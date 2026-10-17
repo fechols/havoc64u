@@ -3,6 +3,8 @@ use havoc::game::{Hud, Mode};
 use havoc::render::pack_band;
 use havoc::sky_cache::SkyCache;
 
+const SKY_PALETTES: [[u8; 3]; 4] = [[6, 1, 15], [8, 7, 10], [11, 15, 12], [4, 10, 14]];
+
 fn hud() -> Hud {
     Hud {
         mode: Mode::Playing,
@@ -65,7 +67,13 @@ fn hud_eligibility_covers_modes_boss_and_exact_sector_banner_boundaries() {
     }
     hud.distance = 0; // Saturation must match the HUD even with stale section.
     assert_eq!(SkyCache::eligible_bands(u32::MAX, &hud), clean & !6 & !0x78);
-    for mode in [Mode::Title, Mode::Respawning, Mode::Victory, Mode::GameOver] {
+    for mode in [
+        Mode::Title,
+        Mode::Respawning,
+        Mode::Victory,
+        Mode::GameOver,
+        Mode::Attract,
+    ] {
         hud.mode = mode;
         assert_eq!(SkyCache::eligible_bands(u32::MAX, &hud), 0);
     }
@@ -89,61 +97,64 @@ fn band_pattern(palette: &[u8], distribution: usize) -> [u8; 1280] {
 fn screen_bytes_determine_all_packed_sky_bytes_for_every_previous_palette() {
     // Every subset, with and without black, covers uniform/absent colors; all
     // 4096 previous palettes include duplicate slots and unrelated old colors.
-    for subset in 1..16 {
-        let palette: Vec<_> = [0, 6, 1, 15]
-            .into_iter()
-            .enumerate()
-            .filter_map(|(bit, color)| (subset & (1 << bit) != 0).then_some(color))
-            .collect();
-        for distribution in 0..2 {
-            let pixels = band_pattern(&palette, distribution);
-            let mut by_screen: [Option<([u8; 8], u8)>; 256] = [None; 256];
-            for base in (0..4096).step_by(40) {
-                let mut previous_screen = [0; 40];
-                let mut previous_color = [0; 40];
-                for cell in 0..40 {
-                    let old = (base + cell).min(4095);
-                    previous_screen[cell] = (old >> 4) as u8;
-                    previous_color[cell] = (old & 15) as u8;
-                }
-                let (mut bitmap, mut screen, mut color) = ([0; 320], [0; 40], [0; 40]);
-                pack_band(
-                    &pixels,
-                    &previous_screen,
-                    &previous_color,
-                    &mut bitmap,
-                    &mut screen,
-                    &mut color,
-                );
-                for cell in 0..40 {
-                    let bytes = bitmap[cell * 8..cell * 8 + 8].try_into().unwrap();
-                    let result = (bytes, color[cell]);
-                    let known = &mut by_screen[screen[cell] as usize];
-                    if let Some(expected) = known {
-                        assert_eq!(
-                            *expected,
-                            result,
-                            "subset {subset}, old palette {}",
-                            base + cell
-                        );
-                    } else {
-                        *known = Some(result);
+    for (theme, [sky, top, shade]) in SKY_PALETTES.into_iter().enumerate() {
+        for subset in 1..16 {
+            let palette: Vec<_> = [0, sky, top, shade]
+                .into_iter()
+                .enumerate()
+                .filter_map(|(bit, color)| (subset & (1 << bit) != 0).then_some(color))
+                .collect();
+            for distribution in 0..2 {
+                let pixels = band_pattern(&palette, distribution);
+                let mut by_screen: [Option<([u8; 8], u8)>; 256] = [None; 256];
+                for base in (0..4096).step_by(40) {
+                    let mut previous_screen = [0; 40];
+                    let mut previous_color = [0; 40];
+                    for cell in 0..40 {
+                        let old = (base + cell).min(4095);
+                        previous_screen[cell] = (old >> 4) as u8;
+                        previous_color[cell] = (old & 15) as u8;
                     }
+                    let (mut bitmap, mut screen, mut color) = ([0; 320], [0; 40], [0; 40]);
+                    pack_band(
+                        &pixels,
+                        &previous_screen,
+                        &previous_color,
+                        &mut bitmap,
+                        &mut screen,
+                        &mut color,
+                    );
+                    for cell in 0..40 {
+                        let bytes = bitmap[cell * 8..cell * 8 + 8].try_into().unwrap();
+                        let result = (bytes, color[cell]);
+                        let known = &mut by_screen[screen[cell] as usize];
+                        if let Some(expected) = known {
+                            assert_eq!(
+                                *expected,
+                                result,
+                                "theme {theme}, subset {subset}, old palette {}",
+                                base + cell
+                            );
+                        } else {
+                            *known = Some(result);
+                        }
+                    }
+                    let (mut repeated_bitmap, mut repeated_screen, mut repeated_color) =
+                        ([0; 320], [0; 40], [0; 40]);
+                    pack_band(
+                        &pixels,
+                        &screen,
+                        &color,
+                        &mut repeated_bitmap,
+                        &mut repeated_screen,
+                        &mut repeated_color,
+                    );
+                    assert_eq!(
+                        (bitmap, screen, color),
+                        (repeated_bitmap, repeated_screen, repeated_color),
+                        "theme {theme}, subset {subset}, palette base {base}"
+                    );
                 }
-                let (mut repeated_bitmap, mut repeated_screen, mut repeated_color) =
-                    ([0; 320], [0; 40], [0; 40]);
-                pack_band(
-                    &pixels,
-                    &screen,
-                    &color,
-                    &mut repeated_bitmap,
-                    &mut repeated_screen,
-                    &mut repeated_color,
-                );
-                assert_eq!(
-                    (bitmap, screen, color),
-                    (repeated_bitmap, repeated_screen, repeated_color)
-                );
             }
         }
     }
@@ -194,4 +205,116 @@ fn alternating_banks_match_uncached_output_through_occlusion_and_hud_changes() {
     }
     assert!(hits >= 8, "cache must exercise repeated reuse");
     assert!(misses >= 12, "both banks must recover after invalidation");
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct PackedBanks {
+    bitmaps: [[u8; 320]; 2],
+    screens: [[u8; 40]; 2],
+    color_shadow: [u8; 40],
+    front: usize,
+}
+
+impl PackedBanks {
+    fn new() -> Self {
+        Self {
+            bitmaps: [[0; 320]; 2],
+            screens: [[0; 40]; 2],
+            color_shadow: [0; 40],
+            front: 0,
+        }
+    }
+
+    fn draw(&mut self, pixels: &[u8; 1280], reuse: bool) {
+        let back = 1 - self.front;
+        if !reuse {
+            let (mut bitmap, mut screen, mut color) = ([0; 320], [0; 40], [0; 40]);
+            pack_band(
+                pixels,
+                &self.screens[self.front],
+                &self.color_shadow,
+                &mut bitmap,
+                &mut screen,
+                &mut color,
+            );
+            self.bitmaps[back] = bitmap;
+            self.screens[back] = screen;
+            self.color_shadow = color;
+        }
+        self.front = back;
+    }
+
+    fn can_reuse(&self, cache: &SkyCache) -> bool {
+        cache.reusable_bands() & (1 << 5) != 0
+            && SkyCache::screens_match(&self.screens[self.front], &self.screens[1 - self.front])
+    }
+}
+
+#[test]
+fn scene_resets_match_forced_repainting_through_all_themes_and_rapid_switches() {
+    let mut cache = SkyCache::new();
+    let mut cached = PackedBanks::new();
+    let mut forced = PackedBanks::new();
+    let mut previous_scene = None;
+    let mut scene_frames = 0;
+    let mut hits = [0; 4];
+    // Warm both banks in each scene, return to lowlands, then cut every frame.
+    let scenes = [
+        0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3, 0, 0, 0, 0, 1, 2, 3, 0, 3, 1, 0, 0, 0, 0,
+    ];
+    for (frame, scene) in scenes.into_iter().enumerate() {
+        if previous_scene != Some(scene) {
+            cache = SkyCache::new();
+            scene_frames = 0;
+        }
+        let pixels = band_pattern(&SKY_PALETTES[scene], scene & 1);
+        let reuse = cached.can_reuse(&cache);
+        assert_eq!(
+            reuse,
+            scene_frames >= 2,
+            "both physical banks must repaint after scene {scene} starts at frame {frame}"
+        );
+        cached.draw(&pixels, reuse);
+        forced.draw(&pixels, false);
+        cache.record_frame((cached.front + 2) as u8, 1 << 5);
+        assert_eq!(cached, forced, "scene {scene}, frame {frame}");
+        hits[scene] += usize::from(reuse);
+        scene_frames += 1;
+        previous_scene = Some(scene);
+    }
+    assert!(hits.into_iter().all(|count| count >= 2));
+}
+
+#[test]
+fn scene_reset_is_required_even_when_new_clouds_keep_the_same_palette() {
+    let old_pixels = band_pattern(&SKY_PALETTES[0], 0);
+    let new_pixels = band_pattern(&SKY_PALETTES[0], 1);
+    let mut cache = SkyCache::new();
+    let mut cached = PackedBanks::new();
+    for _ in 0..2 {
+        cached.draw(&old_pixels, false);
+        cache.record_frame((cached.front + 2) as u8, 1 << 5);
+    }
+    assert!(cached.can_reuse(&cache));
+    let mut forced = cached.clone();
+    forced.draw(&new_pixels, false);
+    assert_eq!(cached.screens, forced.screens);
+    assert_eq!(cached.color_shadow, forced.color_shadow);
+    assert_ne!(cached.bitmaps[forced.front], forced.bitmaps[forced.front]);
+    // Palette equality accepts the old banks, so only a scene reset prevents
+    // the previous arrangement from surviving indefinitely in both bitmaps.
+    cache = SkyCache::new();
+    assert!(!cached.can_reuse(&cache));
+    cached.draw(&new_pixels, false);
+    cache.record_frame((cached.front + 2) as u8, 1 << 5);
+    assert_eq!(cached, forced);
+    assert!(!cached.can_reuse(&cache));
+    for _ in 0..3 {
+        let reuse = cached.can_reuse(&cache);
+        cached.draw(&new_pixels, reuse);
+        forced.draw(&new_pixels, false);
+        cache.record_frame((cached.front + 2) as u8, 1 << 5);
+        assert_eq!(cached, forced);
+    }
+    assert!(cached.can_reuse(&cache));
 }

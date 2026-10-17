@@ -21,6 +21,7 @@ fn header() -> [u8; 32] {
     put32(&mut bytes, 8, COMMON_OFFSET);
     put32(&mut bytes, 12, SEGMENTS_OFFSET);
     bytes[16] = SEGMENT_COUNT;
+    bytes[17] = havoc::music::SID_COUNT as u8;
     seal_header(&mut bytes);
     bytes
 }
@@ -28,6 +29,8 @@ fn package() -> Vec<u8> {
     let mut bytes = vec![0u8; REU_SIZE as usize];
     bytes[..32].copy_from_slice(&header());
     let common = baked_assets::common_bank();
+    let music = havoc::soundtrack::score_bank();
+    bytes[MUSIC_OFFSET as usize..MUSIC_OFFSET as usize + music.len()].copy_from_slice(&music);
     let offset = COMMON_OFFSET as usize;
     bytes[offset..offset + COMMON_SIZE].copy_from_slice(&common);
     put16(&mut bytes, 18, checksum(&common));
@@ -52,10 +55,11 @@ fn header_rejects_wrong_size_signature_version_and_directory() {
     assert_eq!(validate_header(&good[..31]), Err(AssetError::Size));
     for (offset, value, expected) in [
         (0, b'X', AssetError::Magic),
-        (4, 0, AssetError::Version),
+        (4, 0xff, AssetError::Version),
         (8, 0xff, AssetError::Bounds),
         (12, 0xff, AssetError::Bounds),
         (16, 5, AssetError::Bounds),
+        (17, 6 - havoc::music::SID_COUNT as u8, AssetError::Bounds),
     ] {
         let mut bytes = good;
         bytes[offset] = value;
@@ -182,11 +186,7 @@ fn model_only_cache_preserves_meshes_without_exposing_missing_audio() {
     let cache = AssetBank::new(&bytes[..MODEL_SIZE]).unwrap();
     assert_eq!(full.audio().len(), 512);
     assert!(cache.audio().is_empty());
-    assert!(
-        havoc::audio::AudioEngine::new(havoc::audio::VideoStandard::Pal)
-            .load_score(cache.audio())
-            .is_err()
-    );
+    assert!(havoc::music::cue_info(cache.audio(), 0).is_err());
     for mesh in 0..full.mesh_count() {
         assert_eq!(full.vertex_count(mesh), cache.vertex_count(mesh));
         assert_eq!(full.face_count(mesh), cache.face_count(mesh));
@@ -276,7 +276,7 @@ fn trusted_views_match_prior_validation_of_the_same_immutable_bytes() {
 }
 
 #[test]
-fn version_12_checksums_only_the_segment_runtime_prefix() {
+fn version_20_checksums_only_the_segment_runtime_prefix() {
     let mut bytes = package();
     for index in 0..SEGMENT_COUNT as usize {
         let at = SEGMENTS_OFFSET as usize + index * SEGMENT_SIZE;

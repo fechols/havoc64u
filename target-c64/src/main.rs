@@ -11,6 +11,7 @@ use havoc::{
     audio::{AudioEngine, SidBus, VideoStandard},
     game::{Game, Hud, InputSample},
     hud,
+    music::{self, BANK_HEADER_SIZE, PAGE_SIZE},
     render::{self, Renderer},
     sky_cache::SkyCache,
 };
@@ -21,6 +22,17 @@ static mut RENDERER: MaybeUninit<Renderer> = MaybeUninit::uninit();
 static mut GAME: MaybeUninit<Game> = MaybeUninit::uninit();
 #[link_section = ".audio_state"]
 static mut AUDIO: MaybeUninit<AudioEngine> = MaybeUninit::uninit();
+#[cfg_attr(feature = "four-sid", link_section = ".music_page")]
+#[cfg_attr(not(feature = "four-sid"), link_section = ".audio_state")]
+static mut NEXT_PAGE: MaybeUninit<[u8; PAGE_SIZE]> = MaybeUninit::uninit();
+static mut MUSIC_DIRECTORY_HASH: u16 = 0;
+static mut MUSIC_VALIDATED: bool = false;
+#[no_mangle]
+pub static mut MUSIC_CUE: u8 = 0;
+#[no_mangle]
+pub static mut MUSIC_PAGE: u8 = 0;
+#[no_mangle]
+pub static mut MUSIC_UNDERRUNS: u16 = 0;
 #[no_mangle]
 pub static mut FRAME_SERIAL: u16 = 0;
 #[no_mangle]
@@ -84,7 +96,10 @@ extern "C" {
     static __phase_sim_size: u8;
     static __phase_geometry_size: u8;
     static __phase_pixels_size: u8;
+    static __phase_audio_size: u8;
     static __resident_end: u8;
+    static __startup_checks_start: u8;
+    static __startup_checks_end: u8;
 }
 struct HardwareSid;
 impl SidBus for HardwareSid {
@@ -156,7 +171,11 @@ pub unsafe extern "C" fn irq_body() {
 unsafe fn audio_tick() {
     CLOCK_MS = CLOCK_MS.wrapping_add(20);
     AUDIO_TICKS = AUDIO_TICKS.wrapping_add(1);
-    AUDIO.assume_init_mut().tick(&mut HardwareSid);
+    let audio = AUDIO.assume_init_mut();
+    audio.tick(&mut HardwareSid, NEXT_PAGE.assume_init_ref());
+    MUSIC_CUE = audio.current_cue() as u8;
+    MUSIC_PAGE = audio.current_page();
+    MUSIC_UNDERRUNS = audio.underruns();
 }
 
 unsafe fn fail(message: &[u8]) -> ! {
@@ -169,6 +188,11 @@ unsafe fn fail(message: &[u8]) -> ! {
     poke(0xdd0d, 0x7f);
     poke(0xd418, 0);
     poke(0xd438, 0);
+    #[cfg(feature = "four-sid")]
+    {
+        poke(0xd458, 0);
+        poke(0xd478, 0);
+    }
     // Bank 2 exposes the VIC character ROM at $9000. Reuse screen A, keeping
     // the compiler's low-memory scratch intact even while displaying an error.
     poke(0xdd02, peek(0xdd02) | 3);
@@ -222,12 +246,13 @@ unsafe fn load_phase(index: u8, size: u16) {
         offset += n;
     }
 }
+#[link_section = ".startup_checks"]
 #[inline(never)]
 unsafe fn check_code_package() {
-    dma(0x100, 0x7600, 32);
-    let directory = core::slice::from_raw_parts(0x7600 as *const u8, 32);
-    if &directory[..4] != b"OVL1"
-        || assets::checksum(&directory[..30]) != assets::u16_at(directory, 30)
+    dma(0x100, 0x7600, 64);
+    let directory = core::slice::from_raw_parts(0x7600 as *const u8, 64);
+    if &directory[..4] != b"OVL2"
+        || assets::checksum(&directory[..62]) != assets::u16_at(directory, 62)
     {
         fail(b"REU CODE DIRECTORY MISSING OR INVALID")
     }
@@ -236,20 +261,27 @@ unsafe fn check_code_package() {
         core::ptr::addr_of!(__phase_sim_size) as u16,
         core::ptr::addr_of!(__phase_geometry_size) as u16,
         core::ptr::addr_of!(__phase_pixels_size) as u16,
+        core::ptr::addr_of!(__phase_audio_size) as u16,
     ];
     let resident = core::slice::from_raw_parts(
         0x0801 as *const u8,
         core::ptr::addr_of!(__resident_end) as usize - 0x0801,
     );
-    if assets::checksum(resident) != assets::u16_at(directory, 20)
+    if directory[32] != music::SID_COUNT as u8
+        || assets::checksum(resident) != assets::u16_at(directory, 24)
         || assets::checksum(core::slice::from_raw_parts(0x7800 as *const u8, 2048))
-            != assets::u16_at(directory, 22)
+            != assets::u16_at(directory, 26)
         || assets::checksum(core::slice::from_raw_parts(0x9900 as *const u8, 1792))
-            != assets::u16_at(directory, 24)
+            != assets::u16_at(directory, 28)
+        || assets::checksum(core::slice::from_raw_parts(
+            core::ptr::addr_of!(__startup_checks_start),
+            core::ptr::addr_of!(__startup_checks_end) as usize
+                - core::ptr::addr_of!(__startup_checks_start) as usize,
+        )) != assets::u16_at(directory, 30)
     {
         fail(b"PRG AND REU DO NOT MATCH")
     }
-    for index in 0..4 {
+    for index in 0..5 {
         let size = sizes[index];
         if size != assets::u16_at(directory, 4 + index * 2) || size == 0 || size > 0x4200 {
             fail(b"INVALID REU CODE SIZE")
@@ -258,7 +290,7 @@ unsafe fn check_code_package() {
         if assets::checksum(core::slice::from_raw_parts(
             0x3000 as *const u8,
             size as usize,
-        )) != assets::u16_at(directory, 12 + index * 2)
+        )) != assets::u16_at(directory, 14 + index * 2)
         {
             fail(b"REU CODE CHECKSUM FAILED")
         }
@@ -282,13 +314,7 @@ unsafe fn load_initial_assets() {
     if assets::checksum(common) != common_check || AssetBank::new(common).is_err() {
         fail(b"INVALID COMMON ASSET BANK")
     }
-    if AUDIO
-        .assume_init_mut()
-        .load_score(&common[2048..2560])
-        .is_err()
-    {
-        fail(b"INVALID STEREO SCORE")
-    }
+    MUSIC_DIRECTORY_HASH = assets::checksum(&common[2048..2048 + BANK_HEADER_SIZE]);
 }
 unsafe fn segment_data(slot: u8) -> &'static [u8] {
     core::slice::from_raw_parts((0x9500 + slot as u16 * 512) as *const u8, 512)
@@ -417,6 +443,103 @@ unsafe fn send_audio(game: &mut Game) {
     }
     enable_irq();
 }
+
+/// Only the foreground AUDIO overlay touches REU score data. The external
+/// page is never changed while the IRQ has a published page waiting to play.
+#[link_section = ".phase.audio"]
+#[inline(never)]
+unsafe fn service_audio() {
+    dma(assets::MUSIC_OFFSET, 0x8c00, BANK_HEADER_SIZE as u16);
+    let header = core::slice::from_raw_parts(0x8c00 as *const u8, BANK_HEADER_SIZE);
+    if assets::checksum(header) != MUSIC_DIRECTORY_HASH {
+        fail(b"INVALID MUSIC DIRECTORY")
+    }
+    if !MUSIC_VALIDATED {
+        validate_music_bank(header);
+        MUSIC_VALIDATED = true;
+    }
+    disable_irq();
+    let request = AUDIO.assume_init_ref().page_request();
+    enable_irq();
+    let Some(request) = request else {
+        return;
+    };
+    let info = match music::cue_info(header, request.cue as u8) {
+        Ok(info) => info,
+        Err(_) => fail(b"INVALID MUSIC DIRECTORY"),
+    };
+    if request.page >= info.pages {
+        fail(b"INVALID MUSIC PAGE")
+    }
+    dma(
+        assets::MUSIC_OFFSET + info.offset + request.page as u32 * PAGE_SIZE as u32,
+        NEXT_PAGE.as_mut_ptr() as u16,
+        PAGE_SIZE as u16,
+    );
+    let bytes = NEXT_PAGE.assume_init_ref();
+    let expected_next = if request.page + 1 == info.pages {
+        0
+    } else {
+        request.page + 1
+    };
+    if bytes[6] != expected_next || bytes[7] != info.row_ticks {
+        fail(b"INVALID MUSIC PAGE")
+    }
+    disable_irq();
+    let result = AUDIO.assume_init_mut().publish_page(request, bytes);
+    enable_irq();
+    if result.is_err() {
+        fail(b"INVALID MUSIC PAGE")
+    }
+}
+
+#[link_section = ".phase.audio"]
+#[inline(never)]
+unsafe fn validate_music_bank(header: &[u8]) {
+    let mut end = BANK_HEADER_SIZE as u32;
+    for cue in 0..music::CUE_COUNT as u8 {
+        let info = match music::cue_info(header, cue) {
+            Ok(info) => info,
+            Err(_) => fail(b"INVALID MUSIC DIRECTORY"),
+        };
+        if info.offset != end {
+            fail(b"INVALID MUSIC DIRECTORY")
+        }
+        let mut a = 0u16;
+        let mut b = 0u16;
+        for page in 0..info.pages {
+            dma(
+                assets::MUSIC_OFFSET + end,
+                NEXT_PAGE.as_mut_ptr() as u16,
+                PAGE_SIZE as u16,
+            );
+            let bytes = NEXT_PAGE.assume_init_ref();
+            if music::validate_page(bytes, cue, page).is_err()
+                || bytes[7] != info.row_ticks
+                || bytes[6] != if page + 1 == info.pages { 0 } else { page + 1 }
+            {
+                fail(b"INVALID MUSIC PAGE")
+            }
+            for &value in bytes {
+                a += value as u16;
+                if a >= 255 {
+                    a -= 255;
+                }
+                b += a;
+                if b >= 255 {
+                    b -= 255;
+                }
+            }
+            end += PAGE_SIZE as u32;
+        }
+        if ((b << 8) | a) != info.checksum {
+            fail(b"INVALID MUSIC CHECKSUM")
+        }
+    }
+    if end != assets::u32_at(header, 8) {
+        fail(b"INVALID MUSIC DIRECTORY")
+    }
+}
 #[no_mangle]
 #[inline(never)]
 pub unsafe extern "C" fn frame_complete() {
@@ -443,6 +566,17 @@ pub unsafe extern "C" fn benchmark_frame_begin() {
 pub unsafe extern "C" fn benchmark_frame_ready() {
     wr(core::ptr::addr_of_mut!(PROF_PHASE), 1);
 }
+// Test-only clock arithmetic stays resident rather than expanding the SIM
+// overlay; ordinary production scheduling still reads clock_ms directly.
+#[cfg(feature = "benchmarks")]
+#[inline(never)]
+unsafe fn benchmark_now(sim_ms: u32, ticks: u8) -> u32 {
+    if ticks == 255 {
+        clock_ms()
+    } else {
+        sim_ms.wrapping_add(ticks as u32 * 20)
+    }
+}
 #[inline(never)]
 unsafe fn publish(bank: u8, last: &mut u16) {
     loop {
@@ -464,6 +598,18 @@ unsafe fn publish(bank: u8, last: &mut u16) {
     frame_complete();
 }
 
+// Keep theme selection resident: both render phases have little spare space.
+// Screen bytes only prove reuse for identical pixels, so a section change must
+// invalidate both banks even when old and new clouds happen to share a palette.
+#[inline(never)]
+unsafe fn prepare_sky(section: u8) -> u8 {
+    if RENDER_SEGMENT != section {
+        SKY_CACHE = SkyCache::new();
+    }
+    RENDER_SEGMENT = section;
+    GAME.assume_init_ref().sky_color()
+}
+
 #[link_section = ".phase.geometry"]
 #[inline(never)]
 unsafe fn prepare_geometry(current: u8, bank: &AssetBank<'_>) {
@@ -471,8 +617,7 @@ unsafe fn prepare_geometry(current: u8, bank: &AssetBank<'_>) {
     let game = GAME.assume_init_ref();
     let renderer = RENDERER.assume_init_mut();
     let data = segment_data(current);
-    RENDER_SEGMENT = data[4];
-    renderer.begin(6);
+    renderer.begin(prepare_sky(data[4]));
     game.render(renderer, bank, &Segment::from_validated(data));
     renderer.finish();
     SKY_BANDS = renderer.static_sky_bands();
@@ -508,7 +653,10 @@ unsafe fn draw_pixels(status: &Hud) -> u8 {
         // The cockpit completely replaces these two bands. Edge state still
         // advances so triangles crossing their boundaries remain continuous.
         let paint_scene = !reuse_sky
-            && (status.mode == havoc::game::Mode::Title || (band != 0 && band != 24));
+            && (matches!(
+                status.mode,
+                havoc::game::Mode::Title | havoc::game::Mode::Attract
+            ) || (band != 0 && band != 24));
         if pass.next_band(pixels, paint_scene) != Some(band) {
             fail(b"INVALID RASTER BAND ORDER")
         }
@@ -569,6 +717,7 @@ unsafe fn initialize_game() {
 #[inline(never)]
 unsafe fn initialize_audio(standard: VideoStandard) {
     AUDIO.write(AudioEngine::new(standard));
+    core::ptr::write_bytes(NEXT_PAGE.as_mut_ptr().cast::<u8>(), 0, PAGE_SIZE);
 }
 struct Runtime {
     sim_ms: u32,
@@ -617,11 +766,10 @@ unsafe fn simulate(runtime: &mut Runtime) -> Hud {
     let bench_ticks = rd(core::ptr::addr_of!(BENCH_TICKS));
     #[cfg(not(feature = "benchmarks"))]
     let bench_ticks = 255u8;
-    let now = if bench_ticks == 255 {
-        clock_ms()
-    } else {
-        runtime.sim_ms.wrapping_add(bench_ticks as u32 * 20)
-    };
+    #[cfg(feature = "benchmarks")]
+    let now = benchmark_now(runtime.sim_ms, bench_ticks);
+    #[cfg(not(feature = "benchmarks"))]
+    let now = clock_ms();
     while now.wrapping_sub(runtime.sim_ms) >= 20 {
         let need = game.segment_index();
         if runtime.loaded[0] == need {
@@ -691,6 +839,15 @@ pub unsafe extern "C" fn main() -> i32 {
         load_phase(1, core::ptr::addr_of!(__phase_sim_size) as u16);
         wr(core::ptr::addr_of_mut!(PROF_PHASE), 5);
         let status = simulate(&mut runtime);
+        disable_irq();
+        let music_pending = AUDIO.assume_init_ref().page_request().is_some();
+        enable_irq();
+        if music_pending {
+            wr(core::ptr::addr_of_mut!(PROF_PHASE), 8);
+            load_phase(4, core::ptr::addr_of!(__phase_audio_size) as u16);
+            wr(core::ptr::addr_of_mut!(PROF_PHASE), 9);
+            service_audio();
+        }
         wr(core::ptr::addr_of_mut!(PROF_PHASE), 2);
         load_phase(2, core::ptr::addr_of!(__phase_geometry_size) as u16);
         wr(core::ptr::addr_of_mut!(PROF_PHASE), 6);

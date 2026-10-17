@@ -12,8 +12,9 @@ pub const SEGMENT_DISTANCE: u32 = 30_000;
 pub const REU_SIZE: u32 = 0x1000000;
 pub const COMMON_OFFSET: u32 = 0x1000;
 pub const SEGMENTS_OFFSET: u32 = 0x2000;
-// Version 1.2 hashes the 512-byte cached segment prefix and limits it to 62 events.
-pub const PACKAGE_ID: u32 = 0x534D0102;
+pub const MUSIC_OFFSET: u32 = 0x060000;
+// Version 2 pairs the SID profile and paged soundtrack with the common assets.
+pub const PACKAGE_ID: u32 = 0x534D0200;
 pub const PLAYER: u8 = 0;
 pub const FIGHTER: u8 = 1;
 pub const DIVER: u8 = 2;
@@ -69,6 +70,7 @@ pub fn validate_header(data: &[u8]) -> Result<(), AssetError> {
     if u32_at(data, 8) != COMMON_OFFSET
         || u32_at(data, 12) != SEGMENTS_OFFSET
         || data[16] != SEGMENT_COUNT
+        || data[17] != crate::music::SID_COUNT as u8
     {
         return Err(AssetError::Bounds);
     }

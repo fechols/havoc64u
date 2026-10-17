@@ -25,12 +25,12 @@ def load_comparison():
 
 
 REPLAY = r'''
-pub fn replay(input:&[u8])->Vec<u8> {
+pub fn replay(input:&[u8],clear_color:u8)->Vec<u8> {
     assert_eq!(input.len()%16,0);
     let count=input.len()/16;
     assert!(count<=TRIANGLE_CAPACITY);
     let mut renderer=Renderer::new();
-    renderer.begin(6);
+    renderer.begin(clear_color);
     renderer.triangle_count=count as u16;
     for (index,bytes) in input.chunks_exact(16).enumerate() {
         let word=|at|i16::from_le_bytes([bytes[at],bytes[at+1]]);
@@ -89,7 +89,7 @@ fn painted_frame(renderer:&mut Renderer)->Vec<u8> {{
 fn main() {{
  let args:Vec<_>=std::env::args().collect();
  let input=std::fs::read(&args[1]).unwrap();
- std::fs::write(&args[2],render::replay(&input)).unwrap();
+ std::fs::write(&args[2],render::replay(&input,args[3].parse().unwrap())).unwrap();
 }}
 '''
     path = build / f"{name}.rs"
@@ -110,7 +110,7 @@ def replay(executable, sample, output):
                                    triangle["color"], triangle["reserved"]) for triangle in geometry)
     inputs = output.with_suffix(".commands")
     inputs.write_bytes(commands)
-    subprocess.run([executable, inputs, output], check=True)
+    subprocess.run([executable, inputs, output, str(sample.get("clear_color", 6))], check=True)
     result = output.read_bytes()
     if len(result) != 32000 + len(geometry) * 800:
         raise RuntimeError("unexpected replay length")

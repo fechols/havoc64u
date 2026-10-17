@@ -1,5 +1,5 @@
-/* C64 Ultimate PRG with four explicitly selected REU code overlays. The PRG
- * initializes resident code and both high constant pools in one ordinary LOAD.
+/* C64 Ultimate PRG with five explicitly selected REU code overlays. The PRG
+ * initializes resident code, startup checks and high constants in one LOAD.
  * Overlay load addresses are REU package offsets, not C64 RAM addresses.
  */
 ENTRY(_start)
@@ -13,14 +13,17 @@ MEMORY {
     low (rw) : ORIGIN = 0x0200, LENGTH = 0x0600
     ram (rwx) : ORIGIN = 0x0801, LENGTH = 0x27FF
     phase (rwx) : ORIGIN = 0x3000, LENGTH = 0x4200
+    startup_checks (rx) : ORIGIN = 0x8C00, LENGTH = 0x0500
     constants (r) : ORIGIN = 0x7800, LENGTH = 0x0800
     tables (r) : ORIGIN = 0x9900, LENGTH = 0x0700
     /* Empty regions materialize zero-filled holes in the contiguous PRG. */
     image_gap (r) : ORIGIN = 0x3000, LENGTH = 0x4800
-    image_midgap (r) : ORIGIN = 0x8000, LENGTH = 0x1900
+    image_midgap (r) : ORIGIN = 0x8000, LENGTH = 0x0C00
+    image_postgap (r) : ORIGIN = 0x9100, LENGTH = 0x0800
     renderer (rw) : ORIGIN = 0xCFFA, LENGTH = 0x1006
     game (rw) : ORIGIN = 0xC800, LENGTH = 0x0280
     audio (rw) : ORIGIN = 0xCE00, LENGTH = 0x01B0
+    music_page (rw) : ORIGIN = 0x0720, LENGTH = 0x00E0
 }
 
 INPUT(basic-header.o)
@@ -58,6 +61,18 @@ SECTIONS {
         *(.phase.pixels .phase.pixels.*)
         __phase_pixels_end = .;
     } >phase
+    .phase.audio 0x3000 : AT(0x50000) {
+        __phase_audio_start = .;
+        *(.phase.audio .phase.audio.*)
+        __phase_audio_end = .;
+    } >phase
+    /* Called exactly once from main, before BOOT loads common assets over
+     * this range. Never reachable from an interrupt or a later overlay. */
+    .startup_checks : {
+        __startup_checks_start = .;
+        *(.startup_checks .startup_checks.*)
+        __startup_checks_end = .;
+    } >startup_checks
 
     INCLUDE text.ld
     .tables : {
@@ -84,6 +99,11 @@ SECTIONS {
         KEEP(*(.audio_state .audio_state.*))
         __audio_state_end = .;
     } >audio
+    .music_page (NOLOAD) : {
+        __music_page_start = .;
+        KEEP(*(.music_page .music_page.*))
+        __music_page_end = .;
+    } >music_page
 }
 
 /* Independent software stacks; both grow toward lower addresses. */
@@ -106,6 +126,7 @@ __phase_boot_size = SIZEOF(.phase.boot);
 __phase_sim_size = SIZEOF(.phase.sim);
 __phase_geometry_size = SIZEOF(.phase.geometry);
 __phase_pixels_size = SIZEOF(.phase.pixels);
+__phase_audio_size = SIZEOF(.phase.audio);
 /* GEOMETRY resets its cache before use. PIXELS then fills this same workspace
  * before rasterization; neither the IRQ nor resident model data uses it. */
 __pixel_band_start = 0x8C00;
@@ -123,7 +144,8 @@ __raster_masks_end = 0x6F20;
 
 ASSERT(__rc31 == 0x21, "IRQ save range must match compiler imaginary registers")
 ASSERT(__resident_end <= 0x3000, "resident code exceeds $0801-$2FFF")
-ASSERT(ADDR(.noinit) + SIZEOF(.noinit) <= 0x0800, "low globals exceed $0200-$07FF")
+ASSERT(ADDR(.noinit) + SIZEOF(.noinit) <= (SIZEOF(.music_page) > 0 ? 0x0720 : 0x0800), "low globals overlap audio score page")
+ASSERT(SIZEOF(.music_page) == 0 || SIZEOF(.music_page) == 0x00E0, "four-SID score page must occupy $0720-$07FF")
 ASSERT(SIZEOF(.renderer) <= 0x1006, "renderer exceeds header plus hidden-I/O triangle storage")
 ASSERT(SIZEOF(.game_state) <= 0x0280, "game state overlaps IRQ static-frame backup")
 ASSERT(SIZEOF(.noinit) <= 0x0440, "IRQ static-frame backup exceeds 1088 bytes")
@@ -135,6 +157,8 @@ ASSERT(SIZEOF(.phase.boot) <= 0x4200, "BOOT overlay exceeds $3000-$71FF")
 ASSERT(SIZEOF(.phase.sim) <= 0x4200, "SIM overlay exceeds $3000-$71FF")
 ASSERT(SIZEOF(.phase.geometry) <= 0x4200, "GEOMETRY overlay exceeds $3000-$71FF")
 ASSERT(SIZEOF(.phase.pixels) <= 0x3000, "PIXELS overlay overlaps prepared edges at $6000")
+ASSERT(SIZEOF(.phase.audio) <= 0x4200, "AUDIO overlay exceeds $3000-$71FF")
+ASSERT(SIZEOF(.startup_checks) > 0 && SIZEOF(.startup_checks) <= 0x0500, "startup checks exceed retired pixel-band workspace")
 ASSERT(__projection_cache_start >= __pixel_band_start && __projection_cache_end <= __pixel_band_end, "projection cache exceeds shared pixel-band workspace")
 ASSERT(__projection_cache_start + 624 <= __projection_cache_end, "depth-sort scratch exceeds retired projection cache")
 ASSERT(__raster_heads_end - __raster_heads_start == 256 * 16, "incorrect raster head allocation")
@@ -148,5 +172,7 @@ OUTPUT_FORMAT {
     FULL(image_gap)
     FULL(constants)
     FULL(image_midgap)
+    FULL(startup_checks)
+    FULL(image_postgap)
     FULL(tables)
 }

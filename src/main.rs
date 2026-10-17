@@ -14,7 +14,7 @@ fn frame(
     number: u16,
 ) -> (Vec<u8>, u16, u16) {
     let mut r = Renderer::new();
-    r.begin(6);
+    r.begin(game.sky_color());
     game.render(&mut r, bank, segment);
     r.finish();
     let mut output = vec![0; 10_000];
@@ -60,28 +60,49 @@ fn ppm(frame: &[u8]) -> Vec<u8> {
     }
     out
 }
-fn snapshot(
-    section: Option<u8>,
-    distance: u16,
-    out: &Path,
-) -> Result<(), Box<dyn std::error::Error>> {
+enum Snapshot {
+    Title,
+    Section(u8, u16),
+    Attract(u32),
+}
+
+fn snapshot(source: Snapshot, out: &Path) -> Result<(), Box<dyn std::error::Error>> {
     let common = host::common_bank();
     let bank = AssetBank::new(&common).unwrap();
-    let mut game = if let Some(s) = section {
-        Game::preview_at(s, distance)
-    } else {
-        Game::new()
+    let game = match source {
+        Snapshot::Title => Game::new(),
+        Snapshot::Section(section, distance) => {
+            let mut game = Game::preview_at(section, distance);
+            let data = host::segment_bank(game.segment_index());
+            let segment = Segment::new(&data).unwrap();
+            game.sample_input(InputSample {
+                bits: FIRE,
+                pressed: 0,
+                ms: 6000,
+            });
+            game.tick(&segment);
+            game
+        }
+        Snapshot::Attract(elapsed_ms) => {
+            let banks: [_; 4] = core::array::from_fn(|i| host::segment_bank(i as u8));
+            let mut game = Game::new();
+            // Replay actual 20-ms steps, including title idle and repeat cycles.
+            // Fractional steps have not occurred yet at the requested timestamp.
+            for tick in 1..=elapsed_ms / 20 {
+                game.sample_input(InputSample {
+                    bits: 0,
+                    pressed: 0,
+                    ms: tick * 20,
+                });
+                let segment = Segment::new(&banks[game.segment_index() as usize]).unwrap();
+                game.tick(&segment);
+            }
+            game
+        }
     };
+    // A simulation step may transition sections; render its resulting section.
     let data = host::segment_bank(game.segment_index());
     let segment = Segment::new(&data).unwrap();
-    if section.is_some() {
-        game.sample_input(InputSample {
-            bits: FIRE,
-            pressed: 0,
-            ms: 6000,
-        });
-        game.tick(&segment);
-    }
     let (bytes, triangles, dropped) = frame(&game, &bank, &segment, 0);
     if let Some(p) = out.parent() {
         fs::create_dir_all(p)?;
@@ -108,36 +129,46 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             Ok(())
         }
         Some("snapshot") => {
-            let section = args
-                .get(2)
-                .filter(|s| s.as_str() != "title")
-                .map(|s| s.parse::<u8>())
-                .transpose()?;
-            if section.is_some_and(|s| s >= 4) {
-                return Err("section must be0..3 or title".into());
-            }
-            let distance = args
-                .get(3)
-                .map(|s| s.parse::<u16>())
-                .transpose()?
-                .unwrap_or(5000);
+            let source = if args.get(2).map(String::as_str) == Some("attract") {
+                Snapshot::Attract(
+                    args.get(3)
+                        .ok_or("attract needs elapsed milliseconds")?
+                        .parse()?,
+                )
+            } else {
+                let section = args
+                    .get(2)
+                    .filter(|s| s.as_str() != "title")
+                    .map(|s| s.parse::<u8>())
+                    .transpose()?;
+                if section.is_some_and(|s| s >= 4) {
+                    return Err("section must be 0..3, title, or attract".into());
+                }
+                let distance = args
+                    .get(3)
+                    .map(|s| s.parse::<u16>())
+                    .transpose()?
+                    .unwrap_or(5000);
+                section.map_or(Snapshot::Title, |s| Snapshot::Section(s, distance))
+            };
             snapshot(
-                section,
-                distance,
+                source,
                 Path::new(args.get(4).map(String::as_str).unwrap_or("target/preview")),
             )
         }
         Some("sizes") => {
             println!(
-                "Game={} Audio={} Renderer={} bytes",
+                "Game={} Audio={} NextPage={} SID={} Renderer={} bytes",
                 std::mem::size_of::<Game>(),
                 std::mem::size_of::<havoc::audio::AudioEngine>(),
+                havoc::music::PAGE_SIZE,
+                havoc::music::SID_COUNT,
                 std::mem::size_of::<Renderer>()
             );
             Ok(())
         }
         _ => {
-            println!("H.A.V.O.C. tools\n  bake [directory]\n  check game.reu\n  snapshot <title|0|1|2|3> [distance] [output-prefix]\n  sizes");
+            println!("H.A.V.O.C. tools\n  bake [directory]\n  check game.reu\n  snapshot <title|0|1|2|3> [distance] [output-prefix]\n  snapshot attract <elapsed-ms> [output-prefix]\n  sizes");
             Ok(())
         }
     }

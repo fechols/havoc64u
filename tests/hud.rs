@@ -98,6 +98,30 @@ fn respawn_and_results_show_distinct_status_and_restart_cues() {
 }
 
 #[test]
+fn attract_labels_identify_each_map_without_cockpit_or_boss_panels() {
+    let mut images = Vec::new();
+    for section in 0..4 {
+        let mut status = state(Mode::Attract);
+        status.section = section;
+        status.distance = section as u32 * 30_000;
+        status.boss_shield = 100;
+        let pixels = frame(&status, 0);
+        assert!(pixels[10 * 160..15 * 160].iter().any(|&p| p == HUD_INK | 1));
+        assert!(pixels[189 * 160..194 * 160]
+            .iter()
+            .any(|&p| p == HUD_INK | 1));
+        for y in 0..200 {
+            if !(10..15).contains(&y) && !(189..194).contains(&y) {
+                assert!(pixels[y * 160..(y + 1) * 160].iter().all(|&p| p == 6));
+            }
+        }
+        assert_ne!(pixels, frame(&status, 16));
+        assert!(!images.contains(&pixels), "section labels must be distinct");
+        images.push(pixels);
+    }
+}
+
+#[test]
 fn every_mode_survives_native_bitmap_packing_with_readable_ink() {
     for mode in [
         Mode::Title,
@@ -105,6 +129,7 @@ fn every_mode_survives_native_bitmap_packing_with_readable_ink() {
         Mode::Respawning,
         Mode::Victory,
         Mode::GameOver,
+        Mode::Attract,
     ] {
         for band in 0..25 {
             let mut pixels = [6; 1280];

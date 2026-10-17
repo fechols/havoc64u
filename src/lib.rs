@@ -2,6 +2,9 @@
 
 pub mod assets;
 pub mod audio;
+pub mod music;
+#[cfg(feature = "host-tools")]
+pub mod soundtrack;
 pub mod game;
 pub mod hud;
 pub mod math;

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Check boot rejection of four private corrupted REU copies in calibrated VICE.
+"""Check boot rejection of private corrupted REU copies in calibrated VICE.
 
 Run in Linux/WSL: python3 tools/test-corrupt-package.py
 Uses the existing package and dynamic ELF symbols; it performs no builds and
@@ -68,8 +68,11 @@ def main():
     cases = [
         ("directory-magic", 0x100, "REU CODE DIRECTORY MISSING OR INVALID"),
         ("boot-code", 0x10010, "REU CODE CHECKSUM FAILED"),
+        ("audio-code", 0x50010, "REU CODE CHECKSUM FAILED"),
         ("common-assets", 0x1010, "INVALID COMMON ASSET BANK"),
-        ("resident-pair", 0x114, "PRG AND REU DO NOT MATCH"),
+        ("resident-pair", 0x118, "PRG AND REU DO NOT MATCH"),
+        ("directory-profile", 0x120, "PRG AND REU DO NOT MATCH"),
+        ("music-page", 0x60080+12+5*(10 if original["reu"][17] == 4 else 4), "INVALID MUSIC PAGE"),
     ]
     for name, offset, expected in cases:
         case_output = output/name
@@ -79,10 +82,12 @@ def main():
             (private_package/f"havoc.{extension}").write_bytes(original[extension])
         damaged = bytearray(original["reu"])
         damaged[offset] ^= 1
-        if name == "resident-pair":
+        if name == "directory-profile":
+            damaged[offset] = 2 if original["reu"][17] == 4 else 4
+        if name in ("resident-pair", "directory-profile"):
             # A valid directory with the wrong resident checksum must get the
             # distinct pairing error, rather than failing directory validation.
-            damaged[0x11e:0x120] = checksum(damaged[0x100:0x11e]).to_bytes(2, "little")
+            damaged[0x13e:0x140] = checksum(damaged[0x100:0x13e]).to_bytes(2, "little")
         damaged_hash = hashlib.sha256(damaged).hexdigest()
         (private_package/"havoc.reu").write_bytes(damaged)
         sys.argv = ["vice-smoke.py", "--video", "pal", "--frames", "1", "--timeout", str(args.timeout),

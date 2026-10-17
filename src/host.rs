@@ -1,5 +1,5 @@
 //! Original assets and portable package tools. Never linked into the C64 game.
-use havoc::{assets::*, audio::DEFAULT_SCORE};
+use havoc::{assets::*, music, soundtrack};
 use std::{fs, path::Path};
 
 fn put16(b: &mut [u8], p: usize, n: u16) {
@@ -218,7 +218,9 @@ pub fn common_bank() -> [u8; COMMON_SIZE] {
         }
     }
     assert!(cursor <= MODEL_SIZE, "model bank exceeds common arena");
-    b[MODEL_SIZE..MODEL_SIZE + 512].copy_from_slice(&DEFAULT_SCORE);
+    let score = soundtrack::score_bank();
+    b[MODEL_SIZE..MODEL_SIZE + music::BANK_HEADER_SIZE]
+        .copy_from_slice(&score[..music::BANK_HEADER_SIZE]);
     AssetBank::new(&b).expect("generated common bank");
     b
 }
@@ -289,8 +291,11 @@ pub fn bake(out: &Path) -> Result<(), Box<dyn std::error::Error>> {
     put32(&mut reu, 8, COMMON_OFFSET);
     put32(&mut reu, 12, SEGMENTS_OFFSET);
     reu[16] = SEGMENT_COUNT;
+    reu[17] = music::SID_COUNT as u8;
     put16(&mut reu, 18, checksum(&common));
     reu[COMMON_OFFSET as usize..COMMON_OFFSET as usize + COMMON_SIZE].copy_from_slice(&common);
+    let score = soundtrack::score_bank();
+    reu[MUSIC_OFFSET as usize..MUSIC_OFFSET as usize + score.len()].copy_from_slice(&score);
     for i in 0..4u8 {
         let segment = segment_bank(i);
         let p = SEGMENTS_OFFSET as usize + i as usize * SEGMENT_SIZE;
@@ -305,8 +310,15 @@ pub fn bake(out: &Path) -> Result<(), Box<dyn std::error::Error>> {
     put16(&mut reu, 30, check);
     check_package(&reu)?;
     fs::write(out.join("havoc.reu"), &reu)?;
-    fs::write(out.join("havoc.cfg"), include_str!("../config/havoc.cfg"))?;
-    fs::write(out.join("assets.txt"),format!("H.A.V.O.C. package {PACKAGE_ID:08X}\n16 MiB REU; common {COMMON_OFFSET:06X} (3072 bytes; 2048 resident model bytes); four 2048-byte segments at {SEGMENTS_OFFSET:06X}, each with a checksummed 512-byte runtime prefix (up to 62 encounters)\nOriginal models and stereo SID score; no external ROMs or samples.\n"))?;
+    fs::write(
+        out.join("havoc.cfg"),
+        if cfg!(feature = "four-sid") {
+            include_str!("../config/havoc-4sid.cfg")
+        } else {
+            include_str!("../config/havoc.cfg")
+        },
+    )?;
+    fs::write(out.join("assets.txt"),format!("H.A.V.O.C. package {PACKAGE_ID:08X}\n16 MiB REU; common {COMMON_OFFSET:06X} (3072 bytes; 2048 resident model bytes); four 2048-byte segments at {SEGMENTS_OFFSET:06X}, each with a checksummed 512-byte runtime prefix (up to 62 encounters)\n{} SIDs: {} music voices + 2 effects voices. Seven original cues; {} bytes of paged score data at {MUSIC_OFFSET:06X}.\nOriginal models and music; no external ROMs or samples.\n", music::SID_COUNT, music::MUSIC_VOICES, score.len()))?;
     println!(
         "Baked {} ({} bytes)",
         out.join("havoc.reu").display(),
@@ -321,9 +333,11 @@ pub fn check_package(reu: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
     validate_header(reu).map_err(|e| format!("package header: {e:?}"))?;
     let common = &reu[COMMON_OFFSET as usize..COMMON_OFFSET as usize + COMMON_SIZE];
     let bank = AssetBank::new(common).map_err(|e| format!("common bank: {e:?}"))?;
-    havoc::audio::AudioEngine::new(havoc::audio::VideoStandard::Pal)
-        .load_score(bank.audio())
-        .map_err(|e| format!("audio score: {e:?}"))?;
+    let music_bank = &reu[MUSIC_OFFSET as usize..MUSIC_OFFSET as usize + 0x10000];
+    if bank.audio()[..music::BANK_HEADER_SIZE] != music_bank[..music::BANK_HEADER_SIZE] {
+        return Err("music directory does not match common assets".into());
+    }
+    validate_soundtrack(music_bank)?;
     if checksum(common) != u16_at(reu, 18) {
         return Err("common checksum".into());
     }
@@ -335,6 +349,47 @@ pub fn check_package(reu: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
         {
             return Err("segment checksum/index".into());
         }
+    }
+    Ok(())
+}
+
+pub fn validate_soundtrack(bank: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
+    let mut end = music::BANK_HEADER_SIZE;
+    for cue in 0..music::CUE_COUNT as u8 {
+        let info = music::cue_info(bank, cue).map_err(|e| format!("music directory: {e:?}"))?;
+        if info.offset as usize != end {
+            return Err("music page directory is not contiguous".into());
+        }
+        end += info.pages as usize * music::PAGE_SIZE;
+        if end > bank.len() {
+            return Err("truncated music bank".into());
+        }
+        let pages = &bank[info.offset as usize..end];
+        if checksum(pages) != info.checksum {
+            return Err("music cue checksum".into());
+        }
+        for (index, page) in pages.chunks_exact(music::PAGE_SIZE).enumerate() {
+            music::validate_page(page, cue, index as u8)
+                .map_err(|e| format!("music cue {cue} page {index}: {e:?}"))?;
+            if page[6] != ((index + 1) % info.pages as usize) as u8 || page[7] != info.row_ticks {
+                return Err("music page transport mismatch".into());
+            }
+            let previous = &pages
+                [((index + info.pages as usize - 1) % info.pages as usize) * music::PAGE_SIZE..];
+            for voice in 0..music::MUSIC_VOICES {
+                let event = page[music::EVENT_OFFSET + voice];
+                let at = music::INSTRUMENT_OFFSET + voice * 5;
+                if (event == 1 || event & 128 != 0) && page[at..at + 5] != previous[at..at + 5] {
+                    return Err("music changes instrument under a boundary tie".into());
+                }
+                if index == 0 && (event == 1 || event & 128 != 0) {
+                    return Err("music opening needs an attack or rest".into());
+                }
+            }
+        }
+    }
+    if u32_at(bank, 8) as usize != end {
+        return Err("music bank length mismatch".into());
     }
     Ok(())
 }

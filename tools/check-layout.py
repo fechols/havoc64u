@@ -16,6 +16,12 @@ assert len(data)-2+0x0801==0xa000,'PRG must initialize through9FFF'
 assert symbols.get('__stack')==0xc800,'incorrect main stack'
 assert symbols.get('__irq_stack')==0x7600,'incorrect IRQ stack'
 assert symbols['__resident_end']<=0x3000
+assert symbols['__startup_checks_start']==0x8c00
+assert 0x8c00<symbols['__startup_checks_end']<=0x9100
+assert symbols['__music_page_start']==0x720
+assert symbols['__music_page_end'] in (0x720,0x800)
+four_sid=symbols['__music_page_end']==0x800
+low_end=0x720 if four_sid else 0x800
 assert symbols['__renderer_start']==0xcffa and symbols['__renderer_end']==0xe000
 assert symbols['__irq_static_save_size']<=1088
 assert symbols['__pixel_band_start']==0x8c00 and symbols['__pixel_band_end']==0x9100
@@ -26,7 +32,7 @@ assert (symbols['__raster_heads_start'],symbols['__raster_heads_end'])==(0xd000,
 assert (symbols['__raster_tails_start'],symbols['__raster_tails_end'])==(0x6000,0x6c00)
 assert (symbols['__raster_masks_start'],symbols['__raster_masks_end'])==(0x6c00,0x6f20)
 assert symbols['__raster_masks_end']<=symbols['__irq_stack_bottom']
-ranges={'.basic_header':(0x801,0x3000),'.text':(0x801,0x3000),'.data':(0x200,0x800),'.bss':(0x200,0x800),'.noinit':(0x200,0x800),'.rodata':(0x7800,0x8000),'.tables':(0x9900,0xa000),'.renderer':(0xcffa,0xe000),'.game_state':(0xc800,0xca80),'.audio_state':(0xce00,0xcfb0),'.zp.data':(0x22,0x100),'.zp.bss':(0x22,0x100),'.zp.noinit':(0x22,0x100)}
+ranges={'.basic_header':(0x801,0x3000),'.text':(0x801,0x3000),'.data':(0x200,low_end),'.bss':(0x200,low_end),'.noinit':(0x200,low_end),'.music_page':(0x720,0x800),'.startup_checks':(0x8c00,0x9100),'.rodata':(0x7800,0x8000),'.tables':(0x9900,0xa000),'.renderer':(0xcffa,0xe000),'.game_state':(0xc800,0xca80),'.audio_state':(0xce00,0xcfb0),'.zp.data':(0x22,0x100),'.zp.bss':(0x22,0x100),'.zp.noinit':(0x22,0x100)}
 used=[]
 for line in listing.splitlines():
     m=re.search(r'\[\s*\d+\]\s+(\S+)\s+\S+\s+([0-9a-fA-F]+)\s+[0-9a-fA-F]+\s+([0-9a-fA-F]+)\s+\S+\s+(\S+)',line)
@@ -34,7 +40,7 @@ for line in listing.splitlines():
     name,address,size,flags=m.groups();address=int(address,16);size=int(size,16)
     if 'A' not in flags or not size:continue
     if name.startswith('.phase.'):
-        assert name in {'.phase.boot','.phase.sim','.phase.geometry','.phase.pixels'},name
+        assert name in {'.phase.boot','.phase.sim','.phase.geometry','.phase.pixels','.phase.audio'},name
         limit=0x3000 if name=='.phase.pixels' else 0x4200
         assert address==0x3000 and size<=limit,name
     else:
@@ -44,6 +50,8 @@ for line in listing.splitlines():
         used.append((name,address,address+size))
     print(f'{name:18} ${address:04X}-${address+size-1:04X} {size:5} bytes')
 print(f'PRG {len(data):,} bytes; resident headroom {0x3000-symbols["__resident_end"]} bytes')
+print(f'Music profile: {4 if four_sid else 2} SIDs; extra score page {224 if four_sid else 0} bytes')
+print('Startup checks8C00-90FF: retired before BOOT asset loading and rendering')
 print('VIC A: screen8000 bitmapA000-BF3F; VIC B: screenC000 bitmapE000-FF3F')
 print('Models8400-8BFF; band8C00-90FF; color9100-94FF; segments9500-98FF')
 print('Overlay3000-71FF; main stackC400-C7FF; IRQ stack7200-75FF')

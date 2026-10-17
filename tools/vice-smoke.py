@@ -167,7 +167,9 @@ def counters(mon, syms):
     for name, width in (("FRAME_SERIAL", 2), ("VIDEO_FRAMES", 2), ("AUDIO_TICKS", 2),
                         ("FRAME_TRIANGLES", 2), ("FRAME_DROPPED", 2), ("STREAM_BYTES", 2),
                         ("INPUT_OVERFLOWS", 2), ("GAME_MODE", 1), ("GAME_DISTANCE", 4),
-                        ("FRONT_BANK", 1), ("TEST_INPUT", 1), ("RENDER_SEGMENT", 1)):
+                        ("FRONT_BANK", 1), ("TEST_INPUT", 1), ("RENDER_SEGMENT", 1),
+                        ("MUSIC_CUE", 1), ("MUSIC_ACTIVE_CUE", 1), ("MUSIC_PAGE", 1),
+                        ("MUSIC_UNDERRUNS", 2)):
         if name in syms:
             result[name.lower()] = mon.integer(syms[name], width)
     mon.command("bank io")
@@ -198,13 +200,13 @@ def stores(log_path):
     return result
 
 
-def sid_summary(log_path, events):
+def sid_summary(log_path, events, sid_count=2):
     chips = [{"writes": 0, "gate_on": 0, "gate_off": 0, "registers": {},
-              "voices": [{"gate_on": 0, "gate_off": 0} for _ in range(3)]} for _ in range(2)]
+              "voices": [{"gate_on": 0, "gate_off": 0} for _ in range(3)]} for _ in range(sid_count)]
     for event in events:
         address = event["address"]
         chip, reg = (address - 0xd400) // 32, (address - 0xd400) % 32
-        if chip not in (0, 1) or reg > 24:
+        if not 0 <= chip < sid_count or reg > 24:
             continue
         entry = chips[chip]
         entry["writes"] += 1
@@ -214,28 +216,29 @@ def sid_summary(log_path, events):
             gate = "gate_on" if event["value"] & 1 else "gate_off"
             entry[gate] += 1
             entry["voices"][reg // 7][gate] += 1
-    return {"left_d400": chips[0], "right_d420": chips[1], "source": str(log_path)}
+    names = ("left_d400", "right_d420", "socket1_d440", "socket2_d460")
+    return dict(zip(names, chips), source=str(log_path), sid_count=sid_count)
 
 
 def phase_profile(events, address, title, frames):
     names = {1: "simulation", 2: "geometry", 3: "pixels", 4: "publish",
-             5: "simulation", 6: "geometry", 7: "pixels"}
+             5: "simulation", 6: "geometry", 7: "pixels", 8: "audio", 9: "audio"}
     transitions = [event for event in events if event["address"] == address and event["value"] in names]
     previous = title["bus_cycles"]
     for frame in frames:
         end = frame["bus_cycles"]
         selected = [event for event in transitions if previous <= event["bus_cycles"] < end]
         costs = {name: 0 for name in names.values()}
-        loads = {name: 0 for name in ("simulation", "geometry", "pixels")}
-        work = {name: 0 for name in ("simulation", "geometry", "pixels")}
+        loads = {name: 0 for name in ("simulation", "geometry", "pixels", "audio")}
+        work = {name: 0 for name in ("simulation", "geometry", "pixels", "audio")}
         for index, event in enumerate(selected):
             next_cycle = selected[index+1]["bus_cycles"] if index+1 < len(selected) else end
             duration = next_cycle - event["bus_cycles"]
             name = names[event["value"]]
             costs[name] += duration
-            if event["value"] in (1, 2, 3):
+            if event["value"] in (1, 2, 3, 8):
                 loads[name] += duration
-            elif event["value"] in (5, 6, 7):
+            elif event["value"] in (5, 6, 7, 9):
                 work[name] += duration
         frame["phase_bus_cycles"] = costs
         if any(event["value"] in (5, 6, 7) for event in selected):
@@ -346,7 +349,7 @@ def dwarf_game_layout(elf, tool, syms, output, controls=False):
             raise RuntimeError(f"Unsupported or missing target Game::{name} DWARF type")
         fields[name]["size"] = sizes[kind]
     mode_size = re.search(r"DW_AT_byte_size\s+\((0x[0-9a-fA-F]+|\d+)\)", descriptions["Mode"])
-    if not mode_size or int(mode_size[1], 0) != 1 or set(modes) != {"Title", "Playing", "Respawning", "Victory", "GameOver"}:
+    if not mode_size or int(mode_size[1], 0) != 1 or modes != {"Title": 0, "Playing": 1, "Respawning": 2, "Victory": 3, "GameOver": 4, "Attract": 5}:
         raise RuntimeError("Unsupported target Mode representation")
     name, address = resident_symbol(syms, "GAME")
     end = syms.get("__game_state_end")
@@ -372,8 +375,8 @@ def streaming_checks(mon, syms, failures, elf, reu, dwarf_tool, output, result):
                   excluded_from_timing=True, render_segment_telemetry="RENDER_SEGMENT" in syms,
                   layout=layout, scenarios=[])
     data = reu.read_bytes()
-    if data[:4] != b"SM64" or int.from_bytes(data[4:8], "little") != 0x534d0102 or data[16] != 4:
-        raise RuntimeError("Streaming checks require the four-section version 1.2 package")
+    if data[:4] != b"SM64" or int.from_bytes(data[4:8], "little") != 0x534d0200 or data[16] != 4 or data[17] not in (2, 4):
+        raise RuntimeError("Streaming checks require the four-section version 2.0 package")
     segment_base = int.from_bytes(data[12:16], "little")
     references = [data[segment_base+i*2048:segment_base+i*2048+512] for i in range(4)]
     checksums = [int.from_bytes(data[20+i*2:22+i*2], "little") for i in range(4)]
@@ -514,6 +517,217 @@ def streaming_checks(mon, syms, failures, elf, reu, dwarf_tool, output, result):
     result["passed"] = True
 
 
+def attract_checks(mon, syms, failures, elf, reu, dwarf_tool, output, result):
+    """Count native simulation calls through a complete, naturally timed tour."""
+    layout = dwarf_game_layout(elf, dwarf_tool, syms, output, controls=True)
+    fields = layout["fields"]
+    for name, kind, size in (("menu_ticks", "u16", 2), ("menu_activity", "bool", 1)):
+        if fields.get(name, {}).get("type") != kind:
+            raise RuntimeError(f"Unsupported attract Game::{name} field")
+        fields[name]["size"] = size
+    modes = layout["modes"]
+    game_size = syms["__game_state_end"] - layout["address"]
+    observed = ("mode", "ticks", "rail_ticks", "menu_ticks", "menu_activity", "score",
+                "shield", "lives", "bombs", "boss_started", "boss_defeated", "controls.bits")
+    result.update(passed=False, monitor_assisted=True, excluded_from_timing=True, layout=layout,
+                  scope="One natural 15-second title, four 15-second maps, and another 15-second title, verified by counting native 20-ms Game::tick calls. Monitor writes establish a clean timer baseline and per-map dismissal fixtures; all dismiss/relaunch input uses joystick port 2.",
+                  scenarios=[])
+    data = reu.read_bytes()
+    segment_base = int.from_bytes(data[12:16], "little")
+    references = [data[segment_base+i*2048:segment_base+i*2048+512] for i in range(4)]
+    if any(len(part) != 512 or part[:4] != b"SMS1" or part[4] != i
+           or fletcher16(part) != int.from_bytes(data[20+i*2:22+i*2], "little")
+           for i, part in enumerate(references)):
+        raise RuntimeError("Attract checks require four valid packaged segment references")
+
+    def reset_checkpoints():
+        mon.command("delete")
+        for address in failures:
+            mon.command(f"break exec {address:04x}")
+
+    reset_checkpoints()
+    path = output / "attract-monitor.log"
+    path.unlink(missing_ok=True)
+    mon.command(f'logname "{path.as_posix()}"')
+    mon.command("log on")
+    trace_offset = trace_total = 0
+    tracing = False
+    tick_candidates = [address for name, address in syms.items()
+                       if re.search(r"5havoc4game4Game4tick17h[0-9a-fA-F]+E$", name)]
+    if len(tick_candidates) != 1 or "PROF_PHASE" not in syms:
+        raise RuntimeError("Attract checks require Game::tick and SIM phase telemetry")
+    tick_address = tick_candidates[0]
+
+    def tick_count():
+        nonlocal trace_offset, trace_total
+        # Flush complete trace records before reading; monitor commands do not
+        # advance the emulated clock. The phase condition excludes other code
+        # overlays that happen to occupy the same CPU address as Game::tick.
+        mon.command("log off")
+        with path.open("rb") as log:
+            log.seek(trace_offset)
+            text = log.read().decode(errors="replace")
+            trace_offset = log.tell()
+        trace_total += len(re.findall(
+            rf"Trace\s+(?:on\s+)?exec\s+\$?{tick_address:04x}\b", text, re.I))
+        mon.command("log on")
+        return trace_total
+
+    def read_game():
+        mon.command("bank ram")
+        raw = mon.read(layout["address"], game_size)
+        game = {name: int.from_bytes(raw[fields[name]["offset"]:
+                                         fields[name]["offset"]+fields[name]["size"]],
+                                    "little", signed=fields[name]["type"].startswith("i"))
+                for name in observed}
+        mon.command("bank cpu")
+        return game
+
+    def seed(scenario, values):
+        previous = read_game()
+        mon.command("bank ram")
+        for name, value in values.items():
+            field = fields[name]
+            address = layout["address"] + field["offset"]
+            raw = value.to_bytes(field["size"], "little")
+            mon.command(f"> {address:04x} " + " ".join(f"{byte:02x}" for byte in raw))
+            scenario.setdefault("monitor_patches", []).append(
+                {"field": name, "previous": previous[name], "seeded": value})
+        mon.command("bank cpu")
+        actual = read_game()
+        if any(actual[name] != value for name, value in values.items()):
+            raise RuntimeError("Attract monitor fixture did not retain its values")
+
+    def observe(scenario):
+        mon.run_until(syms["frame_complete"], failures)
+        frame = counters(mon, syms)
+        frame["game"] = read_game()
+        mon.command("bank ram")
+        frame["stack_guards"] = {name: mon.integer(syms[name], 1)
+                                 for name in ("__stack_bottom", "__irq_stack_bottom")}
+        frame["cache_sections"] = []
+        for address in (0x9500, 0x9700):
+            cache = mon.read(address, 512)
+            if cache[4] >= 4 or cache != references[cache[4]]:
+                raise RuntimeError("Attract section cache differs from packaged bytes")
+            frame["cache_sections"].append(cache[4])
+        mon.command("bank cpu")
+        if tracing:
+            frame["native_tick_calls"] = tick_count()
+        scenario.setdefault("frames", []).append(frame)
+        if (frame["input_overflows"] or frame["frame_dropped"]
+                or any(value != 0xa5 for value in frame["stack_guards"].values())
+                or frame["test_input"] != 255):
+            raise RuntimeError("Attract check changed a stack guard, dropped input/geometry, or bypassed physical input")
+        section = min(frame["game"]["rail_ticks"] // 3750, 3)
+        if (frame["game_mode"] != frame["game"]["mode"]
+                or frame.get("render_segment") != section
+                or section not in frame["cache_sections"]):
+            raise RuntimeError("Attract rendered a stale section or exported an inconsistent mode")
+        return frame
+
+    def expect_mode(scenario, mode, section=0):
+        for _ in range(4):
+            frame = observe(scenario)
+            if frame["game_mode"] == modes[mode] and frame["game"]["rail_ticks"] // 3750 == section:
+                return frame
+        raise RuntimeError(f"{scenario['name']} did not reach {mode}, section {section}")
+
+    def finish(scenario):
+        scenario["passed"] = True
+        print(f"ATTRACT {scenario['name']}: passed ({len(scenario['frames'])} observed frames)", flush=True)
+
+    # Use the real dismissal path to clear the gameplay fixture left by earlier
+    # smoke checks, then let the physical release drain through the input ring.
+    setup = {"name": "clean-title-setup"}
+    result["setup"] = setup
+    mon.command("jpdb 1 $1f")
+    observe(setup)
+    observe(setup)
+    seed(setup, {"mode": modes["Attract"], "rail_ticks": 0,
+                 "menu_ticks": 0, "menu_activity": 0})
+    mon.command("jpdb 1 $1b")  # LEFT dismisses, without starting the game.
+    expect_mode(setup, "Title")
+    mon.command("jpdb 1 $1f")
+    observe(setup)
+    observe(setup)
+    seed(setup, {"menu_ticks": 0, "menu_activity": 0})
+    finish(setup)
+
+    cycle = {"name": "natural-750-tick-tour-and-repeat", "captures": {},
+             "expected_order": ["Title", "Lowlands", "Canyon", "Base", "Carrier", "Title", "Lowlands"]}
+    result["scenarios"].append(cycle)
+    mon.command(f"trace exec {tick_address:04x} if @cpu:${syms['PROF_PHASE']:04x} == $05")
+    tracing = True
+    baseline = tick_count()
+    for _ in range(1000):
+        frame = observe(cycle)
+        elapsed = frame["native_tick_calls"] - baseline
+        phase, remainder = divmod(elapsed, 750)
+        if phase > 6:
+            raise RuntimeError("Attract check skipped more than one complete presentation interval")
+        section = phase - 1 if 1 <= phase <= 4 else 0
+        expected_mode = modes["Title"] if phase in (0, 5) else modes["Attract"]
+        expected_rail = 0 if expected_mode == modes["Title"] else section * 3750 + remainder
+        game = frame["game"]
+        if (game["mode"] != expected_mode or game["menu_ticks"] != remainder
+                or game["rail_ticks"] != expected_rail):
+            raise RuntimeError(f"Attract 750-tick boundary mismatch after {elapsed} native steps: {game}")
+        if any(game[name] != value for name, value in
+               (("score", 0), ("shield", 100), ("lives", 3), ("bombs", 3))):
+            raise RuntimeError("Attract preview changed player resources or score")
+        if expected_mode == modes["Attract"] and remainder >= 250 and str(section) not in cycle["captures"]:
+            cycle["captures"][str(section)] = capture(mon, syms, output, f"attract-section-{section}")
+            print(f"ATTRACT natural tour: section {section}, {elapsed} native ticks", flush=True)
+        if phase == 5 and "title-return" not in cycle["captures"]:
+            cycle["captures"]["title-return"] = capture(mon, syms, output, "attract-title-return")
+        if phase == 6:
+            cycle["native_ticks_observed"] = elapsed
+            break
+    else:
+        raise RuntimeError("Natural attract tour did not repeat within 1000 rendered frames")
+    if any(str(section) not in cycle["captures"] for section in range(4)):
+        raise RuntimeError("Natural attract tour did not capture every map")
+    finish(cycle)
+    tracing = False
+    reset_checkpoints()
+
+    # Cover every direction and FIRE, including FIRE on the carrier map, while
+    # keeping scene setup explicit and all activation/release edges physical.
+    for section, bits, label in ((0, 1, "up"), (1, 2, "down"), (2, 4, "left"),
+                                 (3, 8, "right"), (0, 16, "fire"), (3, 16, "fire")):
+        scenario = {"name": f"section-{section}-{label}-dismiss-and-relaunch"}
+        result["scenarios"].append(scenario)
+        mon.command("jpdb 1 $1f")
+        observe(scenario)
+        observe(scenario)
+        seed(scenario, {"mode": modes["Attract"], "rail_ticks": section * 3750 + 300,
+                        "menu_ticks": 300, "menu_activity": 0})
+        expect_mode(scenario, "Attract", section)
+        mon.command(f"jpdb 1 ${31 ^ bits:02x}")
+        expect_mode(scenario, "Title")
+        for _ in range(3):
+            held = observe(scenario)
+            if held["game_mode"] != modes["Title"] or held["game"]["menu_ticks"] != 0:
+                raise RuntimeError("Held attract dismissal input escaped title or advanced its idle timer")
+        scenario["title_capture"] = capture(mon, syms, output, f"attract-dismiss-{section}-{label}")
+        mon.command("jpdb 1 $1f")
+        observe(scenario)
+        released = observe(scenario)
+        if released["game_mode"] != modes["Title"] or released["game"]["controls.bits"] != 0:
+            raise RuntimeError("Releasing attract dismissal input started gameplay")
+        mon.command("jpdb 1 $0f")
+        launched = expect_mode(scenario, "Playing")
+        expected = {"shield": 100, "lives": 3, "bombs": 3, "score": 0,
+                    "boss_started": 0, "boss_defeated": 0}
+        if any(launched["game"][name] != value for name, value in expected.items()):
+            raise RuntimeError("Fresh FIRE after attract did not start a clean mission")
+        finish(scenario)
+    mon.command("jpdb 1 $1f")
+    mon.command("log off")
+    result["passed"] = True
+
+
 def control_checks(mon, syms, failures, elf, dwarf_tool, output, result):
     """Exercise real input sampling between rendered frames, without state writes."""
     layout = dwarf_game_layout(elf, dwarf_tool, syms, output, controls=True)
@@ -604,7 +818,9 @@ def control_checks(mon, syms, failures, elf, dwarf_tool, output, result):
         scenario = {"name": f"double-{label}-dodge", "before": baseline["game"]}
         result["scenarios"].append(scenario)
         pulse(scenario, bits)
-        pulse(scenario, 0)
+        # Twenty neutral display samples put the second edge around 350 ms
+        # on NTSC or 420 ms on PAL, exercising the newly extended window.
+        pulse(scenario, 0, 20)
         pulse(scenario, bits)
         pulse(scenario, 0)
         edges = [sample for sample in scenario["samples"] if sample["pressed"] & bits]
@@ -612,8 +828,8 @@ def control_checks(mon, syms, failures, elf, dwarf_tool, output, result):
             raise RuntimeError(f"Double-{label} did not capture two physical press edges")
         gap = (edges[1]["ms"] - edges[0]["ms"]) & 0xffffffff
         scenario["double_tap_gap_ms"] = gap
-        if not 0 < gap <= 250:
-            raise RuntimeError(f"Double-{label} gesture exceeded 250 ms: {gap}")
+        if not 250 < gap <= 500:
+            raise RuntimeError(f"Double-{label} gesture must exceed 250 ms and stay within 500 ms: {gap}")
         for _ in range(4):
             active = observe(scenario)
             if active["game"]["roll_ticks"] > 0 and active["game"]["controls.bits"] == 0:
@@ -971,6 +1187,170 @@ def weapon_checks(mon, syms, failures, elf, dwarf_tool, output, result):
     result["passed"] = True
 
 
+def music_checks(mon, syms, failures, elf, reu, dwarf_tool, output, result, sid_count, video):
+    """Run every complete cue with native IRQ playback and foreground refills."""
+    required = ("MUSIC_CUE", "MUSIC_PAGE", "MUSIC_UNDERRUNS", "AUDIO_TICKS")
+    if any(name not in syms for name in required):
+        raise RuntimeError("Music checks require exported cue, page, underrun and audio-tick diagnostics")
+    layout = dwarf_game_layout(elf, dwarf_tool, syms, output, controls=True)
+    fields, modes = layout["fields"], layout["modes"]
+    if fields.get("menu_ticks", {}).get("type") != "u16":
+        raise RuntimeError("Music fixtures require the DWARF Game::menu_ticks field")
+    fields["menu_ticks"]["size"] = 2
+    data = reu.read_bytes()
+    header = data[0x60000:0x60080]
+    if header[:4] != b"SMU2" or header[4] != sid_count or header[6] != 7:
+        raise RuntimeError("Music checks require a matching seven-cue SMU2 bank")
+    page_size = int.from_bytes(header[12:14], "little")
+    names = ("title", "lowlands", "canyon", "fortress", "carrier", "victory", "defeat")
+    chips = ("left_d400", "right_d420", "socket1_d440", "socket2_d460")[:sid_count]
+    bus_hz = 985248 if video == "pal" else 1022727
+    result.update(passed=False, monitor_assisted=True, excluded_from_timing=True,
+                  scope="All seven cues play one complete native loop plus a page while rendering continues. DWARF-derived game fixtures hold each area/results mode; lowlands uses physical held FIRE for both effects voices.",
+                  sid_count=sid_count, scenarios=[], layout=layout)
+
+    def patch(values):
+        mon.command("bank ram")
+        for name, value in values.items():
+            field = fields[name]
+            address = layout["address"] + field["offset"]
+            raw = value.to_bytes(field["size"], "little", signed=field["type"].startswith("i"))
+            mon.command(f"> {address:04x} " + " ".join(f"{byte:02x}" for byte in raw))
+        mon.command("bank cpu")
+
+    def observe():
+        mon.run_until(syms["frame_complete"], failures)
+        state = {name.lower(): mon.integer(syms[name], width)
+                 for name, width in (("MUSIC_CUE", 1), ("MUSIC_PAGE", 1), ("MUSIC_UNDERRUNS", 2),
+                                     ("AUDIO_TICKS", 2), ("INPUT_OVERFLOWS", 2), ("FRAME_DROPPED", 2))}
+        if "MUSIC_ACTIVE_CUE" in syms:
+            state["music_active_cue"] = mon.integer(syms["MUSIC_ACTIVE_CUE"], 1)
+        if state["music_underruns"] or state["input_overflows"] or state["frame_dropped"]:
+            raise RuntimeError(f"Native music fixture underrun or lost frame/input: {state}")
+        return state
+
+    # The preceding gameplay smoke already establishes normal timing. This
+    # suite has its own traces so monitor fixtures cannot contaminate it.
+    mon.command("delete")
+    for address in failures:
+        mon.command(f"break exec {address:04x}")
+    for sid in range(sid_count):
+        base = 0xd400 + 32 * sid
+        mon.command(f"trace store {base:04x} {base+24:04x} if @cpu:$01 == $35")
+    # Trace unmapped enhancement addresses too: the standard edition must never
+    # touch them, even when hardware would mirror those writes onto SID one.
+    if sid_count == 2:
+        mon.command("trace store d440 d478 if @cpu:$01 == $35")
+    mon.command("jpdb 1 $1f")
+    observe()
+    observe()
+    for cue, name in enumerate(names):
+        at = 16 + cue * 8
+        offset = int.from_bytes(header[at:at+4], "little")
+        pages, row_ticks = header[at+4], header[at+5]
+        if not pages or not 3 <= row_ticks <= 50:
+            raise RuntimeError(f"Invalid {name} score descriptor")
+        loop_ticks = pages * 16 * row_ticks
+        if cue == 0:
+            fixture = {"mode": modes["Title"], "rail_ticks": 0, "menu_ticks": 0}
+        elif cue < 5:
+            fixture = {"mode": modes["Playing"] if cue == 1 else modes["Attract"],
+                       "rail_ticks": (cue-1)*3750+100, "menu_ticks": 0, "shield": 100, "lives": 3,
+                       "player.x": 0}
+        else:
+            fixture = {"mode": modes["Victory"] if cue == 5 else modes["GameOver"],
+                       "rail_ticks": 11400, "menu_ticks": 0}
+        scenario = {"name": name, "cue": cue, "pages": pages, "row_ticks": row_ticks,
+                    "loop_ticks": loop_ticks, "loop_seconds": loop_ticks/50,
+                    "fixture": fixture, "page_transitions": [], "observed_frames": 0}
+        result["scenarios"].append(scenario)
+        mon.command("jpdb 1 $1f")
+        observe()
+        observe()
+        patch(fixture)
+        path = output / f"music-{name}-monitor.log"
+        path.unlink(missing_ok=True)
+        mon.command(f'logname "{path.as_posix()}"')
+        mon.command("log on")
+        if cue == 1:
+            mon.command("jpdb 1 $0f")
+        # Allow the foreground to select/load the opening and the IRQ to
+        # consume it. Repeated cue selection must preserve that transport.
+        first = None
+        for _ in range(8):
+            patch(fixture)
+            candidate = observe()
+            if (candidate["music_cue"] == cue and candidate.get("music_active_cue", cue) == cue
+                    and candidate["music_page"] == 0):
+                first = candidate
+                break
+        if first is None:
+            raise RuntimeError(f"{name} did not begin on its opening page")
+        start_cycles = mon.registers()["bus_cycles"]
+        previous_page, wraps = 0, 0
+        seen = {0}
+        scenario["page_transitions"].append(dict(first, elapsed_ticks=0))
+        # A complete loop plus one page ensures the turnaround and continued
+        # prefetch after wrapping are both exercised for every composition.
+        for _ in range(6000):
+            patch(fixture)
+            frame = observe()
+            scenario["observed_frames"] += 1
+            scenario["last_observation"] = frame
+            if frame["music_cue"] != cue or frame.get("music_active_cue", cue) != cue:
+                raise RuntimeError(f"{name} changed cue unexpectedly during native playback")
+            page = frame["music_page"]
+            elapsed = (frame["audio_ticks"] - first["audio_ticks"]) & 0xffff
+            if page >= pages:
+                raise RuntimeError(f"{name} exposed out-of-range page {page}/{pages}")
+            seen.add(page)
+            if page != previous_page:
+                if page != (previous_page + 1) % pages:
+                    raise RuntimeError(f"{name} skipped a score page: {previous_page} -> {page}")
+                wraps += page == 0
+                scenario["page_transitions"].append(dict(frame, elapsed_ticks=elapsed))
+                previous_page = page
+            if elapsed >= loop_ticks + 16*row_ticks and wraps:
+                break
+        else:
+            raise RuntimeError(f"{name} did not finish its full loop and refill within 6000 rendered frames")
+        end_cycles = mon.registers()["bus_cycles"]
+        mon.command("log off")
+        events = stores(path)
+        scenario["sid"] = sid_summary(path, events, sid_count)
+        scenario.update(elapsed_ticks=elapsed, loop_wraps=wraps, pages_seen=sorted(seen),
+                        bus_cycles=end_cycles-start_cycles,
+                        audio_tick_hz_model=elapsed*bus_hz/(end_cycles-start_cycles))
+        if seen != set(range(pages)):
+            raise RuntimeError(f"{name} did not visit every packaged page")
+        if abs(elapsed - (end_cycles-start_cycles)*50/bus_hz) > 2:
+            raise RuntimeError(f"{name} audio clock drifted by more than two ticks")
+        music_voices = [(0, 0), (1, 0), (0, 1), (1, 1)]
+        if sid_count == 4:
+            music_voices += [(sid, voice) for sid in (2, 3) for voice in range(3)]
+        for lane, (sid, voice) in enumerate(music_voices):
+            # Only demand a gate where the composition actually has attacks.
+            # Intentional rests and staggered entrances remain legitimate.
+            attacked = any(data[0x60000+offset+p*page_size+12+5*len(music_voices)+row*len(music_voices)+lane] > 1
+                           for p in range(pages) for row in range(16))
+            if attacked and not scenario["sid"][chips[sid]]["voices"][voice]["gate_on"]:
+                raise RuntimeError(f"{name} never sounded composed music lane {lane}")
+        if sid_count == 2 and any(0xd440 <= event["address"] <= 0xd478 for event in events):
+            raise RuntimeError("Two-SID music wrote to an enhancement SID address")
+        if cue == 1 and not all(scenario["sid"][chips[sid]]["voices"][2]["gate_on"] for sid in (0, 1)):
+            raise RuntimeError("Lowlands did not service both reserved effects voices during its full loop")
+        mon.command("bank ram")
+        scenario["stack_guards"] = {symbol: mon.integer(syms[symbol], 1)
+                                     for symbol in ("__stack_bottom", "__irq_stack_bottom")}
+        mon.command("bank cpu")
+        if any(value != 0xa5 for value in scenario["stack_guards"].values()):
+            raise RuntimeError(f"{name} changed a native stack guard")
+        scenario["passed"] = True
+        print(f"MUSIC {name}: {elapsed/50:.2f}s, {len(seen)} pages, {wraps} loop(s), no underruns", flush=True)
+    mon.command("jpdb 1 $1f")
+    result["passed"] = True
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     sibling = ROOT.parent / "doomc64u"
@@ -986,6 +1366,10 @@ def main():
                         help="after timing, verify Up climbs, Down dives, and lateral dodges with IRQ-synchronized physical joystick input")
     parser.add_argument("--weapon-checks", action="store_true",
                         help="after timing, verify actual damage flashes and physically fired homing missiles in DWARF-derived encounter fixtures")
+    parser.add_argument("--attract-checks", action="store_true",
+                        help="after timing, count a natural title/map tour and verify physical-input dismissal and fresh-FIRE relaunch")
+    parser.add_argument("--music-checks", action="store_true",
+                        help="after timing, play all seven full native cue loops with page, clock, effects and underrun checks")
     parser.add_argument("--llvm-dwarfdump", type=Path,
                         help="DWARF reader for optional streaming/control/weapon checks; defaults beside --llvm-nm")
     parser.add_argument("--out-dir", type=Path)
@@ -1007,12 +1391,15 @@ def main():
                 raise RuntimeError(f"Required path is missing: {path}")
         if reu.stat().st_size != 16 * 1024 * 1024:
             raise RuntimeError("REU package must be exactly 16 MiB")
+        sid_count = reu.read_bytes()[17]
+        if sid_count not in (2, 4):
+            raise RuntimeError("REU package must identify its two- or four-SID profile")
         syms = symbols(elf, args.llvm_nm)
         failures = {address: name for name, address in syms.items()
                     if ("havoc_c64" in name and "4fail" in name) or name == "rust_begin_unwind"}
         if not failures:
             raise RuntimeError("No fail/panic symbol found in the target ELF")
-        report.update(package=str(package), vice=str(args.vice.resolve()),
+        report.update(package=str(package), sid_count=sid_count, vice=str(args.vice.resolve()),
                       vice_sha256=hashlib.sha256(args.vice.read_bytes()).hexdigest(),
                       prg_sha256=hashlib.sha256(prg.read_bytes()).hexdigest(),
                       elf_sha256=hashlib.sha256(elf.read_bytes()).hexdigest(),
@@ -1027,10 +1414,12 @@ def main():
         # directories instead and specify all test resources on the CLI.
         command = [str(args.vice.resolve()), "-directory", str(args.roms.resolve()), "+logtofile", "+logcolorize",
                    "-"+args.video, "-warp", "+sound", "-jamaction", "5", "-autostartprgmode", "1",
-                   "-reu", "-reusize", "16384", "-reuimage", str(reu), "+reuimagerw", "-sidextra", "1", "-sid2address", "0xd420",
+                   "-reu", "-reusize", "16384", "-reuimage", str(reu), "+reuimagerw", "-sidextra", str(sid_count-1), "-sid2address", "0xd420",
                    "-joydev1", "0", "-joydev2", "0", "-controlport1device", "iosim", "-controlport2device", "iosim",
                    "-remotemonitor", "-remotemonitoraddress", f"127.0.0.1:{port}",
                    "-initbreak", "0x080d", "-moncommands", str(startup), "-autostart", str(prg)]
+        if sid_count == 4:
+            command.extend(["-sid3address", "0xd440", "-sid4address", "0xd460"])
         report["command"] = command
         (output / "config").mkdir(exist_ok=True)
         (output / "cache").mkdir(exist_ok=True)
@@ -1072,8 +1461,9 @@ def main():
                 raise RuntimeError(f"Native title differs from host reference in {differences} bytes")
         # Capture real CPU stores while I/O is selected, excluding the renderer
         # RAM living beneath $D000. Tracepoints do not stop the emulated CPU.
-        mon.command("trace store d400 d418 if @cpu:$01 == $35")
-        mon.command("trace store d420 d438 if @cpu:$01 == $35")
+        for sid in range(sid_count):
+            base = 0xd400 + sid*32
+            mon.command(f"trace store {base:04x} {base+24:04x} if @cpu:$01 == $35")
         if "PROF_PHASE" in syms:
             mon.command(f"trace store {syms['PROF_PHASE']:04x}")
         if "PROF_DETAIL" in syms:
@@ -1093,7 +1483,7 @@ def main():
         mon.command("jpdb 1 $1f")
         mon.command("log off")
         events = stores(monitor_log)
-        report["sid"] = sid_summary(monitor_log, events)
+        report["sid"] = sid_summary(monitor_log, events, sid_count)
         frames = report["frames"]
         if "PROF_PHASE" in syms:
             report["phase_transitions"] = phase_profile(events, syms["PROF_PHASE"], report["title"], frames)
@@ -1111,9 +1501,13 @@ def main():
         # This companion's monitor I/O peek does not implement $D031 and
         # returns $FF. The target verifies a CPU-bus read during boot; retain
         # monitor values only as diagnostics, not as a false failure signal.
-        if not all(report["sid"][name]["writes"] and all(voice["gate_on"] for voice in report["sid"][name]["voices"])
+        if not all(report["sid"][name]["writes"]
+                   and any(voice["gate_on"] for voice in report["sid"][name]["voices"][:2])
+                   and report["sid"][name]["voices"][2]["gate_on"]
                    for name in ("left_d400", "right_d420")):
-            raise RuntimeError("Music and effect gates were not observed on all six stereo SID voices")
+            raise RuntimeError("Core music and both effects voices did not sound during the gameplay sample")
+        if any(frame.get("music_underruns", 0) for frame in [report["title"]] + frames):
+            raise RuntimeError("Score prefetch underrun during ordinary gameplay")
         bus_hz = 985248 if args.video == "pal" else 1022727
         total_cycles = sum(frame["bus_cycles_delta"] for frame in frames)
         report["timing"] = {"bus_hz_model": bus_hz, "mean_frame_bus_cycles": total_cycles/len(frames),
@@ -1138,6 +1532,16 @@ def main():
             streaming_checks(mon, syms, failures, elf, reu,
                              args.llvm_dwarfdump or args.llvm_nm.with_name("llvm-dwarfdump"),
                              output, report["streaming_checks"])
+        if args.attract_checks:
+            report["attract_checks"] = {}
+            attract_checks(mon, syms, failures, elf, reu,
+                           args.llvm_dwarfdump or args.llvm_nm.with_name("llvm-dwarfdump"),
+                           output, report["attract_checks"])
+        if args.music_checks:
+            report["music_checks"] = {}
+            music_checks(mon, syms, failures, elf, reu,
+                         args.llvm_dwarfdump or args.llvm_nm.with_name("llvm-dwarfdump"),
+                         output, report["music_checks"], sid_count, args.video)
         for extension, path in (("prg", prg), ("reu", reu), ("elf", elf)):
             if hashlib.sha256(path.read_bytes()).hexdigest() != report[extension+"_sha256"]:
                 raise RuntimeError(f"Packaged {extension.upper()} changed while the emulator test ran")

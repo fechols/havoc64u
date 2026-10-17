@@ -61,7 +61,7 @@ fn main(){
     for scene in 0..5 {
         let game=if scene==0 {Game::new()}else{Game::preview_at(scene-1,5000)};
         let segment_data=host::segment_bank(game.segment_index());let segment=Segment::new(&segment_data).unwrap();
-        let mut renderer=Renderer::new();renderer.begin(6);game.render(&mut renderer,&bank,&segment);renderer.finish();
+        let mut renderer=Renderer::new();renderer.begin(game.sky_color());game.render(&mut renderer,&bank,&segment);renderer.finish();
         for band in [0,4,8,12,16,20,23,24] {
             let mut pixels=[0;1280];renderer.render_band(band,&mut pixels);hud::draw(band,&mut pixels,&game.hud(),0);
             let (screen,color)=save(dir,id,&pixels,&[0;40],&[0;40]);id+=1;

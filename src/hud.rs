@@ -21,6 +21,16 @@ pub fn draw(band: u8, pixels: &mut [u8; 1280], hud: &Hud, frame: u16) {
     if band >= 25 {
         return;
     }
+    // The map tour keeps the entire world visible around two short labels.
+    if hud.mode == Mode::Attract {
+        if band == 1 {
+            centered(band, pixels, 10, section_name(hud.section), 1);
+        }
+        if band >= 23 {
+            centered(band, pixels, 189, b"MOVE OR FIRE FOR MENU", blink(frame));
+        }
+        return;
+    }
     // Cockpit strips occupy only the first band and the last two bands. None
     // of the mission panels overlaps them, so route them before mode work.
     if hud.mode != Mode::Title && (band == 0 || band >= 23) {
@@ -28,6 +38,7 @@ pub fn draw(band: u8, pixels: &mut [u8; 1280], hud: &Hud, frame: u16) {
         return;
     }
     match hud.mode {
+        Mode::Attract => {}
         Mode::Title => title(band, pixels, frame),
         Mode::Playing => {
             if (1..=2).contains(&band) && hud.boss_shield != 0 {

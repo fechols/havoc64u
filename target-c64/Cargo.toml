@@ -8,6 +8,7 @@ build = "build.rs"
 
 [features]
 benchmarks = []
+four-sid = ["havoc/four-sid"]
 
 [dependencies]
 havoc = { path = "..", default-features = false }

@@ -70,9 +70,15 @@ fn static_sky_reuse_requires_complete_clouds_and_excludes_all_occluder_bounds() 
         0,
         "consumed bytes are not geometry"
     );
-    renderer.begin(0);
-    add_clouds(&mut renderer, 9);
-    assert_eq!(renderer.static_sky_bands(), 0);
+    for clear in 0..16 {
+        renderer.begin(clear);
+        add_clouds(&mut renderer, 9);
+        assert_eq!(
+            renderer.static_sky_bands(),
+            if matches!(clear, 6 | 8 | 11 | 4) { 0x01ff_ffff } else { 0 },
+            "only authored section sky palettes permit reuse"
+        );
+    }
     renderer.begin(6);
     add_clouds(&mut renderer, 10);
     assert_eq!(renderer.static_sky_bands(), 0);

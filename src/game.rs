@@ -16,9 +16,11 @@ const PLAYER_Z: i16 = 180;
 const SPEED: i16 = 8;
 const SECTION_TICKS: u16 = 3750;
 const MISSION_TICKS: u16 = 15000;
+const ATTRACT_TICKS: u16 = 750;
 const ACTORS: usize = 12;
 const SHOTS: usize = 24;
 const AUDIO_CAPACITY: usize = 8;
+const DOUBLE_TAP_WINDOW_MS: u32 = 500;
 
 #[derive(Clone, Copy, Default, Debug)]
 pub struct InputSample {
@@ -35,6 +37,7 @@ pub enum Mode {
     Respawning,
     Victory,
     GameOver,
+    Attract,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -186,7 +189,7 @@ impl Controls {
             self.shot_charge = self.computed_charge();
             self.shot_pending = true;
             self.start_pending = true;
-            if self.fire_armed && input.ms.wrapping_sub(self.fire_at) <= 250 {
+            if self.fire_armed && input.ms.wrapping_sub(self.fire_at) <= DOUBLE_TAP_WINDOW_MS {
                 self.bomb_pending = true;
                 self.fire_armed = false;
             } else {
@@ -199,7 +202,7 @@ impl Controls {
             self.right_armed = false;
         } else {
             if pressed & LEFT != 0 {
-                if self.left_armed && input.ms.wrapping_sub(self.left_at) <= 250 {
+                if self.left_armed && input.ms.wrapping_sub(self.left_at) <= DOUBLE_TAP_WINDOW_MS {
                     self.roll_pending = -1;
                     self.left_armed = false;
                 } else {
@@ -208,7 +211,8 @@ impl Controls {
                 }
             }
             if pressed & RIGHT != 0 {
-                if self.right_armed && input.ms.wrapping_sub(self.right_at) <= 250 {
+                if self.right_armed && input.ms.wrapping_sub(self.right_at) <= DOUBLE_TAP_WINDOW_MS
+                {
                     self.roll_pending = 1;
                     self.right_armed = false;
                 } else {
@@ -241,6 +245,8 @@ pub struct Game {
     rail_ticks: u16,
     score: u32,
     ticks: u16,
+    menu_ticks: u16,
+    menu_activity: bool,
     actors: [Actor; ACTORS],
     shots: [Shot; SHOTS],
     pickups: [Pickup; 4],
@@ -288,6 +294,8 @@ impl Game {
             rail_ticks: 0,
             score: 0,
             ticks: 0,
+            menu_ticks: 0,
+            menu_activity: false,
             actors: [Actor::EMPTY; ACTORS],
             shots: [Shot::EMPTY; SHOTS],
             pickups: [Pickup::EMPTY; 4],
@@ -323,6 +331,13 @@ impl Game {
     #[inline(never)]
     #[cfg_attr(target_arch = "mos", link_section = ".phase.sim")]
     pub fn sample_input(&mut self, input: InputSample) {
+        if matches!(self.mode, Mode::Title | Mode::Attract)
+            && (input.bits | input.pressed) & (UP | DOWN | LEFT | RIGHT | FIRE) != 0
+        {
+            // Keep short pulses until the next simulation tick, even if the
+            // controller is released again between display-rate samples.
+            self.menu_activity = true;
+        }
         self.controls.sample(input);
     }
     /// Host inspection starts at a useful mission location without changing the
@@ -352,6 +367,11 @@ impl Game {
             3
         }
     }
+    /// Sky color follows the active mission section in every camera mode.
+    #[inline(never)]
+    pub fn sky_color(&self) -> u8 {
+        SKY_COLORS[self.segment_index() as usize]
+    }
     #[inline(never)]
     #[cfg_attr(target_arch = "mos", link_section = ".phase.sim")]
     pub fn hud(&self) -> Hud {
@@ -376,11 +396,15 @@ impl Game {
     #[cfg_attr(target_arch = "mos", link_section = ".phase.sim")]
     pub fn music_state(&self) -> MusicState {
         match self.mode {
+            Mode::Title => MusicState::Title,
             Mode::Victory => MusicState::Victory,
             Mode::GameOver => MusicState::Defeat,
-            _ if self.boss_started && !self.boss_defeated => MusicState::Boss,
-            _ if self.segment_index() == 0 => MusicState::Exploration,
-            _ => MusicState::Combat,
+            _ => match self.segment_index() {
+                0 => MusicState::Lowlands,
+                1 => MusicState::Canyon,
+                2 => MusicState::Fortress,
+                _ => MusicState::Carrier,
+            },
         }
     }
     #[inline(never)]
@@ -397,6 +421,10 @@ impl Game {
     #[inline(never)]
     #[cfg_attr(target_arch = "mos", link_section = ".phase.sim")]
     fn sound(&mut self, effect: Effect, x: i16) {
+        // Keep the live previews audible as music only.
+        if self.mode == Mode::Attract {
+            return;
+        }
         let event = AudioEvent {
             effect,
             pan: x.clamp(-127, 127) as i8,
@@ -405,7 +433,7 @@ impl Game {
         if self.audio_len as usize == AUDIO_CAPACITY {
             if matches!(
                 effect,
-                Effect::Death | Effect::Bomb | Effect::Hit | Effect::ChargedShot
+                Effect::Death | Effect::Bomb | Effect::Hit | Effect::MissileLaunch
             ) {
                 let last =
                     (self.audio_head as usize + self.audio_len as usize - 1) % AUDIO_CAPACITY;
@@ -420,14 +448,21 @@ impl Game {
     #[inline(never)]
     #[cfg_attr(target_arch = "mos", link_section = ".phase.sim")]
     fn reset_run(&mut self) {
+        self.reset_scene(Mode::Playing, 0);
+        self.invulnerability = 50;
+    }
+    #[inline(never)]
+    #[cfg_attr(target_arch = "mos", link_section = ".phase.sim")]
+    fn reset_scene(&mut self, mode: Mode, rail_ticks: u16) {
         let bits = self.controls.bits;
         let now = self.controls.now;
         *self = Self::new();
-        self.mode = Mode::Playing;
+        self.mode = mode;
+        self.rail_ticks = rail_ticks;
+        self.spawn_segment = self.segment_index();
         self.controls.bits = bits;
         self.controls.now = now;
         self.controls.released_at = now;
-        self.invulnerability = 50;
     }
     /// One 20 ms simulation step. Feed every captured input sample first.
     #[inline(never)]
@@ -435,7 +470,40 @@ impl Game {
     pub fn tick(&mut self, segment: &Segment<'_>) {
         self.ticks = self.ticks.wrapping_add(1);
         match self.mode {
-            Mode::Title | Mode::Victory | Mode::GameOver => {
+            Mode::Title => {
+                if self.controls.start_pending {
+                    self.reset_run();
+                } else if self.menu_activity || self.controls.bits != 0 {
+                    self.menu_ticks = 0;
+                } else {
+                    self.menu_ticks += 1;
+                    if self.menu_ticks == ATTRACT_TICKS {
+                        self.reset_scene(Mode::Attract, 0);
+                    }
+                }
+                self.menu_activity = false;
+                self.controls.clear_pending();
+                return;
+            }
+            Mode::Attract => {
+                if self.menu_activity || self.controls.bits != 0 {
+                    // Consume the wake-up gesture. A held button remains held
+                    // on the title, so only a fresh fire edge starts a run.
+                    self.reset_scene(Mode::Title, 0);
+                    return;
+                }
+                self.menu_ticks += 1;
+                if self.menu_ticks == ATTRACT_TICKS {
+                    let next = self.segment_index() + 1;
+                    if next < 4 {
+                        self.reset_scene(Mode::Attract, next as u16 * SECTION_TICKS);
+                    } else {
+                        self.reset_scene(Mode::Title, 0);
+                    }
+                    return;
+                }
+            }
+            Mode::Victory | Mode::GameOver => {
                 if self.controls.start_pending {
                     self.reset_run();
                 }
@@ -453,27 +521,29 @@ impl Game {
             }
             Mode::Playing => {}
         }
-        self.invulnerability = self.invulnerability.saturating_sub(1);
-        self.hit_flash_ticks = self.hit_flash_ticks.saturating_sub(1);
-        self.roll_ticks = self.roll_ticks.saturating_sub(1);
-        self.roll_cooldown = self.roll_cooldown.saturating_sub(1);
-        self.shot_cooldown = self.shot_cooldown.saturating_sub(1);
-        if self.controls.roll_pending != 0 && self.roll_cooldown == 0 {
-            self.roll_direction = self.controls.roll_pending;
-            self.roll_ticks = 25;
-            self.roll_cooldown = 50;
-            self.sound(Effect::Roll, 0);
-        }
-        self.move_player();
-        if self.controls.shot_pending {
-            self.fire_player(self.controls.shot_charge);
-            self.shot_cooldown = 5;
-        } else if self.controls.bits & FIRE != 0 && self.shot_cooldown == 0 {
-            self.fire_player(0);
-            self.shot_cooldown = 5;
-        }
-        if self.controls.bomb_pending && self.bombs > 0 {
-            self.bomb();
+        if self.mode == Mode::Playing {
+            self.invulnerability = self.invulnerability.saturating_sub(1);
+            self.hit_flash_ticks = self.hit_flash_ticks.saturating_sub(1);
+            self.roll_ticks = self.roll_ticks.saturating_sub(1);
+            self.roll_cooldown = self.roll_cooldown.saturating_sub(1);
+            self.shot_cooldown = self.shot_cooldown.saturating_sub(1);
+            if self.controls.roll_pending != 0 && self.roll_cooldown == 0 {
+                self.roll_direction = self.controls.roll_pending;
+                self.roll_ticks = 25;
+                self.roll_cooldown = 50;
+                self.sound(Effect::Roll, 0);
+            }
+            self.move_player();
+            if self.controls.shot_pending {
+                self.fire_player(self.controls.shot_charge);
+                self.shot_cooldown = 5;
+            } else if self.controls.bits & FIRE != 0 && self.shot_cooldown == 0 {
+                self.fire_player(0);
+                self.shot_cooldown = 5;
+            }
+            if self.controls.bomb_pending && self.bombs > 0 {
+                self.bomb();
+            }
         }
         self.controls.clear_pending();
         self.rail_ticks = (self.rail_ticks + 1).min(MISSION_TICKS);
@@ -548,8 +618,8 @@ impl Game {
             kind: if charge == 255 { 3 } else { 1 },
         });
         self.sound(
-            if charge > 0 {
-                Effect::ChargedShot
+            if charge == 255 {
+                Effect::MissileLaunch
             } else {
                 Effect::Fire
             },
@@ -680,7 +750,10 @@ impl Game {
             } else {
                 18
             };
-            if (a.pos.z - PLAYER_Z).abs() < 32 && close_xy(actor_center(a), self.player, radius) {
+            if self.mode == Mode::Playing
+                && (a.pos.z - PLAYER_Z).abs() < 32
+                && close_xy(actor_center(a), self.player, radius)
+            {
                 a.kind = 0;
                 self.damage_player(30);
                 self.explode(a.pos, 8);
@@ -821,7 +894,8 @@ impl Game {
                         self.check_boss_death();
                     }
                 }
-            } else if s.kind == 2
+            } else if self.mode == Mode::Playing
+                && s.kind == 2
                 && swept_z(old_z, s.pos.z, PLAYER_Z, 10)
                 && close_xy(s.pos, self.player, 12)
             {
@@ -1044,7 +1118,10 @@ impl Game {
                 continue;
             }
             p.pos.z -= SPEED as i16;
-            if (p.pos.z - PLAYER_Z).abs() < 25 && close_xy(p.pos, self.player, 28) {
+            if self.mode == Mode::Playing
+                && (p.pos.z - PLAYER_Z).abs() < 25
+                && close_xy(p.pos, self.player, 28)
+            {
                 if p.kind == 1 {
                     self.shield = self.shield.saturating_add(30).min(100);
                 } else {
@@ -1368,8 +1445,9 @@ impl Game {
             }
         }
         // Distant silhouettes and clouds use no gameplay object slots.
+        let section = self.segment_index();
         for face in 0..14 {
-            let (points, color) = backdrop_face(face);
+            let (points, color) = backdrop_face(section, face);
             sink.triangle(
                 points[0],
                 points[1],
@@ -1453,54 +1531,100 @@ fn terrain_height(row: u16, right: bool, style: u8) -> i16 {
         -105 + (height << 4)
     }
 }
-// Pure backdrop construction stays resident to conserve the geometry overlay.
-// Clouds are farther than the mountains, so the existing painter sort places
-// every terrain feature and actor in front. Their coordinates already include
-// the neutral chase-camera offset; STATIC_SKY keeps their screen positions fixed.
+// Compact descriptors keep all four themes resident without enlarging the
+// geometry overlay. XY uses 32/16 world units; cloud depth uses 32 world units.
+// Every horizon base is -544, overlapping the far terrain through its complete
+// scroll/camera range. Each sky uses exactly three nonblack colors for caching.
+const SKY_COLORS: [u8; 4] = [6, 8, 11, 4];
+const HORIZON_COLORS: [[u8; 2]; 4] = [[14, 12], [9, 2], [6, 12], [6, 11]];
+const CLOUD_COLORS: [[u8; 2]; 4] = [[1, 15], [7, 10], [15, 12], [10, 14]];
+#[rustfmt::skip]
+const HORIZONS: [[[i8; 2]; 15]; 4] = [
+    // Uneven lowland ridges.
+    [[-88, -34], [-33, -34], [-60, 17],
+     [-45, -34], [3, -34], [-27, 9],
+     [-8, -34], [40, -34], [12, 14],
+     [26, -34], [73, -34], [51, 7],
+     [61, -34], [88, -34], [74, 12]],
+    // Two broad, flat mesa tops and a low central saddle.
+    [[-88, -34], [-7, -34], [-30, 21],
+     [-88, -34], [-30, 21], [-73, 21],
+     [6, -34], [88, -34], [75, 18],
+     [6, -34], [75, 18], [25, 18],
+     [-18, -34], [18, -34], [1, 4]],
+    // Flat industrial blocks with a narrow, off-center spire.
+    [[-88, -34], [-12, -34], [-12, 16],
+     [-88, -34], [-12, 16], [-88, 16],
+     [10, -34], [88, -34], [88, 12],
+     [10, -34], [88, 12], [10, 12],
+     [-15, -34], [15, -34], [-9, 24]],
+    // Low coastal headlands leave room for the carrier above a small island.
+    [[-88, -34], [-4, -34], [-40, 3],
+     [-88, -34], [-40, 3], [-88, 3],
+     [4, -34], [88, -34], [88, 0],
+     [4, -34], [88, 0], [50, 0],
+     [-14, -34], [14, -34], [3, 5]],
+];
+const CLOUD_CENTERS: [[[i8; 3]; 3]; 4] = [
+    [[-67, 78, 96], [4, 110, 112], [89, 69, 127]],
+    [[-72, 61, 96], [6, 96, 112], [98, 65, 127]],
+    [[-72, 82, 96], [4, 67, 112], [103, 124, 127]],
+    [[-67, 58, 96], [14, 101, 112], [102, 57, 127]],
+];
+const CLOUD_OUTLINES: [[[i8; 2]; 5]; 4] = [
+    [[-27, 0], [-13, 11], [4, 15], [27, 2], [20, -6]],
+    [[-37, 0], [-18, 5], [10, 9], [37, 2], [29, -6]],
+    [[-46, 0], [-28, 15], [7, 16], [46, 1], [38, -7]],
+    [[-33, 0], [-19, 5], [7, 7], [33, 1], [25, -5]],
+];
+// Pure backdrop construction stays resident. Clouds are farther than gameplay
+// and retain fixed camera-space positions within each theme.
 #[inline(never)]
-fn backdrop_face(face: u8) -> ([Vec3; 3], u8) {
+fn backdrop_face(section: u8, face: u8) -> ([Vec3; 3], u8) {
+    let theme = (section & 3) as usize;
+    let outline: &[[i8; 2]];
+    let center: [i8; 3];
+    let first;
+    let second;
+    let depth;
+    let color;
     if face < 5 {
-        let i = face as i16 - 2;
-        return (
-            [
-                Vec3 {
-                    x: i * 450 - 260,
-                    y: -105,
-                    z: 2350,
-                },
-                Vec3 {
-                    x: i * 450 + 260,
-                    y: -105,
-                    z: 2350,
-                },
-                Vec3 {
-                    x: i * 450 + 40,
-                    y: 150 + (i & 1) * 100,
-                    z: 2350,
-                },
-            ],
-            if i & 1 == 0 { 6 } else { 14 },
-        );
-    }
-    const CENTERS: [(i16, i16, i16); 3] =
-        [(-2100, 1050, 3072), (100, 1400, 3584), (2300, 900, 4096)];
-    const FACETS: [[(i16, i16); 3]; 3] = [
-        [(-700, 0), (-350, 180), (100, 240)],
-        [(-700, 0), (100, 240), (700, 40)],
-        [(-700, 0), (700, 40), (530, -100)],
-    ];
-    let cloud = (face - 5) / 3;
-    let facet = (face - 5) % 3;
-    let (x, y, z) = CENTERS[cloud as usize];
-    let mut points = [Vec3::default(); 3];
-    for (point, &(dx, dy)) in points.iter_mut().zip(&FACETS[facet as usize]) {
-        *point = Vec3 {
-            x: x + dx,
-            y: y + dy - 40,
-            z,
+        outline = &HORIZONS[theme];
+        center = [0; 3];
+        first = face * 3;
+        second = first + 1;
+        depth = 2350;
+        color = HORIZON_COLORS[theme][(face & 1) as usize];
+    } else {
+        let cloud = if face >= 11 {
+            2
+        } else if face >= 8 {
+            1
+        } else {
+            0
         };
+        let facet = face - 5 - cloud * 3;
+        outline = &CLOUD_OUTLINES[theme];
+        center = CLOUD_CENTERS[theme][cloud as usize];
+        first = 0;
+        second = facet + 1;
+        depth = center[2] as i16 * 32;
+        color = CLOUD_COLORS[theme][(facet == 2) as usize];
     }
-    (points, if facet == 2 { 15 } else { 1 })
+    let points = core::array::from_fn(|corner| {
+        let vertex = if corner == 0 {
+            first as usize
+        } else {
+            second as usize + corner - 1
+        };
+        let xy = outline[vertex];
+        Vec3 {
+            x: (center[0] as i16 + xy[0] as i16) * 32,
+            y: (center[1] as i16 + xy[1] as i16) * 16,
+            z: depth,
+        }
+    });
+    (points, color)
 }
 #[inline(always)]
 fn actor_center(actor: Actor) -> Vec3 {
@@ -1620,6 +1744,36 @@ fn diamond(sink: &mut impl GeometrySink, p: Vec3, r: i16, color: u8) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn music_follows_area_and_results_without_boss_or_respawn_restarts() {
+        let mut game = Game::new();
+        assert_eq!(game.music_state(), MusicState::Title);
+        for (index, cue) in [
+            MusicState::Lowlands,
+            MusicState::Canyon,
+            MusicState::Fortress,
+            MusicState::Carrier,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            game.rail_ticks = index as u16 * 3750;
+            for mode in [Mode::Playing, Mode::Attract, Mode::Respawning] {
+                game.mode = mode;
+                game.boss_started = false;
+                assert_eq!(game.music_state(), cue);
+                game.boss_started = true;
+                assert_eq!(game.music_state(), cue);
+            }
+        }
+        game.mode = Mode::Victory;
+        assert_eq!(game.music_state(), MusicState::Victory);
+        game.mode = Mode::GameOver;
+        assert_eq!(game.music_state(), MusicState::Defeat);
+        game.mode = Mode::Title;
+        assert_eq!(game.music_state(), MusicState::Title);
+    }
+
     fn empty_segment(index: u8) -> [u8; assets::SEGMENT_SIZE] {
         let mut bytes = [0; assets::SEGMENT_SIZE];
         bytes[..4].copy_from_slice(b"SMS1");
@@ -1843,31 +1997,33 @@ mod tests {
     }
     #[test]
     fn clouds_remain_in_the_sky_behind_scenery_with_shared_facet_edges() {
-        for face in 5..14 {
-            let (points, color) = backdrop_face(face);
-            assert!(matches!(color, 1 | 15));
-            for point in points {
-                assert!(
-                    point.z > 2400,
-                    "clouds must be behind gameplay and mountains"
-                );
-                let (_, screen_y) = crate::projection::project(point);
-                assert!(
-                    (20..90).contains(&screen_y),
-                    "cloud must stay above the horizon"
-                );
+        for theme in 0..4 {
+            for face in 5..14 {
+                let (points, color) = backdrop_face(theme, face);
+                assert!(CLOUD_COLORS[theme as usize].contains(&color));
+                for point in points {
+                    assert!(
+                        point.z > 2400,
+                        "clouds must be behind gameplay and mountains"
+                    );
+                    let (_, screen_y) = crate::projection::project(point);
+                    assert!(
+                        (24..90).contains(&screen_y),
+                        "cloud must stay above the horizon and below attract labels"
+                    );
+                }
             }
-        }
-        for cloud in 0..3 {
-            let first = backdrop_face(5 + cloud * 3).0;
-            let second = backdrop_face(6 + cloud * 3).0;
-            let third = backdrop_face(7 + cloud * 3).0;
-            assert_eq!((first[0], first[2]), (second[0], second[1]));
-            assert_eq!((second[0], second[2]), (third[0], third[1]));
+            for cloud in 0..3 {
+                let first = backdrop_face(theme, 5 + cloud * 3).0;
+                let second = backdrop_face(theme, 6 + cloud * 3).0;
+                let third = backdrop_face(theme, 7 + cloud * 3).0;
+                assert_eq!((first[0], first[2]), (second[0], second[1]));
+                assert_eq!((second[0], second[2]), (third[0], third[1]));
+            }
         }
     }
     #[test]
-    fn cloud_screen_geometry_is_fixed_across_camera_modes_and_mission_sections() {
+    fn cloud_screen_geometry_is_fixed_within_each_section_across_camera_modes() {
         struct SkyCapture {
             clouds: [([Vec3; 3], u8); 9],
             count: usize,
@@ -1885,9 +2041,9 @@ mod tests {
         }
         let bytes = model_bank_for_tests();
         let bank = AssetBank::new(&bytes).unwrap();
-        let expected = core::array::from_fn(|face| backdrop_face(5 + face as u8));
         for mode in [
             Mode::Title,
+            Mode::Attract,
             Mode::Playing,
             Mode::Respawning,
             Mode::Victory,
@@ -1899,6 +2055,9 @@ mod tests {
                     game.mode = mode;
                     game.player.y = player_y;
                     game.rail_ticks = ticks;
+                    let theme = game.segment_index();
+                    let expected =
+                        core::array::from_fn(|face| backdrop_face(theme, 5 + face as u8));
                     let segment_bytes = empty_segment(game.segment_index());
                     let segment = Segment::new(&segment_bytes).unwrap();
                     let mut capture = SkyCapture {
@@ -1912,7 +2071,7 @@ mod tests {
                     assert_eq!(
                         capture.first_mountain,
                         Some(camera_point(
-                            backdrop_face(0).0[0],
+                            backdrop_face(theme, 0).0[0],
                             chase_camera_y(mode, player_y)
                         )),
                         "mountains must retain their chase-camera movement"
@@ -1923,43 +2082,184 @@ mod tests {
     }
     #[test]
     fn clouds_are_visible_and_nearer_geometry_occludes_them() {
-        let mut renderer = crate::render::Renderer::new();
-        let (cloud, color) = backdrop_face(8);
-        let near = cloud.map(|p| Vec3 {
-            x: p.x / 2,
-            y: p.y / 2,
-            z: p.z / 2,
-        });
-        // Submit the nearer triangle first to exercise the depth sort.
-        renderer.triangle(near[0], near[1], near[2], 6, TWO_SIDED);
-        renderer.triangle(cloud[0], cloud[1], cloud[2], color, TWO_SIDED);
-        assert_eq!(renderer.triangle_count, 2);
-        renderer.finish();
-        let mut cloud_only = crate::render::Renderer::new();
-        cloud_only.triangle(cloud[0], cloud[1], cloud[2], color, TWO_SIDED);
-        let mut near_only = crate::render::Renderer::new();
-        near_only.triangle(near[0], near[1], near[2], 6, TWO_SIDED);
-        let mut overlap = 0;
-        for band in 0..25 {
-            let mut actual = [0; crate::render::BAND_PIXELS];
-            let mut distant = [0; crate::render::BAND_PIXELS];
-            let mut foreground = [0; crate::render::BAND_PIXELS];
-            renderer.render_band(band, &mut actual);
-            cloud_only.render_band(band, &mut distant);
-            near_only.render_band(band, &mut foreground);
-            for pixel in 0..actual.len() {
-                let expected = if foreground[pixel] == 6 {
-                    6
-                } else {
-                    distant[pixel]
-                };
-                assert_eq!(actual[pixel], expected);
-                if foreground[pixel] == 6 && distant[pixel] == color {
-                    overlap += 1;
+        for theme in 0..4 {
+            let mut renderer = crate::render::Renderer::new();
+            let (cloud, color) = backdrop_face(theme, 8);
+            let near = cloud.map(|p| Vec3 {
+                x: p.x / 2,
+                y: p.y / 2,
+                z: p.z / 2,
+            });
+            // Submit the nearer triangle first to exercise the depth sort.
+            renderer.triangle(near[0], near[1], near[2], 6, TWO_SIDED);
+            renderer.triangle(cloud[0], cloud[1], cloud[2], color, TWO_SIDED);
+            assert_eq!(renderer.triangle_count, 2);
+            renderer.finish();
+            let mut cloud_only = crate::render::Renderer::new();
+            cloud_only.triangle(cloud[0], cloud[1], cloud[2], color, TWO_SIDED);
+            let mut near_only = crate::render::Renderer::new();
+            near_only.triangle(near[0], near[1], near[2], 6, TWO_SIDED);
+            let mut overlap = 0;
+            for band in 0..25 {
+                let mut actual = [0; crate::render::BAND_PIXELS];
+                let mut distant = [0; crate::render::BAND_PIXELS];
+                let mut foreground = [0; crate::render::BAND_PIXELS];
+                renderer.render_band(band, &mut actual);
+                cloud_only.render_band(band, &mut distant);
+                near_only.render_band(band, &mut foreground);
+                for pixel in 0..actual.len() {
+                    let expected = if foreground[pixel] == 6 {
+                        6
+                    } else {
+                        distant[pixel]
+                    };
+                    assert_eq!(actual[pixel], expected);
+                    if foreground[pixel] == 6 && distant[pixel] == color {
+                        overlap += 1;
+                    }
+                }
+            }
+            assert!(overlap > 0, "nearer geometry must visibly cover the cloud");
+        }
+    }
+    #[test]
+    fn section_themes_are_distinct_compact_and_keep_all_cloud_facets_cacheable() {
+        let bytes = model_bank_for_tests();
+        let bank = AssetBank::new(&bytes).unwrap();
+        for theme in 0..4 {
+            let mut game = running();
+            game.rail_ticks = theme as u16 * SECTION_TICKS;
+            assert_eq!(game.sky_color(), SKY_COLORS[theme as usize]);
+            let colors = [
+                game.sky_color(),
+                CLOUD_COLORS[theme as usize][0],
+                CLOUD_COLORS[theme as usize][1],
+            ];
+            assert!(colors.iter().all(|color| (1..16).contains(color)));
+            assert_ne!(colors[0], colors[1]);
+            assert_ne!(colors[0], colors[2]);
+            assert_ne!(colors[1], colors[2]);
+            for other in 0..theme {
+                let horizon: [_; 5] =
+                    core::array::from_fn(|face| backdrop_face(theme, face as u8).0);
+                let clouds: [_; 9] =
+                    core::array::from_fn(|face| backdrop_face(theme, 5 + face as u8).0);
+                assert_ne!(
+                    horizon,
+                    core::array::from_fn(|face| backdrop_face(other, face as u8).0)
+                );
+                assert_ne!(
+                    clouds,
+                    core::array::from_fn(|face| backdrop_face(other, 5 + face as u8).0)
+                );
+            }
+            let mut renderer = crate::render::Renderer::new();
+            renderer.begin(game.sky_color());
+            for face in 5..14 {
+                let (points, color) = backdrop_face(theme, face);
+                renderer.triangle(
+                    points[0],
+                    points[1],
+                    points[2],
+                    color,
+                    TWO_SIDED | STATIC_SKY,
+                );
+            }
+            assert_eq!(
+                renderer.triangle_count, 9,
+                "theme {theme} lost a projected cloud facet"
+            );
+            assert_eq!(
+                renderer.static_sky_bands(),
+                0x01ff_ffff,
+                "theme {theme} must accept every unobstructed cloud-only band"
+            );
+            let mut segment_bytes = empty_segment(theme);
+            segment_bytes[5] = theme;
+            segment_bytes[6] = [5, 9, 11, 6][theme as usize];
+            let segment = Segment::new(&segment_bytes).unwrap();
+            renderer.begin(game.sky_color());
+            game.render(&mut renderer, &bank, &segment);
+            assert_eq!(renderer.dropped, 0);
+            // At this opening camera position, canyon walls conservatively
+            // cover every band; the other terrains leave upper sky reusable.
+            assert_eq!(
+                renderer.static_sky_bands() == 0,
+                theme == 1,
+                "theme {theme} has unexpected foreground coverage"
+            );
+        }
+        assert!(
+            core::mem::size_of_val(&SKY_COLORS)
+                + core::mem::size_of_val(&HORIZON_COLORS)
+                + core::mem::size_of_val(&CLOUD_COLORS)
+                + core::mem::size_of_val(&HORIZONS)
+                + core::mem::size_of_val(&CLOUD_CENTERS)
+                + core::mem::size_of_val(&CLOUD_OUTLINES)
+                <= 250
+        );
+    }
+    #[test]
+    fn lowered_horizons_overlap_terrain_at_every_scroll_phase_and_camera_extreme() {
+        fn occupied_rows(renderer: &crate::render::Renderer, last: bool) -> [Option<usize>; 160] {
+            let mut rows = [None; 160];
+            for band in 0..25 {
+                let mut pixels = [0; crate::render::BAND_PIXELS];
+                renderer.render_band(band, &mut pixels);
+                for (offset, color) in pixels.iter().enumerate() {
+                    let column = offset % 160;
+                    if *color != 0 && (last || rows[column].is_none()) {
+                        rows[column] = Some(band as usize * 8 + offset / 160);
+                    }
+                }
+            }
+            rows
+        }
+        let mut worst = (0i16, 0, 0, 0, 0, 0, 0);
+        for theme in 0..4 {
+            for camera_y in [
+                0,
+                chase_camera_y(Mode::Playing, -65),
+                40,
+                chase_camera_y(Mode::Playing, 65),
+            ] {
+                let mut horizon = crate::render::Renderer::new();
+                for face in 0..5 {
+                    let (points, color) = backdrop_face(theme, face);
+                    assert_ne!(color, SKY_COLORS[theme as usize]);
+                    assert!(points.iter().any(|point| point.y == -544));
+                    assert!(points
+                        .iter()
+                        .all(|point| point.z == 2350 && point.y >= -544));
+                    let points = points.map(|point| camera_point(point, camera_y));
+                    horizon.triangle(points[0], points[1], points[2], 1, TWO_SIDED);
+                }
+                let horizon_bottom = occupied_rows(&horizon, true);
+                for phase in 0..1024 {
+                    // All 64 scroll positions through all 16 repeating rows.
+                    let terrain = terrain_scene(theme, phase);
+                    let mut ground = crate::render::Renderer::new();
+                    for (points, _) in &terrain.faces[..terrain.count - 14] {
+                        let points = points.map(|point| camera_point(point, camera_y));
+                        ground.triangle(points[0], points[1], points[2], 1, TWO_SIDED);
+                    }
+                    let ground_top = occupied_rows(&ground, false);
+                    for column in 0..160 {
+                        let bottom =
+                            horizon_bottom[column].expect("horizon must span the viewport");
+                        let top = ground_top[column].expect("terrain must span the viewport");
+                        let gap = top as i16 - bottom as i16 - 1;
+                        if gap > worst.0 {
+                            worst = (gap, theme, phase, camera_y, column, bottom, top);
+                        }
+                    }
                 }
             }
         }
-        assert!(overlap > 0, "nearer geometry must visibly cover the cloud");
+        assert!(
+            worst.0 <= 0,
+            "sky gap (pixels, theme, phase, camera, x, horizon, terrain): {worst:?}"
+        );
     }
     #[test]
     fn resident_state_fits_budget() {
@@ -1968,6 +2268,170 @@ mod tests {
             "{}",
             core::mem::size_of::<Game>()
         );
+    }
+    #[test]
+    fn attract_silences_all_effects_and_gameplay_restores_them() {
+        let mut g = Game::new();
+        g.reset_scene(Mode::Attract, 0);
+        let effects = [
+            Effect::Fire,
+            Effect::EnemyFire,
+            Effect::MissileLaunch,
+            Effect::Hit,
+            Effect::Pickup,
+            Effect::Roll,
+            Effect::Bomb,
+            Effect::Death,
+        ];
+        for effect in effects {
+            g.sound(effect, 64);
+            assert!(g.pop_audio().is_none(), "{effect:?} during attract");
+        }
+        g.reset_run();
+        for effect in effects {
+            g.sound(effect, 64);
+            assert_eq!(g.pop_audio(), Some(AudioEvent { effect, pan: 64 }));
+        }
+    }
+    #[test]
+    fn attract_enemy_and_carrier_shots_spawn_and_move_silently() {
+        for carrier in [false, true] {
+            let mut g = Game::new();
+            if carrier {
+                g.reset_scene(Mode::Attract, SECTION_TICKS * 3 + 150);
+                g.boss_z = 680;
+                g.ticks = 39;
+            } else {
+                g.reset_scene(Mode::Attract, 0);
+                g.actors[0] = enemy(assets::FIGHTER, 50, 0, 1000);
+                g.actors[0].age = 64;
+            }
+            let bytes = empty_segment(g.segment_index());
+            let segment = Segment::new(&bytes).unwrap();
+            g.tick(&segment);
+            assert_eq!(
+                g.shots.iter().filter(|shot| shot.kind == 2).count(),
+                if carrier { 2 } else { 1 }
+            );
+            assert!(g.pop_audio().is_none());
+            let z = g.shots[0].pos.z;
+            g.tick(&segment);
+            assert_eq!(g.shots[0].kind, 2);
+            assert_eq!(g.shots[0].pos.z, z - 18);
+            assert!(g.pop_audio().is_none());
+        }
+    }
+    #[test]
+    fn attract_has_no_player_collisions_or_pickup_collection() {
+        let mut g = Game::new();
+        g.reset_scene(Mode::Attract, 0);
+        g.shield = 30;
+        g.bombs = 0;
+        g.actors[0] = enemy(assets::FIGHTER, 0, 0, PLAYER_Z + SPEED);
+        g.shots[0] = Shot {
+            pos: Vec3 {
+                x: 0,
+                y: 0,
+                z: PLAYER_Z + 18,
+            },
+            damage: 12,
+            kind: 2,
+            ..Shot::EMPTY
+        };
+        g.pickups[0] = Pickup {
+            pos: Vec3 {
+                x: 0,
+                y: 0,
+                z: PLAYER_Z + SPEED,
+            },
+            kind: 1,
+        };
+        g.pickups[1] = Pickup {
+            kind: 2,
+            ..g.pickups[0]
+        };
+        g.update_actors();
+        g.update_shots();
+        g.update_pickups();
+        assert_ne!(g.actors[0].kind, 0, "enemies fly through the absent ship");
+        assert_ne!(g.shots[0].kind, 0, "hostile shots continue past the camera");
+        assert!(g.pickups[..2].iter().all(|p| p.kind != 0));
+        assert_eq!((g.shield, g.bombs, g.lives, g.score), (30, 0, 3, 0));
+        assert!(g.explosions.iter().all(|e| e.ticks == 0));
+        assert!(g.pop_audio().is_none());
+        for _ in 0..30 {
+            g.update_actors();
+            g.update_shots();
+            g.update_pickups();
+        }
+        assert!(g.actors.iter().all(|a| a.kind == 0));
+        assert!(g.shots.iter().all(|s| s.kind == 0));
+        assert!(g.pickups.iter().all(|p| p.kind == 0));
+    }
+    #[test]
+    fn attract_section_cuts_clear_encounters_boss_audio_and_gestures() {
+        let mut g = Game::new();
+        g.reset_scene(Mode::Attract, SECTION_TICKS * 2);
+        g.menu_ticks = ATTRACT_TICKS - 1;
+        g.actors[0] = enemy(assets::FIGHTER, 50, 0, 500);
+        g.shots[0] = Shot {
+            kind: 2,
+            ..Shot::EMPTY
+        };
+        g.pickups[0] = Pickup {
+            kind: 1,
+            ..Pickup::EMPTY
+        };
+        g.explosions[0] = Explosion {
+            ticks: 10,
+            ..Explosion::EMPTY
+        };
+        g.boss_started = true;
+        g.boss_left = 0;
+        g.controls.now = 0xffff_fff0;
+        g.controls.fire_armed = true;
+        g.controls.shot_pending = true;
+        g.controls.roll_pending = -1;
+        g.controls.bomb_pending = true;
+        // Seed stale audio directly: attract mode suppresses new sound events.
+        g.audio[0] = AudioEvent {
+            effect: Effect::EnemyFire,
+            pan: 0,
+        };
+        g.audio_len = 1;
+        let bytes = empty_segment(2);
+        g.tick(&Segment::new(&bytes).unwrap());
+        assert_eq!(g.mode, Mode::Attract);
+        assert_eq!(g.rail_ticks, SECTION_TICKS * 3);
+        assert_eq!(g.spawn_segment, 3);
+        assert_eq!((g.menu_ticks, g.spawn_cursor), (0, 0));
+        assert!(g.actors.iter().all(|a| a.kind == 0));
+        assert!(g.shots.iter().all(|s| s.kind == 0));
+        assert!(g.pickups.iter().all(|p| p.kind == 0));
+        assert!(g.explosions.iter().all(|e| e.ticks == 0));
+        assert!(!g.boss_started);
+        assert_eq!((g.boss_left, g.boss_right, g.boss_core), (20, 20, 60));
+        assert_eq!(g.controls.now, 0xffff_fff0);
+        assert_eq!(g.controls.released_at, g.controls.now);
+        assert!(!g.controls.fire_armed);
+        assert!(!g.controls.shot_pending);
+        assert!(!g.controls.bomb_pending);
+        assert_eq!(g.controls.roll_pending, 0);
+        assert!(g.pop_audio().is_none());
+    }
+    #[test]
+    fn result_screens_do_not_enter_attract_mode() {
+        let bytes = empty_segment(0);
+        let segment = Segment::new(&bytes).unwrap();
+        for mode in [Mode::Victory, Mode::GameOver] {
+            let mut g = Game::new();
+            g.mode = mode;
+            for _ in 0..ATTRACT_TICKS * 2 {
+                g.tick(&segment);
+            }
+            assert_eq!(g.mode, mode);
+            assert_eq!(g.rail_ticks, 0);
+        }
     }
     #[test]
     fn swept_projectile_hits_between_endpoints() {
@@ -2256,6 +2720,26 @@ mod tests {
             .iter()
             .all(|shot| shot.pos.z == PLAYER_Z + 18 + 48));
         assert_eq!(g.shots[3].pos.z, PLAYER_Z + 18 + 32);
+    }
+    #[test]
+    fn missile_launch_is_retained_when_the_game_audio_queue_is_full() {
+        let mut g = running();
+        while g.pop_audio().is_some() {}
+        for _ in 0..AUDIO_CAPACITY {
+            g.sound(Effect::EnemyFire, 0);
+        }
+        g.fire_player(255);
+        for _ in 0..AUDIO_CAPACITY - 1 {
+            assert_eq!(g.pop_audio().unwrap().effect, Effect::EnemyFire);
+        }
+        assert_eq!(
+            g.pop_audio(),
+            Some(AudioEvent {
+                effect: Effect::MissileLaunch,
+                pan: 0,
+            })
+        );
+        assert!(g.pop_audio().is_none());
     }
     fn enemy(kind: u8, x: i16, y: i16, z: i16) -> Actor {
         Actor {
@@ -2731,9 +3215,6 @@ mod tests {
         }
         let data = model_bank_for_tests();
         let bank = AssetBank::new(&data).unwrap();
-        let mut scene = empty_segment(1);
-        scene[5] = 1;
-        let segment = Segment::new(&scene).unwrap();
         let mut g = running();
         g.boss_started = true;
         g.boss_z = 680;
@@ -2767,24 +3248,29 @@ mod tests {
             };
         }
         let mut renderer = crate::render::Renderer::new();
-        for phase in 0..64 {
-            g.rail_ticks = 3712 + phase;
-            let mut scenery = CountScenery {
-                total: 0,
-                cloud_faces: 0,
-            };
-            g.render(&mut scenery, &bank, &segment);
-            assert_eq!(
-                scenery.cloud_faces, 9,
-                "busy scenes retain every cloud facet"
-            );
-            assert!(scenery.total <= 233);
-            renderer.begin(0);
-            g.render(&mut renderer, &bank, &segment);
-            renderer.finish();
-            assert_eq!(renderer.dropped, 0, "terrain phase {phase}");
-            assert!(renderer.triangle_count > 100);
-            assert!(renderer.triangle_count <= 256);
+        for theme in 0..4 {
+            let mut scene = empty_segment(theme);
+            scene[5] = theme;
+            let segment = Segment::new(&scene).unwrap();
+            for phase in 0..64 {
+                g.rail_ticks = ((theme as u16 * SECTION_TICKS + 63) & !63) + phase;
+                let mut scenery = CountScenery {
+                    total: 0,
+                    cloud_faces: 0,
+                };
+                g.render(&mut scenery, &bank, &segment);
+                assert_eq!(
+                    scenery.cloud_faces, 9,
+                    "busy scenes retain every cloud facet"
+                );
+                assert!(scenery.total <= 233);
+                renderer.begin(g.sky_color());
+                g.render(&mut renderer, &bank, &segment);
+                renderer.finish();
+                assert_eq!(renderer.dropped, 0, "terrain phase {phase}");
+                assert!(renderer.triangle_count > 100);
+                assert!(renderer.triangle_count <= 256);
+            }
         }
     }
 }

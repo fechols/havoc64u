@@ -36,6 +36,176 @@ fn effects(game: &mut Game) -> Vec<Effect> {
     result
 }
 
+fn empty_sections() -> [[u8; SEGMENT_SIZE]; 4] {
+    core::array::from_fn(|index| {
+        let mut bytes = segment_bytes();
+        bytes[4] = index as u8;
+        bytes
+    })
+}
+
+fn advance(game: &mut Game, sections: &[[u8; SEGMENT_SIZE]; 4], ticks: u16) {
+    for _ in 0..ticks {
+        let segment = Segment::new(&sections[game.segment_index() as usize]).unwrap();
+        game.tick(&segment);
+    }
+}
+
+#[test]
+fn attract_waits_fifteen_seconds_then_previews_each_section_and_returns_to_title() {
+    let sections = empty_sections();
+    let mut game = Game::new();
+    advance(&mut game, &sections, 749);
+    assert_eq!(game.hud().mode, Mode::Title);
+    advance(&mut game, &sections, 1);
+    for section in 0..4 {
+        assert_eq!(game.hud().mode, Mode::Attract);
+        assert_eq!(game.hud().section, section);
+        assert_eq!(game.hud().distance, section as u32 * 30_000);
+        advance(&mut game, &sections, 749);
+        assert_eq!(game.hud().mode, Mode::Attract);
+        assert_eq!(game.hud().section, section);
+        assert_eq!(game.hud().distance, section as u32 * 30_000 + 5992);
+        advance(&mut game, &sections, 1);
+    }
+    assert_eq!(game.hud().mode, Mode::Title);
+    assert_eq!(game.hud().distance, 0);
+    advance(&mut game, &sections, 749);
+    assert_eq!(game.hud().mode, Mode::Title);
+    advance(&mut game, &sections, 1);
+    assert_eq!(game.hud().mode, Mode::Attract);
+    assert_eq!(game.hud().section, 0);
+}
+
+#[test]
+fn title_idle_timer_resets_for_short_pulses_and_stays_reset_while_a_direction_is_held() {
+    let sections = empty_sections();
+    let mut game = Game::new();
+    advance(&mut game, &sections, 749);
+    input(&mut game, LEFT, 14_985);
+    input(&mut game, 0, 14_990);
+    advance(&mut game, &sections, 1);
+    advance(&mut game, &sections, 749);
+    assert_eq!(game.hud().mode, Mode::Title);
+    input(&mut game, RIGHT, 29_990);
+    advance(&mut game, &sections, 1000);
+    assert_eq!(game.hud().mode, Mode::Title);
+    input(&mut game, 0, 49_990);
+    advance(&mut game, &sections, 749);
+    assert_eq!(game.hud().mode, Mode::Title);
+    advance(&mut game, &sections, 1);
+    assert_eq!(game.hud().mode, Mode::Attract);
+}
+
+#[test]
+fn every_attract_wake_input_is_consumed_and_a_fresh_fire_starts_a_clean_run() {
+    use havoc::game::{DOWN, UP};
+    let sections = empty_sections();
+    for wake in [UP, DOWN, LEFT, RIGHT, FIRE] {
+        let mut game = Game::new();
+        advance(&mut game, &sections, 750 + 750 * 3 + 300);
+        assert_eq!(game.hud().section, 3);
+        assert_eq!(game.hud().boss_shield, 100);
+        input(&mut game, wake, 66_000);
+        advance(&mut game, &sections, 1);
+        assert_eq!(game.hud().mode, Mode::Title);
+        assert_eq!(game.hud().distance, 0);
+        assert_eq!(game.hud().boss_shield, 0);
+        advance(&mut game, &sections, 800);
+        assert_eq!(game.hud().mode, Mode::Title, "held input {wake}");
+        input(&mut game, 0, 82_000);
+        input(&mut game, FIRE, 82_020);
+        advance(&mut game, &sections, 1);
+        assert_eq!(game.hud().mode, Mode::Playing);
+        assert_eq!(game.hud().distance, 0);
+        assert_eq!(game.hud().score, 0);
+        assert_eq!(game.hud().shield, 100);
+        assert_eq!(game.hud().bombs, 3);
+        assert_eq!(game.hud().lives, 3);
+        assert_eq!(game.hud().charge, 0);
+        assert_eq!(game.hud().roll_ticks, 0);
+        assert!(effects(&mut game).is_empty());
+        advance(&mut game, &sections, 1);
+        assert_eq!(effects(&mut game), [Effect::Fire]);
+        assert_eq!(game.hud().bombs, 3);
+    }
+}
+
+#[test]
+fn attract_retains_pressed_pulses_between_ticks_without_starting_the_game() {
+    let sections = empty_sections();
+    for pressed in [LEFT, FIRE] {
+        let mut game = Game::new();
+        advance(&mut game, &sections, 750);
+        game.sample_input(InputSample {
+            bits: 0,
+            pressed,
+            ms: 15_005,
+        });
+        input(&mut game, 0, 15_010);
+        advance(&mut game, &sections, 1);
+        assert_eq!(game.hud().mode, Mode::Title);
+        advance(&mut game, &sections, 749);
+        assert_eq!(game.hud().mode, Mode::Title);
+        advance(&mut game, &sections, 1);
+        assert_eq!(game.hud().mode, Mode::Attract);
+    }
+}
+
+#[test]
+fn attract_wake_overrides_a_section_cut_and_does_not_prime_a_rapid_fire_bomb() {
+    let sections = empty_sections();
+    let mut game = Game::new();
+    advance(&mut game, &sections, 750 + 749);
+    input(&mut game, FIRE, 29_990);
+    advance(&mut game, &sections, 1);
+    assert_eq!(game.hud().mode, Mode::Title);
+    assert_eq!(game.hud().section, 0);
+    input(&mut game, 0, 30_000);
+    input(&mut game, FIRE, 30_020);
+    advance(&mut game, &sections, 1);
+    assert_eq!(game.hud().mode, Mode::Playing);
+    assert_eq!(game.hud().distance, 0);
+    advance(&mut game, &sections, 1);
+    assert_eq!(effects(&mut game), [Effect::Fire]);
+    assert_eq!(game.hud().bombs, 3);
+}
+
+#[cfg(feature = "host-tools")]
+#[test]
+fn attract_runs_live_encounters_and_the_carrier_without_sfx_or_resource_changes() {
+    let sections = core::array::from_fn(|i| baked_assets::segment_bank(i as u8));
+    let common = baked_assets::common_bank();
+    let bank = havoc::assets::AssetBank::new(&common).unwrap();
+    let mut game = Game::new();
+    advance(&mut game, &sections, 750);
+    for section in 0..4 {
+        for tick in 1..750 {
+            advance(&mut game, &sections, 1);
+            let status = game.hud();
+            assert_eq!(status.mode, Mode::Attract);
+            assert_eq!(
+                (status.shield, status.bombs, status.lives, status.score),
+                (100, 3, 3, 0)
+            );
+            assert!(effects(&mut game).is_empty(), "section {section}, tick {tick}");
+            if section == 3 {
+                assert_eq!(status.boss_shield, if tick < 150 { 0 } else { 100 });
+            }
+            if tick % 50 == 0 {
+                let segment = Segment::new(&sections[section]).unwrap();
+                let mut renderer = havoc::render::Renderer::new();
+                renderer.begin(game.sky_color());
+                game.render(&mut renderer, &bank, &segment);
+                renderer.finish();
+                assert_eq!(renderer.dropped, 0, "section {section}, tick {tick}");
+                assert!(renderer.triangle_count > 10);
+            }
+        }
+        advance(&mut game, &sections, 1);
+    }
+}
+
 #[test]
 fn held_fire_produces_ten_immediate_cadenced_shots_per_second() {
     let bytes = segment_bytes();
@@ -71,7 +241,7 @@ fn charge_begins_after_one_second_and_is_retained_until_press() {
     assert_eq!(g.hud().charge, 255);
     input(&mut g, FIRE, 4040);
     g.tick(&s);
-    assert!(effects(&mut g).contains(&Effect::ChargedShot));
+    assert!(effects(&mut g).contains(&Effect::MissileLaunch));
     assert_eq!(g.hud().charge, 0);
     for i in 1..=5 {
         input(&mut g, FIRE, 4040 + i * 20);
@@ -81,6 +251,28 @@ fn charge_begins_after_one_second_and_is_retained_until_press() {
         effects(&mut g).contains(&Effect::Fire),
         "autofire resumes after charged shot"
     );
+}
+
+#[test]
+fn only_full_charge_uses_the_missile_launch_sound() {
+    let bytes = segment_bytes();
+    let segment = Segment::new(&bytes).unwrap();
+    for (elapsed, charge) in [(1000, 0), (1004, 1), (1500, 127), (1999, 254), (2000, 255)] {
+        let mut game = started(&segment);
+        input(&mut game, 0, 20);
+        game.tick(&segment);
+        input(&mut game, 0, 20 + elapsed);
+        assert_eq!(game.hud().charge, charge);
+        input(&mut game, FIRE, 20 + elapsed);
+        game.tick(&segment);
+        let expected = if charge == 255 {
+            Effect::MissileLaunch
+        } else {
+            Effect::Fire
+        };
+        assert_eq!(effects(&mut game), [expected], "charge {charge}");
+        assert_eq!(game.hud().charge, 0);
+    }
 }
 
 #[test]
@@ -95,28 +287,45 @@ fn inclusive_double_tap_window_consumes_pairs_and_first_shot_is_immediate() {
     assert!(effects(&mut g).contains(&Effect::Fire));
     assert_eq!(g.hud().bombs, 3);
     input(&mut g, 0, 120);
-    input(&mut g, FIRE, 350);
+    input(&mut g, FIRE, 600);
     g.tick(&s);
     assert_eq!(g.hud().bombs, 2);
     assert!(effects(&mut g).contains(&Effect::Bomb));
-    input(&mut g, 0, 370);
-    input(&mut g, FIRE, 400);
+    input(&mut g, 0, 620);
+    input(&mut g, FIRE, 650);
     g.tick(&s);
     assert_eq!(g.hud().bombs, 2, "third tap starts a new pair");
 }
 
 #[test]
-fn a_251_millisecond_gap_is_not_a_double_tap() {
+fn double_tap_boundaries_survive_timestamp_wrap_and_delayed_simulation() {
     let bytes = segment_bytes();
     let s = Segment::new(&bytes).unwrap();
-    let mut g = started(&s);
-    input(&mut g, 0, 20);
-    input(&mut g, FIRE, 100);
-    g.tick(&s);
-    input(&mut g, 0, 120);
-    input(&mut g, FIRE, 351);
-    g.tick(&s);
-    assert_eq!(g.hud().bombs, 3);
+    for bits in [FIRE, LEFT, RIGHT] {
+        for first_at in [100_u32, u32::MAX - 250] {
+            for (gap, accepted) in [(500, true), (501, false)] {
+                for delayed in [false, true] {
+                    let mut g = started(&s);
+                    input(&mut g, 0, first_at.wrapping_sub(20));
+                    input(&mut g, bits, first_at);
+                    if !delayed {
+                        g.tick(&s);
+                    }
+                    input(&mut g, 0, first_at.wrapping_add(20));
+                    input(&mut g, bits, first_at.wrapping_add(gap));
+                    g.tick(&s);
+                    assert_eq!(
+                        (g.hud().bombs, g.hud().roll_ticks),
+                        (
+                            if bits == FIRE && accepted { 2 } else { 3 },
+                            if bits != FIRE && accepted { 25 } else { 0 },
+                        ),
+                        "bits={bits}, first_at={first_at}, gap={gap}, delayed={delayed}"
+                    );
+                }
+            }
+        }
+    }
 }
 
 #[test]
@@ -220,7 +429,7 @@ fn original_asset_previews_fit_the_triangle_budget_in_every_section() {
             let mut game = Game::preview_at(section, local);
             game.tick(&segment);
             let mut renderer = havoc::render::Renderer::new();
-            renderer.begin(0);
+            renderer.begin(game.sky_color());
             game.render(&mut renderer, &bank, &segment);
             renderer.finish();
             assert_eq!(renderer.dropped, 0, "section {section}, distance {local}");
@@ -242,6 +451,25 @@ impl havoc::GeometrySink for CapturedGeometry {
 
 #[cfg(feature = "host-tools")]
 #[test]
+fn attract_renders_the_game_world_without_the_ship_exhaust_or_reticle() {
+    let sections = empty_sections();
+    let segment = Segment::new(&sections[0]).unwrap();
+    let common = baked_assets::common_bank();
+    let bank = havoc::assets::AssetBank::new(&common).unwrap();
+    let playing = started(&segment);
+    let mut attract = Game::new();
+    advance(&mut attract, &sections, 750);
+    let mut normal_scene = CapturedGeometry::default();
+    let mut preview_scene = CapturedGeometry::default();
+    playing.render(&mut normal_scene, &bank, &segment);
+    attract.render(&mut preview_scene, &bank, &segment);
+    let player_faces = bank.face_count(havoc::assets::PLAYER) as usize + 4;
+    assert_eq!(preview_scene.0, normal_scene.0[player_faces..]);
+    assert!(!preview_scene.0.is_empty());
+}
+
+#[cfg(feature = "host-tools")]
+#[test]
 fn scenic_terrain_keeps_the_centered_player_visible_through_every_band_phase() {
     use havoc::{assets::AssetBank, render::Renderer, GeometrySink};
     let common = baked_assets::common_bank();
@@ -257,7 +485,7 @@ fn scenic_terrain_keeps_the_centered_player_visible_through_every_band_phase() {
             let mut player = Renderer::new();
             let mut scene = Renderer::new();
             player.begin(0);
-            scene.begin(0);
+            scene.begin(game.sky_color());
             for (index, &(points, color, flags)) in geometry.0.iter().enumerate() {
                 scene.triangle(points[0], points[1], points[2], color, flags);
                 if index < player_faces {

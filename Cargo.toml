@@ -20,6 +20,7 @@ exclude = ["target-c64"]
 [features]
 default = ["host-tools"]
 host-tools = []
+four-sid = []
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(target_arch, values("mos"))'] }

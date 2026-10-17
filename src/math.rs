@@ -15,8 +15,9 @@ pub fn sin8(a: u8) -> i16 {
         _ => -QUARTER[64 - p],
     }
 }
+// Keep this small, phase-independent arithmetic helper resident so the
+// geometry overlay retains room for the expanded game-state layout.
 #[inline(never)]
-#[cfg_attr(target_arch = "mos", link_section = ".phase.geometry")]
 pub fn mul_q8(a: i16, b: i16) -> i16 {
     ((a as i32 * b as i32) >> 8) as i16
 }

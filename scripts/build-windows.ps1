@@ -11,4 +11,9 @@ if ($OutputDirectory) {
     foreach ($name in @('havoc.prg','havoc.reu','havoc.cfg','havoc.elf','memory-map.txt')) {
         Copy-Item -LiteralPath (Join-Path $projectRoot "dist/$name") -Destination (Join-Path $destination $name)
     }
+    $fourSidDestination=Join-Path $destination '4sid'
+    New-Item -ItemType Directory -Force -Path $fourSidDestination | Out-Null
+    foreach ($name in @('havoc.prg','havoc.reu','havoc.cfg','havoc.elf','memory-map.txt')) {
+        Copy-Item -LiteralPath (Join-Path $projectRoot "dist/4sid/$name") -Destination (Join-Path $fourSidDestination $name)
+    }
 }

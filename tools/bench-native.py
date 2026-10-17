@@ -145,8 +145,8 @@ def cache_sequence():
     """Entry/exit histories that can leave stale pixels in either VIC bank."""
     base = next(fixture for fixture in fixtures() if fixture["name"] == "lowlands")
 
-    def variant(name, patch):
-        return dict(base, name=name, patch=dict(base["patch"], **patch))
+    def variant(name, patch, **metadata):
+        return dict(base, name=name, patch=dict(base["patch"], **patch), **metadata)
 
     occluder = variant("sky-occluder", {"actors[0].kind": 1, "actors[0].hp": 6,
         "actors[0].origin_x": 0, "actors[0].origin_y": 340,
@@ -155,7 +155,25 @@ def cache_sequence():
     boss = variant("boss-hud", {"boss_started": 1, "boss_z": 680,
         "boss_left": 20, "boss_right": 20, "boss_core": 60})
     title = variant("title-transition", {"mode": 0})
-    return [base]*3 + [occluder]*2 + [base]*3 + [banner]*2 + [base]*3 + [boss]*2 + [base]*3 + [title] + [base]*3
+    sequence = [base]*3 + [occluder]*2 + [base]*3 + [banner]*2 + [base]*3 + [boss]*2 + [base]*3 + [title] + [base]*3
+    themes = {fixture["section"]: fixture for fixture in fixtures()
+              if fixture["name"] in ("lowlands", "canyon", "base", "carrier")}
+
+    def theme_frame(section, kind, stable=False):
+        theme = themes[section]
+        return variant(f"theme-{theme['name']}-{kind}",
+                       {"rail_ticks": theme["patch"]["rail_ticks"], "spawn_segment": section},
+                       section=section, theme_check=True, stable_check=stable)
+
+    # Four frames allow both VIC banks to repaint, then demonstrate sustained
+    # reuse. Returning to lowlands exercises a complete 0 -> 1 -> 2 -> 3 -> 0 loop.
+    for section in (0, 1, 2, 3, 0):
+        sequence.extend(theme_frame(section, "stable", frame == 3) for frame in range(4))
+    # Switch every frame in both directions, including returning to the theme
+    # last present in the back bank. Neither bank may retain that old validity.
+    sequence.extend(theme_frame(section, "rapid") for section in (1, 2, 3, 0, 3, 2, 1, 0))
+    sequence.extend(theme_frame(0, "recovery", frame == 2) for frame in range(3))
+    return sequence
 
 
 def dma_events(events, phase_address):
@@ -213,7 +231,9 @@ def main():
     parser.add_argument("--ticks", default="0,10")
     parser.add_argument("--palettes", default="cold,retained")
     parser.add_argument("--real-time-ticks", type=int, default=400)
-    parser.add_argument("--skip-cache-checks", action="store_true", help="omit native cache transition A/B replay in quick timing runs")
+    cache_selection = parser.add_mutually_exclusive_group()
+    cache_selection.add_argument("--skip-cache-checks", action="store_true", help="omit native cache transition A/B replay in quick timing runs")
+    cache_selection.add_argument("--cache-checks-only", action="store_true", help="run only cache transition A/B replay, skipping timing and real-time passes")
     parser.add_argument("--compare", type=Path, help="matching baseline report.json")
     args = parser.parse_args()
     output, package = args.out_dir.resolve(), args.package_dir.resolve()
@@ -238,6 +258,8 @@ def main():
                       command=sys.argv, driver_checkout_revision=subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip(),
                       driver_checkout_status=subprocess.check_output(["git", "status", "--short"], cwd=ROOT, text=True))
         syms = vice.symbols(elf, args.llvm_nm)
+        if args.cache_checks_only and "SKY_CACHE" not in syms:
+            raise RuntimeError("Cache-only replay requires a package containing SKY_CACHE")
         for name in ("BENCH_TICKS", "BENCH_RUNTIME", "benchmark_frame_begin", "benchmark_frame_ready", "geometry_complete"):
             if name not in syms:
                 raise RuntimeError(f"Package is not an instrumented benchmark build: missing {name}")
@@ -299,7 +321,7 @@ def main():
         def word(address, value, size=2):
             write(address, int(value).to_bytes(size, "little"))
 
-        if args.real_time_ticks:
+        if args.real_time_ticks and not args.cache_checks_only:
             mon.command("jpdb 1 $0f")
             frames = []
             previous = vice.counters(mon, syms)
@@ -399,10 +421,13 @@ def main():
             mon.command("bank ram")
             count_offset, _ = layouts.member("Renderer", "triangle_count")
             count = mon.integer(renderer_address+count_offset)
+            clear_offset, _ = layouts.member("Renderer", "clear_color")
+            clear_color = mon.integer(renderer_address+clear_offset, 1)
             triangles_offset, _ = layouts.member("Renderer", "triangles")
             triangle_size = layouts.size("Triangle")
             geometry = [layouts.decode("Triangle", mon.read(renderer_address+triangles_offset+n*triangle_size, triangle_size)) for n in range(count)]
             sky_bands = mon.integer(syms["SKY_BANDS"], 4) if "SKY_BANDS" in syms else None
+            cache_prepared = mon.read(syms["SKY_CACHE"], 8) if "SKY_CACHE" in syms else None
             mon.command("bank cpu")
             mon.run_until(syms["frame_complete"], failures)
             end = vice.counters(mon, syms)
@@ -425,8 +450,12 @@ def main():
                 cache_after = mon.read(syms["SKY_CACHE"], 8)
                 front = end["front_bank"]
                 end["sky_cache"] = {"before_hex": cache_before, "after_hex": cache_after.hex(),
+                                    "prepared_hex": cache_prepared.hex(),
                                     "geometry_bands": sky_bands,
                                     "eligible_bands": int.from_bytes(cache_after[(front-2)*4:(front-1)*4], "little"),
+                                    # Count actual skipped paint/pack operations;
+                                    # pre-geometry masks can be invalidated by a
+                                    # theme switch and do not prove reuse.
                                     "reused_bands": 25 - sum(event["address"] == syms["PROF_DETAIL"] and event["value"] == 2 for event in events)}
             mon.command("bank ram")
             state = layouts.decode("Game", mon.read(game_address, layouts.size("Game")))
@@ -437,7 +466,9 @@ def main():
             # PIXELS. The original renderer discarded both metadata values.
             comparable_geometry = [dict(triangle, reserved=triangle["reserved"] & ~6) for triangle in geometry]
             end.update(geometry_sha256=semantic_hash(comparable_geometry), raw_geometry_sha256=semantic_hash(geometry),
-                       game_sha256=semantic_hash(state), native_sha256=digest(native))
+                       game_sha256=semantic_hash(state), native_sha256=digest(native),
+                       native_screen_sha256=digest(native[8000:9000]), native_color_sha256=digest(native[9000:]),
+                       clear_color=clear_color)
             if capture_image:
                 end["capture"] = vice.capture(mon, syms, folder, "frame")
                 (folder/"game.json").write_text(json.dumps(state, indent=2)+"\n")
@@ -458,7 +489,7 @@ def main():
                 raise RuntimeError("Audio counter does not match traced services")
             return end
 
-        for fixture in chosen:
+        for fixture in ([] if args.cache_checks_only else chosen):
             for ticks in ticks_values:
                 for palette in palettes:
                     case = {"fixture": fixture["name"], "ticks": ticks, "palette": palette, "samples": []}
@@ -512,12 +543,28 @@ def main():
                     samples.append(sample)
                     mon.run_until(syms["benchmark_frame_ready"], failures)
             normal, forced = [cache_report["runs"][name] for name in ("normal-cache", "forced-misses")]
+            theme_age = 0
             for index, (cached, uncached) in enumerate(zip(normal, forced)):
-                for key in ("geometry_sha256", "game_sha256", "native_sha256"):
+                fixture = cache_report["sequence"][index]
+                switched = index > 0 and fixture["section"] != cache_report["sequence"][index-1]["section"]
+                theme_age = 0 if switched else theme_age + 1
+                for key in ("geometry_sha256", "game_sha256", "native_sha256", "native_screen_sha256", "native_color_sha256", "clear_color"):
                     if cached[key] != uncached[key]:
                         raise RuntimeError(f"Cache transition {index} changed {key}")
                 if uncached["sky_cache"]["reused_bands"] != 0:
                     raise RuntimeError("Forced cache miss unexpectedly reused a band")
+                if fixture.get("theme_check"):
+                    cache = cached["sky_cache"]
+                    if cached["clear_color"] != (6, 8, 11, 4)[fixture["section"]]:
+                        raise RuntimeError(f"Theme transition {index} selected the wrong sky color")
+                    if switched and cache["prepared_hex"] != bytes(8).hex():
+                        raise RuntimeError(f"Theme transition {index} did not invalidate both VIC banks")
+                    if theme_age < 2 and cache["reused_bands"]:
+                        raise RuntimeError(f"Theme transition {index} reused sky before both VIC banks repainted")
+                    if not cache["eligible_bands"] and cache["reused_bands"]:
+                        raise RuntimeError(f"Theme transition {index} reused an ineligible sky band")
+                    if fixture.get("stable_check") and cache["eligible_bands"] and cache["reused_bands"] <= 0:
+                        raise RuntimeError(f"Stable theme {fixture['section']} never reused its eligible native sky")
             if normal[2]["sky_cache"]["reused_bands"] <= 0:
                 raise RuntimeError("Stable native sky never exercised cache reuse")
             stable = normal[2]["sky_cache"]["eligible_bands"]

@@ -1,7 +1,7 @@
-"""Audit retained ELF relocations across the four mutually exclusive overlays.
+"""Audit retained ELF relocations across five mutually exclusive overlays.
 
 Unlike a disassembly's numeric call addresses, ELF relocation symbols retain
-the destination section even when all four phases execute at $3000. This is a
+the destination section even when all five phases execute at $3000. This is a
 static reference audit; runtime-computed pointers still require hardware tests.
 Only Python's standard library is needed. Link with --emit-relocs and do not
 strip the ELF before running this checker.
@@ -32,7 +32,7 @@ def string_at(data, offset):
 
 
 def readable_name(name):
-    """Decode the simple Rust legacy names used for the four entry functions."""
+    """Decode the simple Rust legacy names used for the entry functions."""
     if not (name.startswith("_ZN") and name.endswith("E")):
         return name
     remaining = name[3:-1]
@@ -169,7 +169,10 @@ ENTRIES = {
     ".phase.sim": "havoc_c64::simulate",
     ".phase.geometry": "havoc_c64::prepare_geometry",
     ".phase.pixels": "havoc_c64::draw_pixels",
+    ".phase.audio": "havoc_c64::service_audio",
 }
+STARTUP_SECTION = ".startup_checks"
+STARTUP_ENTRY = "havoc_c64::check_code_package"
 
 
 def audit_startup(elf):
@@ -215,16 +218,25 @@ def audit(path):
     elf = Elf(path)
     audit_startup(elf)
     phases = {section.name: section for section in elf.sections if section.name.startswith(".phase.")}
-    require(set(phases) == set(ENTRIES), "ELF must contain exactly the four supported phase sections")
+    require(set(phases) == set(ENTRIES), "ELF must contain exactly the five supported phase sections")
     entry_functions = {}
     for name, expected in ENTRIES.items():
         matches = [function for function in elf.functions[phases[name].index] if function.name == expected]
         require(len(matches) == 1, f"missing or ambiguous overlay entry {expected}")
         entry_functions[name] = matches[0]
+    startup_sections = [section for section in elf.sections if section.name == STARTUP_SECTION]
+    require(len(startup_sections) == 1, "missing or ambiguous startup-check section")
+    startup_section = startup_sections[0]
+    require(startup_section.address == 0x8C00 and 0 < startup_section.size <= 0x500,
+            "startup checks must fit the retired $8C00-$90FF workspace")
+    startup_matches = [function for function in elf.functions[startup_section.index] if function.name == STARTUP_ENTRY]
+    require(len(startup_matches) == 1, "missing or ambiguous startup-check entry")
+    startup_entry = startup_matches[0]
 
     sources = Counter()
     local_references = Counter()
     entry_references = Counter()
+    entry_addresses = defaultdict(list)
     graph = defaultdict(set)
     errors = []
     relocations = list(elf.relocations())
@@ -243,7 +255,7 @@ def audit(path):
         require(callee is not None, f"unresolved code pointer in {source.name}:${address:04X}")
         if kind not in (3, 4, 5):
             # The BASIC SYS header has a decimal startup-address relocation.
-            require(target.name not in phases, f"unsupported overlay-table relocation {kind}")
+            require(target.name not in phases and target.name != STARTUP_SECTION, f"unsupported transient-code table relocation {kind}")
             continue
         table_references.append((source.index, address, 2 if kind == 3 else 1, callee))
     for section, address, width, callee in sorted(table_references, key=lambda item: (item[0], item[1])):
@@ -269,10 +281,10 @@ def audit(path):
                 consumers.add(caller)
                 if caller:
                     graph[caller].add(table_target)
-        if target.name not in phases:
+        if target.name not in phases and target.name != STARTUP_SECTION:
             continue
         origin = caller.name if caller else f"{source.name}+${address - source.address:X}"
-        if source.name in phases:
+        if source.name in phases or source.name == STARTUP_SECTION:
             if source.name != target.name:
                 errors.append(f"{origin} in {source.name} references {target.name} at ${destination:04X}")
             else:
@@ -281,26 +293,30 @@ def audit(path):
         if not source.executable:
             # Validated as an owned switch table below.
             continue
-        expected = entry_functions[target.name]
+        expected = startup_entry if target.name == STARTUP_SECTION else entry_functions[target.name]
         # Require the exact JSR instruction and function entry, not merely an
         # address that happens to fall inside a whitelisted entry function.
         instruction = address - source.address - 1
         is_jsr = kind == 3 and 0 <= instruction < source.size and elf.contents(source)[instruction] == 0x20
         if source.name == ".text" and caller and caller.name == "main" and destination == expected.address and callee == expected and is_jsr:
             entry_references[target.name] += 1
+            entry_addresses[target.name].append(address)
         else:
             errors.append(f"unapproved resident/data reference: {origin} -> {target.name}:${destination:04X}")
     phase_tables = 0
     for section, start, end, target, consumers in tables:
-        if elf.sections[target.section].name in phases:
+        if elf.sections[target.section].name in phases or elf.sections[target.section].name == STARTUP_SECTION:
             phase_tables += 1
             if consumers != {target}:
                 names = sorted(consumer.name if consumer else "unknown/data" for consumer in consumers)
                 errors.append(f"overlay switch table {elf.sections[section].name}:${start:04X}-${end-1:04X} targets {target.name}, consumed by {names}")
-    for name in [".text", *ENTRIES]:
+    for name in [".text", *ENTRIES, STARTUP_SECTION]:
         require(sources[name] > 0, f"no retained relocations for {name}; link with --emit-relocs")
     require(not errors, "unsafe overlay references:\n  " + "\n  ".join(errors))
     require(all(entry_references[name] == 1 for name in ENTRIES), f"expected one main JSR to each overlay entry, got {dict(entry_references)}")
+    require(entry_references[STARTUP_SECTION] == 1, "startup checker must have exactly one direct main call")
+    require(entry_addresses[STARTUP_SECTION][0] < entry_addresses[".phase.boot"][0],
+            "startup checks must precede BOOT's first asset load")
 
     roots = [function for functions in elf.functions.values() for function in functions if function.name in ("irq_entry", "irq_body")]
     require({function.name for function in roots} == {"irq_entry", "irq_body"}, "IRQ audit roots are missing")
@@ -312,12 +328,14 @@ def audit(path):
             continue
         reached.add(function)
         require(elf.sections[function.section].name not in phases, f"IRQ reference graph reaches overlay function {function.name}")
+        require(elf.sections[function.section].name != STARTUP_SECTION, f"IRQ reference graph reaches retired startup function {function.name}")
         require("call_indir" not in function.name, f"IRQ calls an indirect-call trampoline: {function.name}")
         pending.extend(graph[function])
     print(f"Overlay audit: {sum(local_references.values())} phase-local references, {phase_tables} owned switch tables; zero cross-phase references")
     print("Resident entry calls: " + ", ".join(ENTRIES.values()))
     print(f"IRQ relocation graph: {len(reached)} functions, all resident")
     print("Startup: ROMs disabled before BSS; only BSS clear, data copy, main are called")
+    print("Startup checks: one main call before BOOT; no phase or IRQ references into retired workspace")
 
 
 if __name__ == "__main__":

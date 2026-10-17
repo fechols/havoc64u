@@ -17,6 +17,11 @@ pub const TRIANGLE_CAPACITY: usize = 256;
 pub const NEAR: i16 = 32;
 pub const HUD_INK: u8 = 0x80;
 const POSITIVE_AREA: u8 = 4;
+// An indexed byte avoids a variable-width bit test on the 6502.
+const STATIC_SKY_COLORS: [bool; 16] = [
+    false, false, false, false, true, false, true, false,
+    true, false, false, true, false, false, false, false,
+];
 
 #[derive(Clone, Copy)]
 #[repr(C)]
@@ -83,13 +88,16 @@ impl Renderer {
         sort::depth_sort(&mut self.triangles[..self.triangle_count as usize]);
     }
 
-    /// Bands containing only the fixed nine cloud facets over blue sky. Bounds
+    /// Bands containing only a section's fixed nine cloud facets and sky. Bounds
     /// are deliberately conservative: even a hidden non-sky face invalidates
     /// every band it intersects. Call before the raster pass consumes commands.
     #[inline(never)]
     #[cfg_attr(target_arch = "mos", link_section = ".phase.geometry")]
     pub fn static_sky_bands(&self) -> u32 {
-        if self.clear_color != 6 || self.padding != 0 || self.dropped != 0 {
+        if !STATIC_SKY_COLORS[(self.clear_color & 15) as usize]
+            || self.padding != 0
+            || self.dropped != 0
+        {
             return 0;
         }
         #[cfg(target_arch = "mos")]
