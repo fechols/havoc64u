@@ -1091,7 +1091,7 @@ impl Game {
         segment: &Segment<'_>,
     ) {
         // Prioritize player, boss, projectiles and pickups before distant detail.
-        // 224 raw faces leave room for near-plane splitting in the 256 commands.
+        // 233 raw faces leave room for near-plane splitting in the 256 commands.
         let mut budget = SceneBudget {
             sink,
             count: 0,
@@ -1285,7 +1285,7 @@ impl Game {
                 }
             }
         }
-        sink.limit = 224;
+        sink.limit = 233;
         self.terrain(sink, segment);
     }
     // Keep these pure appearance calculations resident: the geometry overlay
@@ -1365,27 +1365,10 @@ impl Game {
                 }
             }
         }
-        // Distant mountain silhouettes do not consume object slots.
-        for i in -2..=2i16 {
-            tri(
-                sink,
-                Vec3 {
-                    x: i * 450 - 260,
-                    y: -105,
-                    z: 2350,
-                },
-                Vec3 {
-                    x: i * 450 + 260,
-                    y: -105,
-                    z: 2350,
-                },
-                Vec3 {
-                    x: i * 450 + 40,
-                    y: 150 + (i & 1) * 100,
-                    z: 2350,
-                },
-                if i & 1 == 0 { 6 } else { 14 },
-            );
+        // Distant silhouettes and clouds use no gameplay object slots.
+        for face in 0..14 {
+            let (points, color) = backdrop_face(face, self.rail_ticks);
+            tri(sink, points[0], points[1], points[2], color);
         }
     }
 }
@@ -1457,6 +1440,56 @@ fn terrain_height(row: u16, right: bool, style: u8) -> i16 {
     } else {
         -105 + (height << 4)
     }
+}
+// Pure backdrop construction stays resident to conserve the geometry overlay.
+// Clouds are farther than the mountains, so the existing painter sort places
+// every terrain feature and actor in front. A shared, slow drift uses mission
+// distance rather than segment position; crossing a section cannot reset it.
+#[inline(never)]
+fn backdrop_face(face: u8, rail_ticks: u16) -> ([Vec3; 3], u8) {
+    if face < 5 {
+        let i = face as i16 - 2;
+        return (
+            [
+                Vec3 {
+                    x: i * 450 - 260,
+                    y: -105,
+                    z: 2350,
+                },
+                Vec3 {
+                    x: i * 450 + 260,
+                    y: -105,
+                    z: 2350,
+                },
+                Vec3 {
+                    x: i * 450 + 40,
+                    y: 150 + (i & 1) * 100,
+                    z: 2350,
+                },
+            ],
+            if i & 1 == 0 { 6 } else { 14 },
+        );
+    }
+    const CENTERS: [(i16, i16, i16); 3] =
+        [(-2100, 1050, 3072), (100, 1400, 3584), (2300, 900, 4096)];
+    const FACETS: [[(i16, i16); 3]; 3] = [
+        [(-700, 0), (-350, 180), (100, 240)],
+        [(-700, 0), (100, 240), (700, 40)],
+        [(-700, 0), (700, 40), (530, -100)],
+    ];
+    let cloud = (face - 5) / 3;
+    let facet = (face - 5) % 3;
+    let (x, y, z) = CENTERS[cloud as usize];
+    let x = x - (rail_ticks >> 5) as i16;
+    let mut points = [Vec3::default(); 3];
+    for (point, &(dx, dy)) in points.iter_mut().zip(&FACETS[facet as usize]) {
+        *point = Vec3 {
+            x: x + dx,
+            y: y + dy,
+            z,
+        };
+    }
+    (points, if facet == 2 { 15 } else { 1 })
 }
 #[inline(always)]
 fn actor_center(actor: Actor) -> Vec3 {
@@ -1663,7 +1696,7 @@ mod tests {
     }
     #[derive(Debug, PartialEq, Eq)]
     struct TerrainCapture {
-        faces: [([Vec3; 3], u8); 45],
+        faces: [([Vec3; 3], u8); 54],
         count: usize,
     }
     impl GeometrySink for TerrainCapture {
@@ -1685,7 +1718,7 @@ mod tests {
         let mut game = Game::new();
         game.rail_ticks = ticks;
         let mut capture = TerrainCapture {
-            faces: [([Vec3::default(); 3], 0); 45],
+            faces: [([Vec3::default(); 3], 0); 54],
             count: 0,
         };
         game.terrain(&mut capture, &segment);
@@ -1722,8 +1755,8 @@ mod tests {
             for ticks in [0, 1, 63, 64, 1023, 3750, 14999] {
                 let scene = terrain_scene(style, ticks);
                 assert_eq!(scene, terrain_scene(style, ticks));
-                assert_eq!(scene.count, if style == 1 || style == 2 { 45 } else { 29 });
-                let surface = &scene.faces[..scene.count - 5];
+                assert_eq!(scene.count, if style == 1 || style == 2 { 54 } else { 38 });
+                let surface = &scene.faces[..scene.count - 14];
                 let mut raised = false;
                 for (points, color) in surface {
                     assert!(*color < 16);
@@ -1749,7 +1782,7 @@ mod tests {
         for style in 0..4 {
             for ticks in [0, 19, 63, 64, 511, 3750, 14999] {
                 let scene = terrain_scene(style, ticks);
-                let faces_per_band = (scene.count - 5) / 4;
+                let faces_per_band = (scene.count - 14) / 4;
                 for band in 0..3 {
                     let left = &scene.faces[band * faces_per_band..(band + 1) * faces_per_band];
                     let right =
@@ -1779,9 +1812,9 @@ mod tests {
             for tick in 0..130 {
                 let before = terrain_scene(style, tick);
                 let after = terrain_scene(style, tick + 1);
-                let per_band = (before.count - 5) / 4;
+                let per_band = (before.count - 14) / 4;
                 let retired = if tick & 63 == 63 { per_band } else { 0 };
-                for i in 0..before.count - 5 - retired {
+                for i in 0..before.count - 14 - retired {
                     let (old_points, old_color) = before.faces[i + retired];
                     let (new_points, new_color) = after.faces[i];
                     assert_eq!(
@@ -1796,6 +1829,63 @@ mod tests {
                 }
             }
         }
+    }
+    #[test]
+    fn clouds_remain_in_the_sky_behind_scenery_and_drift_across_sections() {
+        for tick in [0, 31, 32, 3749, 3750, 7499, 7500, 11249, 11250, 14999] {
+            for face in 5..14 {
+                let (points, color) = backdrop_face(face, tick);
+                let (next, next_color) = backdrop_face(face, tick + 1);
+                assert!(matches!(color, 1 | 15));
+                assert_eq!(color, next_color);
+                for (a, b) in points.iter().zip(next) {
+                    assert!(a.z > 2400, "clouds must be behind gameplay and mountains");
+                    assert_eq!((a.y, a.z), (b.y, b.z));
+                    assert!((0..=1).contains(&(a.x - b.x)), "no section-boundary jump");
+                    for camera_y in [0, 24, 40, 56] {
+                        let (_, screen_y) = crate::projection::project(camera_point(*a, camera_y));
+                        assert!(
+                            (20..90).contains(&screen_y),
+                            "cloud must stay above the horizon"
+                        );
+                    }
+                }
+            }
+            for cloud in 0..3 {
+                let first = backdrop_face(5 + cloud * 3, tick).0;
+                let second = backdrop_face(6 + cloud * 3, tick).0;
+                let third = backdrop_face(7 + cloud * 3, tick).0;
+                assert_eq!((first[0], first[2]), (second[0], second[1]));
+                assert_eq!((second[0], second[2]), (third[0], third[1]));
+            }
+        }
+    }
+    #[test]
+    fn clouds_are_visible_and_nearer_geometry_occludes_them() {
+        let mut renderer = crate::render::Renderer::new();
+        let (cloud, color) = backdrop_face(8, 0);
+        let near = cloud.map(|p| Vec3 {
+            x: p.x / 2,
+            y: p.y / 2,
+            z: p.z / 2,
+        });
+        // Submit the nearer triangle first to exercise the depth sort.
+        renderer.triangle(near[0], near[1], near[2], 6, TWO_SIDED);
+        renderer.triangle(cloud[0], cloud[1], cloud[2], color, TWO_SIDED);
+        assert_eq!(renderer.triangle_count, 2);
+        renderer.finish();
+        let (x, y) = crate::projection::project(Vec3 {
+            x: (cloud[0].x + cloud[1].x + cloud[2].x) / 3,
+            y: (cloud[0].y + cloud[1].y + cloud[2].y) / 3,
+            z: cloud[0].z,
+        });
+        let mut pixels = [0; crate::render::BAND_PIXELS];
+        renderer.render_band((y / 8) as u8, &mut pixels);
+        assert_eq!(pixels[(y as usize % 8) * 160 + x as usize], 6);
+        renderer.begin(0);
+        renderer.triangle(cloud[0], cloud[1], cloud[2], color, TWO_SIDED);
+        renderer.render_band((y / 8) as u8, &mut pixels);
+        assert_eq!(pixels[(y as usize % 8) * 160 + x as usize], 1);
     }
     #[test]
     fn resident_state_fits_budget() {
@@ -2553,6 +2643,18 @@ mod tests {
     }
     #[test]
     fn fully_occupied_scene_keeps_critical_geometry_inside_command_budget() {
+        struct CountScenery {
+            total: usize,
+            cloud_faces: usize,
+        }
+        impl GeometrySink for CountScenery {
+            fn triangle(&mut self, a: Vec3, b: Vec3, c: Vec3, _: u8, _: u8) {
+                self.total += 1;
+                if a.z > 2400 && b.z > 2400 && c.z > 2400 {
+                    self.cloud_faces += 1;
+                }
+            }
+        }
         let data = model_bank_for_tests();
         let bank = AssetBank::new(&data).unwrap();
         let mut scene = empty_segment(1);
@@ -2593,6 +2695,16 @@ mod tests {
         let mut renderer = crate::render::Renderer::new();
         for phase in 0..64 {
             g.rail_ticks = 3712 + phase;
+            let mut scenery = CountScenery {
+                total: 0,
+                cloud_faces: 0,
+            };
+            g.render(&mut scenery, &bank, &segment);
+            assert_eq!(
+                scenery.cloud_faces, 9,
+                "busy scenes retain every cloud facet"
+            );
+            assert!(scenery.total <= 233);
             renderer.begin(0);
             g.render(&mut renderer, &bank, &segment);
             renderer.finish();
