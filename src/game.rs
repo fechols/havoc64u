@@ -10,8 +10,9 @@ pub const LEFT: u8 = 4;
 pub const RIGHT: u8 = 8;
 pub const FIRE: u8 = 16;
 pub const MISSION_DISTANCE: u32 = 120_000;
-/// Fixed camera-space cloud geometry; all nearer scene geometry still occludes it.
+/// Fixed camera-space backdrop geometry; nearer scene geometry still occludes it.
 pub(crate) const STATIC_SKY: u8 = 2;
+const BACKDROP_CAMERA_Y: i16 = 40;
 const PLAYER_Z: i16 = 180;
 const SPEED: i16 = 8;
 const SECTION_TICKS: u16 = 3750;
@@ -258,6 +259,7 @@ pub struct Game {
     spawn_segment: u8,
     shield: u8,
     bombs: u8,
+    bomb_kills: u8,
     lives: u8,
     shot_cooldown: u8,
     invulnerability: u8,
@@ -310,6 +312,7 @@ impl Game {
             spawn_segment: 0,
             shield: 100,
             bombs: 3,
+            bomb_kills: 0,
             lives: 3,
             shot_cooldown: 0,
             invulnerability: 0,
@@ -982,6 +985,13 @@ impl Game {
         self.actors[index].kind = 0;
         self.score += if a.kind == assets::TURRET { 250 } else { 100 };
         self.kills = self.kills.wrapping_add(1);
+        // Keep the five-kill cadence independent of the wrapping total and
+        // consume the milestone even when the three-bomb inventory is full.
+        self.bomb_kills += 1;
+        if self.bomb_kills == 5 {
+            self.bomb_kills = 0;
+            self.bombs = (self.bombs + 1).min(3);
+        }
         self.explode(a.pos, 7);
         self.sound(Effect::Death, a.pos.x);
         if a.flags & 1 != 0 {
@@ -1453,7 +1463,7 @@ impl Game {
                 points[1],
                 points[2],
                 color,
-                TWO_SIDED | if face >= 5 { STATIC_SKY } else { 0 },
+                TWO_SIDED | STATIC_SKY,
             );
         }
     }
@@ -1577,8 +1587,8 @@ const CLOUD_OUTLINES: [[[i8; 2]; 5]; 4] = [
     [[-46, 0], [-28, 15], [7, 16], [46, 1], [38, -7]],
     [[-33, 0], [-19, 5], [7, 7], [33, 1], [25, -5]],
 ];
-// Pure backdrop construction stays resident. Clouds are farther than gameplay
-// and retain fixed camera-space positions within each theme.
+// Pure backdrop construction stays resident. All faces retain fixed camera-space
+// positions; horizons use neutral gameplay framing and clouds keep their layout.
 #[inline(never)]
 fn backdrop_face(section: u8, face: u8) -> ([Vec3; 3], u8) {
     let theme = (section & 3) as usize;
@@ -1588,6 +1598,7 @@ fn backdrop_face(section: u8, face: u8) -> ([Vec3; 3], u8) {
     let second;
     let depth;
     let color;
+    let camera_y;
     if face < 5 {
         outline = &HORIZONS[theme];
         center = [0; 3];
@@ -1595,6 +1606,7 @@ fn backdrop_face(section: u8, face: u8) -> ([Vec3; 3], u8) {
         second = first + 1;
         depth = 2350;
         color = HORIZON_COLORS[theme][(face & 1) as usize];
+        camera_y = BACKDROP_CAMERA_Y;
     } else {
         let cloud = if face >= 11 {
             2
@@ -1610,6 +1622,7 @@ fn backdrop_face(section: u8, face: u8) -> ([Vec3; 3], u8) {
         second = facet + 1;
         depth = center[2] as i16 * 32;
         color = CLOUD_COLORS[theme][(facet == 2) as usize];
+        camera_y = 0;
     }
     let points = core::array::from_fn(|corner| {
         let vertex = if corner == 0 {
@@ -1620,7 +1633,7 @@ fn backdrop_face(section: u8, face: u8) -> ([Vec3; 3], u8) {
         let xy = outline[vertex];
         Vec3 {
             x: (center[0] as i16 + xy[0] as i16) * 32,
-            y: (center[1] as i16 + xy[1] as i16) * 16,
+            y: (center[1] as i16 + xy[1] as i16) * 16 - camera_y,
             z: depth,
         }
     });
@@ -2023,19 +2036,16 @@ mod tests {
         }
     }
     #[test]
-    fn cloud_screen_geometry_is_fixed_within_each_section_across_camera_modes() {
+    fn backdrop_screen_geometry_is_fixed_within_each_section_across_camera_modes() {
         struct SkyCapture {
-            clouds: [([Vec3; 3], u8); 9],
+            faces: [([Vec3; 3], u8); 14],
             count: usize,
-            first_mountain: Option<Vec3>,
         }
         impl GeometrySink for SkyCapture {
             fn triangle(&mut self, a: Vec3, b: Vec3, c: Vec3, color: u8, flags: u8) {
                 if flags & STATIC_SKY != 0 {
-                    self.clouds[self.count] = ([a, b, c], color);
+                    self.faces[self.count] = ([a, b, c], color);
                     self.count += 1;
-                } else if a.z == 2350 && self.first_mountain.is_none() {
-                    self.first_mountain = Some(a);
                 }
             }
         }
@@ -2057,25 +2067,16 @@ mod tests {
                     game.rail_ticks = ticks;
                     let theme = game.segment_index();
                     let expected =
-                        core::array::from_fn(|face| backdrop_face(theme, 5 + face as u8));
+                        core::array::from_fn(|face| backdrop_face(theme, face as u8));
                     let segment_bytes = empty_segment(game.segment_index());
                     let segment = Segment::new(&segment_bytes).unwrap();
                     let mut capture = SkyCapture {
-                        clouds: [([Vec3::default(); 3], 0); 9],
+                        faces: [([Vec3::default(); 3], 0); 14],
                         count: 0,
-                        first_mountain: None,
                     };
                     game.render(&mut capture, &bank, &segment);
-                    assert_eq!(capture.count, 9);
-                    assert_eq!(capture.clouds, expected);
-                    assert_eq!(
-                        capture.first_mountain,
-                        Some(camera_point(
-                            backdrop_face(theme, 0).0[0],
-                            chase_camera_y(mode, player_y)
-                        )),
-                        "mountains must retain their chase-camera movement"
-                    );
+                    assert_eq!(capture.count, 14);
+                    assert_eq!(capture.faces, expected);
                 }
             }
         }
@@ -2123,7 +2124,7 @@ mod tests {
         }
     }
     #[test]
-    fn section_themes_are_distinct_compact_and_keep_all_cloud_facets_cacheable() {
+    fn section_themes_are_distinct_compact_and_keep_all_backdrop_facets_cacheable() {
         let bytes = model_bank_for_tests();
         let bank = AssetBank::new(&bytes).unwrap();
         for theme in 0..4 {
@@ -2155,7 +2156,7 @@ mod tests {
             }
             let mut renderer = crate::render::Renderer::new();
             renderer.begin(game.sky_color());
-            for face in 5..14 {
+            for face in 0..14 {
                 let (points, color) = backdrop_face(theme, face);
                 renderer.triangle(
                     points[0],
@@ -2166,14 +2167,31 @@ mod tests {
                 );
             }
             assert_eq!(
-                renderer.triangle_count, 9,
-                "theme {theme} lost a projected cloud facet"
+                renderer.triangle_count, 14,
+                "theme {theme} lost a projected backdrop facet"
             );
             assert_eq!(
                 renderer.static_sky_bands(),
                 0x01ff_ffff,
-                "theme {theme} must accept every unobstructed cloud-only band"
+                "theme {theme} must accept every unobstructed backdrop band"
             );
+            renderer.finish();
+            for band in 0..25 {
+                let mut pixels = [0; crate::render::BAND_PIXELS];
+                renderer.render_band(band, &mut pixels);
+                for cell in 0..40 {
+                    let mut colors = 0u16;
+                    for row in 0..8 {
+                        for column in 0..4 {
+                            colors |= 1 << pixels[row * 160 + cell * 4 + column];
+                        }
+                    }
+                    assert!(
+                        (colors & !1).count_ones() <= 3,
+                        "cache palette overflow: theme {theme}, band {band}, cell {cell}"
+                    );
+                }
+            }
             let mut segment_bytes = empty_segment(theme);
             segment_bytes[5] = theme;
             segment_bytes[6] = [5, 9, 11, 6][theme as usize];
@@ -2227,11 +2245,10 @@ mod tests {
                 for face in 0..5 {
                     let (points, color) = backdrop_face(theme, face);
                     assert_ne!(color, SKY_COLORS[theme as usize]);
-                    assert!(points.iter().any(|point| point.y == -544));
+                    assert!(points.iter().any(|point| point.y == -544 - BACKDROP_CAMERA_Y));
                     assert!(points
                         .iter()
-                        .all(|point| point.z == 2350 && point.y >= -544));
-                    let points = points.map(|point| camera_point(point, camera_y));
+                        .all(|point| point.z == 2350 && point.y >= -544 - BACKDROP_CAMERA_Y));
                     horizon.triangle(points[0], points[1], points[2], 1, TWO_SIDED);
                 }
                 let horizon_bottom = occupied_rows(&horizon, true);
@@ -2651,6 +2668,106 @@ mod tests {
         g.bomb();
         assert_eq!(g.bombs, 2);
         assert_eq!(g.shots[0].kind, 0);
+    }
+    #[test]
+    fn every_fifth_projectile_kill_adds_a_bomb_up_to_three_without_banking_overflow() {
+        let mut g = running();
+        g.bombs = 0;
+        for kill in 1..=25 {
+            if kill == 21 {
+                // The reward at 20 was consumed at the cap, not deferred.
+                g.bombs = 2;
+            }
+            g.actors[0] = Actor {
+                pos: Vec3 { x: 0, y: 0, z: 210 },
+                kind: assets::FIGHTER,
+                hp: 1,
+                flags: u8::from(kill == 5),
+                ..Actor::EMPTY
+            };
+            g.shots[0] = Shot {
+                pos: Vec3 { x: 0, y: 0, z: 180 },
+                damage: 1,
+                kind: if kill % 2 == 0 { 3 } else { 1 },
+                ..Shot::EMPTY
+            };
+            g.update_shots();
+            assert_eq!(g.actors[0].kind, 0);
+            assert_eq!(g.shots[0].kind, 0);
+            assert_eq!(g.kills, kill);
+            let expected = if (21..25).contains(&kill) {
+                2
+            } else {
+                (kill / 5).min(3) as u8
+            };
+            assert_eq!(g.hud().bombs, expected, "kill {kill}");
+            if kill == 4 {
+                assert_eq!(g.pickups.iter().filter(|p| p.kind == 1).count(), 1);
+            }
+            if kill == 5 {
+                assert_eq!(g.pickups.iter().filter(|p| p.kind == 2).count(), 1);
+            }
+            // A spent projectile cannot award the same kill twice.
+            g.update_shots();
+            assert_eq!(g.kills, kill);
+            assert_eq!(g.bombs, expected);
+        }
+    }
+    #[test]
+    fn bomb_multi_kills_award_each_crossed_five_kill_milestone() {
+        let mut g = running();
+        g.bombs = 1;
+        for actor in &mut g.actors[..10] {
+            *actor = Actor { kind: assets::FIGHTER, hp: 1, ..Actor::EMPTY };
+        }
+        g.actors[10] = Actor { kind: assets::ROCK, hp: 255, ..Actor::EMPTY };
+        g.actors[11] = Actor { kind: assets::TURRET, hp: 9, ..Actor::EMPTY };
+        g.bomb();
+        assert_eq!(g.kills, 10);
+        assert_eq!(g.bombs, 2, "spend one bomb and immediately earn two");
+        assert_eq!(g.actors[10].hp, 255);
+        assert_eq!(g.actors[11].hp, 1, "damage alone is not a kill");
+    }
+    #[test]
+    fn bomb_reward_progress_survives_respawn_and_kill_total_wrap_but_resets_with_run() {
+        let mut g = running();
+        for _ in 0..4 {
+            g.actors[0] = Actor { kind: assets::FIGHTER, hp: 1, ..Actor::EMPTY };
+            g.kill_actor(0);
+        }
+        g.bombs = 0;
+        g.damage_player(100);
+        assert_eq!(g.mode, Mode::Respawning);
+        g.respawn();
+        assert_eq!(g.bombs, 1);
+        g.actors[0] = Actor { kind: assets::FIGHTER, hp: 1, ..Actor::EMPTY };
+        g.kill_actor(0);
+        assert_eq!(
+            g.bombs, 2,
+            "the fifth kill still completes the pre-death progress"
+        );
+
+        g.kills = u16::MAX - 1;
+        g.bombs = 0;
+        for kill in 1..=5 {
+            g.actors[0] = Actor { kind: assets::FIGHTER, hp: 1, ..Actor::EMPTY };
+            g.kill_actor(0);
+            assert_eq!(g.bombs, u8::from(kill == 5));
+        }
+        assert_eq!(g.kills, 3);
+
+        for _ in 0..4 {
+            g.actors[0] = Actor { kind: assets::FIGHTER, hp: 1, ..Actor::EMPTY };
+            g.kill_actor(0);
+        }
+        g.reset_run();
+        assert_eq!((g.kills, g.bombs, g.bomb_kills), (0, 3, 0));
+        g.bombs = 0;
+        for kill in 1..=5 {
+            g.actors[0] = Actor { kind: assets::FIGHTER, hp: 1, ..Actor::EMPTY };
+            g.kill_actor(0);
+            assert_eq!(g.bombs, u8::from(kill == 5));
+        }
     }
     #[test]
     fn charge_uses_elapsed_milliseconds_and_wraps_safely() {

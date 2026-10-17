@@ -88,8 +88,8 @@ impl Renderer {
         sort::depth_sort(&mut self.triangles[..self.triangle_count as usize]);
     }
 
-    /// Bands containing only a section's fixed nine cloud facets and sky. Bounds
-    /// are deliberately conservative: even a hidden non-sky face invalidates
+    /// Bands containing only a section's fixed 14 backdrop facets and sky. Bounds
+    /// are deliberately conservative: even a hidden foreground face invalidates
     /// every band it intersects. Call before the raster pass consumes commands.
     #[inline(never)]
     #[cfg_attr(target_arch = "mos", link_section = ".phase.geometry")]
@@ -111,11 +111,11 @@ impl Renderer {
         }
         #[cfg(not(target_arch = "mos"))]
         {
-            let mut clouds = 0u16;
+            let mut backdrop_faces = 0u16;
             let mut bands = 0x01ff_ffffu32;
             for triangle in &self.triangles[..self.triangle_count as usize] {
                 if triangle.reserved & crate::game::STATIC_SKY != 0 {
-                    clouds += 1;
+                    backdrop_faces += 1;
                 } else {
                     let top = triangle.y[0]
                         .min(triangle.y[1])
@@ -133,7 +133,7 @@ impl Renderer {
                     }
                 }
             }
-            if clouds == 9 {
+            if backdrop_faces == 14 {
                 bands
             } else {
                 0

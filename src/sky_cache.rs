@@ -1,8 +1,10 @@
-//! Reuse packed static sky in the two physical VIC banks without extra pixels.
+//! Reuse packed static backgrounds in the two physical VIC banks without extra pixels.
 //!
-//! A valid band contains only a theme's clear color and two cloud colors, plus
-//! global black, and no HUD. These fit the three cell slots exactly. Packing
-//! zeros absent colors and assigns every present color once, even with duplicate
+//! A valid band contains only fixed backdrop geometry and no HUD. Each 4x8 cell
+//! contains at most three nonblack colors, even when the whole band uses more:
+//! clouds and horizons have separate color triples and do not share a cell.
+//! Together with global black, these fit the cell slots exactly. Packing zeros
+//! absent colors and assigns every present color once, even with duplicate
 //! colors in the previous palette. For identical pixels, equal screen bytes
 //! therefore determine the remaining color-RAM slot too (including uniform cells
 //! with screen byte zero).
@@ -11,11 +13,11 @@
 //! bytes prove that leaving the back bitmap and current color shadow alone is
 //! identical to repainting and packing against the front palette.
 //! Both bank masks must be reset before rendering a different scene: matching
-//! palettes alone cannot identify a changed cloud arrangement or sky color.
+//! palettes alone cannot identify a changed backdrop arrangement or sky color.
 
 use crate::game::{Hud, Mode};
 
-/// Valid static-sky bands in physical VIC banks 2 and 3; exactly eight bytes.
+/// Valid static-background bands in physical VIC banks 2 and 3; exactly eight bytes.
 /// Geometry eligibility must come from `Renderer::static_sky_bands` each frame.
 /// Replace with `SkyCache::new()` whenever the rendered scene changes.
 pub struct SkyCache {

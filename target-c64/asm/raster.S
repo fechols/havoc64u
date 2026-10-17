@@ -239,12 +239,12 @@ fast_raster_rows:
     lda #160
     rts
 
-; Conservative static-sky bounds. C ABI commands rc2/3, count A/X;
+; Conservative static-background bounds. C ABI commands rc2/3, count A/X;
 ; result low word A/X and high word rc2/3. Renderer checks clear/state/drop.
 ; Count can be256; byte loop counters deliberately wrap only in that case.
 .set SK_COUNT, $77a0
 .set SK_LOOP, $77a1
-.set SK_CLOUDS, $77a2
+.set SK_STATIC, $77a2
 .set SK_MASK, $77a4
 .set SK_MIN, $77a8
 .set SK_MAX, $77a9
@@ -268,7 +268,7 @@ fast_static_sky_bands:
     sta __rc5
     lda #0
     sta SK_LOOP
-    sta SK_CLOUDS
+    sta SK_STATIC
     lda #255
     sta SK_MASK
     sta SK_MASK+1
@@ -280,7 +280,7 @@ fast_static_sky_bands:
     lda (__rc4),y
     and #2
     beq .Lsky_bounds
-    inc SK_CLOUDS
+    inc SK_STATIC
     jmp .Lsky_next
 .Lsky_bounds:
     lda #200
@@ -347,8 +347,8 @@ fast_static_sky_bands:
     beq .Lsky_done
     jmp .Lsky_triangle
 .Lsky_done:
-    lda SK_CLOUDS
-    cmp #9
+    lda SK_STATIC
+    cmp #14
     bne .Lsky_none
     lda SK_MASK+2
     sta __rc2

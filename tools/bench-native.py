@@ -173,7 +173,38 @@ def cache_sequence():
     # last present in the back bank. Neither bank may retain that old validity.
     sequence.extend(theme_frame(section, "rapid") for section in (1, 2, 3, 0, 3, 2, 1, 0))
     sequence.extend(theme_frame(0, "recovery", frame == 2) for frame in range(3))
+    # Append so the original occluder/HUD/transition indices remain stable.
+    # Sweep both camera directions while terrain scrolls across row boundaries;
+    # finish with an identical state in both banks to prove reuse recovers.
+    heights = (-65, -48, -32, -16, 0, 16, 32, 48, 65,
+               48, 32, 16, 0, -16, -32, -48, -65)
+    for section in range(4):
+        rail = themes[section]["patch"]["rail_ticks"]
+        for frame, height in enumerate(heights):
+            sequence.append(variant(f"camera-{section}-{frame}",
+                {"rail_ticks": rail + frame*7, "spawn_segment": section,
+                 "player.y": height}, section=section, theme_check=True, camera_check=True))
+        for frame in range(3):
+            sequence.append(variant(f"camera-{section}-recovery-{frame}",
+                {"rail_ticks": rail + (len(heights)-1)*7, "spawn_segment": section,
+                 "player.y": heights[-1]}, section=section, theme_check=True,
+                camera_check=True, stable_check=frame == 2))
     return sequence
+
+
+def cloud_only_bands(bands, geometry):
+    """Reference cloud-only eligibility using the same fixed backdrop geometry."""
+    background = [triangle for triangle in geometry if triangle["reserved"] & 2]
+    horizons = [triangle for triangle in background if triangle["depth"] == 2350]
+    if len(background) != 14 or len(horizons) != 5:
+        raise RuntimeError("Cloud-only reference requires all 14 fixed backdrop triangles")
+    for triangle in horizons:
+        top = max(0, min(200, min(triangle["y"])))
+        bottom = max(0, min(200, max(triangle["y"])))
+        if top < bottom:
+            first, end = top // 8, (bottom + 7) // 8
+            bands &= ~(((1 << (end-first))-1) << first)
+    return bands
 
 
 def dma_events(events, phase_address):
@@ -234,6 +265,8 @@ def main():
     cache_selection = parser.add_mutually_exclusive_group()
     cache_selection.add_argument("--skip-cache-checks", action="store_true", help="omit native cache transition A/B replay in quick timing runs")
     cache_selection.add_argument("--cache-checks-only", action="store_true", help="run only cache transition A/B replay, skipping timing and real-time passes")
+    parser.add_argument("--cloud-only-cache", action="store_true",
+                        help="reference policy: exclude horizon bands from caching without changing geometry or target code; skips real-time pass")
     parser.add_argument("--compare", type=Path, help="matching baseline report.json")
     args = parser.parse_args()
     output, package = args.out_dir.resolve(), args.package_dir.resolve()
@@ -245,6 +278,7 @@ def main():
         parser.error("invalid fixture, ticks, or palette selection")
     report = {"passed": False, "protocol": "havoc-fixed-frame-v1", "video": args.video,
               "scope": "Fixed semantic workload in calibrated VICE; not physical hardware",
+              "cache_policy": "cloud-only" if args.cloud_only_cache else "full-background",
               "retained_palette_setup": "Two warmup frames of the identical fixture fill both VIC banks",
               "cases": [], "fixtures": chosen}
     process = mon = log = None
@@ -258,8 +292,8 @@ def main():
                       command=sys.argv, driver_checkout_revision=subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip(),
                       driver_checkout_status=subprocess.check_output(["git", "status", "--short"], cwd=ROOT, text=True))
         syms = vice.symbols(elf, args.llvm_nm)
-        if args.cache_checks_only and "SKY_CACHE" not in syms:
-            raise RuntimeError("Cache-only replay requires a package containing SKY_CACHE")
+        if (args.cache_checks_only or args.cloud_only_cache) and "SKY_CACHE" not in syms:
+            raise RuntimeError("Selected cache validation requires a package containing SKY_CACHE")
         for name in ("BENCH_TICKS", "BENCH_RUNTIME", "benchmark_frame_begin", "benchmark_frame_ready", "geometry_complete"):
             if name not in syms:
                 raise RuntimeError(f"Package is not an instrumented benchmark build: missing {name}")
@@ -321,7 +355,9 @@ def main():
         def word(address, value, size=2):
             write(address, int(value).to_bytes(size, "little"))
 
-        if args.real_time_ticks and not args.cache_checks_only:
+        if args.cloud_only_cache and args.real_time_ticks and not args.cache_checks_only:
+            report["real_time_skipped"] = "Cloud-only reference applies at fixed-frame geometry stops; use the native policy for ordinary scheduling"
+        if args.real_time_ticks and not args.cache_checks_only and not args.cloud_only_cache:
             mon.command("jpdb 1 $0f")
             frames = []
             previous = vice.counters(mon, syms)
@@ -409,6 +445,21 @@ def main():
                 raise RuntimeError(f"CIA timer seed did not take effect: {remaining}")
             return mon.registers()["bus_cycles"] + remaining + 1
 
+        def read_geometry():
+            count_offset, _ = layouts.member("Renderer", "triangle_count")
+            count = mon.integer(renderer_address+count_offset)
+            triangles_offset, _ = layouts.member("Renderer", "triangles")
+            triangle_size = layouts.size("Triangle")
+            return [layouts.decode("Triangle", mon.read(renderer_address+triangles_offset+n*triangle_size, triangle_size)) for n in range(count)]
+
+        def apply_cache_policy(geometry, sky_bands):
+            if args.cloud_only_cache:
+                sky_bands = cloud_only_bands(sky_bands, geometry)
+                # Monitor writes consume no emulated CPU cycles. Both policies
+                # run identical geometry/audio code; only cache eligibility differs.
+                word(syms["SKY_BANDS"], sky_bands, 4)
+            return sky_bands
+
         def measured_frame(folder, capture_image):
             path = folder / "monitor.log"
             path.unlink(missing_ok=True)
@@ -419,14 +470,11 @@ def main():
             first_deadline = finish_timer_seed()
             mon.run_until(syms["geometry_complete"], failures)
             mon.command("bank ram")
-            count_offset, _ = layouts.member("Renderer", "triangle_count")
-            count = mon.integer(renderer_address+count_offset)
             clear_offset, _ = layouts.member("Renderer", "clear_color")
             clear_color = mon.integer(renderer_address+clear_offset, 1)
-            triangles_offset, _ = layouts.member("Renderer", "triangles")
-            triangle_size = layouts.size("Triangle")
-            geometry = [layouts.decode("Triangle", mon.read(renderer_address+triangles_offset+n*triangle_size, triangle_size)) for n in range(count)]
+            geometry = read_geometry()
             sky_bands = mon.integer(syms["SKY_BANDS"], 4) if "SKY_BANDS" in syms else None
+            sky_bands = apply_cache_policy(geometry, sky_bands)
             cache_prepared = mon.read(syms["SKY_CACHE"], 8) if "SKY_CACHE" in syms else None
             mon.command("bank cpu")
             mon.run_until(syms["frame_complete"], failures)
@@ -466,6 +514,8 @@ def main():
             # PIXELS. The original renderer discarded both metadata values.
             comparable_geometry = [dict(triangle, reserved=triangle["reserved"] & ~6) for triangle in geometry]
             end.update(geometry_sha256=semantic_hash(comparable_geometry), raw_geometry_sha256=semantic_hash(geometry),
+                       static_background_sha256=semantic_hash([triangle for triangle in geometry if triangle["reserved"] & 2]),
+                       static_background_triangles=sum(bool(triangle["reserved"] & 2) for triangle in geometry),
                        game_sha256=semantic_hash(state), native_sha256=digest(native),
                        native_screen_sha256=digest(native[8000:9000]), native_color_sha256=digest(native[9000:]),
                        clear_color=clear_color)
@@ -504,6 +554,11 @@ def main():
                             for warmup in range(2):
                                 seed(fixture, ticks, warmup == 0, phase)
                                 finish_timer_seed()
+                                if args.cloud_only_cache:
+                                    mon.run_until(syms["geometry_complete"], failures)
+                                    mon.command("bank ram")
+                                    apply_cache_policy(read_geometry(), mon.integer(syms["SKY_BANDS"], 4))
+                                    mon.command("bank cpu")
                                 mon.run_until(syms["frame_complete"], failures)
                                 mon.run_until(syms["benchmark_frame_ready"], failures)
                         seeded = seed(fixture, ticks, palette == "cold", phase)
@@ -544,6 +599,7 @@ def main():
                     mon.run_until(syms["benchmark_frame_ready"], failures)
             normal, forced = [cache_report["runs"][name] for name in ("normal-cache", "forced-misses")]
             theme_age = 0
+            camera_backgrounds, camera_geometry = {}, {}
             for index, (cached, uncached) in enumerate(zip(normal, forced)):
                 fixture = cache_report["sequence"][index]
                 switched = index > 0 and fixture["section"] != cache_report["sequence"][index-1]["section"]
@@ -565,6 +621,16 @@ def main():
                         raise RuntimeError(f"Theme transition {index} reused an ineligible sky band")
                     if fixture.get("stable_check") and cache["eligible_bands"] and cache["reused_bands"] <= 0:
                         raise RuntimeError(f"Stable theme {fixture['section']} never reused its eligible native sky")
+                if fixture.get("camera_check"):
+                    section = fixture["section"]
+                    if cached["static_background_triangles"] != 14:
+                        raise RuntimeError(f"Camera sweep {index} did not retain all 14 backdrop triangles")
+                    reference = camera_backgrounds.setdefault(section, cached["static_background_sha256"])
+                    if cached["static_background_sha256"] != reference:
+                        raise RuntimeError(f"Camera sweep {index} moved the static backdrop")
+                    camera_geometry.setdefault(section, set()).add(cached["geometry_sha256"])
+            if any(len(camera_geometry.get(section, ())) < 2 for section in range(4)):
+                raise RuntimeError("Camera sweeps did not move foreground geometry in all four scenes")
             if normal[2]["sky_cache"]["reused_bands"] <= 0:
                 raise RuntimeError("Stable native sky never exercised cache reuse")
             stable = normal[2]["sky_cache"]["eligible_bands"]

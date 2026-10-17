@@ -3,7 +3,8 @@ use havoc::game::{Hud, Mode};
 use havoc::render::pack_band;
 use havoc::sky_cache::SkyCache;
 
-const SKY_PALETTES: [[u8; 3]; 4] = [[6, 1, 15], [8, 7, 10], [11, 15, 12], [4, 10, 14]];
+const CLOUD_PALETTES: [[u8; 3]; 4] = [[6, 1, 15], [8, 7, 10], [11, 15, 12], [4, 10, 14]];
+const HORIZON_PALETTES: [[u8; 3]; 4] = [[6, 14, 12], [8, 9, 2], [11, 6, 12], [4, 6, 11]];
 
 fn hud() -> Hud {
     Hud {
@@ -93,11 +94,27 @@ fn band_pattern(palette: &[u8], distribution: usize) -> [u8; 1280] {
     pixels
 }
 
+fn background_pattern(theme: usize, distribution: usize) -> [u8; 1280] {
+    let mut pixels = band_pattern(&CLOUD_PALETTES[theme], distribution);
+    let horizon = band_pattern(&HORIZON_PALETTES[theme], distribution);
+    // Exercise more than three nonblack colors in one band while preserving
+    // the actual requirement of at most three in each 4x8 cell.
+    for row in 0..8 {
+        pixels[row * 160 + 80..(row + 1) * 160]
+            .copy_from_slice(&horizon[row * 160 + 80..(row + 1) * 160]);
+    }
+    pixels
+}
+
 #[test]
-fn screen_bytes_determine_all_packed_sky_bytes_for_every_previous_palette() {
+fn screen_bytes_determine_all_packed_background_bytes_for_every_previous_palette() {
     // Every subset, with and without black, covers uniform/absent colors; all
     // 4096 previous palettes include duplicate slots and unrelated old colors.
-    for (theme, [sky, top, shade]) in SKY_PALETTES.into_iter().enumerate() {
+    for (palette_index, [sky, top, shade]) in CLOUD_PALETTES
+        .into_iter()
+        .chain(HORIZON_PALETTES)
+        .enumerate()
+    {
         for subset in 1..16 {
             let palette: Vec<_> = [0, sky, top, shade]
                 .into_iter()
@@ -132,7 +149,7 @@ fn screen_bytes_determine_all_packed_sky_bytes_for_every_previous_palette() {
                             assert_eq!(
                                 *expected,
                                 result,
-                                "theme {theme}, subset {subset}, old palette {}",
+                                "background palette {palette_index}, subset {subset}, old palette {}",
                                 base + cell
                             );
                         } else {
@@ -152,7 +169,7 @@ fn screen_bytes_determine_all_packed_sky_bytes_for_every_previous_palette() {
                     assert_eq!(
                         (bitmap, screen, color),
                         (repeated_bitmap, repeated_screen, repeated_color),
-                        "theme {theme}, subset {subset}, palette base {base}"
+                        "background palette {palette_index}, subset {subset}, palette base {base}"
                     );
                 }
             }
@@ -171,7 +188,7 @@ fn alternating_banks_match_uncached_output_through_occlusion_and_hud_changes() {
     let mut misses = 0;
     for frame in 0..32 {
         let back = 1 - front;
-        let mut pixels = band_pattern(&[6, 1, 15], 0);
+        let mut pixels = background_pattern(0, 0);
         let eligible = !matches!(frame, 4 | 5 | 10 | 16 | 23);
         if !eligible {
             // Enemy, opaque HUD and mode changes all invalidate a bank.
@@ -267,7 +284,7 @@ fn scene_resets_match_forced_repainting_through_all_themes_and_rapid_switches() 
             cache = SkyCache::new();
             scene_frames = 0;
         }
-        let pixels = band_pattern(&SKY_PALETTES[scene], scene & 1);
+        let pixels = background_pattern(scene, scene & 1);
         let reuse = cached.can_reuse(&cache);
         assert_eq!(
             reuse,
@@ -286,9 +303,9 @@ fn scene_resets_match_forced_repainting_through_all_themes_and_rapid_switches() 
 }
 
 #[test]
-fn scene_reset_is_required_even_when_new_clouds_keep_the_same_palette() {
-    let old_pixels = band_pattern(&SKY_PALETTES[0], 0);
-    let new_pixels = band_pattern(&SKY_PALETTES[0], 1);
+fn scene_reset_is_required_even_when_new_backgrounds_keep_the_same_palette() {
+    let old_pixels = background_pattern(0, 0);
+    let new_pixels = background_pattern(0, 1);
     let mut cache = SkyCache::new();
     let mut cached = PackedBanks::new();
     for _ in 0..2 {

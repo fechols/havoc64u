@@ -126,12 +126,44 @@ coverage errors, affected cells, and native-cell differences. It complements the
 stricter visible-pixel diagnostic and native kernel tests; it does not silently
 replace an exact native-hash check.
 
-When the package contains `SKY_CACHE`, the driver also runs a 22-frame transition
+When the package contains `SKY_CACHE`, the driver also runs a 133-frame transition
 history twice, once normally and once forcing cache misses before every frame.
-Stable sky, a sky occluder, sector banners, boss HUD, and title/playing transitions
-must produce identical geometry, game state, and native bytes in both runs.
-The checks require actual warm-cache reuse and exercise each invalidation path.
-Use `--skip-cache-checks` only for preliminary timing runs.
+Stable backgrounds, a sky occluder, sector banners, boss HUD, title/playing
+transitions, and rapid scene changes must produce identical geometry, game state,
+and native bytes in both runs. Appended camera sweeps move player height from
+`-65` to `65` and back while scrolling terrain in all four scenes. These assert
+that all 14 backdrop triangles stay identical, foreground geometry moves, and
+eligible bands resume reuse after both VIC banks repaint. The checks exercise
+each invalidation path. Use `--cache-checks-only` to run this replay separately,
+or `--skip-cache-checks` only for preliminary timing runs.
+
+For the fixed-background change, compare caching policies within the **same
+instrumented package**, retaining its current geometry and audio implementation:
+
+```sh
+python3 tools/bench-native.py \
+  --package-dir target/bench/candidate-instrumented \
+  --out-dir target/bench/cloud-only-pal --video pal \
+  --cloud-only-cache --real-time-ticks 0 --skip-cache-checks
+python3 tools/bench-native.py \
+  --package-dir target/bench/candidate-instrumented \
+  --out-dir target/bench/full-background-pal --video pal \
+  --real-time-ticks 0 --skip-cache-checks \
+  --compare target/bench/cloud-only-pal/report.json
+```
+
+Repeat with `--video ntsc` and separate output directories. The cloud-only
+reference intersects `SKY_BANDS` with the inverse bounds of the five horizon
+triangles at `geometry_complete`, using the native scanner's clamping and band
+rounding. It applies that restriction to warmup frames and measured frames.
+Monitor writes consume no emulated CPU cycles and do not alter the package,
+triangle commands, or target code. This isolates the gain from reusing horizon
+bands; both policies pay for the new geometry scan. `cache_policy` records the
+selected policy, and `--compare` still requires exact geometry, game state, and
+native hashes. The reference skips the independent real-time pass because its
+override requires fixed-frame geometry stops. Retained samples report the
+additional reused bands and whole-frame timing; canyon terrain can still exclude
+every band.
 
 For a quick harness check, use `--samples 3` or `--samples 1`, select fixtures with
 `--fixtures lowlands,full-pools`, and disable the independent real-time pass with
@@ -144,7 +176,53 @@ Record PAL/NTSC, firmware version, frame-rate observations, and audible continui
 under the dense scene. The VICE model does not establish the hardware's exact DMA
 or interrupt timing.
 
+## Fixed-background results: 2026-10-17
+
+The cloud-only and full-background policies passed using identical PRG, REU, and
+ELF hashes and the current streamed soundtrack. Each policy ran 48 fixed samples
+per video standard: four scene fixtures, zero/ten simulation ticks, cold/retained
+palettes, and three CIA phases. This is the four-scene comparison, not the full
+eight-fixture matrix. Geometry, game state, and native bitmap/screen/color output
+matched across policies. Cold samples showed no meaningful timing change.
+
+The following retained-palette medians are **cloud-only → full-background**, in
+milliseconds. Reused bands are out of 25 and were identical at zero and ten ticks.
+
+| Video | Scene | Reused bands | Frame, 0 ticks | Frame, 10 ticks |
+| --- | --- | ---: | ---: | ---: |
+| PAL | Lowlands | 9 → 11 | 143.265 → 140.893 | 143.485 → 141.114 |
+| PAL | Canyon | 0 → 0 | 180.123 → 180.123 | 184.210 → 184.210 |
+| PAL | Fortress | 9 → 12 | 160.170 → 160.171 | 161.156 → 160.170 |
+| PAL | Carrier coast | 9 → 9 | 180.122 → 180.122 | 180.123 → 180.123 |
+| NTSC | Lowlands | 9 → 11 | 150.983 → 135.755 | 150.985 → 135.970 |
+| NTSC | Canyon | 0 → 0 | 184.418 → 184.412 | 184.418 → 184.412 |
+| NTSC | Fortress | 9 → 12 | 150.985 → 150.983 | 167.696 → 150.984 |
+| NTSC | Carrier coast | 9 → 9 | 167.695 → 167.696 | 169.731 → 169.731 |
+
+Median pixel-phase work fell by 2.28–2.40 ms in lowlands and 6.09–6.70 ms in the
+fortress. Whole-frame savings depend on the allowed raster window for publishing
+a frame: PAL fortress at zero ticks saved 6.61 ms of pixel work with effectively
+unchanged frame time, while NTSC fortress at ten ticks saved 16.71 ms overall.
+The extra reuse therefore reduces rendering work without guaranteeing the same
+frame-rate improvement in every scene. Foreground bounds still exclude all canyon
+bands, and this carrier fixture gains no additional eligible bands.
+
+The separate 133-frame camera/occluder/HUD/scene-transition replay passed on both
+PAL and NTSC. Each cached output matched its forced-miss counterpart exactly
+(266 total frames per standard); camera sweeps kept all 14 backdrop triangles
+fixed while foreground geometry moved. Audio, DMA, stack, and dropped-geometry
+gates passed.
+
+Reports are under `target/bench/static-background-{cloud-only,full}-{pal,ntsc}/`
+and `target/bench/static-background-cache-{pal,ntsc}/`. These generated artifacts
+are not committed. The measurements isolate cache reuse within the same new
+geometry implementation; they do not measure a complete old-build/new-build or
+physical-hardware speedup.
+
 ## Verified results: 2026-10-17
+
+These earlier renderer results predate the fixed-horizon change and the expanded
+133-frame cache replay described above.
 
 The final matrix passed all 288 fixed-work frames per video standard, plus 44
 cache A/B replay frames per standard. Both actual-source quality gates passed all

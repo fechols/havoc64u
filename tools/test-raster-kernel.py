@@ -40,17 +40,17 @@ static uint8_t actual[1568],expected[1568];
 static uint8_t actual_head[304],expected_head[304],actual_tail[304],expected_tail[304];
 static uint8_t offsets[]={0,1,127,255};
 static struct Command sky_commands[256];
-static uint16_t sky_counts[]={0,1,8,9,10,51,255,256};
+static uint16_t sky_counts[]={0,1,13,14,15,51,255,256};
 static uint32_t reference_sky(uint16_t count){
-  uint16_t clouds=0;uint32_t mask=0x1ffffffUL;
+  uint16_t background=0;uint32_t mask=0x1ffffffUL;
   for(uint16_t i=0;i<count;++i){
     const struct Command *t=sky_commands+i;
-    if(t->flags&2){++clouds;continue;}
+    if(t->flags&2){++background;continue;}
     int16_t low=200,high=0;
     for(uint8_t c=0;c<3;++c){int16_t y=t->y[c];if(y<0)y=0;if(y>200)y=200;if(y<low)low=y;if(y>high)high=y;}
     if(low<high)for(uint8_t b=low/8;b<(high+7)/8;++b)mask&=~(1UL<<b);
   }
-  return clouds==9?mask:0;
+  return background==14?mask:0;
 }
 static uint8_t clamp(int32_t x){x=(x+32767L)>>16;return x<0?0:x>160?160:(uint8_t)x;}
 __attribute__((noinline))
@@ -98,7 +98,7 @@ int main(void){
   printf("PASS %u native raster cases; 25 bands each, split state and pixel guards intact\n",cases);
   for(uint8_t scenario=0;scenario<32;++scenario){
     for(uint16_t i=0;i<256;++i){
-      sky_commands[i].flags=i<(uint16_t)(8+scenario%3)?2:0;
+      sky_commands[i].flags=i<(uint16_t)(13+scenario%3)?2:0;
       for(uint8_t c=0;c<3;++c)sky_commands[i].y[c]=scenario<8?(int16_t)(i+scenario+c)%208-4:(int16_t)((i*137u+c*31u+scenario*7u)%16383u)-8191;
     }
     for(uint8_t n=0;n<sizeof(sky_counts)/sizeof(sky_counts[0]);++n){

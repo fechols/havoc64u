@@ -883,7 +883,7 @@ def weapon_checks(mon, syms, failures, elf, dwarf_tool, output, result):
         structs[name] = {"size": int(size[1], 0), "fields": dwarf_members(description, name)}
 
     fields = layout["fields"]
-    for name in ("invulnerability", "hit_flash_ticks", "spawn_cursor", "spawn_segment", "bank", "kills"):
+    for name in ("invulnerability", "hit_flash_ticks", "spawn_cursor", "spawn_segment", "bank", "kills", "bomb_kills"):
         field = fields.get(name)
         if not field or field["type"] not in scalar_sizes:
             raise RuntimeError(f"Unsupported weapon-fixture Game::{name}")
@@ -993,7 +993,8 @@ def weapon_checks(mon, syms, failures, elf, dwarf_tool, output, result):
         return commands
 
     observed_fields = ("mode", "ticks", "rail_ticks", "player.x", "player.y", "player.z", "shield",
-                       "invulnerability", "hit_flash_ticks", "score", "controls.bits", "controls.cached_charge")
+                       "invulnerability", "hit_flash_ticks", "score", "kills", "bomb_kills", "bombs",
+                       "controls.bits", "controls.cached_charge")
 
     def observe(scenario, geometry=False):
         commands = None
@@ -1036,7 +1037,7 @@ def weapon_checks(mon, syms, failures, elf, dwarf_tool, output, result):
     observe(setup)
     observe(setup)
     seed(setup, {"rail_ticks": 0, "spawn_segment": 0, "spawn_cursor": 255,
-                 "player.x": 0, "player.y": 0, "bank": 0, "shield": 100, "score": 0, "kills": 0,
+                 "player.x": 0, "player.y": 0, "bank": 0, "shield": 100, "score": 0, "kills": 0, "bomb_kills": 0,
                  "roll_ticks": 0, "roll_cooldown": 0, "invulnerability": 0,
                  "boss_started": 0, "boss_defeated": 0}, clear=("actors", "shots", "pickups", "explosions"))
 
@@ -1140,7 +1141,8 @@ def weapon_checks(mon, syms, failures, elf, dwarf_tool, output, result):
     impact = {"name": "homing-missile-tracks-and-hits"}
     result["scenarios"].append(impact)
     await_charge(impact)
-    seed(impact, clear=("actors", "shots", "pickups", "explosions"))
+    seed(impact, {"kills": 4, "bomb_kills": 4, "bombs": 0},
+         clear=("actors", "shots", "pickups", "explosions"))
     seed_element(impact, "actors", 0, {"kind": 3, "hp": 4, "flags": 0, "age": 0,
                  "origin_x": 100, "origin_y": 20, "pos.x": 100, "pos.y": 20, "pos.z": 1400})
     launched, slot = launch(impact)
@@ -1154,6 +1156,10 @@ def weapon_checks(mon, syms, failures, elf, dwarf_tool, output, result):
         raise RuntimeError("Homing missile failed to intercept the off-axis turret")
     if frame["game"]["score"] != launched["game"]["score"] + 250 or frame["shots"][slot]["kind"] != 0:
         raise RuntimeError("Missile impact did not consume the missile and award exactly one turret kill")
+    reward = {"kills": 5, "bomb_kills": 0, "bombs": 1}
+    if any(frame["game"][name] != expected for name, expected in reward.items()):
+        raise RuntimeError("Fifth enemy kill did not immediately award one bomb and reset reward progress")
+    impact["five_kill_bomb_reward"] = reward
     impact["impact_capture"] = capture(mon, syms, output, "weapons-missile-impact")
     finish(impact)
 

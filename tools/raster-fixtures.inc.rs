@@ -12,9 +12,9 @@ fn fixture_triangle(x: [i16; 3], y: [i16; 3]) -> Triangle {
 }
 
 #[test]
-fn static_sky_reuse_requires_complete_clouds_and_excludes_all_occluder_bounds() {
+fn static_sky_reuse_requires_complete_background_and_excludes_all_occluder_bounds() {
     let mut renderer = Renderer::new();
-    let add_clouds = |renderer: &mut Renderer, count: usize| {
+    let add_background = |renderer: &mut Renderer, count: usize| {
         for _ in 0..count {
             renderer.triangle(
                 Vec3 {
@@ -38,27 +38,27 @@ fn static_sky_reuse_requires_complete_clouds_and_excludes_all_occluder_bounds() 
         }
     };
     renderer.begin(6);
-    add_clouds(&mut renderer, 8);
+    add_background(&mut renderer, 13);
     assert_eq!(renderer.static_sky_bands(), 0);
-    add_clouds(&mut renderer, 1);
-    assert_eq!(renderer.triangle_count, 9);
-    assert!(renderer.triangles[..9]
+    add_background(&mut renderer, 1);
+    assert_eq!(renderer.triangle_count, 14);
+    assert!(renderer.triangles[..14]
         .iter()
         .all(|triangle| triangle.reserved & crate::game::STATIC_SKY != 0));
     assert_eq!(renderer.static_sky_bands(), 0x01ff_ffff);
     renderer.dropped = 1;
     assert_eq!(renderer.static_sky_bands(), 0);
     renderer.dropped = 0;
-    // A far-away, black face still blocks reuse, even if clouds hide its pixels.
-    renderer.triangles[9] = fixture_triangle([20, 40, 30], [15, 16, 18]);
-    renderer.triangles[9].depth = 31000;
-    renderer.triangles[9].color = 0;
-    renderer.triangle_count = 10;
+    // A far-away, black face still blocks reuse, even if the background hides it.
+    renderer.triangles[14] = fixture_triangle([20, 40, 30], [15, 16, 18]);
+    renderer.triangles[14].depth = 31000;
+    renderer.triangles[14].color = 0;
+    renderer.triangle_count = 15;
     assert_eq!(renderer.static_sky_bands(), 0x01ff_ffff & !6);
-    renderer.triangles[9].y = [-8191, 8191, 0];
+    renderer.triangles[14].y = [-8191, 8191, 0];
     assert_eq!(renderer.static_sky_bands(), 0);
     renderer.begin(6);
-    add_clouds(&mut renderer, 9);
+    add_background(&mut renderer, 14);
     assert_eq!(
         renderer.static_sky_bands(),
         0x01ff_ffff,
@@ -72,7 +72,7 @@ fn static_sky_reuse_requires_complete_clouds_and_excludes_all_occluder_bounds() 
     );
     for clear in 0..16 {
         renderer.begin(clear);
-        add_clouds(&mut renderer, 9);
+        add_background(&mut renderer, 14);
         assert_eq!(
             renderer.static_sky_bands(),
             if matches!(clear, 6 | 8 | 11 | 4) { 0x01ff_ffff } else { 0 },
@@ -80,7 +80,7 @@ fn static_sky_reuse_requires_complete_clouds_and_excludes_all_occluder_bounds() 
         );
     }
     renderer.begin(6);
-    add_clouds(&mut renderer, 10);
+    add_background(&mut renderer, 15);
     assert_eq!(renderer.static_sky_bands(), 0);
 }
 
