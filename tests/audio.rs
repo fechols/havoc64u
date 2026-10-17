@@ -425,6 +425,199 @@ fn higher_priority_effect_interrupts_main_gun_and_restores_default_pulse_width()
 }
 
 #[test]
+fn enemy_fire_has_a_noise_attack_falling_sawtooth_and_release_in_each_stereo_lane() {
+    for standard in [VideoStandard::Pal, VideoStandard::Ntsc] {
+        for pan in [-100, 0, 100] {
+            let (mut player, mut bus) = engine_for(standard);
+            let idle = bus.registers;
+            player.queue(event(Effect::EnemyFire, pan));
+            let mut frequency = note_frequency(standard, 84);
+            for age in 0..=6 {
+                if age == 1 {
+                    frequency = note_frequency(standard, 64);
+                } else if (2..6).contains(&age) {
+                    frequency -= frequency >> 3;
+                }
+                bus.writes.clear();
+                player.tick(&mut bus);
+                for sid in 0..2 {
+                    let writes: Vec<_> = bus
+                        .writes
+                        .iter()
+                        .filter(|&&(chip, reg, _)| chip == sid as u8 && (14..=20).contains(&reg))
+                        .map(|&(_, reg, value)| (reg, value))
+                        .collect();
+                    if (pan < 0 && sid == 1) || (pan > 0 && sid == 0) {
+                        assert_eq!(&bus.registers[sid][14..21], &idle[sid][14..21]);
+                        assert!(writes.is_empty());
+                        continue;
+                    }
+                    let registers = bus.registers[sid];
+                    assert_eq!(
+                        u16::from_le_bytes([registers[14], registers[15]]),
+                        frequency
+                    );
+                    assert_eq!(&registers[16..18], &[0, 8]);
+                    assert_eq!(&registers[19..21], &[0x02, 0x72]);
+                    assert_eq!(
+                        registers[18],
+                        match age {
+                            0 => 0x81,
+                            6 => 0x20,
+                            _ => 0x21,
+                        }
+                    );
+                    if (1..6).contains(&age) {
+                        assert!(writes.iter().all(|&(reg, value)| reg != 18 || value & 1 != 0));
+                    }
+                    if age == 1 {
+                        let sawtooth = writes
+                            .iter()
+                            .position(|&write| write == (18, 0x21))
+                            .unwrap();
+                        for register in [14, 15] {
+                            let pitch = writes
+                                .iter()
+                                .position(|&(reg, _)| reg == register)
+                                .unwrap();
+                            assert!(pitch < sawtooth, "body pitch must precede its waveform");
+                        }
+                    } else if age == 6 {
+                        assert_eq!(writes, [(18, 0x20)]);
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn enemy_fire_coalesces_rapid_shots_and_protects_the_first_body_tick() {
+    for standard in [VideoStandard::Pal, VideoStandard::Ntsc] {
+        let (mut player, mut bus) = engine_for(standard);
+        player.queue(event(Effect::Fire, 100));
+        for tick in 0..4 {
+            for _ in 0..16 {
+                assert!(player.queue(event(Effect::EnemyFire, -100)));
+            }
+            bus.writes.clear();
+            player.tick(&mut bus);
+            let attack = tick % 2 == 0;
+            assert_eq!(bus.registers[0][18], if attack { 0x81 } else { 0x21 });
+            assert_eq!(
+                u16::from_le_bytes([bus.registers[0][14], bus.registers[0][15]]),
+                note_frequency(standard, if attack { 84 } else { 64 })
+            );
+            if tick == 0 {
+                assert_eq!(
+                    &bus.registers[1][18..21],
+                    &[0x81, 0x02, 0xb1],
+                    "coalesced enemy shots must not evict the earlier player shot"
+                );
+            }
+            if !attack {
+                assert!(bus
+                    .writes
+                    .iter()
+                    .all(|&(sid, reg, value)| sid != 0 || reg != 18 || value & 1 != 0));
+            }
+        }
+    }
+}
+
+#[test]
+fn higher_priority_effects_interrupt_enemy_fire_and_block_its_retrigger() {
+    for standard in [VideoStandard::Pal, VideoStandard::Ntsc] {
+        for effect in [Effect::Roll, Effect::Hit, Effect::Bomb, Effect::Death] {
+            let (mut player, mut bus) = engine_for(standard);
+            player.queue(event(Effect::EnemyFire, 0));
+            player.tick(&mut bus);
+            player.tick(&mut bus);
+            player.queue(event(effect, 0));
+            player.tick(&mut bus);
+            let (mut baseline, mut baseline_bus) = engine_for(standard);
+            baseline.queue(event(effect, 0));
+            baseline.tick(&mut baseline_bus);
+            for sid in 0..2 {
+                assert_eq!(
+                    &bus.registers[sid][14..21],
+                    &baseline_bus.registers[sid][14..21]
+                );
+            }
+            player.queue(event(Effect::EnemyFire, 0));
+            player.tick(&mut bus);
+            baseline.tick(&mut baseline_bus);
+            for sid in 0..2 {
+                assert_eq!(
+                    &bus.registers[sid][14..21],
+                    &baseline_bus.registers[sid][14..21]
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn sustained_enemy_fire_preserves_every_music_lane_filter_and_music_write() {
+    let mut first = page(MusicState::Title, 0, 0, 5);
+    for row in 0..PAGE_ROWS {
+        for voice in 0..MUSIC_VOICES {
+            first[EVENT_OFFSET + row * MUSIC_VOICES + voice] = 48 + voice as u8 + (row % 4) as u8 * 2;
+        }
+    }
+    seal(&mut first);
+    for standard in [VideoStandard::Pal, VideoStandard::Ntsc] {
+        let (mut player, mut bus) = ready_player(&first, standard);
+        let (mut baseline, mut baseline_bus) = ready_player(&first, standard);
+        for tick in 0..112 {
+            if let Some(request) = player.page_request() {
+                player.publish_page(request, &first).unwrap();
+            }
+            if let Some(request) = baseline.page_request() {
+                baseline.publish_page(request, &first).unwrap();
+            }
+            if tick < 100 && tick % 3 == 0 {
+                player.queue(event(Effect::EnemyFire, [-100, 0, 100][tick / 3 % 3]));
+            }
+            bus.writes.clear();
+            baseline_bus.writes.clear();
+            player.tick(&mut bus, &first);
+            baseline.tick(&mut baseline_bus, &first);
+            for sid in 0..SID_COUNT {
+                let music_end = if sid < 2 { 14 } else { 21 };
+                assert_eq!(
+                    &bus.registers[sid][..music_end],
+                    &baseline_bus.registers[sid][..music_end]
+                );
+                assert_eq!(
+                    &bus.registers[sid][21..],
+                    &baseline_bus.registers[sid][21..]
+                );
+                if tick == 0 {
+                    for voice in 0..music_end / 7 {
+                        assert_ne!(bus.registers[sid][voice * 7 + 4] & 1, 0);
+                    }
+                }
+            }
+            let music_writes: Vec<_> = bus
+                .writes
+                .iter()
+                .copied()
+                .filter(|&(sid, reg, _)| sid >= 2 || !(14..=20).contains(&reg))
+                .collect();
+            assert_eq!(music_writes, baseline_bus.writes);
+            if tick >= 106 {
+                assert_eq!(bus.registers[0][18], 0x20);
+                assert_eq!(bus.registers[1][18], 0x20);
+                assert_eq!(bus.writes, baseline_bus.writes);
+            }
+        }
+        assert_eq!(player.underruns(), 0);
+        assert_eq!(baseline.underruns(), 0);
+    }
+}
+
+#[test]
 fn missile_launch_descends_for_400_ms_and_blocks_fire_without_touching_music() {
     for standard in [VideoStandard::Pal, VideoStandard::Ntsc] {
         let (mut player, mut bus) = engine_for(standard);

@@ -439,13 +439,14 @@ impl AudioEngine {
                     // The first tick is a noise crack; its pitch does not carry
                     // into the low pulse body. Later ticks settle only slightly.
                     Effect::Fire if fx.age == 1 => note_frequency(self.standard, 52),
+                    // Enemy shots trade the noise crack for a higher, raspy body.
+                    Effect::EnemyFire if fx.age == 1 => note_frequency(self.standard, 64),
                     // A falling noise clock makes the rocket roar recede.
                     Effect::Fire | Effect::MissileLaunch | Effect::Death => {
                         fx.frequency - (fx.frequency >> 4)
                     }
-                    Effect::EnemyFire => fx.frequency.saturating_add(fx.frequency >> 6),
                     Effect::Bomb => fx.frequency - (fx.frequency >> 5),
-                    Effect::Hit => fx.frequency - (fx.frequency >> 3),
+                    Effect::EnemyFire | Effect::Hit => fx.frequency - (fx.frequency >> 3),
                     Effect::Pickup => note_frequency(self.standard, 72 + (fx.age / 3) * 4),
                     Effect::Roll => {
                         let curve = if fx.age < 6 { fx.age } else { 12 - fx.age };
@@ -460,6 +461,10 @@ impl AudioEngine {
                     // high and the music-owned filters completely untouched.
                     self.write(bus, sid, 17, fx.age * 3 - 1);
                     self.write(bus, sid, 18, 0x41);
+                } else if fx.effect == Effect::EnemyFire && fx.age == 1 {
+                    // Set the body pitch before switching to sawtooth; retain
+                    // the gate so this is one shot, not a second attack.
+                    self.write(bus, sid, 18, 0x21);
                 }
             }
             self.effects[sid] = fx;
@@ -525,7 +530,7 @@ const fn lane(pan: i8) -> u8 {
 fn effect_instrument(effect: Effect) -> (u8, u8, u8, u8, u8) {
     match effect {
         Effect::Fire => (88, 0x80, 0x02, 0xb1, 4),
-        Effect::EnemyFire => (80, 0x40, 0x02, 0x72, 6),
+        Effect::EnemyFire => (84, 0x80, 0x02, 0x72, 6),
         Effect::MissileLaunch => (76, 0x80, 0x24, 0xb3, 20),
         Effect::Hit => (65, 0x80, 0x02, 0x94, 9),
         Effect::Pickup => (72, 0x10, 0x02, 0x84, 15),
