@@ -137,6 +137,8 @@ impl AudioEngine {
     /// Layout: SMU1; five 50-Hz row durations; four instruments of waveform,
     /// pulse low/high, attack/decay, sustain/release; five 16-row patterns with
     /// four MIDI notes per row. Zero is a rest; supported notes are 24..=95.
+    /// Defeat uses its asset pattern as the opening phrase, followed by seven
+    /// resident continuation phrases without expanding the mutable score bank.
     #[cfg_attr(target_arch = "mos", link_section = ".phase.boot")]
     #[inline(never)]
     pub fn load_score(&mut self, bytes: &[u8]) -> Result<(), ScoreError> {
@@ -327,7 +329,18 @@ impl AudioEngine {
                 let sid = voice & 1;
                 let base = (voice >> 1) * 7;
                 let instrument = INSTRUMENT_OFFSET + voice * 5;
-                let note = self.score_byte(offset + voice);
+                let note = if self.music == MusicState::Defeat && self.phrase != 0 {
+                    if self.row & 1 == 0 {
+                        let index = (self.phrase as usize - 1) * 32 + self.row as usize * 2 + voice;
+                        // The phrase counter is 1..=7 here, the even row is
+                        // 0..=14, and each sounding row has four voices.
+                        unsafe { *DEFEAT_CONTINUATION.get_unchecked(index) }
+                    } else {
+                        0
+                    }
+                } else {
+                    self.score_byte(offset + voice)
+                };
                 if note == 0 {
                     self.write(bus, sid, base + 4, self.register(sid, base + 4) & !1);
                     continue;
@@ -464,6 +477,35 @@ fn phrase_transpose(state: MusicState, phrase: u8) -> i8 {
         MusicState::Defeat => 0,
     }
 }
+
+// "Lost Wing": seven answering phrases after the score asset's opening lament.
+// Four voices per sounding row; every intervening row is a breath. At 18 ticks
+// per row, all eight 16-row phrases last 2,304 ticks / 46.08 seconds. Keeping
+// these 224 immutable bytes resident preserves the 427-byte audio-state budget
+// and lets the interrupt play the complete piece without REU transfers.
+const DEFEAT_CONTINUATION: [u8; 224] = [
+    // II. A warmer C/G answer, rising before returning to E minor.
+    36, 67, 52, 60, 43, 69, 55, 64, 43, 71, 59, 67, 0, 74, 0, 71, 38, 72, 54, 62, 45, 69, 57, 66,
+    40, 67, 55, 59, 0, 64, 0, 0,
+    // III. Low-register response: A minor, E minor, C, then an unresolved B7.
+    33, 64, 48, 57, 40, 60, 52, 64, 40, 59, 55, 67, 0, 62, 0, 59, 36, 64, 52, 60, 43, 67, 55, 64,
+    35, 66, 51, 57, 0, 63, 0, 59,
+    // IV. The melody reaches upward while the left harmony answers below it.
+    40, 67, 59, 64, 47, 71, 55, 67, 43, 76, 59, 71, 0, 74, 0, 67, 33, 72, 52, 69, 40, 71, 57, 64,
+    35, 69, 51, 66, 0, 66, 0, 63,
+    // V. A brief major-colour bridge, with gaps in the lead for the arpeggio.
+    36, 72, 55, 64, 43, 0, 52, 67, 38, 74, 57, 66, 45, 72, 54, 69, 31, 71, 50, 67, 38, 0, 55, 62,
+    35, 69, 51, 66, 0, 63, 0, 59,
+    // VI. The opening's descending shape returns with a different inner line.
+    40, 71, 55, 67, 47, 67, 59, 64, 36, 69, 52, 64, 43, 64, 55, 60, 33, 67, 48, 64, 40, 62, 52, 57,
+    35, 66, 51, 59, 0, 63, 0, 57,
+    // VII. Quiet acceptance: rising bass beneath a descending upper melody.
+    36, 67, 52, 60, 38, 66, 54, 62, 40, 64, 55, 59, 43, 62, 59, 67, 33, 60, 52, 57, 35, 59, 51, 54,
+    40, 64, 55, 59, 0, 0, 0, 64,
+    // VIII. A final A/D/G/B cadence, E-minor resolution, then a longer breath.
+    33, 69, 52, 60, 38, 66, 57, 62, 31, 67, 50, 59, 38, 62, 55, 67, 35, 63, 54, 57, 47, 66, 51, 59,
+    40, 64, 55, 59, 0, 0, 0, 0,
+];
 
 // Rounded C6..B6 SID register values: Hz * 2^24 / native SID clock.
 // These use the VIC/SID clocks (PAL 985248 Hz, NTSC 1022727 Hz), never turbo CPU Hz.
@@ -612,7 +654,7 @@ const fn make_score() -> [u8; SCORE_ASSET_LENGTH] {
     result[5] = 7;
     result[6] = 6;
     result[7] = 10;
-    result[8] = 14;
+    result[8] = 18;
     let mut voice = 0;
     while voice < 4 {
         let mut field = 0;

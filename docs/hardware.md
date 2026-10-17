@@ -52,7 +52,7 @@ Both chips use the same `8580 Lo` filter curve, `High` resonance setting, and `8
 
 The Ultimate Audio mapping at `$DF20–$DFFF` is disabled, and both sampler channels are muted. The firmware's `Digis Level=Medium` setting is retained but is not used for sampled playback. Mixer panning applies to HDMI and AV output, not the physical SID-TAP header. The built-in SID player's autoconfiguration can override mixer settings, so re-import the game configuration after using that player. See the [official mixer documentation](https://1541u-documentation.readthedocs.io/en/latest/config/audio_mixer.html).
 
-The score runs at 50 Hz from CIA1 Timer A, independently of frame presentation. PAL and NTSC use different timer periods and SID frequency tables. The complete compact score is copied from REU into the resident audio engine before interrupts start; the audio interrupt performs no REU transfers.
+The score runs at 50 Hz from CIA1 Timer A, independently of frame presentation. PAL and NTSC use different timer periods and SID frequency tables. The compact score bank is copied from REU into the resident audio engine before interrupts start. Mission Lost adds seven continuation phrases in a 224-byte resident constant table: eight distinct phrases play for 46.08 seconds before repeating, compared with the original 4.48-second loop. The audio engine's mutable state remains unchanged, and the audio interrupt performs no REU transfers.
 
 ## Build and verification
 
