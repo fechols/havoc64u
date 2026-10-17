@@ -21,6 +21,11 @@ assert symbols['__irq_static_save_size']<=1088
 assert symbols['__pixel_band_start']==0x8c00 and symbols['__pixel_band_end']==0x9100
 assert symbols['__projection_cache_start']==0x8c00 and symbols['__projection_cache_end']==0x8e80
 assert symbols['__projection_cache_end']<=symbols['__pixel_band_end']
+assert symbols['__projection_cache_start']+624<=symbols['__projection_cache_end']
+assert (symbols['__raster_heads_start'],symbols['__raster_heads_end'])==(0xd000,0xe000)
+assert (symbols['__raster_tails_start'],symbols['__raster_tails_end'])==(0x6000,0x6c00)
+assert (symbols['__raster_masks_start'],symbols['__raster_masks_end'])==(0x6c00,0x6f20)
+assert symbols['__raster_masks_end']<=symbols['__irq_stack_bottom']
 ranges={'.basic_header':(0x801,0x3000),'.text':(0x801,0x3000),'.data':(0x200,0x800),'.bss':(0x200,0x800),'.noinit':(0x200,0x800),'.rodata':(0x7800,0x8000),'.tables':(0x9900,0xa000),'.renderer':(0xcffa,0xe000),'.game_state':(0xc800,0xca80),'.audio_state':(0xce00,0xcfb0),'.zp.data':(0x22,0x100),'.zp.bss':(0x22,0x100),'.zp.noinit':(0x22,0x100)}
 used=[]
 for line in listing.splitlines():
@@ -42,5 +47,5 @@ print(f'PRG {len(data):,} bytes; resident headroom {0x3000-symbols["__resident_e
 print('VIC A: screen8000 bitmapA000-BF3F; VIC B: screenC000 bitmapE000-FF3F')
 print('Models8400-8BFF; band8C00-90FF; color9100-94FF; segments9500-98FF')
 print('Overlay3000-71FF; main stackC400-C7FF; IRQ stack7200-75FF')
-print('PIXELS code3000-5FFF; slope cache6000-6BFF after GEOMETRY completes')
-print('GEOMETRY code3000-71FF; projected-vertex cache8C00-8E7F shares PIXELS band')
+print('PIXELS code3000-5FFF; edge headsD000-DFFF tails6000-6BFF masks6C00-6F1F')
+print('GEOMETRY code3000-71FF; projection/sort cache8C00-8E7F shares PIXELS band')

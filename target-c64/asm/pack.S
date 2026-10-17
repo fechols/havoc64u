@@ -33,7 +33,7 @@
 .set PK_CELL, $77ea
 .set PK_ROW, $77eb
 .set PK_UNIFORM, $77ec
-.set PK_MIXED, $77ed
+.set PK_NONBLACK, $77ed
 .set PK_RAW, $77ee
 .set PK_PICK, $77ef
 .set PK_BEST, $77f0
@@ -181,6 +181,7 @@ fast_pack_band:
 
 .Lpk_select_begin:
     lda #0
+    sta PK_NONBLACK
     ldx #15
 .Lpk_clear_flags:
     sta PK_FLAGS,x
@@ -199,6 +200,7 @@ fast_pack_band:
     bne .Lpk_rank_present
     jmp .Lpk_rank_next
 .Lpk_rank_present:
+    inc PK_NONBLACK
     asl
     asl
     sta PK_SCORE
@@ -333,6 +335,14 @@ fast_pack_band:
     inx
     cpx #4
     bne .Lpk_exact_slot
+
+    ; With at most three nonblack colors, exact-slot assignment covered every
+    ; present color. Ranking/retention still ran, preserving all palette bytes.
+    lda PK_NONBLACK
+    cmp #4
+    bcs .Lpk_omitted_colors
+    jmp .Lpk_map_done
+.Lpk_omitted_colors:
 
     ; COLOR_DISTANCE is a 16x16 little-endian u16 table shared with Rust.
     ldx #1

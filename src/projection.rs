@@ -42,7 +42,7 @@ const _: () = {
 const CACHE: *mut [Entry; 64] = CACHE_ADDRESS as *mut [Entry; 64];
 
 #[inline(never)]
-#[cfg_attr(target_arch = "mos", link_section = ".phase.geometry")]
+#[cfg_attr(target_arch = "mos", link_section = ".tables.projection_reset")]
 pub fn begin_frame() {
     #[cfg(target_arch = "mos")]
     // SAFETY: GEOMETRY owns this shared workspace until all projection is done.

@@ -10,6 +10,8 @@ pub const LEFT: u8 = 4;
 pub const RIGHT: u8 = 8;
 pub const FIRE: u8 = 16;
 pub const MISSION_DISTANCE: u32 = 120_000;
+/// Fixed camera-space cloud geometry; all nearer scene geometry still occludes it.
+pub(crate) const STATIC_SKY: u8 = 2;
 const PLAYER_Z: i16 = 180;
 const SPEED: i16 = 8;
 const SECTION_TICKS: u16 = 3750;
@@ -1367,8 +1369,14 @@ impl Game {
         }
         // Distant silhouettes and clouds use no gameplay object slots.
         for face in 0..14 {
-            let (points, color) = backdrop_face(face, self.rail_ticks);
-            tri(sink, points[0], points[1], points[2], color);
+            let (points, color) = backdrop_face(face);
+            sink.triangle(
+                points[0],
+                points[1],
+                points[2],
+                color,
+                TWO_SIDED | if face >= 5 { STATIC_SKY } else { 0 },
+            );
         }
     }
 }
@@ -1386,7 +1394,11 @@ impl<S: GeometrySink> GeometrySink for SceneBudget<'_, S> {
     fn triangle(&mut self, a: Vec3, b: Vec3, c: Vec3, color: u8, flags: u8) {
         if self.count < self.limit {
             self.count += 1;
-            let camera_y = self.camera_y;
+            let camera_y = if flags & STATIC_SKY != 0 {
+                0
+            } else {
+                self.camera_y
+            };
             self.sink.triangle(
                 camera_point(a, camera_y),
                 camera_point(b, camera_y),
@@ -1443,10 +1455,10 @@ fn terrain_height(row: u16, right: bool, style: u8) -> i16 {
 }
 // Pure backdrop construction stays resident to conserve the geometry overlay.
 // Clouds are farther than the mountains, so the existing painter sort places
-// every terrain feature and actor in front. A shared, slow drift uses mission
-// distance rather than segment position; crossing a section cannot reset it.
+// every terrain feature and actor in front. Their coordinates already include
+// the neutral chase-camera offset; STATIC_SKY keeps their screen positions fixed.
 #[inline(never)]
-fn backdrop_face(face: u8, rail_ticks: u16) -> ([Vec3; 3], u8) {
+fn backdrop_face(face: u8) -> ([Vec3; 3], u8) {
     if face < 5 {
         let i = face as i16 - 2;
         return (
@@ -1480,12 +1492,11 @@ fn backdrop_face(face: u8, rail_ticks: u16) -> ([Vec3; 3], u8) {
     let cloud = (face - 5) / 3;
     let facet = (face - 5) % 3;
     let (x, y, z) = CENTERS[cloud as usize];
-    let x = x - (rail_ticks >> 5) as i16;
     let mut points = [Vec3::default(); 3];
     for (point, &(dx, dy)) in points.iter_mut().zip(&FACETS[facet as usize]) {
         *point = Vec3 {
             x: x + dx,
-            y: y + dy,
+            y: y + dy - 40,
             z,
         };
     }
@@ -1701,7 +1712,7 @@ mod tests {
     }
     impl GeometrySink for TerrainCapture {
         fn triangle(&mut self, a: Vec3, b: Vec3, c: Vec3, color: u8, flags: u8) {
-            assert_eq!(flags, TWO_SIDED);
+            assert_eq!(flags & !STATIC_SKY, TWO_SIDED);
             assert!(
                 self.count < self.faces.len(),
                 "terrain exceeded its face reservation"
@@ -1831,39 +1842,89 @@ mod tests {
         }
     }
     #[test]
-    fn clouds_remain_in_the_sky_behind_scenery_and_drift_across_sections() {
-        for tick in [0, 31, 32, 3749, 3750, 7499, 7500, 11249, 11250, 14999] {
-            for face in 5..14 {
-                let (points, color) = backdrop_face(face, tick);
-                let (next, next_color) = backdrop_face(face, tick + 1);
-                assert!(matches!(color, 1 | 15));
-                assert_eq!(color, next_color);
-                for (a, b) in points.iter().zip(next) {
-                    assert!(a.z > 2400, "clouds must be behind gameplay and mountains");
-                    assert_eq!((a.y, a.z), (b.y, b.z));
-                    assert!((0..=1).contains(&(a.x - b.x)), "no section-boundary jump");
-                    for camera_y in [0, 24, 40, 56] {
-                        let (_, screen_y) = crate::projection::project(camera_point(*a, camera_y));
-                        assert!(
-                            (20..90).contains(&screen_y),
-                            "cloud must stay above the horizon"
-                        );
-                    }
+    fn clouds_remain_in_the_sky_behind_scenery_with_shared_facet_edges() {
+        for face in 5..14 {
+            let (points, color) = backdrop_face(face);
+            assert!(matches!(color, 1 | 15));
+            for point in points {
+                assert!(
+                    point.z > 2400,
+                    "clouds must be behind gameplay and mountains"
+                );
+                let (_, screen_y) = crate::projection::project(point);
+                assert!(
+                    (20..90).contains(&screen_y),
+                    "cloud must stay above the horizon"
+                );
+            }
+        }
+        for cloud in 0..3 {
+            let first = backdrop_face(5 + cloud * 3).0;
+            let second = backdrop_face(6 + cloud * 3).0;
+            let third = backdrop_face(7 + cloud * 3).0;
+            assert_eq!((first[0], first[2]), (second[0], second[1]));
+            assert_eq!((second[0], second[2]), (third[0], third[1]));
+        }
+    }
+    #[test]
+    fn cloud_screen_geometry_is_fixed_across_camera_modes_and_mission_sections() {
+        struct SkyCapture {
+            clouds: [([Vec3; 3], u8); 9],
+            count: usize,
+            first_mountain: Option<Vec3>,
+        }
+        impl GeometrySink for SkyCapture {
+            fn triangle(&mut self, a: Vec3, b: Vec3, c: Vec3, color: u8, flags: u8) {
+                if flags & STATIC_SKY != 0 {
+                    self.clouds[self.count] = ([a, b, c], color);
+                    self.count += 1;
+                } else if a.z == 2350 && self.first_mountain.is_none() {
+                    self.first_mountain = Some(a);
                 }
             }
-            for cloud in 0..3 {
-                let first = backdrop_face(5 + cloud * 3, tick).0;
-                let second = backdrop_face(6 + cloud * 3, tick).0;
-                let third = backdrop_face(7 + cloud * 3, tick).0;
-                assert_eq!((first[0], first[2]), (second[0], second[1]));
-                assert_eq!((second[0], second[2]), (third[0], third[1]));
+        }
+        let bytes = model_bank_for_tests();
+        let bank = AssetBank::new(&bytes).unwrap();
+        let expected = core::array::from_fn(|face| backdrop_face(5 + face as u8));
+        for mode in [
+            Mode::Title,
+            Mode::Playing,
+            Mode::Respawning,
+            Mode::Victory,
+            Mode::GameOver,
+        ] {
+            for player_y in [-65, -1, 0, 1, 65] {
+                for ticks in [0, 31, 32, 3749, 3750, 7499, 7500, 11249, 11250, 14999] {
+                    let mut game = Game::new();
+                    game.mode = mode;
+                    game.player.y = player_y;
+                    game.rail_ticks = ticks;
+                    let segment_bytes = empty_segment(game.segment_index());
+                    let segment = Segment::new(&segment_bytes).unwrap();
+                    let mut capture = SkyCapture {
+                        clouds: [([Vec3::default(); 3], 0); 9],
+                        count: 0,
+                        first_mountain: None,
+                    };
+                    game.render(&mut capture, &bank, &segment);
+                    assert_eq!(capture.count, 9);
+                    assert_eq!(capture.clouds, expected);
+                    assert_eq!(
+                        capture.first_mountain,
+                        Some(camera_point(
+                            backdrop_face(0).0[0],
+                            chase_camera_y(mode, player_y)
+                        )),
+                        "mountains must retain their chase-camera movement"
+                    );
+                }
             }
         }
     }
     #[test]
     fn clouds_are_visible_and_nearer_geometry_occludes_them() {
         let mut renderer = crate::render::Renderer::new();
-        let (cloud, color) = backdrop_face(8, 0);
+        let (cloud, color) = backdrop_face(8);
         let near = cloud.map(|p| Vec3 {
             x: p.x / 2,
             y: p.y / 2,
@@ -1874,18 +1935,31 @@ mod tests {
         renderer.triangle(cloud[0], cloud[1], cloud[2], color, TWO_SIDED);
         assert_eq!(renderer.triangle_count, 2);
         renderer.finish();
-        let (x, y) = crate::projection::project(Vec3 {
-            x: (cloud[0].x + cloud[1].x + cloud[2].x) / 3,
-            y: (cloud[0].y + cloud[1].y + cloud[2].y) / 3,
-            z: cloud[0].z,
-        });
-        let mut pixels = [0; crate::render::BAND_PIXELS];
-        renderer.render_band((y / 8) as u8, &mut pixels);
-        assert_eq!(pixels[(y as usize % 8) * 160 + x as usize], 6);
-        renderer.begin(0);
-        renderer.triangle(cloud[0], cloud[1], cloud[2], color, TWO_SIDED);
-        renderer.render_band((y / 8) as u8, &mut pixels);
-        assert_eq!(pixels[(y as usize % 8) * 160 + x as usize], 1);
+        let mut cloud_only = crate::render::Renderer::new();
+        cloud_only.triangle(cloud[0], cloud[1], cloud[2], color, TWO_SIDED);
+        let mut near_only = crate::render::Renderer::new();
+        near_only.triangle(near[0], near[1], near[2], 6, TWO_SIDED);
+        let mut overlap = 0;
+        for band in 0..25 {
+            let mut actual = [0; crate::render::BAND_PIXELS];
+            let mut distant = [0; crate::render::BAND_PIXELS];
+            let mut foreground = [0; crate::render::BAND_PIXELS];
+            renderer.render_band(band, &mut actual);
+            cloud_only.render_band(band, &mut distant);
+            near_only.render_band(band, &mut foreground);
+            for pixel in 0..actual.len() {
+                let expected = if foreground[pixel] == 6 {
+                    6
+                } else {
+                    distant[pixel]
+                };
+                assert_eq!(actual[pixel], expected);
+                if foreground[pixel] == 6 && distant[pixel] == color {
+                    overlap += 1;
+                }
+            }
+        }
+        assert!(overlap > 0, "nearer geometry must visibly cover the cloud");
     }
     #[test]
     fn resident_state_fits_budget() {

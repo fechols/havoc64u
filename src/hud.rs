@@ -5,6 +5,15 @@ use crate::assets::SEGMENT_DISTANCE;
 use crate::game::{Hud, Mode};
 use crate::render::{draw_bar, draw_text, draw_text_scaled, fill_color, HUD_INK};
 
+/// Shared with sky eligibility so cached bands exclude the same sector panel.
+#[inline(never)]
+#[cfg_attr(target_arch = "mos", link_section = ".phase.pixels")]
+pub(crate) fn sector_banner_visible(hud: &Hud) -> bool {
+    hud.distance
+        .saturating_sub(hud.section as u32 * SEGMENT_DISTANCE)
+        < 800
+}
+
 /// Paint a HUD into one rendered eight-row band. `frame` controls soft blinking.
 #[inline(never)]
 #[cfg_attr(target_arch = "mos", link_section = ".phase.pixels")]
@@ -36,12 +45,7 @@ pub fn draw(band: u8, pixels: &mut [u8; 1280], hud: &Hud, frame: u16) {
                     if hud.boss_shield <= 25 { 10 } else { 8 },
                 );
             }
-            if (3..=6).contains(&band)
-                && hud
-                    .distance
-                    .saturating_sub(hud.section as u32 * SEGMENT_DISTANCE)
-                    < 800
-            {
+            if (3..=6).contains(&band) && sector_banner_visible(hud) {
                 panel(band, pixels, 24, 29, 112, 22, 12);
                 let mut sector = *b"SECTOR 1";
                 sector[7] = b'1' + hud.section.min(3);

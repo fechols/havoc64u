@@ -7,6 +7,8 @@
 use crate::projection::project;
 use crate::{GeometrySink, Vec3, TWO_SIDED};
 
+mod sort;
+
 pub const WIDTH: usize = 160;
 pub const HEIGHT: usize = 200;
 pub const BAND_HEIGHT: usize = 8;
@@ -14,6 +16,7 @@ pub const BAND_PIXELS: usize = WIDTH * BAND_HEIGHT;
 pub const TRIANGLE_CAPACITY: usize = 256;
 pub const NEAR: i16 = 32;
 pub const HUD_INK: u8 = 0x80;
+const POSITIVE_AREA: u8 = 4;
 
 #[derive(Clone, Copy)]
 #[repr(C)]
@@ -69,69 +72,128 @@ impl Renderer {
         self.triangle_count = 0;
         self.dropped = 0;
         self.clear_color = clear_color & 15;
+        self.padding = 0;
     }
 
-    /// Stable far-to-near insertion sort: ties retain their authored ordering.
+    /// Stable far-to-near radix sort: ties retain their authored ordering.
     #[inline(never)]
     #[cfg_attr(target_arch = "mos", link_section = ".phase.geometry")]
     pub fn finish(&mut self) {
-        for i in 1..self.triangle_count as usize {
-            let command = self.triangles[i];
-            let mut j = i;
-            while j > 0 && self.triangles[j - 1].depth < command.depth {
-                self.triangles[j] = self.triangles[j - 1];
-                j -= 1;
+        assert_eq!(self.padding, 0, "begin a new frame before geometry");
+        sort::depth_sort(&mut self.triangles[..self.triangle_count as usize]);
+    }
+
+    /// Bands containing only the fixed nine cloud facets over blue sky. Bounds
+    /// are deliberately conservative: even a hidden non-sky face invalidates
+    /// every band it intersects. Call before the raster pass consumes commands.
+    #[inline(never)]
+    #[cfg_attr(target_arch = "mos", link_section = ".phase.geometry")]
+    pub fn static_sky_bands(&self) -> u32 {
+        if self.clear_color != 6 || self.padding != 0 || self.dropped != 0 {
+            return 0;
+        }
+        #[cfg(target_arch = "mos")]
+        unsafe {
+            extern "C" {
+                fn fast_static_sky_bands(commands: *const Triangle, count: u16) -> u32;
             }
-            self.triangles[j] = command;
+            // The native scan reads only current 16-byte commands and uses the
+            // same conservative clamped bounds as the host reference below.
+            return fast_static_sky_bands(self.triangles.as_ptr(), self.triangle_count);
+        }
+        #[cfg(not(target_arch = "mos"))]
+        {
+            let mut clouds = 0u16;
+            let mut bands = 0x01ff_ffffu32;
+            for triangle in &self.triangles[..self.triangle_count as usize] {
+                if triangle.reserved & crate::game::STATIC_SKY != 0 {
+                    clouds += 1;
+                } else {
+                    let top = triangle.y[0]
+                        .min(triangle.y[1])
+                        .min(triangle.y[2])
+                        .clamp(0, 200) as u8;
+                    let bottom = triangle.y[0]
+                        .max(triangle.y[1])
+                        .max(triangle.y[2])
+                        .clamp(0, 200) as u8;
+                    if top < bottom {
+                        let first = top / 8;
+                        let end = (bottom + 7) / 8;
+                        let covered = (0x01ff_ffffu32 >> (25 - (end - first))) << first;
+                        bands &= !covered;
+                    }
+                }
+            }
+            if clouds == 9 {
+                bands
+            } else {
+                0
+            }
         }
     }
 
     #[inline(never)]
     #[cfg_attr(target_arch = "mos", link_section = ".phase.pixels")]
     pub fn render_band(&self, band: u8, pixels: &mut [u8; BAND_PIXELS]) {
+        assert_eq!(self.padding, 0, "raster pass consumed geometry commands");
         fill_color(pixels, self.clear_color);
         if band >= 25 {
             return;
         }
-        // The target publishes bands in order. Its pixels overlay leaves this
-        // 3 KiB region free after the previous geometry overlay is replaced.
-        #[cfg(target_arch = "mos")]
-        if band == 0 {
-            self.prepare_slopes();
-        }
-        let band_y = band as i16 * 8;
-        for (index, triangle) in self.triangles[..self.triangle_count as usize]
-            .iter()
-            .enumerate()
-        {
-            #[cfg(target_arch = "mos")]
-            let slopes = Some(unsafe { &*((0x6000 + index * 12) as *const [i32; 3]) });
-            #[cfg(not(target_arch = "mos"))]
-            let slopes = {
-                let _ = index;
-                None
-            };
-            raster_triangle(triangle, band_y, pixels, slopes);
+        for triangle in &self.triangles[..self.triangle_count as usize] {
+            let (mut head, tail) = prepare_triangle(triangle);
+            seek_row(&mut head, &tail, band * 8);
+            raster_rows_reference(&mut head, &tail, band * 8, pixels, true);
         }
     }
 
-    #[cfg(target_arch = "mos")]
+    /// Consume sorted geometry into a bounded sequential raster pass. A second
+    /// pass requires begin(); the borrow prevents geometry changes during a pass.
     #[inline(never)]
-    #[link_section = ".phase.pixels"]
-    fn prepare_slopes(&self) {
-        for (index, triangle) in self.triangles[..self.triangle_count as usize]
-            .iter()
-            .enumerate()
-        {
-            // SAFETY: the linker keeps pixel code below $6000, the private
-            // scratch ends at $6C00, and at most 256 entries are generated.
-            unsafe {
-                core::ptr::write(
-                    (0x6000 + index * 12) as *mut [i32; 3],
-                    triangle_slopes(triangle),
-                );
+    #[cfg_attr(target_arch = "mos", link_section = ".phase.pixels")]
+    pub fn raster_pass(&mut self) -> Option<RasterPass<'_>> {
+        if self.padding != 0 {
+            return None;
+        }
+        self.padding = 1;
+        let mut pass = RasterPass {
+            renderer: self,
+            next_band: 0,
+            #[cfg(not(target_arch = "mos"))]
+            tails: [RasterTail::EMPTY; TRIANGLE_CAPACITY],
+            #[cfg(not(target_arch = "mos"))]
+            masks: [[0; 32]; 25],
+        };
+        pass.masks_mut().fill([0; 32]);
+        for index in 0..pass.renderer.triangle_count as usize {
+            #[cfg(target_arch = "mos")]
+            let tail = unsafe {
+                // The old command must be read before its bytes become heads.
+                // All-bit-pattern integer records are valid in phase scratch.
+                let triangle = pass.renderer.triangles[index];
+                let head = pass.head_ptr(index);
+                let tail = pass.tails_mut().as_mut_ptr().add(index);
+                prepare_triangle_into(&triangle, &mut *head, &mut *tail);
+                *tail
+            };
+            #[cfg(not(target_arch = "mos"))]
+            let (head, tail) = prepare_triangle(&pass.renderer.triangles[index]);
+            #[cfg(not(target_arch = "mos"))]
+            pass.write_head(index, head);
+            #[cfg(not(target_arch = "mos"))]
+            {
+                pass.tails_mut()[index] = tail;
+            }
+            if tail.top < tail.bottom {
+                let first = tail.top / 8;
+                let last = (tail.bottom - 1) / 8;
+                for band in first..=last {
+                    pass.masks_mut()[band as usize][index / 8] |= 1 << (index & 7);
+                }
             }
         }
+        Some(pass)
     }
 
     #[inline(never)]
@@ -164,6 +226,8 @@ impl Renderer {
         // Clipping leaves positive i16 depths, so their average fits in i16.
         triangle.depth = crate::math::div_u32_u16(a.z as u32 + b.z as u32 + c.z as u32, 3) as i16;
         triangle.color = color & 15;
+        triangle.reserved =
+            (flags & crate::game::STATIC_SKY) | if area > 0 { POSITIVE_AREA } else { 0 };
         self.triangles[self.triangle_count as usize] = triangle;
         self.triangle_count += 1;
     }
@@ -173,6 +237,7 @@ impl GeometrySink for Renderer {
     #[inline(never)]
     #[cfg_attr(target_arch = "mos", link_section = ".phase.geometry")]
     fn triangle(&mut self, a: Vec3, b: Vec3, c: Vec3, color: u8, flags: u8) {
+        assert_eq!(self.padding, 0, "begin a new frame before geometry");
         if a.z >= NEAR && b.z >= NEAR && c.z >= NEAR {
             self.project_triangle(a, b, c, color, flags);
             return;
@@ -209,6 +274,9 @@ impl GeometrySink for Renderer {
 #[inline(never)]
 #[cfg_attr(target_arch = "mos", link_section = ".phase.geometry")]
 fn near_intersection(a: Vec3, b: Vec3) -> Vec3 {
+    // Both owners of a shared edge must round the same intersection, even
+    // when their winding traverses that edge in opposite directions.
+    let (a, b) = if a.z < b.z { (a, b) } else { (b, a) };
     // Q15 interpolation keeps full-range i16 input products within signed i32.
     let t = crate::math::div_i32((NEAR as i32 - a.z as i32) << 15, b.z as i32 - a.z as i32);
     Vec3 {
@@ -218,151 +286,269 @@ fn near_intersection(a: Vec3, b: Vec3) -> Vec3 {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(C)]
-struct Edge {
-    y0: i16,
-    y1: i16,
-    x: i32,
-    step: i32,
+struct RasterHead {
+    long_x: i32,
+    long_step: i32,
+    short_x: i32,
+    short_step: i32,
 }
 
-impl Edge {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(C)]
+struct RasterTail {
+    lower_x: i32,
+    lower_step: i32,
+    top: u8,
+    middle: u8,
+    bottom: u8,
+    color_flags: u8,
+}
+impl RasterTail {
     const EMPTY: Self = Self {
-        y0: 0,
-        y1: 0,
-        x: 0,
-        step: 0,
+        lower_x: 0,
+        lower_step: 0,
+        top: 0,
+        middle: 0,
+        bottom: 0,
+        color_flags: 0,
     };
 }
+const _: [(); 16] = [(); core::mem::size_of::<RasterHead>()];
+const _: [(); 12] = [(); core::mem::size_of::<RasterTail>()];
+const _: [(); 8] = [(); core::mem::offset_of!(RasterTail, top)];
+const _: [(); 11] = [(); core::mem::offset_of!(RasterTail, color_flags)];
 
-#[repr(C)]
-struct RasterRows {
-    edges: [Edge; 3],
-    first_y: u8,
-    end_y: u8,
-    band_y: u8,
-    color: u8,
+/// Native storage is phase-owned: heads consume $D000-$DFFF commands, tails
+/// occupy $6000-$6BFF, and ordered band masks occupy $6C00-$6F1F.
+pub struct RasterPass<'a> {
+    renderer: &'a mut Renderer,
+    next_band: u8,
+    #[cfg(not(target_arch = "mos"))]
+    tails: [RasterTail; TRIANGLE_CAPACITY],
+    #[cfg(not(target_arch = "mos"))]
+    masks: [[u8; 32]; 25],
 }
-
-const _: [(); 12] = [(); core::mem::size_of::<Edge>()];
-const _: [(); 40] = [(); core::mem::size_of::<RasterRows>()];
-const _: [(); 36] = [(); core::mem::offset_of!(RasterRows, first_y)];
-
-#[inline(never)]
-#[cfg_attr(target_arch = "mos", link_section = ".phase.pixels")]
-fn raster_triangle(
-    triangle: &Triangle,
-    band_y: i16,
-    pixels: &mut [u8; BAND_PIXELS],
-    slopes: Option<&[i32; 3]>,
-) {
-    let y0 = triangle.y[0]
-        .min(triangle.y[1])
-        .min(triangle.y[2])
-        .max(band_y);
-    let y1 = triangle.y[0]
-        .max(triangle.y[1])
-        .max(triangle.y[2])
-        .min(band_y + 8);
-    if y0 >= y1 {
-        return;
-    }
-    let mut rows = RasterRows {
-        edges: [Edge::EMPTY; 3],
-        first_y: y0 as u8,
-        end_y: y1 as u8,
-        band_y: band_y as u8,
-        color: triangle.color,
-    };
-    for i in 0..3 {
-        let j = (i + 1) % 3;
-        let (ax, ay, bx, by) = if triangle.y[i] < triangle.y[j] {
-            (triangle.x[i], triangle.y[i], triangle.x[j], triangle.y[j])
-        } else {
-            (triangle.x[j], triangle.y[j], triangle.x[i], triangle.y[i])
-        };
-        if ay == by || by <= y0 || ay >= y1 {
-            continue;
-        }
-        let start = y0.max(ay);
-        let dx = bx as i32 - ax as i32;
-        let dy = by as i32 - ay as i32;
-        // Evaluate at the center of the first pixel row. Normalize all edges
-        // upward so adjacent triangles make identical shared-edge decisions.
-        let numerator = ((start as i32 - ay as i32) * 2 + 1) << 14;
-        let (t, step) = if let Some(slopes) = slopes {
-            (
-                crate::math::div_u32_u16(numerator as u32, dy as u16) as i32,
-                slopes[i],
-            )
-        } else {
-            (
-                crate::math::div_i32(numerator, dy),
-                crate::math::div_i32(dx << 8, dy),
-            )
-        };
-        rows.edges[i] = Edge {
-            y0: ay,
-            y1: by,
-            x: ((ax as i32) << 8) + ((dx * t) >> 7),
-            step,
-        };
-    }
-    #[cfg(target_arch = "mos")]
-    {
-        extern "C" {
-            fn fast_raster_rows(rows: *mut RasterRows, pixels: *mut u8);
-        }
-        // SAFETY: the fixed C layout is asserted above; visible row bounds and
-        // clipped spans constrain the kernel to the supplied 1,280-byte band.
+impl RasterPass<'_> {
+    #[inline(always)]
+    fn tails_mut(&mut self) -> &mut [RasterTail; TRIANGLE_CAPACITY] {
+        #[cfg(target_arch = "mos")]
         unsafe {
-            fast_raster_rows(&mut rows, pixels.as_mut_ptr());
+            &mut *(0x6000 as *mut [RasterTail; TRIANGLE_CAPACITY])
         }
+        #[cfg(not(target_arch = "mos"))]
+        {
+            &mut self.tails
+        }
+    }
+    #[inline(always)]
+    fn masks_mut(&mut self) -> &mut [[u8; 32]; 25] {
+        #[cfg(target_arch = "mos")]
+        unsafe {
+            &mut *(0x6c00 as *mut [[u8; 32]; 25])
+        }
+        #[cfg(not(target_arch = "mos"))]
+        {
+            &mut self.masks
+        }
+    }
+    #[inline(always)]
+    fn head_ptr(&mut self, index: usize) -> *mut RasterHead {
+        self.renderer
+            .triangles
+            .as_mut_ptr()
+            .wrapping_add(index)
+            .cast()
     }
     #[cfg(not(target_arch = "mos"))]
-    raster_rows_reference(&mut rows, pixels);
-}
-
-#[cfg(not(target_arch = "mos"))]
-fn raster_rows_reference(rows: &mut RasterRows, pixels: &mut [u8; BAND_PIXELS]) {
-    for y in rows.first_y as i16..rows.end_y as i16 {
-        let mut left = i32::MAX;
-        let mut right = i32::MIN;
-        for edge in &mut rows.edges {
-            if y >= edge.y0 && y < edge.y1 {
-                left = left.min(edge.x);
-                right = right.max(edge.x);
-                edge.x += edge.step;
+    #[inline(always)]
+    fn write_head(&mut self, index: usize, head: RasterHead) {
+        // Triangle storage can be only 2-byte aligned on the host. No typed
+        // RasterHead reference is formed; native fixed storage is aligned.
+        unsafe { self.head_ptr(index).write_unaligned(head) };
+    }
+    /// Produce the next band. Hidden scene bands leave pixels untouched while
+    /// advancing every active edge; an opaque HUD panel must replace the band.
+    #[inline(never)]
+    #[cfg_attr(target_arch = "mos", link_section = ".phase.pixels")]
+    pub fn next_band(&mut self, pixels: &mut [u8; BAND_PIXELS], paint_scene: bool) -> Option<u8> {
+        let band = self.next_band;
+        if band >= 25 {
+            return None;
+        }
+        self.next_band += 1;
+        if paint_scene {
+            fill_color(pixels, self.renderer.clear_color);
+        }
+        for byte in 0..32usize {
+            let mut mask = self.masks_mut()[band as usize][byte];
+            let mut bit = 0;
+            while mask != 0 {
+                if mask & 1 != 0 {
+                    let index = byte * 8 + bit;
+                    #[cfg(target_arch = "mos")]
+                    unsafe {
+                        #[repr(C)]
+                        struct Job {
+                            head: *mut RasterHead,
+                            tail: *const RasterTail,
+                            pixels: *mut u8,
+                            band_y: u8,
+                            paint: u8,
+                        }
+                        const _: [(); 8] = [(); core::mem::size_of::<Job>()];
+                        extern "C" {
+                            fn fast_raster_rows(job: *const Job);
+                        }
+                        let job = Job {
+                            head: self.head_ptr(index),
+                            tail: self.tails_mut().as_ptr().add(index),
+                            pixels: pixels.as_mut_ptr(),
+                            band_y: band * 8,
+                            paint: paint_scene as u8,
+                        };
+                        fast_raster_rows(&job);
+                    }
+                    #[cfg(not(target_arch = "mos"))]
+                    {
+                        let mut head = unsafe { self.head_ptr(index).read_unaligned() };
+                        let tail = self.tails[index];
+                        raster_rows_reference(&mut head, &tail, band * 8, pixels, paint_scene);
+                        self.write_head(index, head);
+                    }
+                }
+                mask >>= 1;
+                bit += 1;
             }
         }
-        if left >= right {
-            continue;
-        }
-        // Half-open spans implement a shared-edge fill convention.
-        let first = ((left + 127) >> 8).clamp(0, WIDTH as i32) as usize;
-        let end = ((right + 127) >> 8).clamp(0, WIDTH as i32) as usize;
-        if first < end {
-            let row = (y - rows.band_y as i16) as usize * WIDTH;
-            fill_color(&mut pixels[row + first..row + end], rows.color);
-        }
+        Some(band)
     }
 }
 
-#[cfg_attr(not(target_arch = "mos"), allow(dead_code))]
+// Canonical initialization is per edge, never per band or per owning triangle.
+// Projected coordinates are within +/-8191. dx*65536 and dx*t*2 fit i32;
+// the visible-center fraction t is below 32768 and its numerator below 2^28.
 #[inline(never)]
 #[cfg_attr(target_arch = "mos", link_section = ".phase.pixels")]
-fn triangle_slopes(triangle: &Triangle) -> [i32; 3] {
-    let mut slopes = [0; 3];
-    for i in 0..3 {
-        let j = (i + 1) % 3;
-        let dx = triangle.x[j] as i32 - triangle.x[i] as i32;
-        let dy = triangle.y[j] as i32 - triangle.y[i] as i32;
-        if dy != 0 {
-            slopes[i] = crate::math::div_i32(dx << 8, dy);
-        }
+fn prepare_edge(ax: i16, ay: i16, bx: i16, by: i16) -> (i32, i32) {
+    if ay == by || by <= 0 || ay >= 200 {
+        return (0, 0);
     }
-    slopes
+    let dx = bx as i32 - ax as i32;
+    let dy = by as i32 - ay as i32;
+    let start = ay.max(0) as i32;
+    let numerator = ((start - ay as i32) * 2 + 1) << 14;
+    let t = crate::math::div_u32_u16(numerator as u32, dy as u16) as i32;
+    (
+        (ax as i32 * 65536) + dx * t * 2,
+        crate::math::div_i32(dx * 65536, dy),
+    )
+}
+
+fn prepare_triangle(triangle: &Triangle) -> (RasterHead, RasterTail) {
+    let mut head = RasterHead {
+        long_x: 0,
+        long_step: 0,
+        short_x: 0,
+        short_step: 0,
+    };
+    let mut tail = RasterTail::EMPTY;
+    prepare_triangle_into(triangle, &mut head, &mut tail);
+    (head, tail)
+}
+
+#[inline(never)]
+#[cfg_attr(target_arch = "mos", link_section = ".phase.pixels")]
+fn prepare_triangle_into(triangle: &Triangle, head: &mut RasterHead, tail: &mut RasterTail) {
+    // Separate objects and scalar swaps keep LLVM-MOS from materializing the
+    // generic overlapping-memory swap machinery (over a kilobyte of runtime).
+    let mut a = Point2 {
+        x: triangle.x[0],
+        y: triangle.y[0],
+    };
+    let mut b = Point2 {
+        x: triangle.x[1],
+        y: triangle.y[1],
+    };
+    let mut c = Point2 {
+        x: triangle.x[2],
+        y: triangle.y[2],
+    };
+    let mut orientation = (triangle.reserved & POSITIVE_AREA) << 2;
+    orientation ^= sort_pair(&mut a, &mut b);
+    orientation ^= sort_pair(&mut b, &mut c);
+    orientation ^= sort_pair(&mut a, &mut b);
+    let Point2 { x: ax, y: ay } = a;
+    let Point2 { x: bx, y: by } = b;
+    let Point2 { x: cx, y: cy } = c;
+    tail.top = ay.clamp(0, 200) as u8;
+    tail.middle = by.clamp(0, 200) as u8;
+    tail.bottom = cy.clamp(0, 200) as u8;
+    tail.color_flags = triangle.color | orientation;
+    (head.long_x, head.long_step) = prepare_edge(ax, ay, cx, cy);
+    (head.short_x, head.short_step) = prepare_edge(ax, ay, bx, by);
+    (tail.lower_x, tail.lower_step) = prepare_edge(bx, by, cx, cy);
+}
+
+struct Point2 {
+    x: i16,
+    y: i16,
+}
+
+#[inline(never)]
+#[cfg_attr(target_arch = "mos", link_section = ".phase.pixels")]
+fn sort_pair(a: &mut Point2, b: &mut Point2) -> u8 {
+    if a.y > b.y || (a.y == b.y && a.x > b.x) {
+        let x = a.x;
+        let y = a.y;
+        a.x = b.x;
+        a.y = b.y;
+        b.x = x;
+        b.y = y;
+        16
+    } else {
+        0
+    }
+}
+
+fn seek_row(head: &mut RasterHead, tail: &RasterTail, row: u8) {
+    let row = row.max(tail.top).min(tail.bottom);
+    head.long_x += head.long_step * (row - tail.top) as i32;
+    if row >= tail.middle {
+        head.short_x = tail.lower_x + tail.lower_step * (row - tail.middle) as i32;
+        head.short_step = tail.lower_step;
+    } else {
+        head.short_x += head.short_step * (row - tail.top) as i32;
+    }
+}
+
+fn raster_rows_reference(
+    head: &mut RasterHead,
+    tail: &RasterTail,
+    band_y: u8,
+    pixels: &mut [u8; BAND_PIXELS],
+    paint: bool,
+) {
+    for y in tail.top.max(band_y)..tail.bottom.min(band_y + 8) {
+        if y == tail.middle {
+            head.short_x = tail.lower_x;
+            head.short_step = tail.lower_step;
+        }
+        let (left, right) = if tail.color_flags & 16 != 0 {
+            (head.long_x, head.short_x)
+        } else {
+            (head.short_x, head.long_x)
+        };
+        let first = ((left + 32767) >> 16).clamp(0, WIDTH as i32) as usize;
+        let end = ((right + 32767) >> 16).clamp(0, WIDTH as i32) as usize;
+        if paint && first < end {
+            let offset = (y - band_y) as usize * WIDTH;
+            pixels[offset + first..offset + end].fill(tail.color_flags & 15);
+        }
+        head.long_x += head.long_step;
+        head.short_x += head.short_step;
+    }
 }
 
 /// Approximate VIC-II palette for host previews and quantization distances.
@@ -765,30 +951,5 @@ mod tests {
         assert_eq!(core::mem::offset_of!(Renderer, triangles), 6);
         assert_eq!(core::mem::size_of::<Renderer>(), 4102);
     }
-    #[test]
-    fn cached_slopes_and_short_divider_preserve_every_band_pixel() {
-        let mut state = 0x0915_ba74u32;
-        for _ in 0..400 {
-            let mut triangle = Triangle::EMPTY;
-            for i in 0..3 {
-                state = state.wrapping_mul(1664525).wrapping_add(1013904223);
-                triangle.x[i] = (state % 1600) as i16 - 700;
-                state = state.wrapping_mul(1664525).wrapping_add(1013904223);
-                triangle.y[i] = (state % 1600) as i16 - 700;
-            }
-            triangle.color = 7;
-            let slopes = triangle_slopes(&triangle);
-            for band in 0..25 {
-                let mut reference = [0; BAND_PIXELS];
-                let mut cached = [0; BAND_PIXELS];
-                raster_triangle(&triangle, band * 8, &mut reference, None);
-                raster_triangle(&triangle, band * 8, &mut cached, Some(&slopes));
-                assert_eq!(
-                    cached, reference,
-                    "triangle {:?}/{:?}, band {band}",
-                    triangle.x, triangle.y
-                );
-            }
-        }
-    }
+    include!("../tools/raster-fixtures.inc.rs");
 }

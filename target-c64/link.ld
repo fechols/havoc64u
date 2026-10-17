@@ -112,6 +112,14 @@ __pixel_band_start = 0x8C00;
 __pixel_band_end = 0x9100;
 __projection_cache_start = __pixel_band_start;
 __projection_cache_end = __projection_cache_start + 0x0280;
+/* PIXELS consumes the sorted 16-byte commands into persistent edge heads.
+ * Twelve-byte tails and ordered band masks replace the old slope workspace. */
+__raster_heads_start = 0xD000;
+__raster_heads_end = 0xE000;
+__raster_tails_start = 0x6000;
+__raster_tails_end = 0x6C00;
+__raster_masks_start = 0x6C00;
+__raster_masks_end = 0x6F20;
 
 ASSERT(__rc31 == 0x21, "IRQ save range must match compiler imaginary registers")
 ASSERT(__resident_end <= 0x3000, "resident code exceeds $0801-$2FFF")
@@ -126,8 +134,13 @@ ASSERT(SIZEOF(.tables) <= 0x0700, "resident tables exceed $9900-$9FFF")
 ASSERT(SIZEOF(.phase.boot) <= 0x4200, "BOOT overlay exceeds $3000-$71FF")
 ASSERT(SIZEOF(.phase.sim) <= 0x4200, "SIM overlay exceeds $3000-$71FF")
 ASSERT(SIZEOF(.phase.geometry) <= 0x4200, "GEOMETRY overlay exceeds $3000-$71FF")
-ASSERT(SIZEOF(.phase.pixels) <= 0x3000, "PIXELS overlay overlaps $6000-$6BFF slope cache")
+ASSERT(SIZEOF(.phase.pixels) <= 0x3000, "PIXELS overlay overlaps prepared edges at $6000")
 ASSERT(__projection_cache_start >= __pixel_band_start && __projection_cache_end <= __pixel_band_end, "projection cache exceeds shared pixel-band workspace")
+ASSERT(__projection_cache_start + 624 <= __projection_cache_end, "depth-sort scratch exceeds retired projection cache")
+ASSERT(__raster_heads_end - __raster_heads_start == 256 * 16, "incorrect raster head allocation")
+ASSERT(__raster_tails_end - __raster_tails_start == 256 * 12, "incorrect raster tail allocation")
+ASSERT(__raster_masks_start >= __raster_tails_end && __raster_masks_end - __raster_masks_start == 25 * 32, "incorrect ordered band mask allocation")
+ASSERT(__raster_masks_end <= __irq_stack_bottom, "prepared raster data overlaps IRQ stack")
 
 OUTPUT_FORMAT {
     SHORT(ORIGIN(ram))

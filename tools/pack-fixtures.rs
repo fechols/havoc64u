@@ -26,6 +26,37 @@ fn main(){
         if case%7==0 {old_screen.fill(0);old_color.fill(0);}
         save(dir,id,&pixels,&old_screen,&old_color);id+=1;
     }
+    // Exercise the exact-color shortcut at one through five nonblack colors,
+    // including the three/four-color boundary, HUD minorities, ranking ties,
+    // empty old slots, retained slots and duplicate old colors.
+    for nonblack in 1..=5usize {
+        for variant in 0..8usize {
+            let mut pixels=[0;1280];let mut old_screen=[0;40];let mut old_color=[0;40];
+            for cell in 0..40usize {
+                let colors: [u8;5]=core::array::from_fn(|i|1+((cell*7+i*3)%15)as u8);
+                let old=match variant {
+                    0 => [0,0,0],
+                    1 => [colors[0],colors[1],colors[2]],
+                    2 => [colors[2],colors[0],colors[1]],
+                    3 => [colors[0];3],
+                    4 => [colors[1],colors[1],colors[2]],
+                    5 => [colors[4],0,colors[0]],
+                    6 => [0,colors[2],0],
+                    _ => [colors[2],colors[1],colors[0]],
+                };
+                old_screen[cell]=(old[0]<<4)|old[1];old_color[cell]=old[2];
+                for row in 0..8usize {for col in 0..4usize {
+                    let index=row*4+col;
+                    let selected=if variant&4!=0 && index<24 {0}else{index%nonblack};
+                    let mut pixel=colors[selected];
+                    if variant&1!=0 && index>=30 {pixel=0;}
+                    if variant&2!=0 && selected==nonblack-1 {pixel|=render::HUD_INK;}
+                    pixels[row*160+cell*4+col]=pixel;
+                }}
+            }
+            save(dir,id,&pixels,&old_screen,&old_color);id+=1;
+        }
+    }
     let common=host::common_bank();let bank=AssetBank::new(&common).unwrap();
     for scene in 0..5 {
         let game=if scene==0 {Game::new()}else{Game::preview_at(scene-1,5000)};

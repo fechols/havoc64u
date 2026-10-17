@@ -7,6 +7,7 @@ pub mod hud;
 pub mod math;
 pub mod projection;
 pub mod render;
+pub mod sky_cache;
 
 #[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]
 pub struct Vec3 {
@@ -40,9 +41,7 @@ pub fn emit_mesh(
     let mut vertices = [Vec3 { x: 0, y: 0, z: 0 }; CACHED_VERTICES];
     let transform = MeshTransform {
         position,
-        yaw,
-        pitch,
-        roll,
+        rotation: math::PreparedRotation::new(yaw, pitch, roll),
         scale_q8,
         id,
     };
@@ -66,9 +65,7 @@ pub fn emit_mesh(
 
 struct MeshTransform {
     position: Vec3,
-    yaw: u8,
-    pitch: u8,
-    roll: u8,
+    rotation: math::PreparedRotation,
     scale_q8: i16,
     id: u8,
 }
@@ -81,12 +78,18 @@ fn transformed_mesh_vertex(
     index: u8,
 ) -> Vec3 {
     let v = bank.vertex(transform.id, index);
-    let v = Vec3 {
-        x: math::mul_q8(v.x, transform.scale_q8),
-        y: math::mul_q8(v.y, transform.scale_q8),
-        z: math::mul_q8(v.z, transform.scale_q8),
+    // Multiplication by Q8 identity is exact for every i16, including negative
+    // coordinates. All shipped meshes use it, so avoid three wide multiplies.
+    let v = if transform.scale_q8 == 256 {
+        v
+    } else {
+        Vec3 {
+            x: math::mul_q8(v.x, transform.scale_q8),
+            y: math::mul_q8(v.y, transform.scale_q8),
+            z: math::mul_q8(v.z, transform.scale_q8),
+        }
     };
-    let v = math::rotate(v, transform.yaw, transform.pitch, transform.roll);
+    let v = transform.rotation.apply(v);
     Vec3 {
         x: v.x.saturating_add(transform.position.x),
         y: v.y.saturating_add(transform.position.y),

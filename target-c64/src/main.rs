@@ -12,6 +12,7 @@ use havoc::{
     game::{Game, Hud, InputSample},
     hud,
     render::{self, Renderer},
+    sky_cache::SkyCache,
 };
 
 #[link_section = ".renderer"]
@@ -48,6 +49,10 @@ pub static mut TEST_INPUT: u8 = 0xff;
 pub static mut PROF_PHASE: u8 = 0;
 #[no_mangle]
 pub static mut PROF_DETAIL: u8 = 0;
+#[no_mangle]
+pub static mut SKY_CACHE: SkyCache = SkyCache::new();
+#[no_mangle]
+pub static mut SKY_BANDS: u32 = 0;
 // Host-monitored benchmark controls are absent from production builds.
 #[cfg(feature = "benchmarks")]
 #[no_mangle]
@@ -470,29 +475,53 @@ unsafe fn prepare_geometry(current: u8, bank: &AssetBank<'_>) {
     renderer.begin(6);
     game.render(renderer, bank, &Segment::from_validated(data));
     renderer.finish();
+    SKY_BANDS = renderer.static_sky_bands();
     FRAME_TRIANGLES = renderer.triangle_count;
     FRAME_DROPPED = renderer.dropped;
 }
 #[link_section = ".phase.pixels"]
 #[inline(never)]
 unsafe fn draw_pixels(status: &Hud) -> u8 {
-    let renderer = RENDERER.assume_init_ref();
+    let renderer = RENDERER.assume_init_mut();
     let front = rd(core::ptr::addr_of!(FRONT_BANK));
     let back = if front == 3 { 2 } else { 3 };
     let front_screen = if front == 3 { 0xc000 } else { 0x8000 };
     let back_screen = if back == 3 { 0xc000 } else { 0x8000 };
     let back_bitmap = if back == 3 { 0xe000 } else { 0xa000 };
+    let eligible = SkyCache::eligible_bands(SKY_BANDS, status);
+    let mut reusable = SKY_CACHE.reusable_bands() & eligible;
+    // Preparation belongs to raster time, including before the opaque HUD band.
+    wr(core::ptr::addr_of_mut!(PROF_DETAIL), 1);
+    let Some(mut pass) = renderer.raster_pass() else {
+        fail(b"RASTER COMMANDS ALREADY CONSUMED")
+    };
     for band in 0..25u8 {
-        wr(core::ptr::addr_of_mut!(PROF_DETAIL), 1);
+        if band != 0 {
+            wr(core::ptr::addr_of_mut!(PROF_DETAIL), 1);
+        }
         let pixels = &mut *(0x8c00 as *mut [u8; 1280]);
-        renderer.render_band(band, pixels);
-        wr(core::ptr::addr_of_mut!(PROF_DETAIL), 2);
-        hud::draw(band, pixels, status, FRAME_SERIAL);
         let offset = band as u16 * 40;
         let previous_screen = &*((front_screen + offset) as *const [u8; 40]);
+        let screen = &mut *((back_screen + offset) as *mut [u8; 40]);
+        let reuse_sky = reusable & 1 != 0 && SkyCache::screens_match(previous_screen, screen);
+        reusable >>= 1;
+        // The cockpit completely replaces these two bands. Edge state still
+        // advances so triangles crossing their boundaries remain continuous.
+        let paint_scene = !reuse_sky
+            && (status.mode == havoc::game::Mode::Title || (band != 0 && band != 24));
+        if pass.next_band(pixels, paint_scene) != Some(band) {
+            fail(b"INVALID RASTER BAND ORDER")
+        }
+        if reuse_sky {
+            // Both banks contain the same static pixels and exact palette.
+            // Keep the back bitmap/screen and the current front color shadow.
+            continue;
+        }
+        wr(core::ptr::addr_of_mut!(PROF_DETAIL), 2);
+        hud::draw(band, pixels, status, FRAME_SERIAL);
         let previous_color = &*((0x9100 + offset) as *const [u8; 40]);
-        let bitmap = &mut *(0x7600 as *mut [u8; 320]);
-        let screen = &mut *(0x7740 as *mut [u8; 40]);
+        let bitmap = &mut *((back_bitmap + band as u16 * 320) as *mut [u8; 320]);
+        // Stage only color: previous_color and mutable colors must not alias.
         let color = &mut *(0x7768 as *mut [u8; 40]);
         wr(core::ptr::addr_of_mut!(PROF_DETAIL), 3);
         render::pack_band(
@@ -504,14 +533,9 @@ unsafe fn draw_pixels(status: &Hud) -> u8 {
             color,
         );
         wr(core::ptr::addr_of_mut!(PROF_DETAIL), 4);
-        core::ptr::copy_nonoverlapping(
-            bitmap.as_ptr(),
-            (back_bitmap + band as u16 * 320) as *mut u8,
-            320,
-        );
-        core::ptr::copy_nonoverlapping(screen.as_ptr(), (back_screen + offset) as *mut u8, 40);
         core::ptr::copy_nonoverlapping(color.as_ptr(), (0x9100 + offset) as *mut u8, 40);
     }
+    SKY_CACHE.record_frame(back, eligible);
     wr(core::ptr::addr_of_mut!(PROF_DETAIL), 0);
     back
 }

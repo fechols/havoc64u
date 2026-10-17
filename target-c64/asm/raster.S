@@ -1,48 +1,93 @@
-; Exact flat-triangle row walker. C ABI: job pointer rc2/3, pixels rc4/5.
-; Job layout: three 12-byte edges {i16 y0,y1; i32 x,step}, followed by
-; u8 first_y,end_y,band_y,color. Pixel rows are always within 0..199.
-; rc6..13 and $77A0..$77B5 are volatile main-thread scratch. The pack kernel
-; reuses this scratch later; audio IRQ never accesses it. rc20..31 are kept.
-.set RR_ROW, $77a0
-.set RR_END, $77a1
-.set RR_COLOR, $77a2
-.set RR_LEFT, $77a4
-.set RR_RIGHT, $77a8
-.set RR_VALUE, $77ac
-.set RR_EDGES, $77b0
-.set RR_FIRST, $77b1
-.set RR_LAST, $77b2
+; Persistent Q16 two-edge row walker. C ABI: job pointer in rc2/3.
+; Job: head pointer, tail pointer, pixels pointer, u8 band_y, u8 paint.
+; Head16: i32 long_x,long_step,short_x,short_step.
+; Tail12: i32 lower_x,lower_step; u8 top,middle,bottom,color_flags.
+; flags bit4: long is left. Caller owns sequential bands and ordered masks.
+; rc2..13 and $77A0-$77AA are volatile; IRQ never accesses private scratch.
+.zeropage __rc2
+.zeropage __rc3
+.zeropage __rc4
+.zeropage __rc5
+.zeropage __rc6
+.zeropage __rc7
+.zeropage __rc8
+.zeropage __rc9
+.zeropage __rc10
+.zeropage __rc11
+.zeropage __rc12
+.zeropage __rc13
+.set RR_BAND, $77a0
+.set RR_PAINT, $77a1
+.set RR_ROW, $77a2
+.set RR_END, $77a3
+.set RR_COLOR, $77a4
+.set RR_MIDDLE, $77a5
+.set RR_FLAGS, $77a6
+.set RR_FIRST, $77a7
+.set RR_LAST, $77a8
+.set RR_BOUND, $77a9
+.set RR_OFFSET, $77aa
 
-.section .phase.pixels,"ax",@progbits
+.section .tables.raster,"ax",@progbits
 .globl fast_raster_rows
 fast_raster_rows:
-    lda __rc2
-    sta __rc6
-    lda __rc3
-    sta __rc7
-    lda __rc4
-    sta __rc8
-    lda __rc5
-    sta __rc9
-    ldy #36
-    lda (__rc6),y
-    sta RR_ROW
+    ldy #0
+    lda (__rc2),y
+    sta __rc4
     iny
-    cmp (__rc6),y
-    bne .Lrr_nonempty
-    rts
-.Lrr_nonempty:
-    lda (__rc6),y
+    lda (__rc2),y
+    sta __rc5
+    iny
+    lda (__rc2),y
+    sta __rc6
+    iny
+    lda (__rc2),y
+    sta __rc7
+    iny
+    lda (__rc2),y
+    sta __rc8
+    iny
+    lda (__rc2),y
+    sta __rc9
+    iny
+    lda (__rc2),y
+    sta RR_BAND
+    sta RR_ROW
+    clc
+    adc #8
     sta RR_END
     iny
-    lda RR_ROW
-    sec
-    sbc (__rc6),y
-    tax
+    lda (__rc2),y
+    sta RR_PAINT
+    ldy #8
+    lda (__rc6),y
+    cmp RR_ROW
+    bcc .Lrr_top
+    sta RR_ROW
+.Lrr_top:
     iny
     lda (__rc6),y
+    sta RR_MIDDLE
+    iny
+    lda (__rc6),y
+    cmp RR_END
+    bcs .Lrr_bottom
+    sta RR_END
+.Lrr_bottom:
+    lda RR_ROW
+    cmp RR_END
+    bcc .Lrr_nonempty
+    rts
+.Lrr_nonempty:
+    iny
+    lda (__rc6),y
+    sta RR_FLAGS
+    and #15
     sta RR_COLOR
-    cpx #0
+    sec
+    lda RR_ROW
+    sbc RR_BAND
+    tax
     beq .Lrr_row
 .Lrr_initial_row:
     clc
@@ -55,199 +100,285 @@ fast_raster_rows:
     dex
     bne .Lrr_initial_row
 .Lrr_row:
-    lda #$ff
-    sta RR_LEFT
-    sta RR_LEFT+1
-    sta RR_LEFT+2
-    lda #$7f
-    sta RR_LEFT+3
-    lda #0
-    sta RR_RIGHT
-    sta RR_RIGHT+1
-    sta RR_RIGHT+2
-    lda #$80
-    sta RR_RIGHT+3
-    lda __rc6
-    sta __rc10
-    lda __rc7
-    sta __rc11
-    lda #3
-    sta RR_EDGES
-.Lrr_edge:
-    ; Active iff y >= y0 and y < y1. y is an unsigned visible scanline;
-    ; negative/large signed endpoints can therefore be rejected cheaply.
-    ldy #1
-    lda (__rc10),y
-    bmi .Lrr_check_end
-    beq .Lrr_check_start_low
-    jmp .Lrr_next_edge
-.Lrr_check_start_low:
-    dey
     lda RR_ROW
-    cmp (__rc10),y
-    bcs .Lrr_check_end
-    jmp .Lrr_next_edge
-.Lrr_check_end:
-    ldy #3
-    lda (__rc10),y
-    bpl .Lrr_check_end_nonnegative
-    jmp .Lrr_next_edge
-.Lrr_check_end_nonnegative:
-    bne .Lrr_active
-    dey
-    lda RR_ROW
-    cmp (__rc10),y
-    bcc .Lrr_active
-    jmp .Lrr_next_edge
-.Lrr_active:
-    ldy #4
-    ldx #0
-.Lrr_read_x:
-    lda (__rc10),y
-    sta RR_VALUE,x
-    iny
-    inx
-    cpx #4
-    bne .Lrr_read_x
-    ; Signed 32-bit minimum, using a biased most-significant byte.
-    lda RR_VALUE+3
-    eor #$80
-    sta RR_FIRST
-    lda RR_LEFT+3
-    eor #$80
-    cmp RR_FIRST
-    bcc .Lrr_maximum
-    bne .Lrr_set_minimum
-    ldx #2
-.Lrr_compare_minimum:
-    lda RR_LEFT,x
-    cmp RR_VALUE,x
-    bcc .Lrr_maximum
-    bne .Lrr_set_minimum
-    dex
-    bpl .Lrr_compare_minimum
-    jmp .Lrr_maximum
-.Lrr_set_minimum:
-    ldx #3
-.Lrr_copy_minimum:
-    lda RR_VALUE,x
-    sta RR_LEFT,x
-    dex
-    bpl .Lrr_copy_minimum
-.Lrr_maximum:
-    lda RR_RIGHT+3
-    eor #$80
-    cmp RR_FIRST
-    bcc .Lrr_set_maximum
-    bne .Lrr_advance_edge
-    ldx #2
-.Lrr_compare_maximum:
-    lda RR_RIGHT,x
-    cmp RR_VALUE,x
-    bcc .Lrr_set_maximum
-    bne .Lrr_advance_edge
-    dex
-    bpl .Lrr_compare_maximum
-    jmp .Lrr_advance_edge
-.Lrr_set_maximum:
-    ldx #3
-.Lrr_copy_maximum:
-    lda RR_VALUE,x
-    sta RR_RIGHT,x
-    dex
-    bpl .Lrr_copy_maximum
-.Lrr_advance_edge:
+    cmp RR_MIDDLE
+    bne .Lrr_span
     clc
-    ldy #8
-    lda (__rc10),y
-    adc RR_VALUE
-    ldy #4
-    sta (__rc10),y
-    ldy #9
-    lda (__rc10),y
-    adc RR_VALUE+1
-    ldy #5
-    sta (__rc10),y
-    ldy #10
-    lda (__rc10),y
-    adc RR_VALUE+2
-    ldy #6
-    sta (__rc10),y
-    ldy #11
-    lda (__rc10),y
-    adc RR_VALUE+3
+    lda __rc4
+    adc #8
+    sta __rc12
+    lda __rc5
+    adc #0
+    sta __rc13
     ldy #7
-    sta (__rc10),y
-.Lrr_next_edge:
-    clc
-    lda __rc10
-    adc #12
-    sta __rc10
-    bcc .Lrr_edge_no_carry
-    inc __rc11
-.Lrr_edge_no_carry:
-    dec RR_EDGES
-    beq .Lrr_span
-    jmp .Lrr_edge
+.Lrr_lower:
+    lda (__rc6),y
+    sta (__rc12),y
+    dey
+    bpl .Lrr_lower
 .Lrr_span:
-    ; Clamping is monotonic, so empty/reversed bounds remain empty after
-    ; rounding ((x + 127) >> 8) and clamping to [0,160].
-    ldx #0
-    jsr .Lrr_clamp_bound
+    lda RR_PAINT
+    bne .Lrr_paint
+    jmp .Lrr_advance
+.Lrr_paint:
+    lda RR_FLAGS
+    and #16
+    beq .Lrr_short_left
+    ldy #0
+    lda #8
+    bne .Lrr_bounds
+.Lrr_short_left:
+    ldy #8
+    lda #0
+.Lrr_bounds:
+    sta RR_OFFSET
+    jsr .Lrr_clamp
     sta RR_FIRST
-    ldx #4
-    jsr .Lrr_clamp_bound
+    ldy RR_OFFSET
+    jsr .Lrr_clamp
     sta RR_LAST
     sec
     sbc RR_FIRST
-    beq .Lrr_next_row
-    bcc .Lrr_next_row
+    beq .Lrr_advance
+    bcc .Lrr_advance
     tay
     clc
     lda __rc8
     adc RR_FIRST
-    sta __rc12
+    sta __rc10
     lda __rc9
     adc #0
-    sta __rc13
+    sta __rc11
     lda RR_COLOR
 .Lrr_fill:
     dey
-    sta (__rc12),y
+    sta (__rc10),y
     cpy #0
     bne .Lrr_fill
-.Lrr_next_row:
+.Lrr_advance:
+    clc
+    ldy #4
+    lda (__rc4),y
+    ldy #0
+    adc (__rc4),y
+    sta (__rc4),y
+    ldy #5
+    lda (__rc4),y
+    ldy #1
+    adc (__rc4),y
+    sta (__rc4),y
+    ldy #6
+    lda (__rc4),y
+    ldy #2
+    adc (__rc4),y
+    sta (__rc4),y
+    ldy #7
+    lda (__rc4),y
+    ldy #3
+    adc (__rc4),y
+    sta (__rc4),y
+    clc
+    ldy #12
+    lda (__rc4),y
+    ldy #8
+    adc (__rc4),y
+    sta (__rc4),y
+    ldy #13
+    lda (__rc4),y
+    ldy #9
+    adc (__rc4),y
+    sta (__rc4),y
+    ldy #14
+    lda (__rc4),y
+    ldy #10
+    adc (__rc4),y
+    sta (__rc4),y
+    ldy #15
+    lda (__rc4),y
+    ldy #11
+    adc (__rc4),y
+    sta (__rc4),y
     inc RR_ROW
     lda RR_ROW
     cmp RR_END
-    bne .Lrr_more_rows
+    bne .Lrr_more
     rts
-.Lrr_more_rows:
+.Lrr_more:
     clc
     lda __rc8
     adc #160
     sta __rc8
-    bcc .Lrr_row_no_carry
+    bcc .Lrr_no_carry
     inc __rc9
-.Lrr_row_no_carry:
+.Lrr_no_carry:
     jmp .Lrr_row
-.Lrr_clamp_bound:
-    lda RR_LEFT+3,x
-    bmi .Lrr_clamp_zero
-    ora RR_LEFT+2,x
-    bne .Lrr_clamp_width
+.Lrr_clamp:
     clc
-    lda RR_LEFT,x
+    lda (__rc4),y
+    adc #255
+    iny
+    lda (__rc4),y
     adc #127
-    lda RR_LEFT+1,x
+    iny
+    lda (__rc4),y
     adc #0
-    bcs .Lrr_clamp_width
+    sta RR_BOUND
+    iny
+    lda (__rc4),y
+    adc #0
+    bmi .Lrr_zero
+    bne .Lrr_width
+    lda RR_BOUND
     cmp #160
-    bcs .Lrr_clamp_width
+    bcs .Lrr_width
     rts
-.Lrr_clamp_width:
-    lda #160
-    rts
-.Lrr_clamp_zero:
+.Lrr_zero:
     lda #0
     rts
+.Lrr_width:
+    lda #160
+    rts
+
+; Conservative static-sky bounds. C ABI commands rc2/3, count A/X;
+; result low word A/X and high word rc2/3. Renderer checks clear/state/drop.
+; Count can be256; byte loop counters deliberately wrap only in that case.
+.set SK_COUNT, $77a0
+.set SK_LOOP, $77a1
+.set SK_CLOUDS, $77a2
+.set SK_MASK, $77a4
+.set SK_MIN, $77a8
+.set SK_MAX, $77a9
+.set SK_END, $77aa
+.set SK_BIT, $77ab
+.set SK_TEMP, $77ac
+.set SK_BAND, $77ad
+.section .phase.geometry,"ax",@progbits
+.globl fast_static_sky_bands
+fast_static_sky_bands:
+    sta SK_COUNT
+    cpx #0
+    bne .Lsky_begin
+    cmp #0
+    bne .Lsky_begin
+    jmp .Lsky_none
+.Lsky_begin:
+    lda __rc2
+    sta __rc4
+    lda __rc3
+    sta __rc5
+    lda #0
+    sta SK_LOOP
+    sta SK_CLOUDS
+    lda #255
+    sta SK_MASK
+    sta SK_MASK+1
+    sta SK_MASK+2
+    lda #1
+    sta SK_MASK+3
+.Lsky_triangle:
+    ldy #15
+    lda (__rc4),y
+    and #2
+    beq .Lsky_bounds
+    inc SK_CLOUDS
+    jmp .Lsky_next
+.Lsky_bounds:
+    lda #200
+    sta SK_MIN
+    lda #0
+    sta SK_MAX
+    ldy #6
+.Lsky_vertex:
+    jsr .Lsky_clamp_y
+    cmp SK_MIN
+    bcs .Lsky_minimum
+    sta SK_MIN
+.Lsky_minimum:
+    cmp SK_MAX
+    bcc .Lsky_maximum
+    sta SK_MAX
+.Lsky_maximum:
+    iny
+    cpy #12
+    bne .Lsky_vertex
+    lda SK_MIN
+    cmp SK_MAX
+    bcs .Lsky_next
+    lsr
+    lsr
+    lsr
+    sta SK_BAND
+    lda SK_MAX
+    clc
+    adc #7
+    lsr
+    lsr
+    lsr
+    sta SK_END
+.Lsky_clear_band:
+    lda SK_BAND
+    and #7
+    tax
+    lda .Lsky_bits,x
+    sta SK_BIT
+    lda SK_BAND
+    lsr
+    lsr
+    lsr
+    tax
+    lda SK_MASK,x
+    and SK_BIT
+    sta SK_MASK,x
+    inc SK_BAND
+    lda SK_BAND
+    cmp SK_END
+    bcc .Lsky_clear_band
+.Lsky_next:
+    clc
+    lda __rc4
+    adc #16
+    sta __rc4
+    bcc .Lsky_pointer
+    inc __rc5
+.Lsky_pointer:
+    inc SK_LOOP
+    lda SK_LOOP
+    cmp SK_COUNT
+    beq .Lsky_done
+    jmp .Lsky_triangle
+.Lsky_done:
+    lda SK_CLOUDS
+    cmp #9
+    bne .Lsky_none
+    lda SK_MASK+2
+    sta __rc2
+    lda SK_MASK+3
+    sta __rc3
+    lda SK_MASK
+    ldx SK_MASK+1
+    rts
+.Lsky_none:
+    lda #0
+    tax
+    sta __rc2
+    sta __rc3
+    rts
+.Lsky_clamp_y:
+    lda (__rc4),y
+    sta SK_TEMP
+    iny
+    lda (__rc4),y
+    bmi .Lsky_zero
+    bne .Lsky_height
+    lda SK_TEMP
+    cmp #200
+    bcs .Lsky_height
+    rts
+.Lsky_zero:
+    lda #0
+    rts
+.Lsky_height:
+    lda #200
+    rts
+.Lsky_bits:
+    .byte $fe,$fd,$fb,$f7,$ef,$df,$bf,$7f

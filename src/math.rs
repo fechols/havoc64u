@@ -44,6 +44,62 @@ pub fn rotate(mut v: Vec3, yaw: u8, pitch: u8, roll: u8) -> Vec3 {
     v
 }
 
+/// Trigonometry shared by every vertex of one mesh. Keep the original sequence
+/// of Q8 products: combining these rotations into a matrix changes rounding.
+pub(crate) struct PreparedRotation {
+    axes: [[i16; 2]; 3],
+    active: u8,
+}
+
+impl PreparedRotation {
+    #[inline(never)]
+    #[cfg_attr(target_arch = "mos", link_section = ".phase.geometry")]
+    pub(crate) fn new(yaw: u8, pitch: u8, roll: u8) -> Self {
+        Self {
+            axes: [
+                rotation_axis(yaw),
+                rotation_axis(pitch),
+                rotation_axis(roll),
+            ],
+            active: (yaw != 0) as u8 | (((pitch != 0) as u8) << 1) | (((roll != 0) as u8) << 2),
+        }
+    }
+
+    #[inline(never)]
+    #[cfg_attr(target_arch = "mos", link_section = ".phase.geometry")]
+    pub(crate) fn apply(&self, mut v: Vec3) -> Vec3 {
+        if self.active & 1 != 0 {
+            // Swapping yaw's coordinates shares the exact same pair rotation
+            // as pitch/roll without negating a Q8 product before rounding.
+            (v.z, v.x) = rotate_pair(v.z, v.x, &self.axes[0]);
+        }
+        if self.active & 2 != 0 {
+            (v.y, v.z) = rotate_pair(v.y, v.z, &self.axes[1]);
+        }
+        if self.active & 4 != 0 {
+            (v.x, v.y) = rotate_pair(v.x, v.y, &self.axes[2]);
+        }
+        v
+    }
+}
+
+#[inline(never)]
+#[cfg_attr(target_arch = "mos", link_section = ".phase.geometry")]
+fn rotation_axis(angle: u8) -> [i16; 2] {
+    if angle == 0 {
+        [0, 256]
+    } else {
+        [sin8(angle), sin8(angle.wrapping_add(64))]
+    }
+}
+
+#[inline(never)]
+#[cfg_attr(target_arch = "mos", link_section = ".phase.geometry")]
+fn rotate_pair(a: i16, b: i16, axis: &[i16; 2]) -> (i16, i16) {
+    let [s, c] = *axis;
+    (mul_q8(a, c) - mul_q8(b, s), mul_q8(a, s) + mul_q8(b, c))
+}
+
 /// Quotient-only division uses the compact LLVM-MOS SDK runtime on the target.
 /// Avoid computing a remainder alongside it: that selects a much larger helper.
 /// A zero divisor has the deterministic saturated result `u32::MAX`.

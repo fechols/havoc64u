@@ -306,12 +306,17 @@ fn chase_camera_translates_the_scene_without_moving_world_geometry_or_title() {
     playing.render(&mut playing_geometry, &bank, &segment);
 
     // Starting via ordinary fire leaves the ship, terrain and animation at
-    // their initial world positions. Only gameplay adds two reticle faces.
+    // their initial world positions. Only gameplay adds two reticle faces;
+    // the nine distant cloud faces now remain fixed in camera space.
     let reticle_start = bank.face_count(PLAYER) as usize + 2;
     assert_eq!(playing_geometry.0.len(), title_geometry.0.len() + 2);
     for (index, &(vertices, color, flags)) in title_geometry.0.iter().enumerate() {
         let gameplay_index = index + usize::from(index >= reticle_start) * 2;
-        let shifted = vertices.map(|p| Vec3 { y: p.y - 40, ..p });
+        let shifted = if vertices[0].z > 2400 {
+            vertices
+        } else {
+            vertices.map(|p| Vec3 { y: p.y - 40, ..p })
+        };
         assert_eq!(playing_geometry.0[gameplay_index], (shifted, color, flags));
     }
     let mut world_ship = CapturedGeometry::default();
