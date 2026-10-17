@@ -829,14 +829,21 @@ def weapon_checks(mon, syms, failures, elf, dwarf_tool, output, result):
     baselines = [observe(flash, geometry=True) for _ in range(3)]
     def signature(command):
         return tuple(command["x"] + command["y"] + [command["depth"]])
-    # In this isolated centered fixture the hull is the only static geometry
-    # in this near-depth screen region. Intersect frames to discard exhaust,
-    # whose tip length animates, and moving terrain. Retain authored rear faces.
+    # Separate the centered exhaust by its screen region: a frame interval of
+    # eight ticks can alias its animation, so frame intersection alone cannot
+    # identify it. The orange rear hull face extends above this region and must
+    # still be checked for a white flash.
+    def exhaust_region(command):
+        return (command["depth"] < 160
+                and all(60 <= x <= 100 for x in command["x"])
+                and all(135 <= y <= 175 for y in command["y"]))
+    # Intersect the remaining near-depth geometry to discard moving terrain.
     def candidates(frame):
         return {signature(command): command["color"] for command in frame["triangles"]
                 if 150 <= command["depth"] <= 220
                 and all(40 <= x <= 120 for x in command["x"])
-                and all(100 <= y <= 175 for y in command["y"])}
+                and all(100 <= y <= 175 for y in command["y"])
+                and not exhaust_region(command)}
     normal = candidates(baselines[0])
     for frame in baselines[1:]:
         current = candidates(frame)
@@ -864,9 +871,7 @@ def weapon_checks(mon, syms, failures, elf, dwarf_tool, output, result):
         if any(current.get(key) != (1 if white else color) for key, color in normal.items()):
             raise RuntimeError("Hit flash hid hull geometry or did not preserve the expected white/normal colors")
         exhaust = [command for command in frame["triangles"] if command["color"] == 8
-                   and command["depth"] < 160 and signature(command) not in normal
-                   and all(60 <= x <= 100 for x in command["x"])
-                   and all(100 <= y <= 175 for y in command["y"])]
+                   and exhaust_region(command)]
         if len(exhaust) != 2:
             raise RuntimeError("Hit flash hid or recolored the two animated exhaust triangles")
         phase = "white" if white else "normal"

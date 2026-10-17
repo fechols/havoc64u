@@ -141,6 +141,23 @@ def fixtures():
     return result
 
 
+def cache_sequence():
+    """Entry/exit histories that can leave stale pixels in either VIC bank."""
+    base = next(fixture for fixture in fixtures() if fixture["name"] == "lowlands")
+
+    def variant(name, patch):
+        return dict(base, name=name, patch=dict(base["patch"], **patch))
+
+    occluder = variant("sky-occluder", {"actors[0].kind": 1, "actors[0].hp": 6,
+        "actors[0].origin_x": 0, "actors[0].origin_y": 340,
+        "actors[0].pos.x": 0, "actors[0].pos.y": 340, "actors[0].pos.z": 1100})
+    banner = variant("sector-banner", {"rail_ticks": 25})
+    boss = variant("boss-hud", {"boss_started": 1, "boss_z": 680,
+        "boss_left": 20, "boss_right": 20, "boss_core": 60})
+    title = variant("title-transition", {"mode": 0})
+    return [base]*3 + [occluder]*2 + [base]*3 + [banner]*2 + [base]*3 + [boss]*2 + [base]*3 + [title] + [base]*3
+
+
 def dma_events(events, phase_address):
     registers, transfers = {}, []
     phase = 0
@@ -196,6 +213,7 @@ def main():
     parser.add_argument("--ticks", default="0,10")
     parser.add_argument("--palettes", default="cold,retained")
     parser.add_argument("--real-time-ticks", type=int, default=400)
+    parser.add_argument("--skip-cache-checks", action="store_true", help="omit native cache transition A/B replay in quick timing runs")
     parser.add_argument("--compare", type=Path, help="matching baseline report.json")
     args = parser.parse_args()
     output, package = args.out_dir.resolve(), args.package_dir.resolve()
@@ -375,6 +393,7 @@ def main():
             mon.command(f'logname "{path.as_posix()}"')
             mon.command("log on")
             start = vice.counters(mon, syms)
+            cache_before = mon.read(syms["SKY_CACHE"], 8).hex() if "SKY_CACHE" in syms else None
             first_deadline = finish_timer_seed()
             mon.run_until(syms["geometry_complete"], failures)
             mon.command("bank ram")
@@ -383,6 +402,7 @@ def main():
             triangles_offset, _ = layouts.member("Renderer", "triangles")
             triangle_size = layouts.size("Triangle")
             geometry = [layouts.decode("Triangle", mon.read(renderer_address+triangles_offset+n*triangle_size, triangle_size)) for n in range(count)]
+            sky_bands = mon.integer(syms["SKY_BANDS"], 4) if "SKY_BANDS" in syms else None
             mon.command("bank cpu")
             mon.run_until(syms["frame_complete"], failures)
             end = vice.counters(mon, syms)
@@ -401,14 +421,21 @@ def main():
             end["sid"] = vice.sid_summary(path, events)
             if any(not end["sid"][chip]["gate_on"] for chip in ("left_d400", "right_d420")):
                 raise RuntimeError("Measured frame did not service live music on both SID chips")
+            if cache_before is not None:
+                cache_after = mon.read(syms["SKY_CACHE"], 8)
+                front = end["front_bank"]
+                end["sky_cache"] = {"before_hex": cache_before, "after_hex": cache_after.hex(),
+                                    "geometry_bands": sky_bands,
+                                    "eligible_bands": int.from_bytes(cache_after[(front-2)*4:(front-1)*4], "little"),
+                                    "reused_bands": 25 - sum(event["address"] == syms["PROF_DETAIL"] and event["value"] == 2 for event in events)}
             mon.command("bank ram")
             state = layouts.decode("Game", mon.read(game_address, layouts.size("Game")))
             end["stack_guards"] = {name: mon.integer(syms[name], 1) for name in ("__stack_bottom", "__irq_stack_bottom")}
             mon.command("bank cpu")
             native = native_bytes(mon, syms)
-            # Bit 4 caches triangle orientation for PIXELS. It is renderer
-            # bookkeeping, not projected geometry or a visible drawing flag.
-            comparable_geometry = [dict(triangle, reserved=triangle["reserved"] & ~4) for triangle in geometry]
+            # Bits 2/4 cache static-sky classification and orientation for
+            # PIXELS. The original renderer discarded both metadata values.
+            comparable_geometry = [dict(triangle, reserved=triangle["reserved"] & ~6) for triangle in geometry]
             end.update(geometry_sha256=semantic_hash(comparable_geometry), raw_geometry_sha256=semantic_hash(geometry),
                        game_sha256=semantic_hash(state), native_sha256=digest(native))
             if capture_image:
@@ -419,6 +446,16 @@ def main():
                 raise RuntimeError("Fixed-work frame dropped data or changed a stack guard")
             if end["dma"]["max_bytes"] > 1024:
                 raise RuntimeError("Runtime DMA exceeded the 1024-byte IRQ latency bound")
+            service = end["audio_service_cycles"]
+            if not service:
+                raise RuntimeError("No traced audio-service entries in measured frame")
+            lateness = [cycle - (first_deadline+index*period) for index, cycle in enumerate(service)]
+            end["audio_lateness_cycles"] = lateness
+            end["max_audio_lateness_ms"] = max(lateness)*1000/bus_hz
+            if min(lateness) < -2 or max(lateness) > bus_hz*0.002:
+                raise RuntimeError(f"Audio deadline/latency failure: {lateness}")
+            if end["audio_ticks"] != len(service):
+                raise RuntimeError("Audio counter does not match traced services")
             return end
 
         for fixture in chosen:
@@ -441,16 +478,6 @@ def main():
                         seeded = seed(fixture, ticks, palette == "cold", phase)
                         sample = measured_frame(folder, sample_index == 0)
                         sample.update(initial=seeded, cia_phase=phase)
-                        service = sample["audio_service_cycles"]
-                        if not service:
-                            raise RuntimeError("No traced audio-service entries in measured frame")
-                        lateness = [cycle - (sample["first_audio_deadline_cycles"]+index*period) for index, cycle in enumerate(service)]
-                        sample["audio_lateness_cycles"] = lateness
-                        sample["max_audio_lateness_ms"] = max(lateness)*1000/bus_hz
-                        if min(lateness) < -2 or max(lateness) > bus_hz*0.002:
-                            raise RuntimeError(f"Audio deadline/latency failure: {lateness}")
-                        if sample["audio_ticks"] != len(service):
-                            raise RuntimeError("Audio counter does not match traced services")
                         if case["samples"] and any(sample[key] != case["samples"][0][key] for key in ("geometry_sha256", "game_sha256", "native_sha256")):
                             raise RuntimeError("Identical fixture repeats changed geometry, game state, or pixels")
                         case["samples"].append(sample)
@@ -466,6 +493,44 @@ def main():
                         case["speedup"] = reference["median_cycles"]/case["median_cycles"]
                     print(f"BENCH {args.video} {fixture['name']} ticks={ticks} palette={palette}: {case['median_cycles']/bus_hz*1000:.3f}ms DMA={case['samples'][0]['dma']['bytes']}B", flush=True)
                     (output/"report.json").write_text(json.dumps(report, indent=2)+"\n")
+        if "SKY_CACHE" in syms and not args.skip_cache_checks:
+            cache_report = {"passed": False, "sequence": cache_sequence(), "runs": {}}
+            report["cache_checks"] = cache_report
+            for forced in (False, True):
+                name = "forced-misses" if forced else "normal-cache"
+                samples = []
+                cache_report["runs"][name] = samples
+                for index, fixture in enumerate(cache_report["sequence"]):
+                    folder = output / "cache-checks" / name / str(index)
+                    folder.mkdir(parents=True, exist_ok=True)
+                    if index == 0:
+                        word(syms["FRONT_BANK"], 3, 1)
+                    seed(fixture, 0, index == 0, 0)
+                    if forced:
+                        write(syms["SKY_CACHE"], bytes(8))
+                    sample = measured_frame(folder, False)
+                    samples.append(sample)
+                    mon.run_until(syms["benchmark_frame_ready"], failures)
+            normal, forced = [cache_report["runs"][name] for name in ("normal-cache", "forced-misses")]
+            for index, (cached, uncached) in enumerate(zip(normal, forced)):
+                for key in ("geometry_sha256", "game_sha256", "native_sha256"):
+                    if cached[key] != uncached[key]:
+                        raise RuntimeError(f"Cache transition {index} changed {key}")
+                if uncached["sky_cache"]["reused_bands"] != 0:
+                    raise RuntimeError("Forced cache miss unexpectedly reused a band")
+            if normal[2]["sky_cache"]["reused_bands"] <= 0:
+                raise RuntimeError("Stable native sky never exercised cache reuse")
+            stable = normal[2]["sky_cache"]["eligible_bands"]
+            if stable & ~normal[3]["sky_cache"]["eligible_bands"] == 0:
+                raise RuntimeError("Native occluder fixture did not invalidate a cached sky band")
+            if not stable & 0x78 or normal[8]["sky_cache"]["eligible_bands"] & 0x78:
+                raise RuntimeError("Sector banner cache exclusion was not exercised")
+            if not stable & 0x6 or normal[13]["sky_cache"]["eligible_bands"] & 0x6:
+                raise RuntimeError("Boss HUD cache exclusion was not exercised")
+            if normal[18]["sky_cache"]["eligible_bands"] or normal[19]["sky_cache"]["reused_bands"]:
+                raise RuntimeError("Title-to-playing transition reused stale sky")
+            cache_report["passed"] = True
+            print(f"CACHE {args.video}: {len(normal)} transition frames match forced misses exactly", flush=True)
         report["package_unchanged"] = all(digest(path.read_bytes()) == hashes[extension] for extension, path in (("prg", prg), ("reu", reu), ("elf", elf)))
         if not report["package_unchanged"]:
             raise RuntimeError("Input package changed during benchmarking")

@@ -80,11 +80,12 @@ Optional native checks run the assembly helpers in the LLVM-MOS 6502 simulator:
 source scripts/env.sh
 python3 tools/test-pack-kernel.py
 python3 tools/test-raster-kernel.py
+python3 tools/test-sort-kernel.py
 python3 tools/test-memcpy-kernel.py
 python3 tools/benchmark-division.py
 ```
 
-They compare the actual CPU output against independent reference results and check buffer guards. The packer covers 128 synthetic and game-image bands; the rasterizer covers 6,400 bands and 8,192,000 pixel bytes; memory copying covers 1,297 cases.
+They compare the actual CPU output against independent reference results and check buffer guards. The packer covers 168 synthetic and game-image bands; the rasterizer covers 25,600 band calls, including hidden bands and unaligned state; the stable sorter covers 108 sorts up to all 256 commands; memory copying covers 1,297 cases.
 
 The optional emulator checks use the calibrated `doomc64u/target/audit-fast/x64sc-64x` companion and ROMs from the sibling checkout. Override paths with `--vice` and `--roms` when needed. An unmodified companion may map the turbo setting to 48x, which invalidates a 64x timing comparison.
 
@@ -99,9 +100,9 @@ The smoke test checks the exact 10,000-byte native title, physical joystick port
 
 ## Implementation
 
-The display is native **160 x 200 multicolor bitmap mode**, with the C64's 16-color palette and normal per-cell restrictions. An eight-line software color band feeds a cell-palette packer; retained color slots reduce palette changes. There is no texture mapping. The renderer performs fixed-point transforms, near-plane clipping, painter sorting, and flat triangle rasterization into two VIC bitmap banks.
+The display is native **160 x 200 multicolor bitmap mode**, with the C64's 16-color palette and normal per-cell restrictions. An eight-line software color band feeds a cell-palette packer; retained color slots reduce palette changes. There is no texture mapping. The renderer performs fixed-point transforms, near-plane clipping, stable radix depth sorting, and flat triangle rasterization into two VIC bitmap banks. Persistent Q16 edges advance through the bands in a small assembly kernel. The packer writes directly to the hidden bitmap and screen, staging only color RAM.
 
-Four coarse terrain bands form hills and uneven canyon ridges around a level flight corridor. Shared edge heights stay anchored to world distance, and two flat color tones reveal the triangular facets. Three distant clouds add nine triangles, with white tops, light-gray undersides, and slow drift that continues across section boundaries. Terrain and sky use 38 triangles in the lowlands and carrier section, or 54 with canyon caps or base guide strips, including distant mountains and clouds. The hills are scenic; existing obstacle collisions and ground-object positions remain unchanged.
+Four coarse terrain bands form hills and uneven canyon ridges around a level flight corridor. Shared edge heights stay anchored to world distance, and two flat color tones reveal the triangular facets. Three distant clouds add nine triangles, with white tops and light-gray undersides. Clouds stay fixed in screen space across camera movement and mission progress. Unobstructed sky bands reuse the two existing bitmap buffers when both contain the same static sky and palette; moving geometry or HUD elements invalidate reuse. Terrain and sky use 38 triangles in the lowlands and carrier section, or 54 with canyon caps or base guide strips, including distant mountains and clouds. The hills are scenic; existing obstacle collisions and ground-object positions remain unchanged.
 
 Two UltiSIDs at **$D400/$D420** provide four music voices and two reserved effects voices. Original synthesized music runs on a 50 Hz CIA interrupt independently of rendering. Mission Lost now plays eight distinct phrases over **46.08 seconds** before repeating, compared with the original 4.48-second loop. Effects use SID oscillators, ADSR, and noise; there is no digital audio. The shipped mixer uses moderate left/right separation and matched 8580 settings.
 
@@ -109,15 +110,17 @@ Simulation uses fixed 20 ms steps, while joystick gestures use timestamped displ
 
 ## Current validation and performance
 
-The 2026-10-17 H.A.V.O.C. clouds and extended-score build passes **90 host tests**, including continuous ship geometry through every flash phase, missile targeting and bounded steering, carrier shielding, projectile-pool saturation, terrain and cloud continuity, cloud occlusion and retention in busy scenes, the full defeat-score loop, joystick controls, steerable roll dodges, and a complete five-minute mission driven by ordinary controls. Native PAL and NTSC checks pass for the exact title and subtitle, stereo music/effects, stack guards, physical vertical/roll controls, visible white/normal hit flashes, homing interception, targetless missile expiry, section-cache integrity, rendered-section consistency, and seeded victory/game-over restarts. Earlier native HUD captures verify **LASER CHARGE** when empty, partially charged, and after firing, plus **HOMING MISSILE** in both ready-color phases. Weapon and streaming checks use explicit encounter/section fixtures; charging and firing use real elapsed time and physical joystick input. A complete mission has not yet been played through on the target.
+The optimized renderer passes **111 host tests**, including shared-edge coverage, independent raster arithmetic, static clouds, palette reuse, gameplay, and a complete five-minute host mission. Native PAL and NTSC checks pass the exact title, stereo music/effects, stack guards, physical vertical/roll controls, visible white damage flashes, homing interception, targetless missile expiry, section streaming, and seeded victory/game-over restarts. Weapon and streaming checks use explicit encounter/section fixtures with physical joystick input; a complete mission has not yet been played through on the target.
 
-| Calibrated 64x VICE | Terrain baseline | H.A.V.O.C. rename | Clouds and extended score |
+| Calibrated 64x VICE, ordinary held-fire gameplay | Same-content baseline | Optimized renderer | Speedup |
 |---|---:|---:|---:|
-| PAL | 4.87 FPS | 4.62 FPS | 4.22 FPS |
-| NTSC | 5.11 FPS | 4.81 FPS | 4.36 FPS |
+| PAL | 3.845 FPS | 5.854 FPS | 1.52x |
+| NTSC | 3.998 FPS | 6.011 FPS | 1.50x |
 
-These measurements cover seven opening gameplay frames, exclude the title frame, and include REU transfers, interrupts, and presentation. Audio remains approximately 50 Hz. Title timing changes can shift the game states sampled by these opening frames; these feature changes are not performance optimizations. This sample does not measure a sustained homing-missile encounter. These results **do not meet the 25 FPS PAL / 30 FPS NTSC goals**, and they are not measurements of physical C64 Ultimate hardware or later, busier scenes. Rasterization and cell-palette packing remain expensive; the executable overlays also transfer 43,969 bytes per rendered frame. Rendering performance is the main unfinished goal.
+These ordinary-play samples span 400 audio ticks and measure completed frames after the first second, including simulation, REU transfers, live stereo audio, and publication. The frozen baseline receives the same static-cloud and pending weapon-SFX changes as the candidate. A separate fixed-work matrix compares identical title, lowlands, canyon, base, carrier, missile, full-pool, and section-boundary states with zero or ten simulation ticks and cold or retained palettes. See [docs/benchmarks.md](docs/benchmarks.md) for the protocol and results. These results **do not meet the 25 FPS PAL / 30 FPS NTSC goals**, and they are not physical C64 Ultimate measurements.
 
-Matching H.A.V.O.C. package hashes, raw timings, title captures, and control/weapon/streaming checks are in `target/vice/havoc-clouds-pal/report.json` and `target/vice/havoc-clouds-ntsc/report.json`. Native extended-score traces in `target/vice/havoc-defeat-pal` and `target/vice/havoc-defeat-ntsc` confirm all eight phrases, the exact 2,304-tick opening repeat, and approximately 50 Hz playback with intact stack guards. All four startup-corruption checks pass in `target/corrupt-package-havoc-clouds/summary.json`. Historical rename checks remain in `target/vice/havoc-rename-pal` and `target/vice/havoc-rename-ntsc`; HUD captures remain in `target/vice/weapon-labels-pal` and `target/vice/weapon-labels-ntsc`; the terrain baseline remains in `target/vice/terrain-pal` and `target/vice/terrain-ntsc`. Physical-machine display, audio, and full-mission testing remain outstanding.
+Resident assembly kernels occupy previously unused table space, but added preparation/cache code means this stage does **not** reduce total REU traffic: the benchmark transfers 45,682 bytes in 46 commands per ordinary frame, versus 44,281 bytes in 45 commands before optimization. The production build transfers 45,537 overlay bytes. The conditional compression experiment was not enabled: SIM (16,520 bytes) and GEOMETRY (16,882 bytes) exceed its 16,128-byte admission budget. Pixel processing and code transfers remain the next bottlenecks.
+
+Native kernel reports are under `target/raster-test`, `target/raster-prep-test`, `target/sort-test`, and `target/pack-test`. Matching production hashes, screenshots, and control/weapon/streaming checks are in `target/vice/havoc-optimized-{pal,ntsc}/report.json`; all four startup-corruption checks pass in `target/corrupt-package-havoc-optimized/summary.json`. Historical music and HUD evidence remains under `target/vice/havoc-defeat-{pal,ntsc}` and `target/vice/weapon-labels-{pal,ntsc}`. Physical-machine display, audio, and full-mission testing remain outstanding.
 
 Bootstrap ideas came from the neighboring `doomc64u` project, and Ultimate configuration examples from `secondreality`. The `ultrastarfox` disassembly is not copied into this project.
