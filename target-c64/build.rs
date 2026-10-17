@@ -53,6 +53,6 @@ fn main() {
     println!("cargo:rustc-link-arg=-Wl,--emit-relocs");
     println!(
         "cargo:rustc-link-arg=-Wl,-Map,{}",
-        output.join("sueme64.map").display()
+        output.join("havoc.map").display()
     );
 }

@@ -20,10 +20,10 @@ rust_bin = pathlib.Path(os.environ.get("CARGO_HOME", str(pathlib.Path.home()/".c
 os.environ["PATH"] = str(rust_bin) + os.pathsep + str(sdk) + os.pathsep + os.environ.get("PATH", "")
 
 subprocess.run(["cargo", "+stable", "build", "--lib"], cwd=root, check=True)
-libraries = list((root/"target/debug/deps").glob("libsueme64-*.rlib"))
+libraries = list((root/"target/debug/deps").glob("libhavoc-*.rlib"))
 library = max(libraries, key=lambda path: path.stat().st_mtime)
 subprocess.run(["rustc", "+stable", "--edition=2021", root/"tools/pack-fixtures.rs",
-                "--extern", f"sueme64={library}", "-L", f"dependency={root/'target/debug/deps'}",
+                "--extern", f"havoc={library}", "-L", f"dependency={root/'target/debug/deps'}",
                 "-o", build/"generate"], cwd=root, check=True)
 subprocess.run([build/"generate", build/"fixtures"], cwd=root, check=True)
 subprocess.run([sdk/"mos-c64-clang", "-c", root/"target-c64/asm/pack.S", "-o", build/"pack.o"], check=True)

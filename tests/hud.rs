@@ -1,4 +1,4 @@
-use sueme64::{
+use havoc::{
     game::{Hud, Mode},
     hud,
     render::{pack_band, HUD_INK},

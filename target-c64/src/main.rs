@@ -6,7 +6,7 @@ use core::{
     mem::MaybeUninit,
     ptr::{read_volatile as rd, write_volatile as wr},
 };
-use sueme64::{
+use havoc::{
     assets::{self, AssetBank, Segment},
     audio::{AudioEngine, SidBus, VideoStandard},
     game::{Game, Hud, InputSample},
@@ -259,7 +259,7 @@ unsafe fn load_initial_assets() {
     dma(0, 0x7600, 32);
     let header = core::slice::from_raw_parts(0x7600 as *const u8, 32);
     if assets::validate_header(header).is_err() {
-        fail(b"LOAD MATCHING SUEME64 REU AT ZERO")
+        fail(b"LOAD MATCHING H.A.V.O.C. REU AT ZERO")
     }
     for i in 0..4 {
         SEGMENT_CHECKSUMS[i] = assets::u16_at(header, 20 + i * 2);
@@ -434,7 +434,7 @@ unsafe fn publish(bank: u8, last: &mut u16) {
 #[link_section = ".phase.geometry"]
 #[inline(never)]
 unsafe fn prepare_geometry(current: u8, bank: &AssetBank<'_>) {
-    sueme64::projection::begin_frame();
+    havoc::projection::begin_frame();
     let game = GAME.assume_init_ref();
     let renderer = RENDERER.assume_init_mut();
     let data = segment_data(current);
@@ -550,7 +550,7 @@ unsafe fn simulate(runtime: &mut Runtime) -> Hud {
     }
     let desired = if matches!(
         game.hud().mode,
-        sueme64::game::Mode::GameOver | sueme64::game::Mode::Victory
+        havoc::game::Mode::GameOver | havoc::game::Mode::Victory
     ) {
         0
     } else {
@@ -600,7 +600,7 @@ pub unsafe extern "C" fn main() -> i32 {
     io_on();
     poke(0xd031, 0x8f);
     if peek(0xd031) != 0x8f {
-        fail(b"LOAD SUEME64 CFG: C64U TURBO REQUIRED")
+        fail(b"LOAD H.A.V.O.C. CFG: C64U TURBO REQUIRED")
     }
     check_code_package();
     boot_init();
@@ -635,5 +635,5 @@ pub unsafe extern "C" fn main() -> i32 {
 
 #[panic_handler]
 fn panic(_: &core::panic::PanicInfo) -> ! {
-    unsafe { fail(b"SUEME64 PANIC - RESET TO EXIT") }
+    unsafe { fail(b"H.A.V.O.C. PANIC - RESET TO EXIT") }
 }

@@ -1,4 +1,4 @@
-; Original SUEME64 hardware glue, using the LLVM-MOS C calling convention.
+; Original H.A.V.O.C. hardware glue, using the LLVM-MOS C calling convention.
 ; All interrupt-owned Rust code uses a separate software stack. -mlto-zp=0 is
 ; mandatory: only the fixed $02-$21 imaginary registers are saved below.
 
@@ -43,16 +43,16 @@
 
 ; Unlike the default C64 image, our .data VMA is below the PRG load address.
 .section .init.251,"ax",@progbits
-    jsr __sueme_copy_data
+    jsr __havoc_copy_data
 
 ; Reassert the runtime mapping immediately before the call to main.
 .section .init.999,"ax",@progbits
     lda #$35
     sta $01
 
-.section .text.__sueme_copy_data,"ax",@progbits
-.globl __sueme_copy_data
-__sueme_copy_data:
+.section .text.__havoc_copy_data,"ax",@progbits
+.globl __havoc_copy_data
+__havoc_copy_data:
     lda #<__data_load_start
     sta __rc2
     lda #>__data_load_start
@@ -65,12 +65,12 @@ __sueme_copy_data:
     sta __rc6
     lda #>__data_size
     sta __rc7
-    jmp __sueme_copy_bytes
+    jmp __havoc_copy_bytes
 
 ; Copy rc6/7 bytes from rc2/3 to rc4/5 without touching any compiler static
 ; frame. The page loop keeps the interrupt scratch backup cheap at 64 MHz.
-.section .text.__sueme_copy_bytes,"ax",@progbits
-__sueme_copy_bytes:
+.section .text.__havoc_copy_bytes,"ax",@progbits
+__havoc_copy_bytes:
     ldy #0
     ldx __rc7
     beq .Lcopy_data_tail
@@ -125,7 +125,7 @@ irq_entry:
     sta __rc6
     lda #>__irq_static_first_size
     sta __rc7
-    jsr __sueme_copy_bytes
+    jsr __havoc_copy_bytes
     lda #<__irq_static_tail_start
     sta __rc2
     lda #>__irq_static_tail_start
@@ -138,7 +138,7 @@ irq_entry:
     sta __rc6
     lda #>__irq_static_tail_size
     sta __rc7
-    jsr __sueme_copy_bytes
+    jsr __havoc_copy_bytes
     lda #<__irq_stack
     sta __rc0
     lda #>__irq_stack
@@ -156,7 +156,7 @@ irq_entry:
     sta __rc6
     lda #>__irq_static_first_size
     sta __rc7
-    jsr __sueme_copy_bytes
+    jsr __havoc_copy_bytes
     lda #<__irq_static_backup_tail
     sta __rc2
     lda #>__irq_static_backup_tail
@@ -169,7 +169,7 @@ irq_entry:
     sta __rc6
     lda #>__irq_static_tail_size
     sta __rc7
-    jsr __sueme_copy_bytes
+    jsr __havoc_copy_bytes
     ldx #31
 .Lirq_restore:
     pla

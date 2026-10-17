@@ -1,11 +1,11 @@
 mod host;
-use std::{env, fs, path::Path};
-use sueme64::{
+use havoc::{
     assets::*,
     game::{Game, InputSample, FIRE},
     hud,
     render::{self, Renderer},
 };
+use std::{env, fs, path::Path};
 
 fn frame(
     game: &Game,
@@ -131,13 +131,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             println!(
                 "Game={} Audio={} Renderer={} bytes",
                 std::mem::size_of::<Game>(),
-                std::mem::size_of::<sueme64::audio::AudioEngine>(),
+                std::mem::size_of::<havoc::audio::AudioEngine>(),
                 std::mem::size_of::<Renderer>()
             );
             Ok(())
         }
         _ => {
-            println!("SUEME64 tools\n  bake [directory]\n  check game.reu\n  snapshot <title|0|1|2|3> [distance] [output-prefix]\n  sizes");
+            println!("H.A.V.O.C. tools\n  bake [directory]\n  check game.reu\n  snapshot <title|0|1|2|3> [distance] [output-prefix]\n  sizes");
             Ok(())
         }
     }

@@ -45,7 +45,7 @@ def main():
     spec = importlib.util.spec_from_file_location("vice_smoke", ROOT/"tools/vice-smoke.py")
     vice = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(vice)
-    original = {extension: (package/f"sueme64.{extension}").read_bytes()
+    original = {extension: (package/f"havoc.{extension}").read_bytes()
                 for extension in ("prg", "elf", "reu", "cfg")}
     if len(original["reu"]) != 16*1024*1024:
         parser.error("input REU image must contain exactly 16 MiB")
@@ -76,7 +76,7 @@ def main():
         private_package = case_output/"package"
         private_package.mkdir(parents=True, exist_ok=True)
         for extension in ("prg", "elf", "cfg"):
-            (private_package/f"sueme64.{extension}").write_bytes(original[extension])
+            (private_package/f"havoc.{extension}").write_bytes(original[extension])
         damaged = bytearray(original["reu"])
         damaged[offset] ^= 1
         if name == "resident-pair":
@@ -84,7 +84,7 @@ def main():
             # distinct pairing error, rather than failing directory validation.
             damaged[0x11e:0x120] = checksum(damaged[0x100:0x11e]).to_bytes(2, "little")
         damaged_hash = hashlib.sha256(damaged).hexdigest()
-        (private_package/"sueme64.reu").write_bytes(damaged)
+        (private_package/"havoc.reu").write_bytes(damaged)
         sys.argv = ["vice-smoke.py", "--video", "pal", "--frames", "1", "--timeout", str(args.timeout),
                     "--package-dir", str(private_package), "--out-dir", str(case_output),
                     "--vice", str(args.vice), "--roms", str(args.roms), "--llvm-nm", str(args.llvm_nm)]
@@ -103,7 +103,7 @@ def main():
         print(f"CORRUPTION {'PASS' if passed else 'FAIL'} {name}: {text}", flush=True)
         if not passed:
             break
-    after = {extension: hashlib.sha256((package/f"sueme64.{extension}").read_bytes()).hexdigest()
+    after = {extension: hashlib.sha256((package/f"havoc.{extension}").read_bytes()).hexdigest()
              for extension in original}
     summary["input_package_unchanged"] = before == after
     summary["passed"] = len(summary["cases"]) == len(cases) and all(case["expected_failure_observed"] for case in summary["cases"]) and before == after

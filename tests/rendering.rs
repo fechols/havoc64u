@@ -1,5 +1,5 @@
-use sueme64::render::{draw_bar, draw_text, pack_band, Renderer, HUD_INK};
-use sueme64::{GeometrySink, Vec3, TWO_SIDED};
+use havoc::render::{draw_bar, draw_text, pack_band, Renderer, HUD_INK};
+use havoc::{GeometrySink, Vec3, TWO_SIDED};
 
 fn v(x: i16, y: i16, z: i16) -> Vec3 {
     Vec3 { x, y, z }
@@ -221,7 +221,7 @@ fn hud_text_and_bars_clip_to_the_current_band() {
 
 #[test]
 fn cached_mesh_transforms_match_direct_reference_emissions() {
-    use sueme64::{
+    use havoc::{
         assets::{AssetBank, COMMON_SIZE},
         emit_mesh, math,
     };

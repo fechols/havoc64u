@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Smoke-test an existing SUEME64 package in calibrated C64U-flavoured VICE.
+"""Smoke-test an existing H.A.V.O.C. package in calibrated C64U-flavoured VICE.
 
 Run from the configured WSL SDK: python3 tools/vice-smoke.py --video pal
 The default emulator and ROMs are in the sibling doomc64u checkout. No package
@@ -274,7 +274,7 @@ def dwarf_members(description, label):
 
 def resident_symbol(syms, name):
     candidates = [(symbol, address) for symbol, address in syms.items()
-                  if symbol == name or ("sueme64_c64" in symbol and
+                  if symbol == name or ("havoc_c64" in symbol and
                      re.search(rf"{len(name)}{name}17h[0-9a-fA-F]+E(?:\.\d+)?$", symbol))]
     if len(candidates) != 1:
         raise RuntimeError(f"Expected one resident {name} ELF symbol, got {candidates}")
@@ -297,15 +297,15 @@ def dwarf_game_layout(elf, tool, syms, output, controls=False):
         value = re.search(r"DW_AT_const_value\s+\((0x[0-9a-fA-F]+|\d+)\)", block)
         if name and value:
             modes[name[1]] = int(value[1], 0)
-    required = {"rail_ticks": "u16", "boss_z": "i16", "mode": "sueme64::game::Mode",
+    required = {"rail_ticks": "u16", "boss_z": "i16", "mode": "havoc::game::Mode",
                 "boss_started": "bool", "boss_defeated": "bool", "score": "u32",
                 "shield": "u8", "lives": "u8", "bombs": "u8"}
-    sizes = {"u8": 1, "i8": 1, "u16": 2, "u32": 4, "i16": 2, "bool": 1, "sueme64::game::Mode": 1}
+    sizes = {"u8": 1, "i8": 1, "u16": 2, "u32": 4, "i16": 2, "bool": 1, "havoc::game::Mode": 1}
     sample = None
     if controls:
         required.update(ticks="u16", roll_ticks="u8", roll_cooldown="u8", roll_direction="i8")
-        for outer, name, members, expected in (("player", "Vec3", ("x", "y", "z"), "sueme64::Vec3"),
-                                               ("controls", "Controls", ("bits",), "sueme64::game::Controls")):
+        for outer, name, members, expected in (("player", "Vec3", ("x", "y", "z"), "havoc::Vec3"),
+                                               ("controls", "Controls", ("bits",), "havoc::game::Controls")):
             if fields.get(outer, {}).get("type") != expected:
                 raise RuntimeError(f"Unsupported Game::{outer} DWARF type")
             inner = dwarf_members(descriptions[name], name)
@@ -669,7 +669,7 @@ def weapon_checks(mon, syms, failures, elf, dwarf_tool, output, result):
     for field_name, struct_name in (("actors", "Actor"), ("shots", "Shot"),
                                      ("pickups", "Pickup"), ("explosions", "Explosion")):
         field = fields[field_name]
-        match = re.fullmatch(rf"sueme64::game::{struct_name}\[(\d+)\]", field["type"])
+        match = re.fullmatch(rf"havoc::game::{struct_name}\[(\d+)\]", field["type"])
         if match is None:
             raise RuntimeError(f"Unsupported Game::{field_name} array type")
         arrays[field_name] = dict(structs[struct_name], count=int(match[1]),
@@ -677,7 +677,7 @@ def weapon_checks(mon, syms, failures, elf, dwarf_tool, output, result):
         array = arrays[field_name]
         if array["address"] + array["size"] * array["count"] > syms["__game_state_end"]:
             raise RuntimeError(f"Weapon fixture {field_name} exceeds reserved Game state")
-        if array["fields"]["pos"]["type"] != "sueme64::Vec3":
+        if array["fields"]["pos"]["type"] != "havoc::Vec3":
             raise RuntimeError(f"Unsupported {struct_name}::pos type")
         for axis in ("x", "y", "z"):
             component = structs["Vec3"]["fields"][axis]
@@ -689,7 +689,7 @@ def weapon_checks(mon, syms, failures, elf, dwarf_tool, output, result):
     renderer["address"] = resident_symbol(syms, "RENDERER")[1]
     triangle = structs["Triangle"]
     if (renderer["fields"]["triangle_count"]["type"] != "u16"
-            or renderer["fields"]["triangles"]["type"] != "sueme64::render::Triangle[256]"
+            or renderer["fields"]["triangles"]["type"] != "havoc::render::Triangle[256]"
             or any(triangle["fields"][axis]["type"] != "i16[3]" for axis in ("x", "y"))
             or triangle["fields"]["depth"]["type"] != "i16"
             or triangle["fields"]["color"]["type"] != "u8"):
@@ -978,7 +978,7 @@ def main():
     process = mon = log = None
     try:
         package = args.package_dir.resolve()
-        prg, reu, elf = (package / f"sueme64.{extension}" for extension in ("prg", "reu", "elf"))
+        prg, reu, elf = (package / f"havoc.{extension}" for extension in ("prg", "reu", "elf"))
         for path in (args.vice, args.roms, args.llvm_nm, prg, reu, elf):
             if not path.exists():
                 raise RuntimeError(f"Required path is missing: {path}")
@@ -986,7 +986,7 @@ def main():
             raise RuntimeError("REU package must be exactly 16 MiB")
         syms = symbols(elf, args.llvm_nm)
         failures = {address: name for name, address in syms.items()
-                    if ("sueme64_c64" in name and "4fail" in name) or name == "rust_begin_unwind"}
+                    if ("havoc_c64" in name and "4fail" in name) or name == "rust_begin_unwind"}
         if not failures:
             raise RuntimeError("No fail/panic symbol found in the target ELF")
         report.update(package=str(package), vice=str(args.vice.resolve()),

@@ -1,4 +1,10 @@
-# SUEME64
+# H.A.V.O.C.
+
+**Heavy Assault Vessel: Orbital Combat**
+
+Your ship is an unreasonable amount of firepower with a cockpit attached!
+
+The title is a tribute to **A.L.C.O.N.**
 
 An original polygon rail shooter for the **64 MHz C64 Ultimate**, written in Rust with a small 6502 assembly hardware layer. The visual inspiration is early flat-shaded console shooters; the models, mission, music, and effects are original. No Nintendo ROM or disassembly is required.
 
@@ -8,9 +14,9 @@ The first mission travels across open terrain, a canyon, and a defended base bef
 
 Build the project, then copy these three matching files from `dist/` to the Ultimate's storage:
 
-- `sueme64.cfg` — 64 MHz, 16 MB REU, two stereo UltiSIDs.
-- `sueme64.reu` — assets and executable overlays, exactly 16 MiB.
-- `sueme64.prg` — startup and resident runtime.
+- `havoc.cfg` — 64 MHz, 16 MB REU, two stereo UltiSIDs.
+- `havoc.reu` — assets and executable overlays, exactly 16 MiB.
+- `havoc.prg` — startup and resident runtime.
 
 Import the configuration, load the REU image at address zero, and run the PRG. Use **joystick port 2**. The initial PRG/REU load is required; gameplay performs no disk reads. Mission data and code are transferred from the already loaded REU. Startup checks detect missing, corrupt, or mismatched files.
 
@@ -101,15 +107,15 @@ Simulation uses fixed 20 ms steps, while joystick gestures use timestamped displ
 
 ## Current validation and performance
 
-The 2026-10-17 build passes **85 host tests**, including continuous ship geometry through every flash phase, missile targeting and bounded steering, carrier shielding, projectile-pool saturation, terrain continuity, joystick controls, steerable roll dodges, and a complete five-minute mission driven by ordinary controls. Native PAL and NTSC smoke and weapon checks pass for the exact title image, stereo music/effects, stack guards, visible white/normal hit flashes, homing interception, and targetless missile expiry. Native HUD captures verify **LASER CHARGE** when empty, partially charged, and after firing, plus **HOMING MISSILE** in both ready-color phases, with clear spacing beside BOMBS. The earlier weapon build also passed physical vertical/roll controls, section-cache integrity, rendered-section consistency, and seeded victory/game-over restarts. Weapon and streaming checks use explicit encounter/section fixtures; charging and firing use real elapsed time and physical joystick input. A complete mission has not yet been played through on the target.
+The 2026-10-17 H.A.V.O.C. rename build passes **85 host tests**, including continuous ship geometry through every flash phase, missile targeting and bounded steering, carrier shielding, projectile-pool saturation, terrain continuity, joystick controls, steerable roll dodges, and a complete five-minute mission driven by ordinary controls. Native PAL and NTSC checks pass for the exact new title and subtitle, stereo music/effects, stack guards, physical vertical/roll controls, visible white/normal hit flashes, homing interception, targetless missile expiry, section-cache integrity, rendered-section consistency, and seeded victory/game-over restarts. Earlier native HUD captures verify **LASER CHARGE** when empty, partially charged, and after firing, plus **HOMING MISSILE** in both ready-color phases. Weapon and streaming checks use explicit encounter/section fixtures; charging and firing use real elapsed time and physical joystick input. A complete mission has not yet been played through on the target.
 
-| Calibrated 64x VICE | Terrain baseline | Current stateful weapon HUD |
+| Calibrated 64x VICE | Terrain baseline | H.A.V.O.C. rename |
 |---|---:|---:|
 | PAL | 4.87 FPS | 4.62 FPS |
-| NTSC | 5.11 FPS | 4.76 FPS |
+| NTSC | 5.11 FPS | 4.81 FPS |
 
-These measurements cover seven opening gameplay frames, exclude the title frame, and include REU transfers, interrupts, and presentation. The current opening sample is about 5% slower on PAL and 7% on NTSC than the terrain baseline; audio remains approximately 50 Hz. This sample does not measure a sustained homing-missile encounter. These results **do not meet the 25 FPS PAL / 30 FPS NTSC goals**, and they are not measurements of physical C64 Ultimate hardware or later, busier scenes. Rasterization and cell-palette packing remain expensive; the executable overlays also transfer 44,297 bytes per rendered frame. Rendering performance is the main unfinished goal.
+These measurements cover seven opening gameplay frames, exclude the title frame, and include REU transfers, interrupts, and presentation. Audio remains approximately 50 Hz. Title timing changes can shift the game states sampled by these opening frames; the rename is not a performance optimization. This sample does not measure a sustained homing-missile encounter. These results **do not meet the 25 FPS PAL / 30 FPS NTSC goals**, and they are not measurements of physical C64 Ultimate hardware or later, busier scenes. Rasterization and cell-palette packing remain expensive; the executable overlays also transfer 44,326 bytes per rendered frame. Rendering performance is the main unfinished goal.
 
-Matching package hashes, raw timings, and HUD captures are in `target/vice/weapon-labels-pal/report.json` and `target/vice/weapon-labels-ntsc/report.json`. Earlier control/streaming checks remain in `target/vice/weapons-pal` and `target/vice/weapons-ntsc`; the terrain baseline remains in `target/vice/terrain-pal` and `target/vice/terrain-ntsc`. That terrain build's four startup-corruption checks are recorded in `target/corrupt-package-terrain/summary.json`. Physical-machine display, audio, and full-mission testing remain outstanding.
+Matching H.A.V.O.C. package hashes, raw timings, title captures, and control/weapon/streaming checks are in `target/vice/havoc-rename-pal/report.json` and `target/vice/havoc-rename-ntsc/report.json`. All four startup-corruption checks pass in `target/corrupt-package-havoc-rename/summary.json`. Historical HUD captures remain in `target/vice/weapon-labels-pal` and `target/vice/weapon-labels-ntsc`; the terrain baseline remains in `target/vice/terrain-pal` and `target/vice/terrain-ntsc`. Physical-machine display, audio, and full-mission testing remain outstanding.
 
 Bootstrap ideas came from the neighboring `doomc64u` project, and Ultimate configuration examples from `secondreality`. The `ultrastarfox` disassembly is not copied into this project.

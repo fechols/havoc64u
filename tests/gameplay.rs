@@ -1,6 +1,6 @@
-use sueme64::assets::{Segment, SEGMENT_SIZE};
-use sueme64::audio::Effect;
-use sueme64::game::{Game, InputSample, Mode, FIRE, LEFT, RIGHT};
+use havoc::assets::{Segment, SEGMENT_SIZE};
+use havoc::audio::Effect;
+use havoc::game::{Game, InputSample, Mode, FIRE, LEFT, RIGHT};
 
 #[cfg(feature = "host-tools")]
 #[allow(dead_code)]
@@ -211,7 +211,7 @@ fn deterministic_inputs_produce_identical_game_state() {
 #[test]
 fn original_asset_previews_fit_the_triangle_budget_in_every_section() {
     let common = baked_assets::common_bank();
-    let bank = sueme64::assets::AssetBank::new(&common).unwrap();
+    let bank = havoc::assets::AssetBank::new(&common).unwrap();
     for section in 0..4 {
         let bytes = baked_assets::segment_bank(section);
         let segment = Segment::new(&bytes).unwrap();
@@ -219,7 +219,7 @@ fn original_asset_previews_fit_the_triangle_budget_in_every_section() {
         for local in (0..512).step_by(8).chain([1400, 2500, 10000, 28000]) {
             let mut game = Game::preview_at(section, local);
             game.tick(&segment);
-            let mut renderer = sueme64::render::Renderer::new();
+            let mut renderer = havoc::render::Renderer::new();
             renderer.begin(0);
             game.render(&mut renderer, &bank, &segment);
             renderer.finish();
@@ -231,18 +231,11 @@ fn original_asset_previews_fit_the_triangle_budget_in_every_section() {
 
 #[cfg(feature = "host-tools")]
 #[derive(Default)]
-struct CapturedGeometry(Vec<([sueme64::Vec3; 3], u8, u8)>);
+struct CapturedGeometry(Vec<([havoc::Vec3; 3], u8, u8)>);
 
 #[cfg(feature = "host-tools")]
-impl sueme64::GeometrySink for CapturedGeometry {
-    fn triangle(
-        &mut self,
-        a: sueme64::Vec3,
-        b: sueme64::Vec3,
-        c: sueme64::Vec3,
-        color: u8,
-        flags: u8,
-    ) {
+impl havoc::GeometrySink for CapturedGeometry {
+    fn triangle(&mut self, a: havoc::Vec3, b: havoc::Vec3, c: havoc::Vec3, color: u8, flags: u8) {
         self.0.push(([a, b, c], color, flags));
     }
 }
@@ -250,10 +243,10 @@ impl sueme64::GeometrySink for CapturedGeometry {
 #[cfg(feature = "host-tools")]
 #[test]
 fn scenic_terrain_keeps_the_centered_player_visible_through_every_band_phase() {
-    use sueme64::{assets::AssetBank, render::Renderer, GeometrySink};
+    use havoc::{assets::AssetBank, render::Renderer, GeometrySink};
     let common = baked_assets::common_bank();
     let bank = AssetBank::new(&common).unwrap();
-    let player_faces = bank.face_count(sueme64::assets::PLAYER) as usize + 2; // Hull and exhaust.
+    let player_faces = bank.face_count(havoc::assets::PLAYER) as usize + 2; // Hull and exhaust.
     for section in 0..4 {
         let bytes = baked_assets::segment_bank(section);
         let segment = Segment::new(&bytes).unwrap();
@@ -297,7 +290,7 @@ fn scenic_terrain_keeps_the_centered_player_visible_through_every_band_phase() {
 #[cfg(feature = "host-tools")]
 #[test]
 fn chase_camera_translates_the_scene_without_moving_world_geometry_or_title() {
-    use sueme64::{
+    use havoc::{
         assets::{AssetBank, PLAYER},
         emit_mesh, Vec3,
     };
@@ -346,7 +339,7 @@ fn chase_camera_translates_the_scene_without_moving_world_geometry_or_title() {
 #[cfg(feature = "host-tools")]
 #[test]
 fn chase_camera_reveals_carrier_and_reticle_and_keeps_controlled_hull_on_screen() {
-    use sueme64::{
+    use havoc::{
         assets::{AssetBank, CARRIER, PLAYER},
         emit_mesh,
         game::{DOWN, UP},
@@ -362,7 +355,7 @@ fn chase_camera_reveals_carrier_and_reticle_and_keeps_controlled_hull_on_screen(
     carrier.render(&mut geometry, &bank, &carrier_segment);
     let ship_faces = bank.face_count(PLAYER) as usize;
     let carrier_start = ship_faces + 4; // Exhaust and aiming reticle each use two faces.
-    let bounds = |faces: &[([sueme64::Vec3; 3], u8, u8)]| {
+    let bounds = |faces: &[([havoc::Vec3; 3], u8, u8)]| {
         faces
             .iter()
             .flat_map(|face| face.0)

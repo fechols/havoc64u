@@ -3,12 +3,12 @@
 version = 4
 
 [[package]]
-name = "sueme64"
+name = "havoc"
 version = "0.1.0"
 
 [[package]]
-name = "sueme64-c64"
+name = "havoc-c64"
 version = "0.1.0"
 dependencies = [
- "sueme64",
+ "havoc",
 ]

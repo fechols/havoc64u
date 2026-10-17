@@ -102,8 +102,9 @@ fn title(band: u8, pixels: &mut [u8; 1280], frame: u16) {
     if band <= 8 {
         rect(band, pixels, 0, 10, 160, 58, 0);
         centered(band, pixels, 17, b"C64 ULTIMATE", 12);
-        centered_scaled(band, pixels, 31, b"SUEME64", 1, 3);
-        centered(band, pixels, 55, b"KESTREL STRIKE", 3);
+        centered_scaled(band, pixels, 31, b"H.A.V.O.C.", 1, 3);
+        centered(band, pixels, 51, b"HEAVY ASSAULT VESSEL:", 3);
+        centered(band, pixels, 59, b"ORBITAL COMBAT", 3);
         rect(band, pixels, 34, 65, 92, 1, HUD_INK | 14);
         return;
     }

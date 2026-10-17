@@ -1,6 +1,6 @@
-# C64 Ultimate hardware and build notes
+# H.A.V.O.C. hardware and build notes
 
-SUEME64 targets the C64 Ultimate at 64 MHz with its built-in 16 MiB REU and two UltiSIDs. Import `sueme64.cfg`, load `sueme64.reu` at REU address zero, then run `sueme64.prg`. Keep all three files from the same build together.
+H.A.V.O.C. (Heavy Assault Vessel: Orbital Combat) targets the C64 Ultimate at 64 MHz with its built-in 16 MiB REU and two UltiSIDs. Import `havoc.cfg`, load `havoc.reu` at REU address zero, then run `havoc.prg`. Keep all three files from the same build together.
 
 The configuration selects the C64U turbo registers, 64 MHz CPU speed, disabled badline timing, and quiet bus operation. The runtime programs the turbo register at startup and checks that the setting is available. An ordinary 1 MHz C64 is not a supported execution target.
 
@@ -66,4 +66,4 @@ The native `memcpy.S` replaces the Rust compiler's larger memory-copy routine an
 
 Useful host checks are `cargo test --all-targets`, `cargo run -- sizes`, and `cargo run -- snapshot title`. A passing host test or valid linker map does not establish a frame-rate result on the machine. Hardware acceptance must check PAL and NTSC presentation timing, simultaneous stereo music and effects, REU transfers during play, stack guards, and full-mission restart/checkpoint behavior.
 
-The bootstrap structure was informed by the neighboring `doomc64u` repository. `secondreality/src/output/cfg.rs` provided a local example of the Ultimate mixer and SID-address configuration keys. SUEME64 uses its own synthesis player and does not adopt Second Reality's digital-audio modes.
+The bootstrap structure was informed by the neighboring `doomc64u` repository. `secondreality/src/output/cfg.rs` provided a local example of the Ultimate mixer and SID-address configuration keys. H.A.V.O.C. uses its own synthesis player and does not adopt Second Reality's digital-audio modes.

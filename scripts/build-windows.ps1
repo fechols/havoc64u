@@ -8,7 +8,7 @@ if ($LASTEXITCODE -ne 0) { throw 'C64 build failed; no output copied.' }
 if ($OutputDirectory) {
     $destination=$ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($OutputDirectory)
     New-Item -ItemType Directory -Force -Path $destination | Out-Null
-    foreach ($name in @('sueme64.prg','sueme64.reu','sueme64.cfg','sueme64.elf','memory-map.txt')) {
+    foreach ($name in @('havoc.prg','havoc.reu','havoc.cfg','havoc.elf','memory-map.txt')) {
         Copy-Item -LiteralPath (Join-Path $projectRoot "dist/$name") -Destination (Join-Path $destination $name)
     }
 }

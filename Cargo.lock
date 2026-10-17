@@ -3,5 +3,5 @@
 version = 4
 
 [[package]]
-name = "sueme64"
+name = "havoc"
 version = "0.1.0"

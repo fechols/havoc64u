@@ -19,14 +19,14 @@ sdk = pathlib.Path(os.environ.get("LLVM_MOS", str(pathlib.Path.home() / ".local/
 rust_bin = pathlib.Path(os.environ.get("CARGO_HOME", str(pathlib.Path.home() / ".cargo"))) / "bin"
 os.environ["PATH"] = str(rust_bin) + os.pathsep + str(sdk) + os.pathsep + os.environ.get("PATH", "")
 subprocess.run(["cargo", "+stable", "build", "--lib"], cwd=root, check=True)
-libraries = list((root / "target/debug/deps").glob("libsueme64-*.rlib"))
+libraries = list((root / "target/debug/deps").glob("libhavoc-*.rlib"))
 library = max(libraries, key=lambda path: path.stat().st_mtime)
-source = "#![allow(dead_code)]\nuse sueme64::{Vec3,GeometrySink,TWO_SIDED,math,projection};\nmod render {\n"
+source = "#![allow(dead_code)]\nuse havoc::{Vec3,GeometrySink,TWO_SIDED,math,projection};\nmod render {\n"
 source += (root / "src/render.rs").read_text()
 source += (root / "tools/raster-fixtures.inc.rs").read_text()
 source += '\n}\nfn main(){let path=std::env::args().nth(1).unwrap();render::write_native_fixtures(std::path::Path::new(&path));}\n'
 (build / "generate.rs").write_text(source)
-subprocess.run(["rustc", "+stable", "--edition=2021", build / "generate.rs", "--extern", f"sueme64={library}",
+subprocess.run(["rustc", "+stable", "--edition=2021", build / "generate.rs", "--extern", f"havoc={library}",
                 "-L", f"dependency={root / 'target/debug/deps'}", "-o", build / "generate"], check=True)
 subprocess.run([build / "generate", build / "fixtures.bin"], check=True)
 subprocess.run([sdk / "mos-c64-clang", "-c", root / "target-c64/asm/raster.S", "-o", build / "raster.o"], check=True)

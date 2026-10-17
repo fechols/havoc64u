@@ -1,6 +1,6 @@
 #[allow(dead_code)] #[path="../src/host.rs"] mod host;
 use std::{fs, path::Path};
-use sueme64::{assets::{AssetBank, Segment}, game::Game, hud, render::{self, Renderer}};
+use havoc::{assets::{AssetBank, Segment}, game::Game, hud, render::{self, Renderer}};
 
 fn random(state: &mut u16) -> u8 { *state = state.wrapping_mul(25173).wrapping_add(13849); (*state >> 8) as u8 }
 fn save(dir: &Path, id: usize, pixels: &[u8;1280], old_screen: &[u8;40], old_color: &[u8;40]) -> ([u8;40],[u8;40]) {

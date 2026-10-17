@@ -165,10 +165,10 @@ class Elf:
 
 
 ENTRIES = {
-    ".phase.boot": "sueme64_c64::boot_init",
-    ".phase.sim": "sueme64_c64::simulate",
-    ".phase.geometry": "sueme64_c64::prepare_geometry",
-    ".phase.pixels": "sueme64_c64::draw_pixels",
+    ".phase.boot": "havoc_c64::boot_init",
+    ".phase.sim": "havoc_c64::simulate",
+    ".phase.geometry": "havoc_c64::prepare_geometry",
+    ".phase.pixels": "havoc_c64::draw_pixels",
 }
 
 
@@ -180,7 +180,7 @@ def audit_startup(elf):
     Keep this small instruction whitelist explicit when changing the CRT.
     """
     symbols = {symbol.name: symbol for symbol in elf.symbols if symbol.name}
-    names = ("_start", "__after_main", "__zero_bss", "__sueme_copy_data", "main")
+    names = ("_start", "__after_main", "__zero_bss", "__havoc_copy_data", "main")
     require(all(name in symbols for name in names), "startup audit symbols are missing")
     start, end = symbols["_start"], symbols["__after_main"]
     require(start.section == end.section and start.address < end.address, "invalid startup range")
@@ -207,7 +207,7 @@ def audit_startup(elf):
             calls.append(target)
         previous = instruction
         offset += width
-    expected = [symbols[name].address for name in ("__zero_bss", "__sueme_copy_data", "main")]
+    expected = [symbols[name].address for name in ("__zero_bss", "__havoc_copy_data", "main")]
     require(calls == expected, "startup calls must be exactly BSS clear, data copy, main; reject SDK ROM hooks")
 
 
@@ -322,7 +322,7 @@ def audit(path):
 
 if __name__ == "__main__":
     if len(sys.argv) != 2:
-        raise SystemExit("usage: python3 tools/check-overlays.py path/to/sueme64.elf")
+        raise SystemExit("usage: python3 tools/check-overlays.py path/to/havoc.elf")
     try:
         audit(Path(sys.argv[1]))
     except (AuditError, OSError, ValueError, struct.error, IndexError) as error:

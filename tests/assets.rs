@@ -1,4 +1,4 @@
-use sueme64::assets::*;
+use havoc::assets::*;
 
 #[allow(dead_code)]
 #[path = "../src/host.rs"]
@@ -101,7 +101,7 @@ fn views_return_safe_empty_values_for_unknown_meshes_and_records() {
     let bank = AssetBank::new(&bytes).unwrap();
     assert_eq!(bank.vertex_count(255), 0);
     assert_eq!(bank.face_count(255), 0);
-    assert_eq!(bank.vertex(255, 255), sueme64::Vec3::default());
+    assert_eq!(bank.vertex(255, 255), havoc::Vec3::default());
     assert_eq!(bank.face(255, 255), ([0; 3], 0));
     let bytes = baked_assets::segment_bank(3);
     let segment = Segment::new(&bytes).unwrap();
@@ -183,7 +183,7 @@ fn model_only_cache_preserves_meshes_without_exposing_missing_audio() {
     assert_eq!(full.audio().len(), 512);
     assert!(cache.audio().is_empty());
     assert!(
-        sueme64::audio::AudioEngine::new(sueme64::audio::VideoStandard::Pal)
+        havoc::audio::AudioEngine::new(havoc::audio::VideoStandard::Pal)
             .load_score(cache.audio())
             .is_err()
     );

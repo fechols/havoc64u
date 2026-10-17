@@ -1,14 +1,14 @@
 [package]
-name = "sueme64"
+name = "havoc"
 version = "0.1.0"
 edition = "2021"
 
 [lib]
-name = "sueme64"
+name = "havoc"
 path = "src/lib.rs"
 
 [[bin]]
-name = "sueme64"
+name = "havoc"
 path = "src/main.rs"
 required-features = ["host-tools"]
 

@@ -1,4 +1,4 @@
-use sueme64::audio::{
+use havoc::audio::{
     note_frequency, AudioEngine, AudioEvent, Effect, MusicState, ScoreError, SidBus, VideoStandard,
     DEFAULT_SCORE, SCORE_LENGTH, SID_BASES,
 };

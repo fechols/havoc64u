@@ -1,6 +1,6 @@
 //! Original assets and portable package tools. Never linked into the C64 game.
+use havoc::{assets::*, audio::DEFAULT_SCORE};
 use std::{fs, path::Path};
-use sueme64::{assets::*, audio::DEFAULT_SCORE};
 
 fn put16(b: &mut [u8], p: usize, n: u16) {
     b[p..p + 2].copy_from_slice(&n.to_le_bytes());
@@ -304,15 +304,12 @@ pub fn bake(out: &Path) -> Result<(), Box<dyn std::error::Error>> {
     let check = checksum(&reu[..30]);
     put16(&mut reu, 30, check);
     check_package(&reu)?;
-    fs::write(out.join("sueme64.reu"), &reu)?;
-    fs::write(
-        out.join("sueme64.cfg"),
-        include_str!("../config/sueme64.cfg"),
-    )?;
-    fs::write(out.join("assets.txt"),format!("SUEME64 package {PACKAGE_ID:08X}\n16 MiB REU; common {COMMON_OFFSET:06X} (3072 bytes; 2048 resident model bytes); four 2048-byte segments at {SEGMENTS_OFFSET:06X}, each with a checksummed 512-byte runtime prefix (up to 62 encounters)\nOriginal models and stereo SID score; no external ROMs or samples.\n"))?;
+    fs::write(out.join("havoc.reu"), &reu)?;
+    fs::write(out.join("havoc.cfg"), include_str!("../config/havoc.cfg"))?;
+    fs::write(out.join("assets.txt"),format!("H.A.V.O.C. package {PACKAGE_ID:08X}\n16 MiB REU; common {COMMON_OFFSET:06X} (3072 bytes; 2048 resident model bytes); four 2048-byte segments at {SEGMENTS_OFFSET:06X}, each with a checksummed 512-byte runtime prefix (up to 62 encounters)\nOriginal models and stereo SID score; no external ROMs or samples.\n"))?;
     println!(
         "Baked {} ({} bytes)",
-        out.join("sueme64.reu").display(),
+        out.join("havoc.reu").display(),
         reu.len()
     );
     Ok(())
@@ -324,7 +321,7 @@ pub fn check_package(reu: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
     validate_header(reu).map_err(|e| format!("package header: {e:?}"))?;
     let common = &reu[COMMON_OFFSET as usize..COMMON_OFFSET as usize + COMMON_SIZE];
     let bank = AssetBank::new(common).map_err(|e| format!("common bank: {e:?}"))?;
-    sueme64::audio::AudioEngine::new(sueme64::audio::VideoStandard::Pal)
+    havoc::audio::AudioEngine::new(havoc::audio::VideoStandard::Pal)
         .load_score(bank.audio())
         .map_err(|e| format!("audio score: {e:?}"))?;
     if checksum(common) != u16_at(reu, 18) {

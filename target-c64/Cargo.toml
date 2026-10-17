@@ -1,5 +1,5 @@
 [package]
-name = "sueme64-c64"
+name = "havoc-c64"
 version = "0.1.0"
 edition = "2021"
 build = "build.rs"
@@ -7,7 +7,7 @@ build = "build.rs"
 [workspace]
 
 [dependencies]
-sueme64 = { path = "..", default-features = false }
+havoc = { path = "..", default-features = false }
 
 [profile.release]
 opt-level = "z"
