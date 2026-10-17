@@ -6,6 +6,9 @@ build = "build.rs"
 
 [workspace]
 
+[features]
+benchmarks = []
+
 [dependencies]
 havoc = { path = "..", default-features = false }
 

@@ -48,6 +48,13 @@ pub static mut TEST_INPUT: u8 = 0xff;
 pub static mut PROF_PHASE: u8 = 0;
 #[no_mangle]
 pub static mut PROF_DETAIL: u8 = 0;
+// Host-monitored benchmark controls are absent from production builds.
+#[cfg(feature = "benchmarks")]
+#[no_mangle]
+pub static mut BENCH_TICKS: u8 = 255;
+#[cfg(feature = "benchmarks")]
+#[no_mangle]
+pub static mut BENCH_RUNTIME: u16 = 0;
 static mut CLOCK_MS: u32 = 0;
 static mut AUDIO_PERIOD: u16 = 19705;
 static mut CLOCK_KHZ: u16 = 985;
@@ -410,6 +417,27 @@ unsafe fn send_audio(game: &mut Game) {
 pub unsafe extern "C" fn frame_complete() {
     FRAME_SERIAL = FRAME_SERIAL.wrapping_add(1);
 }
+#[no_mangle]
+#[inline(never)]
+pub unsafe extern "C" fn geometry_complete() {
+    // This resident checkpoint precedes any PIXELS reuse of command storage.
+    wr(core::ptr::addr_of_mut!(PROF_PHASE), 3);
+}
+#[cfg(feature = "benchmarks")]
+#[no_mangle]
+#[inline(never)]
+pub unsafe extern "C" fn benchmark_frame_begin() {
+    if rd(core::ptr::addr_of!(BENCH_TICKS)) != 255 {
+        while raster() != 250 {}
+    }
+    benchmark_frame_ready();
+}
+#[cfg(feature = "benchmarks")]
+#[no_mangle]
+#[inline(never)]
+pub unsafe extern "C" fn benchmark_frame_ready() {
+    wr(core::ptr::addr_of_mut!(PROF_PHASE), 1);
+}
 #[inline(never)]
 unsafe fn publish(bank: u8, last: &mut u16) {
     loop {
@@ -561,7 +589,15 @@ unsafe fn simulate(runtime: &mut Runtime) -> Hud {
         load_segment(slot, desired);
         runtime.loaded[slot as usize] = desired;
     }
-    let now = clock_ms();
+    #[cfg(feature = "benchmarks")]
+    let bench_ticks = rd(core::ptr::addr_of!(BENCH_TICKS));
+    #[cfg(not(feature = "benchmarks"))]
+    let bench_ticks = 255u8;
+    let now = if bench_ticks == 255 {
+        clock_ms()
+    } else {
+        runtime.sim_ms.wrapping_add(bench_ticks as u32 * 20)
+    };
     while now.wrapping_sub(runtime.sim_ms) >= 20 {
         let need = game.segment_index();
         if runtime.loaded[0] == need {
@@ -572,8 +608,16 @@ unsafe fn simulate(runtime: &mut Runtime) -> Hud {
             break;
         }
         runtime.sim_ms = runtime.sim_ms.wrapping_add(20);
-        while let Some(input) = take_input(runtime.sim_ms) {
-            game.sample_input(input)
+        if bench_ticks == 255 {
+            while let Some(input) = take_input(runtime.sim_ms) {
+                game.sample_input(input)
+            }
+        } else {
+            game.sample_input(InputSample {
+                bits: TEST_INPUT & 31,
+                pressed: 0,
+                ms: runtime.sim_ms,
+            });
         }
         game.tick(&Segment::from_validated(segment_data(runtime.current)));
     }
@@ -611,17 +655,27 @@ pub unsafe extern "C" fn main() -> i32 {
         current: 0,
     };
     let mut last_present = 0;
+    #[cfg(feature = "benchmarks")]
+    {
+        BENCH_RUNTIME = core::ptr::addr_of_mut!(runtime) as u16;
+    }
     loop {
+        #[cfg(feature = "benchmarks")]
+        benchmark_frame_begin();
+        #[cfg(not(feature = "benchmarks"))]
         wr(core::ptr::addr_of_mut!(PROF_PHASE), 1);
         load_phase(1, core::ptr::addr_of!(__phase_sim_size) as u16);
+        wr(core::ptr::addr_of_mut!(PROF_PHASE), 5);
         let status = simulate(&mut runtime);
         wr(core::ptr::addr_of_mut!(PROF_PHASE), 2);
         load_phase(2, core::ptr::addr_of!(__phase_geometry_size) as u16);
+        wr(core::ptr::addr_of_mut!(PROF_PHASE), 6);
         io_off();
         prepare_geometry(runtime.current, &bank);
         io_on();
-        wr(core::ptr::addr_of_mut!(PROF_PHASE), 3);
+        geometry_complete();
         load_phase(3, core::ptr::addr_of!(__phase_pixels_size) as u16);
+        wr(core::ptr::addr_of_mut!(PROF_PHASE), 7);
         io_off();
         let back = draw_pixels(&status);
         io_on();

@@ -218,17 +218,29 @@ def sid_summary(log_path, events):
 
 
 def phase_profile(events, address, title, frames):
-    names = {1: "simulation", 2: "geometry", 3: "pixels", 4: "publish"}
+    names = {1: "simulation", 2: "geometry", 3: "pixels", 4: "publish",
+             5: "simulation", 6: "geometry", 7: "pixels"}
     transitions = [event for event in events if event["address"] == address and event["value"] in names]
     previous = title["bus_cycles"]
     for frame in frames:
         end = frame["bus_cycles"]
         selected = [event for event in transitions if previous <= event["bus_cycles"] < end]
         costs = {name: 0 for name in names.values()}
+        loads = {name: 0 for name in ("simulation", "geometry", "pixels")}
+        work = {name: 0 for name in ("simulation", "geometry", "pixels")}
         for index, event in enumerate(selected):
             next_cycle = selected[index+1]["bus_cycles"] if index+1 < len(selected) else end
-            costs[names[event["value"]]] += next_cycle - event["bus_cycles"]
+            duration = next_cycle - event["bus_cycles"]
+            name = names[event["value"]]
+            costs[name] += duration
+            if event["value"] in (1, 2, 3):
+                loads[name] += duration
+            elif event["value"] in (5, 6, 7):
+                work[name] += duration
         frame["phase_bus_cycles"] = costs
+        if any(event["value"] in (5, 6, 7) for event in selected):
+            frame["phase_load_bus_cycles"] = loads
+            frame["phase_work_bus_cycles"] = work
         frame["unprofiled_bus_cycles"] = frame["bus_cycles_delta"] - sum(costs.values())
         previous = end
     return transitions
@@ -768,6 +780,12 @@ def weapon_checks(mon, syms, failures, elf, dwarf_tool, output, result):
                        "invulnerability", "hit_flash_ticks", "score", "controls.bits", "controls.cached_charge")
 
     def observe(scenario, geometry=False):
+        commands = None
+        if geometry and "geometry_complete" in syms:
+            mon.run_until(syms["geometry_complete"], failures)
+            mon.command("bank ram")
+            commands = read_triangles()
+            mon.command("bank cpu")
         mon.run_until(syms["frame_complete"], failures)
         frame = counters(mon, syms)
         mon.command("bank ram")
@@ -776,7 +794,7 @@ def weapon_checks(mon, syms, failures, elf, dwarf_tool, output, result):
         frame["stack_guards"] = {name: mon.integer(syms[name], 1)
                                  for name in ("__stack_bottom", "__irq_stack_bottom")}
         if geometry:
-            frame["triangles"] = read_triangles()
+            frame["triangles"] = commands if commands is not None else read_triangles()
         mon.command("bank cpu")
         scenario.setdefault("frames", []).append(frame)
         if (frame["input_overflows"] or frame["frame_dropped"]
