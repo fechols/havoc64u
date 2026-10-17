@@ -1,0 +1,48 @@
+"""Pair the resident PRG and four linked code phases with the baked REU image."""
+import os
+import pathlib
+import subprocess
+import sys
+
+def checksum(data):
+    a = b = 0
+    for value in data:
+        a = (a + value) % 255
+        b = (b + a) % 255
+    return a | b << 8
+
+def main():
+    elf, prg, reu_path = map(pathlib.Path, sys.argv[1:4])
+    sdk = pathlib.Path(os.environ.get('LLVM_MOS', str(pathlib.Path.home()/'.local/llvm-mos')))/'bin'
+    symbols = {}
+    for line in subprocess.check_output([str(sdk/'llvm-nm'), '-n', str(elf)], text=True).splitlines():
+        fields = line.split()
+        if len(fields) == 3:
+            try: symbols[fields[2]] = int(fields[0], 16)
+            except ValueError: pass
+    image = prg.read_bytes()
+    assert image[:2] == b'\x01\x08'
+    reu = bytearray(reu_path.read_bytes())
+    assert len(reu) == 16*1024*1024
+    directory = bytearray(32)
+    directory[:4] = b'OVL1'
+    def put(at, value): directory[at:at+2] = value.to_bytes(2, 'little')
+    for index, name in enumerate(('boot', 'sim', 'geometry', 'pixels')):
+        output = elf.parent / f'phase-{name}.bin'
+        subprocess.run([str(sdk/'llvm-objcopy'), '--dump-section', f'.phase.{name}={output}', str(elf)], check=True)
+        code = output.read_bytes()
+        assert len(code) == symbols[f'__phase_{name}_size'] and 0 < len(code) <= 0x4200
+        offset = (index+1)*0x10000
+        reu[offset:offset+0x4200] = bytes(0x4200)
+        reu[offset:offset+len(code)] = code
+        put(4+index*2, len(code)); put(12+index*2, checksum(code))
+        print(f'{name:8} REU ${offset:06X} -> RAM $3000: {len(code):5} bytes')
+    def span(start, end): return image[2+start-0x801:2+end-0x801]
+    put(20, checksum(span(0x801, symbols['__resident_end'])))
+    put(22, checksum(span(0x7800, 0x8000)))
+    put(24, checksum(span(0x9900, 0xa000)))
+    put(30, checksum(directory[:30]))
+    reu[0x100:0x120] = directory
+    reu_path.write_bytes(reu)
+
+if __name__ == '__main__': main()

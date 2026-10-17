@@ -1,0 +1,283 @@
+//! Bounded, little-endian asset views shared by the host baker and 6510 runtime.
+use crate::Vec3;
+pub const COMMON_SIZE: usize = 3072;
+/// Models remain resident after the score has been copied into the audio engine.
+pub const MODEL_SIZE: usize = 2048;
+pub const SEGMENT_SIZE: usize = 2048;
+/// Only this prefix of a packaged segment is needed during gameplay.
+pub const SEGMENT_CACHE_SIZE: usize = 512;
+pub const MAX_SEGMENT_SPAWNS: u8 = 62;
+pub const SEGMENT_COUNT: u8 = 4;
+pub const SEGMENT_DISTANCE: u32 = 30_000;
+pub const REU_SIZE: u32 = 0x1000000;
+pub const COMMON_OFFSET: u32 = 0x1000;
+pub const SEGMENTS_OFFSET: u32 = 0x2000;
+// Version 1.2 hashes the 512-byte cached segment prefix and limits it to 62 events.
+pub const PACKAGE_ID: u32 = 0x534D0102;
+pub const PLAYER: u8 = 0;
+pub const FIGHTER: u8 = 1;
+pub const DIVER: u8 = 2;
+pub const TURRET: u8 = 3;
+pub const CARRIER: u8 = 4;
+pub const CRYSTAL: u8 = 5;
+pub const BUILDING: u8 = 6;
+pub const ROCK: u8 = 7;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AssetError {
+    Size,
+    Magic,
+    Version,
+    Bounds,
+    Index,
+    Checksum,
+}
+pub fn u16_at(data: &[u8], at: usize) -> u16 {
+    u16::from_le_bytes([data[at], data[at + 1]])
+}
+pub fn u32_at(data: &[u8], at: usize) -> u32 {
+    u32::from_le_bytes([data[at], data[at + 1], data[at + 2], data[at + 3]])
+}
+#[inline(never)]
+pub fn checksum(data: &[u8]) -> u16 {
+    let mut a = 0u16;
+    let mut b = 0u16;
+    // Each sum is at most 509, so one subtraction is exactly modulo 255.
+    // Avoid dragging a general divide/remainder helper into the resident loader.
+    for &v in data {
+        a += v as u16;
+        if a >= 255 {
+            a -= 255;
+        }
+        b += a;
+        if b >= 255 {
+            b -= 255;
+        }
+    }
+    (b << 8) | a
+}
+pub fn validate_header(data: &[u8]) -> Result<(), AssetError> {
+    if data.len() < 32 {
+        return Err(AssetError::Size);
+    }
+    if &data[..4] != b"SM64" {
+        return Err(AssetError::Magic);
+    }
+    if u32_at(data, 4) != PACKAGE_ID {
+        return Err(AssetError::Version);
+    }
+    if u32_at(data, 8) != COMMON_OFFSET
+        || u32_at(data, 12) != SEGMENTS_OFFSET
+        || data[16] != SEGMENT_COUNT
+    {
+        return Err(AssetError::Bounds);
+    }
+    if checksum(&data[..30]) != u16_at(data, 30) {
+        return Err(AssetError::Checksum);
+    }
+    Ok(())
+}
+
+pub struct AssetBank<'a> {
+    data: &'a [u8],
+}
+impl<'a> AssetBank<'a> {
+    #[inline(never)]
+    #[cfg_attr(target_arch = "mos", link_section = ".phase.boot")]
+    pub fn new(data: &'a [u8]) -> Result<Self, AssetError> {
+        if data.len() != COMMON_SIZE && data.len() != MODEL_SIZE {
+            return Err(AssetError::Size);
+        }
+        if &data[..4] != b"SMA1" {
+            return Err(AssetError::Magic);
+        }
+        if data[4] != 8 {
+            return Err(AssetError::Version);
+        }
+        let bank = Self { data };
+        for id in 0..8 {
+            let d = 16 + id as usize * 8;
+            let vo = u16_at(data, d) as usize;
+            let fo = u16_at(data, d + 4) as usize;
+            let vc = data[d + 2] as usize;
+            let fc = data[d + 3] as usize;
+            if vc == 0
+                || vc > 128
+                || vo < 80
+                || vo > MODEL_SIZE
+                || fo > MODEL_SIZE
+                || fo < vo + vc * 6
+                || fo + fc * 4 > MODEL_SIZE
+            {
+                return Err(AssetError::Bounds);
+            }
+            for f in 0..fc {
+                if data[fo + f * 4..fo + f * 4 + 3]
+                    .iter()
+                    .any(|&i| i as usize >= vc)
+                    || data[fo + f * 4 + 3] > 15
+                {
+                    return Err(AssetError::Index);
+                }
+            }
+        }
+        Ok(bank)
+    }
+    /// Reconstruct a borrowed view without walking the mesh directory again.
+    ///
+    /// # Safety
+    /// `data` must contain the unchanged bytes of a bank accepted by `new`, or
+    /// the complete `MODEL_SIZE` prefix of such a full bank. The backing memory
+    /// must remain unchanged and valid for the returned view's entire lifetime;
+    /// in particular, a REU DMA must not overwrite it while this view is in use.
+    #[inline]
+    pub unsafe fn from_validated(data: &'a [u8]) -> Self {
+        Self { data }
+    }
+    pub fn mesh_count(&self) -> u8 {
+        8
+    }
+    pub fn vertex_count(&self, id: u8) -> u8 {
+        if id < 8 {
+            self.data[18 + id as usize * 8]
+        } else {
+            0
+        }
+    }
+    pub fn face_count(&self, id: u8) -> u8 {
+        if id < 8 {
+            self.data[19 + id as usize * 8]
+        } else {
+            0
+        }
+    }
+    pub fn vertex(&self, id: u8, index: u8) -> Vec3 {
+        if index >= self.vertex_count(id) {
+            return Vec3::default();
+        }
+        let p = u16_at(self.data, 16 + id as usize * 8) as usize + index as usize * 6;
+        Vec3 {
+            x: u16_at(self.data, p) as i16,
+            y: u16_at(self.data, p + 2) as i16,
+            z: u16_at(self.data, p + 4) as i16,
+        }
+    }
+    pub fn face(&self, id: u8, index: u8) -> ([u8; 3], u8) {
+        if index >= self.face_count(id) {
+            return ([0; 3], 0);
+        }
+        let p = u16_at(self.data, 20 + id as usize * 8) as usize + index as usize * 4;
+        (
+            [self.data[p], self.data[p + 1], self.data[p + 2]],
+            self.data[p + 3],
+        )
+    }
+    /// A model-only cache has no score; return an empty slice instead of panicking.
+    pub fn audio(&self) -> &[u8] {
+        if self.data.len() == COMMON_SIZE {
+            &self.data[MODEL_SIZE..MODEL_SIZE + 512]
+        } else {
+            &[]
+        }
+    }
+}
+
+#[derive(Clone, Copy, Default, Debug)]
+pub struct Spawn {
+    pub distance: u16,
+    pub kind: u8,
+    pub x: i16,
+    pub y: i16,
+    pub flags: u8,
+}
+pub struct Segment<'a> {
+    data: &'a [u8],
+}
+impl<'a> Segment<'a> {
+    #[inline(never)]
+    #[cfg_attr(target_arch = "mos", link_section = ".phase.sim")]
+    pub fn new(data: &'a [u8]) -> Result<Self, AssetError> {
+        if data.len() != SEGMENT_SIZE && data.len() != SEGMENT_CACHE_SIZE {
+            return Err(AssetError::Size);
+        }
+        if &data[..4] != b"SMS1" {
+            return Err(AssetError::Magic);
+        }
+        if data[4] >= 4
+            || data[5] > 3
+            || data[6] > 15
+            || data[7] > MAX_SEGMENT_SPAWNS
+            || data[7] as usize > (data.len() - 16) / 8
+        {
+            return Err(AssetError::Bounds);
+        }
+        let s = Self { data };
+        let mut prev = 0;
+        for i in 0..s.spawn_count() {
+            let e = s.spawn(i);
+            if e.distance < prev
+                || e.distance as u32 >= SEGMENT_DISTANCE
+                || !matches!(e.kind, 1 | 2 | 3 | 5 | 6 | 7)
+            {
+                return Err(AssetError::Bounds);
+            }
+            prev = e.distance;
+        }
+        Ok(s)
+    }
+    /// Reconstruct a prefetched, previously checked mission view without scanning it.
+    ///
+    /// # Safety
+    /// `data` must contain unchanged bytes accepted by `new`, or exactly the
+    /// `SEGMENT_CACHE_SIZE` prefix of an accepted packaged segment. The memory
+    /// must remain valid and unmodified for the view's lifetime. Drop all views
+    /// before reusing a segment's DMA destination for another segment.
+    #[inline]
+    pub unsafe fn from_validated(data: &'a [u8]) -> Self {
+        Self { data }
+    }
+    #[inline(never)]
+    #[cfg_attr(target_arch = "mos", link_section = ".phase.sim")]
+    pub fn index(&self) -> u8 {
+        self.data[4]
+    }
+    pub fn terrain(&self) -> u8 {
+        self.data[5]
+    }
+    pub fn ground_color(&self) -> u8 {
+        self.data[6]
+    }
+    #[inline(never)]
+    #[cfg_attr(target_arch = "mos", link_section = ".phase.sim")]
+    pub fn spawn_count(&self) -> u8 {
+        self.data[7]
+    }
+    #[inline(never)]
+    #[cfg_attr(target_arch = "mos", link_section = ".phase.sim")]
+    pub fn spawn(&self, i: u8) -> Spawn {
+        if i >= self.spawn_count() {
+            return Spawn::default();
+        }
+        let p = 16 + i as usize * 8;
+        Spawn {
+            distance: u16_at(self.data, p),
+            kind: self.data[p + 2],
+            flags: self.data[p + 3],
+            x: u16_at(self.data, p + 4) as i16,
+            y: u16_at(self.data, p + 6) as i16,
+        }
+    }
+}
+
+/// DMA chunks never wrap REU's 512KiB pages, 16MiB address space, or CPU RAM.
+pub fn dma_chunk(reu: u32, cpu: u16, remaining: u16) -> u16 {
+    if remaining == 0 || reu >= REU_SIZE as u32 {
+        return 0;
+    }
+    let reu_left = 0x80000 - (reu & 0x7ffff);
+    let cpu_left = 0x10000u32 - cpu as u32;
+    (remaining as u32)
+        .min(reu_left)
+        .min(cpu_left)
+        .min(REU_SIZE as u32 - reu) as u16
+}

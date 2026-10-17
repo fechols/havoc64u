@@ -1,0 +1,72 @@
+#!/usr/bin/env python3
+"""Optional native 6502/Rust differential check; run in the configured WSL SDK.
+
+Usage: python3 tools/test-pack-kernel.py
+Requires stable Rust plus LLVM-MOS's mos-c64-clang, mos-sim-clang, and mos-sim.
+All generated fixtures, binaries, and the JSON report stay under target/pack-test.
+Simulator cycle counts include the comparison harness; they are not game FPS.
+"""
+import hashlib
+import json
+import os
+import pathlib
+import subprocess
+
+root = pathlib.Path(__file__).resolve().parents[1]
+build = root / "target/pack-test"
+build.mkdir(parents=True, exist_ok=True)
+sdk = pathlib.Path(os.environ.get("LLVM_MOS", str(pathlib.Path.home()/".local/llvm-mos"))) / "bin"
+rust_bin = pathlib.Path(os.environ.get("CARGO_HOME", str(pathlib.Path.home()/".cargo"))) / "bin"
+os.environ["PATH"] = str(rust_bin) + os.pathsep + str(sdk) + os.pathsep + os.environ.get("PATH", "")
+
+subprocess.run(["cargo", "+stable", "build", "--lib"], cwd=root, check=True)
+libraries = list((root/"target/debug/deps").glob("libsueme64-*.rlib"))
+library = max(libraries, key=lambda path: path.stat().st_mtime)
+subprocess.run(["rustc", "+stable", "--edition=2021", root/"tools/pack-fixtures.rs",
+                "--extern", f"sueme64={library}", "-L", f"dependency={root/'target/debug/deps'}",
+                "-o", build/"generate"], cwd=root, check=True)
+subprocess.run([build/"generate", build/"fixtures"], cwd=root, check=True)
+subprocess.run([sdk/"mos-c64-clang", "-c", root/"target-c64/asm/pack.S", "-o", build/"pack.o"], check=True)
+distance_bytes = (build/"fixtures/distances.bin").read_bytes()
+distance = [int.from_bytes(distance_bytes[n:n+2], "little") for n in range(0, 512, 2)]
+cases = sorted((build/"fixtures").glob("case-*.bin"))
+report = {
+    "assembly_sha256": hashlib.sha256((root/"target-c64/asm/pack.S").read_bytes()).hexdigest(),
+    "reference": "actual host Rust render::pack_band outputs",
+    "cpu": "LLVM-MOS mos-sim 6502 instruction simulator",
+    "cycles_include_test_harness": True,
+    "batches": [],
+}
+for batch in range(0, len(cases), 8):
+    selected = cases[batch:batch+8]
+    rows = [path.read_bytes() for path in selected]
+    assert all(len(row) == 1760 for row in rows)
+    source = '#include <stdint.h>\n#include <stdio.h>\n'
+    source += 'const uint16_t COLOR_DISTANCE[256]={' + ','.join(map(str, distance)) + '};\n'
+    source += 'static const uint8_t cases[][1760]={\n' + ',\n'.join('{'+','.join(map(str, row))+'}' for row in rows) + '};\n'
+    source += r'''
+extern void fast_pack_band(const uint8_t*,const uint8_t*,const uint8_t*,uint8_t*,uint8_t*,uint8_t*);
+static uint8_t actual[402];
+int main(void){
+  for(uint8_t n=0;n<sizeof(cases)/sizeof(cases[0]);n++){
+    actual[0]=0xa5;actual[401]=0x5a;
+    for(uint16_t i=1;i<=400;i++)actual[i]=0xcd;
+    fast_pack_band(cases[n],cases[n]+1280,cases[n]+1320,actual+1,actual+321,actual+361);
+    if(actual[0]!=0xa5||actual[401]!=0x5a){puts("output guard corrupted");return 2;}
+    for(uint16_t i=0;i<400;i++)if(actual[i+1]!=cases[n][1360+i]){
+      printf("case %u byte %u got %u expected %u\n",n,i,actual[i+1],cases[n][1360+i]);return 1;
+    }
+  }
+  puts("native pack matches Rust reference");return 0;
+}
+'''
+    (build/"check.c").write_text(source)
+    subprocess.run([sdk/"mos-sim-clang", "-Os", "-mlto-zp=0", build/"check.c", build/"pack.o", "-o", build/"check"], check=True)
+    result = subprocess.run([sdk/"mos-sim", "--cycles", build/"check"], text=True, capture_output=True)
+    print(f"cases {batch}..{batch+len(rows)-1}: {result.stdout.strip()} {result.stderr.strip()}", flush=True)
+    if result.returncode:
+        raise SystemExit(result.returncode)
+    report["batches"].append({"first_case": batch, "count": len(rows), "simulator_output": result.stdout.strip()+" "+result.stderr.strip()})
+report.update(passed=True, bands=len(cases), compared_output_bytes=len(cases)*400, output_guards_intact=True)
+(build/"report.json").write_text(json.dumps(report, indent=2)+"\n")
+print(f"PASS: {len(cases)} full bands, {len(cases)*400} native output bytes versus Rust; guard bytes intact")

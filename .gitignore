@@ -1,0 +1,6 @@
+/target
+/target-c64/target
+/target-c64/target-*
+/dist
+/__pycache__
+/tools/__pycache__

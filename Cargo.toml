@@ -1,0 +1,31 @@
+[package]
+name = "sueme64"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "sueme64"
+path = "src/lib.rs"
+
+[[bin]]
+name = "sueme64"
+path = "src/main.rs"
+required-features = ["host-tools"]
+
+[workspace]
+exclude = ["target-c64"]
+
+[dependencies]
+
+[features]
+default = ["host-tools"]
+host-tools = []
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(target_arch, values("mos"))'] }
+
+[profile.release]
+opt-level = 2
+lto = true
+codegen-units = 1
+panic = "abort"
