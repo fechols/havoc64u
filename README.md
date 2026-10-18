@@ -10,6 +10,8 @@ An original polygon rail shooter for the **64 MHz C64 Ultimate**, written in Rus
 
 The first mission travels across open terrain, a canyon, and a defended base before a carrier boss. It includes enemies, scenery collisions, shields, pickups, explosions, three lives, section checkpoints, and victory/restart screens. This is a working prototype: rendering is still below the intended frame rate, and physical C64 Ultimate testing remains outstanding.
 
+Each pair of levels is now connected by an eight-second scenic flight. Hills rise into canyon walls, the canyon opens onto the fortress, and the fortress gives way to the carrier's coast. A creature walks across the first bridge, with distant birds along all three crossings. These three breaks add 24 seconds to the five-minute combat route; there is no extra transition after the carrier battle.
+
 ## Run on C64 Ultimate
 
 The build produces two packages: `dist/` for two UltiSIDs, and `dist/4sid/` for two UltiSIDs plus two physical ARMSIDs. Copy these three matching files from the chosen folder to the Ultimate's storage:
@@ -40,6 +42,10 @@ The four-SID package adds six music voices through the physical sockets at `$D44
 Leave the controller's hardware autofire disabled. The game supplies its own autofire; controller-generated fire pulses can activate the double-tap bomb gesture.
 
 Every five enemy kills immediately restore one bomb, up to the three-bomb limit. Gun, missile, and bomb kills all count. Progress carries across respawns and resets for a new run; rewards earned at the limit are not stored for later. Existing shield and bomb pickups still work normally.
+
+Firing a bomb shakes the whole display, including the cockpit, for 640 ms. The border flashes white, yellow, orange, and red for 80 ms each before returning to black as the shake fades. These hardware effects keep moving between rendered frames and also work during scenic flights. Another bomb restarts the impact; an empty bomb inventory produces no effect.
+
+Steering, firing, charging, rolls, and bombs remain available during scenic flights. Bombs still consume inventory. Outgoing enemies and hostile shots are cleared, damage is disabled, and wildlife is decorative: it cannot be targeted or collided with. The flight grants no shields, bombs, or score. The cockpit and reticle remain visible, and the next section's checkpoint, music, and arrival banner activate when the crossing ends.
 
 After 15 seconds without joystick activity on the title screen, attract mode previews **Lowland Approach**, **Iron Canyon**, **Fortress Run**, and **Carrier Assault** for 15 seconds each. These are live opening scenes at normal game speed, with enemies, scenery, and music, but no player ship or cockpit HUD. Enemies still fire, but all sound effects are silenced during attract mode so the soundtrack can be heard clearly. The section name and **MOVE OR FIRE FOR MENU** remain visible. After all four previews, the title returns for another 15 idle seconds before the cycle repeats. Moving the joystick or pressing fire dismisses a preview; release and press fire again to launch a fresh game. Holding a direction on the title prevents the idle preview from starting. Results screens do not enter attract mode.
 
@@ -95,12 +101,16 @@ cargo run --release --features four-sid -- sizes
 cargo run --release -- snapshot title 0 target/previews/title
 cargo run --release -- snapshot 1 5000 target/previews/canyon
 cargo run --release -- snapshot attract 35000 target/previews/attract-canyon
+cargo run --release -- snapshot transition 0 4000 target/previews/lowlands-canyon
+cargo run --release -- snapshot transition 2 8000 target/previews/carrier-arrival
 python3 tools/previews.py
 ```
 
 Snapshots produce an aspect-correct PPM and the exact 10,000 native bitmap/screen/color bytes. The preview converter uses only Python's standard library.
 
 `snapshot attract` takes elapsed milliseconds from a fresh title screen and replays the actual idle/preview simulation. For example, `35000` captures five seconds into Iron Canyon; `75000` captures the automatic return to the title.
+
+`snapshot transition <0|1|2> <elapsed-ms> [output-prefix]` selects the outgoing section and a time from `0` through `8000`, rounded down to a 20 ms simulation tick. `4000` shows the bridge midpoint; `8000` shows the incoming checkpoint. These inspection snapshots do not replay preceding combat.
 
 Optional native checks run the assembly helpers in the LLVM-MOS 6502 simulator:
 
@@ -130,6 +140,8 @@ python3 tools/test-corrupt-package.py
 
 The smoke test checks the exact 10,000-byte native title, physical joystick port 2, SID music/effects activity, independent 50 Hz audio, frame progress, and dropped-input/triangle counters. It reads the SID profile from the package; use `--package-dir dist/4sid` for the enhanced build. Add `--control-checks` to verify up-to-climb/down-to-dive movement and left/right roll dodges through joystick port 2. Add `--weapon-checks` to seed encounters, trigger actual hit flashes, and fire fully charged homing missiles through the physical joystick input; it checks native hull colors, exhaust visibility, off-axis interception, and targetless expiry. Add `--streaming-checks` to seed section boundaries and results screens through the monitor, verify prefetched REU bytes, and exercise restart with real joystick input. These additional scenarios are separate from the ordinary timing sample; they are not a full native mission playthrough. It records emulator/package hashes, timing, native screenshots, and logs under `target/vice`. Corruption tests operate on private package copies under `target`; they leave `dist` intact.
 
+The weapon checks also double-tap physical FIRE to verify bomb shake and border timing, a second bomb during the effect, and empty-inventory attempts. They trace actual display-register writes to check all sixteen shake phases, movement between rendered frames, bank publication during the effect, and restoration of the normal display. The companion emulator has an existing disabled-badline screen/color-fetch defect in its screenshots; exact native bitmap captures and register traces remain available for validation, while final appearance requires a physical C64 Ultimate check.
+
 `--music-checks` plays a full loop plus a page of each of the seven cues while rendering continues. Monitor fixtures hold each scene, and Lowland uses physical held fire to exercise both effects voices. It checks page order, loop timing, active music lanes, and underruns. The two-SID run also checks that no writes reach the additional SID addresses.
 
 `--attract-checks` observes a full 90-second title/map/title/repeat sequence, counting actual native simulation calls to verify each 750-tick interval. It checks segment-cache bytes, rendered sections, player resources, and stack/input/geometry guards, and captures every map. It also exercises dismissal with every joystick direction and fire, held-input consumption, and fresh-fire launch. Monitor writes establish the initial timer baseline and per-map input fixtures; the complete tour advances naturally and all dismissal/launch input uses physical joystick port 2.
@@ -140,11 +152,25 @@ The display is native **160 x 200 multicolor bitmap mode**, with the C64's 16-co
 
 Four coarse terrain bands form hills and uneven canyon ridges around a level flight corridor. Shared edge heights stay anchored to world distance, and two flat color tones reveal the triangular facets. Each section has its own sky, cloud arrangement, and horizon: blue-gray lowland ridges, warm canyon mesas, an overcast industrial fortress, and a purple dusk coast for the carrier. All five horizon triangles and nine cloud triangles stay fixed in screen space within each section, while terrain and gameplay objects follow the camera. The horizon bases extend below the far terrain to prevent sky gaps as the ground scrolls. Unobstructed background bands reuse the two existing bitmap buffers when both contain the same static backdrop and palette; section changes invalidate both banks, and moving geometry or HUD elements invalidate affected bands. Terrain and sky still use 38 triangles in the lowlands and carrier section, or 54 with canyon caps or base guide strips. The hills are scenic; existing obstacle collisions and ground-object positions remain unchanged.
 
+Bridges use a separate scenery clock while combat distance pauses at the section boundary. Their terrain is sampled by world position, so the connecting landscape appears ahead and continues scrolling through both seams. Horizons and clouds interpolate between the neighboring areas, with stepped changes through the native palette. Wildlife is procedural geometry and uses no enemy slots. Backdrop caching is disabled throughout the crossing and invalidated at both ends; title and attract scenes retain their original terrain and timing.
+
 Original synthesized music runs on a 50 Hz CIA interrupt independently of rendering. A foreground AUDIO overlay prefetches one-bar score pages from REU; the resident player handles notes, ties, legato, and effects without performing REU transfers. The two builds provide four or ten music voices and retain the same two reserved effects voices. Their complete score banks occupy 22,400 and 52,096 REU bytes respectively. Mixer settings use moderate left/right separation; the extra physical SID pair starts at −6 dB.
 
 Simulation uses fixed 20 ms steps, while joystick gestures use timestamped display-rate input. Executable phases share a RAM window and are loaded from REU; audio and the interrupt handler remain resident. Detailed memory ownership and configuration references are in [docs/hardware.md](docs/hardware.md).
 
-## Current validation and performance
+The six code overlays are BOOT, SIM, GEOMETRY, PIXELS, AUDIO, and SCENERY. After startup, each frame runs SIM, AUDIO when a score page is needed, SCENERY, GEOMETRY, then PIXELS. SCENERY stages up to 96 camera-space triangles in the existing command array; GEOMETRY projects them, adds the foreground, and preserves foreground-first ordering at equal depth. The `OVL3` package directory includes the sixth overlay at REU `$070000`, leaving the score bank at `$060000`.
+
+During bridges, native transfers omit enemy/boss drawing code and include wildlife code in the shared overlay memory. Ordinary frames skip the wildlife code. Player and weapon rendering stay available in both cases; enemy simulation is paused throughout the crossing.
+
+## Validation history and performance
+
+The scenic build passes **164 host tests per SID profile**, with one existing native-fixture export ignored. Coverage includes all three 400-tick crossings, controls across both seams, checkpoint and boss timing, and 4,800 saturated bridge/camera states with no dropped geometry. Direct and staged rendering also match in 36 full-frame comparisons. Both native sound profiles pass memory and overlay-reference audits.
+
+Final two- and four-SID packages pass calibrated PAL and NTSC VICE checks for exact title output, all three natural scenic flights, section/music handoffs, result-screen restarts, and the complete attract tour. Controls and weapons pass on both video standards, with an additional four-SID NTSC run. The final cache replay matches forced repainting exactly across all 157 frames on each video standard. All 11 startup-corruption cases pass for each profile, including both partially loaded code tails and rejection of the old overlay directory. Reports are under `target/vice/scenic-release-{2sid,4sid}-{pal,ntsc}`, `target/bench/scenic-release-cache-{pal,ntsc}`, and `target/corrupt-scenic-release-{2sid,4sid}`.
+
+The eight-second ordinary-play benchmark measures 5.4720 FPS PAL and 5.6843 FPS NTSC, respectively 4.48% and 4.08% below the preserved original build. That probe meets the five-percent budget; individual fixed fixtures can have larger costs. See [the scenic benchmark measurements](docs/benchmarks.md#scenic-flight-measurements) for the workload, comparisons, and limits. Physical C64 Ultimate testing remains outstanding.
+
+The older reports and measurements below describe previous builds. Their frame rates, overlay sizes, and native acceptance results are historical.
 
 The OST build passes **140 host tests per SID profile**, with one existing native-fixture export ignored. Six composition/playback tests cover the complete authored suite twice on PAL and NTSC clocks, with page service limited to five frames per second and effects continuing throughout. Additional checks preserve the complete *Lost Wing* transcription, verify cue selection, and reject damaged score data.
 

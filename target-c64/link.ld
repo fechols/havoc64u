@@ -1,4 +1,4 @@
-/* C64 Ultimate PRG with five explicitly selected REU code overlays. The PRG
+/* C64 Ultimate PRG with six explicitly selected REU code overlays. The PRG
  * initializes resident code, startup checks and high constants in one LOAD.
  * Overlay load addresses are REU package offsets, not C64 RAM addresses.
  */
@@ -53,7 +53,10 @@ SECTIONS {
     } >phase
     .phase.geometry 0x3000 : AT(0x30000) {
         __phase_geometry_start = .;
-        *(.phase.geometry .phase.geometry.*)
+        *(.phase.geometry .phase.geometry.data)
+        __phase_geometry_base_end = .;
+        /* Bridges omit enemy meshes but retain the player and projectiles. */
+        *(.phase.geometry.combat .phase.geometry.combat.*)
         __phase_geometry_end = .;
     } >phase
     .phase.pixels 0x3000 : AT(0x40000) {
@@ -65,6 +68,15 @@ SECTIONS {
         __phase_audio_start = .;
         *(.phase.audio .phase.audio.*)
         __phase_audio_end = .;
+    } >phase
+    /* $060000 remains the soundtrack; scenery has its own REU page. */
+    .phase.scenery 0x3000 : AT(0x70000) {
+        __phase_scenery_start = .;
+        *(.phase.scenery .phase.scenery.data)
+        __phase_scenery_base_end = .;
+        /* Only Transition reaches wildlife. Ordinary frames omit this tail. */
+        *(.phase.scenery.wildlife .phase.scenery.wildlife.*)
+        __phase_scenery_end = .;
     } >phase
     /* Called exactly once from main, before BOOT loads common assets over
      * this range. Never reachable from an interrupt or a later overlay. */
@@ -125,8 +137,15 @@ __phase_run = 0x3000;
 __phase_boot_size = SIZEOF(.phase.boot);
 __phase_sim_size = SIZEOF(.phase.sim);
 __phase_geometry_size = SIZEOF(.phase.geometry);
+__phase_geometry_base_size = __phase_geometry_base_end - __phase_geometry_start;
 __phase_pixels_size = SIZEOF(.phase.pixels);
 __phase_audio_size = SIZEOF(.phase.audio);
+__phase_scenery_size = SIZEOF(.phase.scenery);
+__phase_scenery_base_size = __phase_scenery_base_end - __phase_scenery_start;
+/* SCENERY stages 96 camera-space records in the command array's tail.
+ * GEOMETRY copies each record out before projection reuses consumed bytes. */
+__scenery_records_start = 0xD880;
+__scenery_records_end = 0xE000;
 /* GEOMETRY resets its cache before use. PIXELS then fills this same workspace
  * before rasterization; neither the IRQ nor resident model data uses it. */
 __pixel_band_start = 0x8C00;
@@ -156,8 +175,13 @@ ASSERT(SIZEOF(.tables) <= 0x0700, "resident tables exceed $9900-$9FFF")
 ASSERT(SIZEOF(.phase.boot) <= 0x4200, "BOOT overlay exceeds $3000-$71FF")
 ASSERT(SIZEOF(.phase.sim) <= 0x4200, "SIM overlay exceeds $3000-$71FF")
 ASSERT(SIZEOF(.phase.geometry) <= 0x4200, "GEOMETRY overlay exceeds $3000-$71FF")
+ASSERT(__phase_geometry_base_size > 0 && __phase_geometry_base_size < __phase_geometry_size, "GEOMETRY needs a common prefix and a combat tail")
 ASSERT(SIZEOF(.phase.pixels) <= 0x3000, "PIXELS overlay overlaps prepared edges at $6000")
 ASSERT(SIZEOF(.phase.audio) <= 0x4200, "AUDIO overlay exceeds $3000-$71FF")
+ASSERT(SIZEOF(.phase.scenery) <= 0x4200, "SCENERY overlay exceeds $3000-$71FF")
+ASSERT(__phase_scenery_base_size > 0 && __phase_scenery_base_size < __phase_scenery_size, "SCENERY needs a common prefix and a wildlife tail")
+ASSERT(__scenery_records_end - __scenery_records_start == 96 * 20, "incorrect scenery staging allocation")
+ASSERT(__scenery_records_start >= __raster_heads_start && __scenery_records_end <= __raster_heads_end, "scenery staging exceeds command array")
 ASSERT(SIZEOF(.startup_checks) > 0 && SIZEOF(.startup_checks) <= 0x0500, "startup checks exceed retired pixel-band workspace")
 ASSERT(__projection_cache_start >= __pixel_band_start && __projection_cache_end <= __pixel_band_end, "projection cache exceeds shared pixel-band workspace")
 ASSERT(__projection_cache_start + 624 <= __projection_cache_end, "depth-sort scratch exceeds retired projection cache")

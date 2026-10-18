@@ -69,6 +69,14 @@ def main():
         ("directory-magic", 0x100, "REU CODE DIRECTORY MISSING OR INVALID"),
         ("boot-code", 0x10010, "REU CODE CHECKSUM FAILED"),
         ("audio-code", 0x50010, "REU CODE CHECKSUM FAILED"),
+        ("scenery-code", 0x70010, "REU CODE CHECKSUM FAILED"),
+        # These tails are omitted from some frame transfers, but boot must
+        # validate their complete executable bytes before any frame is drawn.
+        ("wildlife-tail", 0x70000 + int.from_bytes(original["reu"][0x122:0x124], "little") - 1,
+         "REU CODE CHECKSUM FAILED"),
+        ("enemy-drawing-tail", 0x30000 + int.from_bytes(original["reu"][0x108:0x10a], "little") - 1,
+         "REU CODE CHECKSUM FAILED"),
+        ("old-code-directory", 0x103, "REU CODE DIRECTORY MISSING OR INVALID"),
         ("common-assets", 0x1010, "INVALID COMMON ASSET BANK"),
         ("resident-pair", 0x118, "PRG AND REU DO NOT MATCH"),
         ("directory-profile", 0x120, "PRG AND REU DO NOT MATCH"),
@@ -82,9 +90,11 @@ def main():
             (private_package/f"havoc.{extension}").write_bytes(original[extension])
         damaged = bytearray(original["reu"])
         damaged[offset] ^= 1
+        if name == "old-code-directory":
+            damaged[0x100:0x104] = b"OVL2"
         if name == "directory-profile":
             damaged[offset] = 2 if original["reu"][17] == 4 else 4
-        if name in ("resident-pair", "directory-profile"):
+        if name in ("resident-pair", "directory-profile", "old-code-directory"):
             # A valid directory with the wrong resident checksum must get the
             # distinct pairing error, rather than failing directory validation.
             damaged[0x13e:0x140] = checksum(damaged[0x100:0x13e]).to_bytes(2, "little")

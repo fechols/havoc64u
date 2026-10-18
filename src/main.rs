@@ -1,7 +1,7 @@
 mod host;
 use havoc::{
     assets::*,
-    game::{Game, InputSample, FIRE},
+    game::{Game, InputSample, FIRE, TRANSITION_TICKS},
     hud,
     render::{self, Renderer},
 };
@@ -64,6 +64,7 @@ enum Snapshot {
     Title,
     Section(u8, u16),
     Attract(u32),
+    Transition(u8, u16),
 }
 
 fn snapshot(source: Snapshot, out: &Path) -> Result<(), Box<dyn std::error::Error>> {
@@ -71,6 +72,9 @@ fn snapshot(source: Snapshot, out: &Path) -> Result<(), Box<dyn std::error::Erro
     let bank = AssetBank::new(&common).unwrap();
     let game = match source {
         Snapshot::Title => Game::new(),
+        Snapshot::Transition(section, elapsed_ticks) => {
+            Game::preview_transition(section, elapsed_ticks)
+        }
         Snapshot::Section(section, distance) => {
             let mut game = Game::preview_at(section, distance);
             let data = host::segment_bank(game.segment_index());
@@ -129,7 +133,23 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             Ok(())
         }
         Some("snapshot") => {
-            let source = if args.get(2).map(String::as_str) == Some("attract") {
+            let transition = args.get(2).map(String::as_str) == Some("transition");
+            let source = if transition {
+                let section = args
+                    .get(3)
+                    .ok_or("transition needs outgoing section 0..2")?
+                    .parse::<u8>()?;
+                let elapsed_ms = args
+                    .get(4)
+                    .ok_or("transition needs elapsed milliseconds 0..8000")?
+                    .parse::<u16>()?;
+                if section >= 3 || elapsed_ms > TRANSITION_TICKS * 20 {
+                    return Err(
+                        "transition section must be 0..2 and elapsed milliseconds 0..8000".into(),
+                    );
+                }
+                Snapshot::Transition(section, elapsed_ms / 20)
+            } else if args.get(2).map(String::as_str) == Some("attract") {
                 Snapshot::Attract(
                     args.get(3)
                         .ok_or("attract needs elapsed milliseconds")?
@@ -153,7 +173,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             };
             snapshot(
                 source,
-                Path::new(args.get(4).map(String::as_str).unwrap_or("target/preview")),
+                Path::new(
+                    args.get(if transition { 5 } else { 4 })
+                        .map(String::as_str)
+                        .unwrap_or("target/preview"),
+                ),
             )
         }
         Some("sizes") => {
@@ -168,7 +192,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             Ok(())
         }
         _ => {
-            println!("H.A.V.O.C. tools\n  bake [directory]\n  check game.reu\n  snapshot <title|0|1|2|3> [distance] [output-prefix]\n  snapshot attract <elapsed-ms> [output-prefix]\n  sizes");
+            println!("H.A.V.O.C. tools\n  bake [directory]\n  check game.reu\n  snapshot <title|0|1|2|3> [distance] [output-prefix]\n  snapshot attract <elapsed-ms> [output-prefix]\n  snapshot transition <0|1|2> <elapsed-ms:0..8000> [output-prefix]\n  sizes");
             Ok(())
         }
     }

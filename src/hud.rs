@@ -38,7 +38,7 @@ pub fn draw(band: u8, pixels: &mut [u8; 1280], hud: &Hud, frame: u16) {
         return;
     }
     match hud.mode {
-        Mode::Attract => {}
+        Mode::Attract | Mode::Transition => {}
         Mode::Title => title(band, pixels, frame),
         Mode::Playing => {
             if (1..=2).contains(&band) && hud.boss_shield != 0 {

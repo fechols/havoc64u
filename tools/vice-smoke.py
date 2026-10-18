@@ -180,9 +180,11 @@ def counters(mon, syms):
     return result
 
 
-def stores(log_path):
+def stores(log_path, initial_values=None):
     text = log_path.read_text(errors="replace") if log_path.exists() else ""
     result = []
+    values = dict(initial_values or {})
+    tracked = set(values)
     # VICE trace records pair an effective store address with the instruction's
     # registers. A store's value comes from A, X or Y according to its opcode.
     pattern = r"(?:Trace|trace)\s+(?:on\s+)?store\s+\$?([0-9a-fA-F]{4})[^\n]*\n([^\n]*)"
@@ -190,13 +192,20 @@ def stores(log_path):
         address = int(match[1], 16)
         instruction = match[2]
         register = re.search(r"\bST([AXY])\b", instruction, re.I)
-        if register is None:
-            continue
-        value = re.search(rf"\b{register[1]}:([0-9a-fA-F]{{2}})\b", instruction, re.I)
+        value = re.search(rf"\b{register[1]}:([0-9a-fA-F]{{2}})\b", instruction, re.I) if register else None
         cycles = re.search(r"\s(\d+)\s*$", instruction)
-        if value is None or cycles is None:
+        if cycles is None:
             continue
-        result.append({"address": address, "value": int(value[1], 16), "bus_cycles": int(cycles[1])})
+        if value is not None:
+            updated = int(value[1], 16)
+        elif address in tracked and re.search(r"\b(?:INC|DEC)\b", instruction, re.I):
+            # Counters may compile to read/modify/write instructions rather
+            # than STA. Only infer them when the caller supplies known state.
+            updated = (values[address] + (1 if re.search(r"\bINC\b", instruction, re.I) else -1)) & 255
+        else:
+            continue
+        values[address] = updated
+        result.append({"address": address, "value": updated, "bus_cycles": int(cycles[1])})
     return result
 
 
@@ -222,23 +231,24 @@ def sid_summary(log_path, events, sid_count=2):
 
 def phase_profile(events, address, title, frames):
     names = {1: "simulation", 2: "geometry", 3: "pixels", 4: "publish",
-             5: "simulation", 6: "geometry", 7: "pixels", 8: "audio", 9: "audio"}
+             5: "simulation", 6: "geometry", 7: "pixels", 8: "audio", 9: "audio",
+             10: "scenery", 11: "scenery"}
     transitions = [event for event in events if event["address"] == address and event["value"] in names]
     previous = title["bus_cycles"]
     for frame in frames:
         end = frame["bus_cycles"]
         selected = [event for event in transitions if previous <= event["bus_cycles"] < end]
         costs = {name: 0 for name in names.values()}
-        loads = {name: 0 for name in ("simulation", "geometry", "pixels", "audio")}
-        work = {name: 0 for name in ("simulation", "geometry", "pixels", "audio")}
+        loads = {name: 0 for name in ("simulation", "geometry", "pixels", "audio", "scenery")}
+        work = {name: 0 for name in ("simulation", "geometry", "pixels", "audio", "scenery")}
         for index, event in enumerate(selected):
             next_cycle = selected[index+1]["bus_cycles"] if index+1 < len(selected) else end
             duration = next_cycle - event["bus_cycles"]
             name = names[event["value"]]
             costs[name] += duration
-            if event["value"] in (1, 2, 3, 8):
+            if event["value"] in (1, 2, 3, 8, 10):
                 loads[name] += duration
-            elif event["value"] in (5, 6, 7, 9):
+            elif event["value"] in (5, 6, 7, 9, 11):
                 work[name] += duration
         frame["phase_bus_cycles"] = costs
         if any(event["value"] in (5, 6, 7) for event in selected):
@@ -315,6 +325,8 @@ def dwarf_game_layout(elf, tool, syms, output, controls=False):
     required = {"rail_ticks": "u16", "boss_z": "i16", "mode": "havoc::game::Mode",
                 "boss_started": "bool", "boss_defeated": "bool", "score": "u32",
                 "shield": "u8", "lives": "u8", "bombs": "u8"}
+    if "Transition" in modes:
+        required.update(transition_ticks="u16", ticks="u16")
     sizes = {"u8": 1, "i8": 1, "u16": 2, "u32": 4, "i16": 2, "bool": 1, "havoc::game::Mode": 1}
     sample = None
     if controls:
@@ -349,7 +361,10 @@ def dwarf_game_layout(elf, tool, syms, output, controls=False):
             raise RuntimeError(f"Unsupported or missing target Game::{name} DWARF type")
         fields[name]["size"] = sizes[kind]
     mode_size = re.search(r"DW_AT_byte_size\s+\((0x[0-9a-fA-F]+|\d+)\)", descriptions["Mode"])
-    if not mode_size or int(mode_size[1], 0) != 1 or modes != {"Title": 0, "Playing": 1, "Respawning": 2, "Victory": 3, "GameOver": 4, "Attract": 5}:
+    expected_modes = {"Title": 0, "Playing": 1, "Respawning": 2, "Victory": 3, "GameOver": 4, "Attract": 5}
+    if "Transition" in modes:
+        expected_modes["Transition"] = 6
+    if not mode_size or int(mode_size[1], 0) != 1 or modes != expected_modes:
         raise RuntimeError("Unsupported target Mode representation")
     name, address = resident_symbol(syms, "GAME")
     end = syms.get("__game_state_end")
@@ -365,6 +380,11 @@ def fletcher16(data):
         a = (a + value) % 255
         b = (b + a) % 255
     return a | (b << 8)
+
+
+def active_section(rail_ticks, mode):
+    """A bridge holds the incoming boundary while rendering its outgoing area."""
+    return min((rail_ticks - (mode == 6)) // 3750, 3)
 
 
 def streaming_checks(mon, syms, failures, elf, reu, dwarf_tool, output, result):
@@ -433,7 +453,10 @@ def streaming_checks(mon, syms, failures, elf, reu, dwarf_tool, output, result):
         mon.run_until(syms["frame_complete"], failures)
         frame = counters(mon, syms)
         mon.command("bank ram")
-        frame["game"] = {name: field_read(name) for name in ("mode", "rail_ticks", "boss_z", "boss_started", "boss_defeated", "score", "shield", "lives", "bombs")}
+        observed = ["mode", "rail_ticks", "boss_z", "boss_started", "boss_defeated", "score", "shield", "lives", "bombs"]
+        if "Transition" in layout["modes"]:
+            observed += ["ticks", "transition_ticks"]
+        frame["game"] = {name: field_read(name) for name in observed}
         frame["stack_guards"] = {name: mon.integer(syms[name], 1) for name in ("__stack_bottom", "__irq_stack_bottom")}
         mon.command("bank cpu")
         frame["cache_views"] = caches()
@@ -442,18 +465,26 @@ def streaming_checks(mon, syms, failures, elf, reu, dwarf_tool, output, result):
             raise RuntimeError("Seeded scenario dropped input/geometry or changed a stack guard")
         if frame["test_input"] != 255 or frame["game_mode"] != frame["game"]["mode"]:
             raise RuntimeError("Seeded scenario did not retain physical input or consistent exported game mode")
-        if "render_segment" in frame and frame["render_segment"] != min(frame["game"]["rail_ticks"] // 3750, 3):
+        if frame.get("music_underruns", 0):
+            raise RuntimeError("Music underrun during section streaming")
+        if "render_segment" in frame and frame["render_segment"] != active_section(frame["game"]["rail_ticks"], frame["game_mode"]):
             raise RuntimeError("Geometry rendered a stale segment after a section transition or restart")
+        if frame["game_mode"] == layout["modes"].get("Transition"):
+            progress = frame["game"]["transition_ticks"]
+            label = "late" if progress >= 320 else "middle" if progress >= 180 else "entrance"
+            captures = scenario.setdefault("transition_captures", {})
+            if label not in captures:
+                captures[label] = capture(mon, syms, output, f"{scenario['name']}-{label}")
         return frame
 
     def wait_ready(scenario, mode, section, desired):
-        for _ in range(4):
+        for _ in range(160 if "Transition" in layout["modes"] else 4):
             frame = observe(scenario)
-            current = min(frame["game"]["rail_ticks"] // 3750, 3)
+            current = active_section(frame["game"]["rail_ticks"], frame["game_mode"])
             indices = {view["section"] for view in frame["cache_views"]}
             if frame["game_mode"] == mode and current == section and indices == {section, desired}:
                 return frame
-        raise RuntimeError(f"{scenario['name']} did not reach its expected state and prefetched caches within four frames")
+        raise RuntimeError(f"{scenario['name']} did not reach its expected state and prefetched caches")
 
     def finish_capture(scenario, name):
         scenario["capture"] = capture(mon, syms, output, name)
@@ -478,6 +509,26 @@ def streaming_checks(mon, syms, failures, elf, reu, dwarf_tool, output, result):
         result["scenarios"].append(scenario)
         seed(scenario, {"rail_ticks": section*3750-1})
         wait_ready(scenario, layout["modes"]["Playing"], section, (section+1)&3)
+        if "Transition" in layout["modes"]:
+            bridge = [frame for frame in scenario["frames"] if frame["game_mode"] == layout["modes"]["Transition"]]
+            if not bridge:
+                raise RuntimeError("Section boundary skipped its scenic flight")
+            # Account for catch-up ticks before/after each presented frame:
+            # elapsed ticks since bridge entry = transition progress, then
+            # exactly 400 plus the resumed local combat ticks.
+            epoch = (bridge[0]["game"]["ticks"] - bridge[0]["game"]["transition_ticks"]) & 0xffff
+            initial_resources = {name: bridge[0]["game"][name] for name in ("shield", "lives", "bombs", "score")}
+            for frame in bridge:
+                game = frame["game"]
+                if game["rail_ticks"] != section*3750 or ((game["ticks"]-epoch) & 0xffff) != game["transition_ticks"]:
+                    raise RuntimeError("Bridge encounter clock or animation clock advanced incorrectly")
+                if any(game[name] != value for name, value in initial_resources.items()):
+                    raise RuntimeError("Enemy-free scenic flight changed player resources")
+            final = scenario["frames"][-1]["game"]
+            duration = ((final["ticks"]-epoch) & 0xffff) - (final["rail_ticks"]-section*3750)
+            if duration != 400:
+                raise RuntimeError(f"Scenic flight lasted {duration} ticks instead of 400")
+            scenario["transition"] = {"duration_ticks": duration, "observed_frames": len(bridge), "resources_preserved": True}
         if not any(frame["stream_bytes"] for frame in scenario["frames"]):
             raise RuntimeError(f"No actual segment DMA observed for section {section}")
         finish_capture(scenario, label)
@@ -763,7 +814,7 @@ def control_checks(mon, syms, failures, elf, dwarf_tool, output, result):
             raise RuntimeError("Control check dropped input/geometry or changed a stack guard")
         if frame["test_input"] != 255 or frame["game"]["mode"] != layout["modes"]["Playing"]:
             raise RuntimeError("Control check lost physical-input mode or active gameplay")
-        if "render_segment" in frame and frame["render_segment"] != min(frame["game"]["rail_ticks"] // 3750, 3):
+        if "render_segment" in frame and frame["render_segment"] != active_section(frame["game"]["rail_ticks"], frame["game_mode"]):
             raise RuntimeError("Control check rendered a stale segment")
         return frame
 
@@ -868,12 +919,12 @@ def control_checks(mon, syms, failures, elf, dwarf_tool, output, result):
     result["passed"] = True
 
 
-def weapon_checks(mon, syms, failures, elf, dwarf_tool, output, result):
+def weapon_checks(mon, syms, failures, elf, dwarf_tool, output, result, video):
     """Seed encounter fixtures; exercise damage, charging and FIRE through game code."""
     layout = dwarf_game_layout(elf, dwarf_tool, syms, output, controls=True)
     scalar_sizes = {"u8": 1, "i8": 1, "bool": 1, "u16": 2, "i16": 2, "u32": 4}
     structs = {}
-    for name in ("Actor", "Shot", "Pickup", "Explosion", "Renderer", "Triangle", "Vec3", "Controls"):
+    for name in ("Actor", "Shot", "Pickup", "Explosion", "Renderer", "Triangle", "Vec3", "Controls", "BombEffect"):
         description = subprocess.check_output(
             [str(dwarf_tool), f"--name={name}", "--show-children", str(elf)], text=True)
         (output / f"dwarf-{name.lower()}.txt").write_text(description)
@@ -922,9 +973,14 @@ def weapon_checks(mon, syms, failures, elf, dwarf_tool, output, result):
             or triangle["fields"]["depth"]["type"] != "i16"
             or triangle["fields"]["color"]["type"] != "u8"):
         raise RuntimeError("Unsupported Renderer/Triangle DWARF layout")
+    effect = structs["BombEffect"]
+    effect["address"] = resident_symbol(syms, "BOMB_EFFECT")[1]
+    if (effect["size"] != 1 or effect["fields"].get("remaining") != {"offset": 0, "type": "u8"}
+            or "irq_entry" not in syms):
+        raise RuntimeError("Bomb checks require the one-byte BombEffect and resident irq_entry")
     result.update(passed=False, monitor_assisted=True, excluded_from_timing=True,
-                  scope="Seeded encounters and cleared actors/projectiles; damage runs through hostile-shot collision. Charge timers and shot creation use real elapsed time and physical joystick FIRE. No hit-flash timer or shot-pending writes.",
-                  layout=layout, arrays=arrays, renderer=renderer, triangle=triangle, scenarios=[])
+                  scope="Seeded encounters and cleared actors/projectiles; damage runs through hostile-shot collision. Charge timers, missiles and bombs use real elapsed time and physical joystick FIRE. No hit-flash, bomb-effect timer or shot-pending writes.",
+                  layout=layout, arrays=arrays, renderer=renderer, triangle=triangle, bomb_effect=effect, scenarios=[])
 
     def read_field(name):
         field = fields[name]
@@ -1188,6 +1244,157 @@ def weapon_checks(mon, syms, failures, elf, dwarf_tool, output, result):
         raise RuntimeError("Targetless missile unexpectedly changed score")
     missing["expired_capture"] = capture(mon, syms, output, "weapons-missile-no-target-expired")
     finish(missing)
+
+    # Keep this separate from rendered-frame observations: a bomb's complete
+    # impulse can run between a handful of frame publications. Read the exact
+    # resident countdown from DWARF and trace every actual VIC register write.
+    sample_layout = layout["input_sample"]
+    bomb_samples = ((6, 6, 1), (0, 0, 1), (6, 1, 7), (0, 6, 7),
+                    (4, 5, 8), (0, 1, 8), (4, 2, 2), (0, 5, 2),
+                    (2, 4, 0), (0, 2, 0), (2, 2, 0), (0, 4, 0),
+                    (2, 3, 0), (0, 2, 0), (2, 3, 0), (0, 4, 0))
+    bus_hz = 985248 if video == "pal" else 1022727
+    video_ms = 1000 * (19656 if video == "pal" else 17095) / bus_hz
+
+    def pulse_fire(scenario, bits, count=1):
+        mon.command(f"jpdb 1 ${31 ^ bits:02x}")
+        for _ in range(count):
+            head = mon.integer(sample_layout["head_address"], 1)
+            for _ in range(8):
+                mon.run_until(syms["irq_entry"], failures)
+                next_head = mon.integer(sample_layout["head_address"], 1)
+                if next_head != head:
+                    break
+            else:
+                raise RuntimeError("Bomb gesture missed an accepted raster input sample")
+            if (next_head - head) & 63 != 1:
+                raise RuntimeError("Bomb gesture skipped an input-ring sample")
+            address = sample_layout["address"] + ((next_head - 1) & 63) * sample_layout["size"]
+            raw = mon.read(address, sample_layout["size"])
+            sample = {name: int.from_bytes(raw[field["offset"]:field["offset"]+field["size"]], "little")
+                      for name, field in sample_layout["fields"].items()}
+            if sample["bits"] != bits:
+                raise RuntimeError("Bomb gesture did not reach the physical joystick input ring")
+            scenario.setdefault("samples", []).append(sample)
+
+    def double_fire(scenario):
+        start = len(scenario.get("samples", []))
+        for bits in (16, 0, 16, 0):
+            pulse_fire(scenario, bits)
+        edges = [sample for sample in scenario["samples"][start:] if sample["pressed"] & 16]
+        if len(edges) != 2 or not 0 < (edges[1]["ms"] - edges[0]["ms"]) & 0xffffffff <= 500:
+            raise RuntimeError("Bomb requires two real FIRE edges within the double-tap window")
+
+    def observe_effect(scenario):
+        mon.run_until(syms["irq_entry"], failures)
+        state = {"remaining": mon.integer(effect["address"], 1),
+                 "audio_ticks": mon.integer(syms["AUDIO_TICKS"]),
+                 "front_bank": mon.integer(syms["FRONT_BANK"], 1),
+                 "frame_serial": mon.integer(syms["FRAME_SERIAL"])}
+        mon.command("bank io")
+        state.update(x=mon.integer(0xd016, 1) & 7, y=mon.integer(0xd011, 1) & 7,
+                     border=mon.integer(0xd020, 1) & 15)
+        mon.command("bank cpu")
+        scenario.setdefault("irq_samples", []).append(state)
+        return state
+
+    def await_effect(scenario, predicate):
+        for _ in range(120):
+            state = observe_effect(scenario)
+            if predicate(state):
+                return state
+        raise RuntimeError("Bomb effect did not reach its expected countdown state within 120 IRQs")
+
+    def verify_bomb_trace(scenario, trace_path, expected_triggers, initial_bank):
+        mon.command("log off")  # Flush complete records before parsing.
+        events = stores(trace_path, {effect["address"]: 0})
+        remaining, applied, bank, publications = 0, (0, 3, 0), initial_bank, 0
+        triggers, durations, phases = [], [], set()
+        changing_between_frames = shaken_publications = 0
+        previous_motion = None
+        for event in events:
+            address, value = event["address"], event["value"]
+            if address == effect["address"]:
+                if value == 32:
+                    triggers.append(event["bus_cycles"])
+                elif value != max(0, remaining - 1):
+                    raise RuntimeError(f"Bomb countdown changed from {remaining} to {value} without a trigger")
+                if value == 0 and remaining > 0:
+                    durations.append(1000 * (event["bus_cycles"] - triggers[-1]) / bus_hz)
+                remaining = value
+            elif address == 0xd016:
+                applied = bomb_samples[(32-remaining)//2] if remaining else (0, 3, 0)
+                if value != 0x18 | applied[0]:
+                    raise RuntimeError("Raster bomb X scroll differs from the native countdown phase")
+                if remaining:
+                    phases.add((32-remaining)//2)
+                    if previous_motion and previous_motion[0] == publications and previous_motion[1] != applied[:2]:
+                        changing_between_frames += 1
+                    previous_motion = (publications, applied[:2])
+            elif address == 0xd011:
+                if value != 0x38 | applied[1]:
+                    raise RuntimeError("Raster/publication changed bomb Y scroll, bitmap/display mode, or IRQ compare bit")
+            elif address == 0xd020:
+                if value != applied[2]:
+                    raise RuntimeError("Bomb border differs from its white/yellow/orange/red/black phase")
+            elif address == syms["FRONT_BANK"]:
+                if value not in (2, 3) or value == bank:
+                    raise RuntimeError("Bomb effect interrupted alternating bitmap publication")
+                bank, publications = value, publications + 1
+                shaken_publications += applied[:2] != (0, 3)
+        if len(triggers) != expected_triggers or remaining != 0 or applied != (0, 3, 0):
+            raise RuntimeError("Bomb trigger count or final neutral display state is incorrect")
+        if expected_triggers:
+            if (len(durations) != 1 or abs(durations[0] - 640) > 20 + video_ms
+                    or phases != set(range(16)) or not changing_between_frames or not shaken_publications):
+                raise RuntimeError("Bomb duration, complete shake phases, between-frame motion, or active bank publication failed")
+        elif phases or durations:
+            raise RuntimeError("Empty-inventory double FIRE activated bomb presentation")
+        scenario["presentation"] = {"trace": str(trace_path), "triggers": len(triggers),
+            "completed_duration_ms": durations, "duration_tolerance_ms": 20 + video_ms,
+            "shake_phases": sorted(phases), "motion_changes_between_publications": changing_between_frames,
+            "shaken_bank_publications": shaken_publications, "final_scroll_and_border": applied}
+
+    mon.command("log off")
+    for address in (0xd011, 0xd016, 0xd020):
+        mon.command(f"trace store {address:04x} if @cpu:$01 == $35")
+    for address in (effect["address"], syms["FRONT_BANK"]):
+        mon.command(f"trace store {address:04x}")
+    for name, inventory, retrigger in (("bomb-display-impulse", 1, False),
+                                        ("bomb-display-retrigger", 2, True),
+                                        ("bomb-empty-inventory", 0, False)):
+        scenario = {"name": name}
+        result["scenarios"].append(scenario)
+        # Let any earlier FIRE edge age out through actual released samples.
+        pulse_fire(scenario, 0, 35)
+        observe(scenario)
+        seed(scenario, {"bombs": inventory}, clear=("actors", "shots", "pickups", "explosions"))
+        initial_bank = mon.integer(syms["FRONT_BANK"], 1)
+        if mon.integer(effect["address"], 1) != 0:
+            raise RuntimeError("Bomb scenario did not start with a neutral presentation")
+        trace_path = output / f"weapons-{name}-monitor.log"
+        trace_path.unlink(missing_ok=True)
+        mon.command(f'logname "{trace_path.as_posix()}"')
+        mon.command("log on")
+        double_fire(scenario)
+        if inventory:
+            await_effect(scenario, lambda state: 24 <= state["remaining"] <= 30)
+            scenario["active_capture"] = capture(mon, syms, output, f"weapons-{name}-active")
+            if retrigger:
+                await_effect(scenario, lambda state: 0 < state["remaining"] <= 24)
+                double_fire(scenario)
+                await_effect(scenario, lambda state: state["remaining"] >= 28)
+            await_effect(scenario, lambda state: state["remaining"] == 0)
+        else:
+            first = observe_effect(scenario)
+            await_effect(scenario, lambda state: ((state["audio_ticks"] - first["audio_ticks"]) & 0xffff) >= 36)
+        pulse_fire(scenario, 0, 2)  # Publish idle registers after the final CIA tick.
+        final = observe(scenario)
+        if final["game"]["bombs"] != 0:
+            raise RuntimeError("Physical bomb gesture did not spend the expected inventory")
+        verify_bomb_trace(scenario, trace_path, 2 if retrigger else int(inventory > 0), initial_bank)
+        scenario["expired_capture"] = capture(mon, syms, output, f"weapons-{name}-expired")
+        finish(scenario)
     mon.command("jpdb 1 $1f")
     mon.command("log off")
     result["passed"] = True
@@ -1371,7 +1578,7 @@ def main():
     parser.add_argument("--control-checks", action="store_true",
                         help="after timing, verify Up climbs, Down dives, and lateral dodges with IRQ-synchronized physical joystick input")
     parser.add_argument("--weapon-checks", action="store_true",
-                        help="after timing, verify actual damage flashes and physically fired homing missiles in DWARF-derived encounter fixtures")
+                        help="after timing, verify damage flashes, homing missiles and raster-clocked bomb shake/flash with physical joystick input")
     parser.add_argument("--attract-checks", action="store_true",
                         help="after timing, count a natural title/map tour and verify physical-input dismissal and fresh-FIRE relaunch")
     parser.add_argument("--music-checks", action="store_true",
@@ -1501,7 +1708,7 @@ def main():
             raise RuntimeError("Physical joystick port 2 was not sampled as held fire")
         if any(frame["frame_dropped"] or frame["input_overflows"] for frame in frames):
             raise RuntimeError("Geometry commands or input samples were dropped")
-        if any("render_segment" in frame and frame["render_segment"] != min(frame["game_distance"] // 30000, 3)
+        if any("render_segment" in frame and frame["render_segment"] != active_section(frame["game_distance"] // 8, frame["game_mode"])
                for frame in [report["title"]] + frames):
             raise RuntimeError("Rendered segment does not match the current game distance")
         # This companion's monitor I/O peek does not implement $D031 and
@@ -1532,7 +1739,7 @@ def main():
             report["weapon_checks"] = {}
             weapon_checks(mon, syms, failures, elf,
                           args.llvm_dwarfdump or args.llvm_nm.with_name("llvm-dwarfdump"),
-                          output, report["weapon_checks"])
+                          output, report["weapon_checks"], args.video)
         if args.streaming_checks:
             report["streaming_checks"] = {}
             streaming_checks(mon, syms, failures, elf, reu,

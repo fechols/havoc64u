@@ -1,7 +1,7 @@
-"""Audit retained ELF relocations across five mutually exclusive overlays.
+"""Audit retained ELF relocations across six mutually exclusive overlays.
 
 Unlike a disassembly's numeric call addresses, ELF relocation symbols retain
-the destination section even when all five phases execute at $3000. This is a
+the destination section even when all six phases execute at $3000. This is a
 static reference audit; runtime-computed pointers still require hardware tests.
 Only Python's standard library is needed. Link with --emit-relocs and do not
 strip the ELF before running this checker.
@@ -170,6 +170,7 @@ ENTRIES = {
     ".phase.geometry": "havoc_c64::prepare_geometry",
     ".phase.pixels": "havoc_c64::draw_pixels",
     ".phase.audio": "havoc_c64::service_audio",
+    ".phase.scenery": "havoc_c64::prepare_scenery",
 }
 STARTUP_SECTION = ".startup_checks"
 STARTUP_ENTRY = "havoc_c64::check_code_package"
@@ -218,12 +219,30 @@ def audit(path):
     elf = Elf(path)
     audit_startup(elf)
     phases = {section.name: section for section in elf.sections if section.name.startswith(".phase.")}
-    require(set(phases) == set(ENTRIES), "ELF must contain exactly the five supported phase sections")
+    require(set(phases) == set(ENTRIES), "ELF must contain exactly the six supported phase sections")
     entry_functions = {}
     for name, expected in ENTRIES.items():
         matches = [function for function in elf.functions[phases[name].index] if function.name == expected]
         require(len(matches) == 1, f"missing or ambiguous overlay entry {expected}")
         entry_functions[name] = matches[0]
+    symbols = {symbol.name: symbol for symbol in elf.symbols if symbol.name}
+    partial_phases = []
+    for name, caller_name, tail_name in (
+        ("scenery", "havoc::scenery::emit", "havoc::scenery::wildlife"),
+        ("geometry", "havoc::game::Game::render_foreground", "havoc::game::Game::render_combat"),
+    ):
+        phase = phases[f".phase.{name}"]
+        boundary_name = f"__phase_{name}_base_end"
+        require(boundary_name in symbols, f"missing common {name} prefix boundary")
+        boundary = symbols[boundary_name].address
+        require(phase.address < boundary < phase.address + phase.size,
+                f"invalid common {name} prefix boundary")
+        require(entry_functions[phase.name].end <= boundary,
+                f"{name} entry must be entirely within the common prefix")
+        tail = [function for function in elf.functions[phase.index] if function.name == tail_name]
+        require(len(tail) == 1 and tail[0].address >= boundary,
+                f"{tail_name} must be the mode-dependent {name} tail entry")
+        partial_phases.append((phase, boundary, caller_name, tail[0]))
     startup_sections = [section for section in elf.sections if section.name == STARTUP_SECTION]
     require(len(startup_sections) == 1, "missing or ambiguous startup-check section")
     startup_section = startup_sections[0]
@@ -239,6 +258,7 @@ def audit(path):
     entry_addresses = defaultdict(list)
     graph = defaultdict(set)
     errors = []
+    partial_tail_calls = Counter()
     relocations = list(elf.relocations())
     # LLVM places switch tables in resident .rodata and drops their local
     # symbol names. Recover their contiguous relocation runs, then require
@@ -273,6 +293,21 @@ def audit(path):
         destination = symbol.address + addend
         caller = elf.function_at(source.index, address) if source.executable else None
         callee = elf.function_at(target.index, destination) if target.executable else None
+        for phase, boundary, caller_name, tail in partial_phases:
+            if (source.index == phase.index and target.index == phase.index
+                    and address < boundary <= destination):
+                # Reviewed guards: scenery calls wildlife only in Transition;
+                # foreground calls combat only outside Transition. main selects
+                # those same full/prefix loads using the unchanged simulation HUD.
+                instruction = address - source.address - 1
+                direct = (kind == 3 and 0 <= instruction < source.size
+                          and elf.contents(source)[instruction] in (0x20, 0x4C))
+                if (caller and caller.name == caller_name and callee == tail
+                        and destination == tail.address and direct):
+                    partial_tail_calls[phase.name] += 1
+                else:
+                    origin = caller.name if caller else f"{source.name}:${address:04X}"
+                    errors.append(f"common {phase.name} prefix references unloaded tail: {origin} -> ${destination:04X}")
         if caller and callee:
             graph[caller].add(callee)
         for table in tables:
@@ -313,6 +348,8 @@ def audit(path):
     for name in [".text", *ENTRIES, STARTUP_SECTION]:
         require(sources[name] > 0, f"no retained relocations for {name}; link with --emit-relocs")
     require(not errors, "unsafe overlay references:\n  " + "\n  ".join(errors))
+    require(all(partial_tail_calls[phase.name] == 1 for phase, *_ in partial_phases),
+            f"expected one guarded call to each mode-dependent tail, got {dict(partial_tail_calls)}")
     require(all(entry_references[name] == 1 for name in ENTRIES), f"expected one main JSR to each overlay entry, got {dict(entry_references)}")
     require(entry_references[STARTUP_SECTION] == 1, "startup checker must have exactly one direct main call")
     require(entry_addresses[STARTUP_SECTION][0] < entry_addresses[".phase.boot"][0],
@@ -332,6 +369,8 @@ def audit(path):
         require("call_indir" not in function.name, f"IRQ calls an indirect-call trampoline: {function.name}")
         pending.extend(graph[function])
     print(f"Overlay audit: {sum(local_references.values())} phase-local references, {phase_tables} owned switch tables; zero cross-phase references")
+    for phase, boundary, _, tail in partial_phases:
+        print(f"{phase.name} prefix: {boundary-phase.address} bytes; one reviewed mode-dependent call to {tail.name}")
     print("Resident entry calls: " + ", ".join(ENTRIES.values()))
     print(f"IRQ relocation graph: {len(reached)} functions, all resident")
     print("Startup: ROMs disabled before BSS; only BSS clear, data copy, main are called")

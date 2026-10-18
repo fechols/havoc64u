@@ -1,6 +1,6 @@
 use havoc::assets::{Segment, SEGMENT_SIZE};
 use havoc::audio::Effect;
-use havoc::game::{Game, InputSample, Mode, FIRE, LEFT, RIGHT};
+use havoc::game::{Game, InputSample, Mode, PresentationEvent, FIRE, LEFT, RIGHT};
 
 #[cfg(feature = "host-tools")]
 #[allow(dead_code)]
@@ -280,21 +280,26 @@ fn inclusive_double_tap_window_consumes_pairs_and_first_shot_is_immediate() {
     let bytes = segment_bytes();
     let s = Segment::new(&bytes).unwrap();
     let mut g = started(&s);
+    assert_eq!(g.take_presentation_event(), PresentationEvent::Reset);
     input(&mut g, 0, 20);
     g.tick(&s);
     input(&mut g, FIRE, 100);
     g.tick(&s);
     assert!(effects(&mut g).contains(&Effect::Fire));
     assert_eq!(g.hud().bombs, 3);
+    assert_eq!(g.take_presentation_event(), PresentationEvent::None);
     input(&mut g, 0, 120);
     input(&mut g, FIRE, 600);
     g.tick(&s);
     assert_eq!(g.hud().bombs, 2);
     assert!(effects(&mut g).contains(&Effect::Bomb));
+    assert_eq!(g.take_presentation_event(), PresentationEvent::Bomb);
+    assert_eq!(g.take_presentation_event(), PresentationEvent::None);
     input(&mut g, 0, 620);
     input(&mut g, FIRE, 650);
     g.tick(&s);
     assert_eq!(g.hud().bombs, 2, "third tap starts a new pair");
+    assert_eq!(g.take_presentation_event(), PresentationEvent::None);
 }
 
 #[test]
@@ -349,6 +354,7 @@ fn bomb_inventory_cannot_underflow() {
     let bytes = segment_bytes();
     let s = Segment::new(&bytes).unwrap();
     let mut g = started(&s);
+    assert_eq!(g.take_presentation_event(), PresentationEvent::Reset);
     input(&mut g, 0, 20);
     for pair in 0..4 {
         let time = 100 + pair * 600;
@@ -359,6 +365,15 @@ fn bomb_inventory_cannot_underflow() {
         g.tick(&s);
         input(&mut g, 0, time + 120);
         effects(&mut g);
+        assert_eq!(
+            g.take_presentation_event(),
+            if pair < 3 {
+                PresentationEvent::Bomb
+            } else {
+                PresentationEvent::None
+            },
+            "pair {pair}"
+        );
     }
     assert_eq!(g.hud().bombs, 0);
 }

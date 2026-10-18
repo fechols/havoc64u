@@ -14,13 +14,15 @@ pub const HEIGHT: usize = 200;
 pub const BAND_HEIGHT: usize = 8;
 pub const BAND_PIXELS: usize = WIDTH * BAND_HEIGHT;
 pub const TRIANGLE_CAPACITY: usize = 256;
+pub const SCENERY_CAPACITY: usize = 96;
+const SCENERY_OFFSET: usize = 2176;
 pub const NEAR: i16 = 32;
 pub const HUD_INK: u8 = 0x80;
 const POSITIVE_AREA: u8 = 4;
 // An indexed byte avoids a variable-width bit test on the 6502.
 const STATIC_SKY_COLORS: [bool; 16] = [
-    false, false, false, false, true, false, true, false,
-    true, false, false, true, false, false, false, false,
+    false, false, false, false, true, false, true, false, true, false, false, true, false, false,
+    false, false,
 ];
 
 #[derive(Clone, Copy)]
@@ -31,6 +33,62 @@ struct Triangle {
     depth: i16,
     color: u8,
     reserved: u8,
+}
+
+/// Camera-space records occupy the unused command tail during SCENERY.
+#[derive(Clone, Copy)]
+#[repr(C)]
+struct SceneryTriangle {
+    points: [Vec3; 3],
+    color: u8,
+    flags: u8,
+}
+const _: () = {
+    assert!(core::mem::size_of::<Triangle>() == 16);
+    assert!(core::mem::size_of::<SceneryTriangle>() == 20);
+    assert!(SCENERY_OFFSET + SCENERY_CAPACITY * 20 == 4096);
+    // Once a record has been copied out, even two clipped output commands
+    // cannot catch the following unread record in the shared allocation.
+    assert!(SCENERY_CAPACITY * (32 - 20) <= SCENERY_OFFSET);
+};
+
+pub struct SceneryStage<'a> {
+    renderer: &'a mut Renderer,
+    count: u8,
+}
+impl SceneryStage<'_> {
+    #[inline(always)]
+    pub fn count(&self) -> u8 {
+        self.count
+    }
+}
+impl GeometrySink for SceneryStage<'_> {
+    #[inline(never)]
+    #[cfg_attr(target_arch = "mos", link_section = ".phase.scenery")]
+    fn triangle(&mut self, a: Vec3, b: Vec3, c: Vec3, color: u8, flags: u8) {
+        if self.count as usize == SCENERY_CAPACITY {
+            self.renderer.dropped = self.renderer.dropped.saturating_add(1);
+            return;
+        }
+        let record = SceneryTriangle {
+            points: [a, b, c],
+            color,
+            flags,
+        };
+        // Derive provenance from the whole command allocation. Integer-only
+        // records admit every bit pattern; no reference to retyped storage is
+        // created, and the stage's exclusive borrow ends before projection.
+        unsafe {
+            self.renderer
+                .triangles
+                .as_mut_ptr()
+                .cast::<u8>()
+                .add(SCENERY_OFFSET + self.count as usize * 20)
+                .cast::<SceneryTriangle>()
+                .write_unaligned(record);
+        }
+        self.count += 1;
+    }
 }
 
 impl Triangle {
@@ -78,6 +136,87 @@ impl Renderer {
         self.dropped = 0;
         self.clear_color = clear_color & 15;
         self.padding = 0;
+    }
+
+    /// Borrow the command tail for unprojected scenery after begin().
+    #[inline(always)]
+    pub fn scenery_stage(&mut self) -> SceneryStage<'_> {
+        assert_eq!(self.triangle_count, 0, "stage scenery before projection");
+        assert_eq!(self.padding, 0, "begin a new frame before scenery");
+        SceneryStage {
+            renderer: self,
+            count: 0,
+        }
+    }
+
+    /// Consume staged records before foreground can reuse their command bytes.
+    #[inline(never)]
+    #[cfg_attr(target_arch = "mos", link_section = ".phase.geometry")]
+    pub fn project_scenery(&mut self, count: u8) -> u16 {
+        assert!(count as usize <= SCENERY_CAPACITY);
+        assert_eq!(self.triangle_count, 0, "project scenery before foreground");
+        for index in 0..count as usize {
+            // Copy the complete input before triangle() mutates the allocation.
+            // After k inputs the output is at most32*k bytes and the next input
+            // begins at2176+20*k; the compile-time bound proves non-overlap.
+            let record = unsafe {
+                self.triangles
+                    .as_ptr()
+                    .cast::<u8>()
+                    .add(SCENERY_OFFSET + index * 20)
+                    .cast::<SceneryTriangle>()
+                    .read_unaligned()
+            };
+            self.triangle(
+                record.points[0],
+                record.points[1],
+                record.points[2],
+                record.color,
+                record.flags,
+            );
+        }
+        self.triangle_count
+    }
+
+    /// Restore foreground-first authoring order before the stable depth sort.
+    #[inline(never)]
+    #[cfg_attr(target_arch = "mos", link_section = ".phase.geometry")]
+    pub fn scenery_last(&mut self, prefix: u16) {
+        assert!(prefix <= self.triangle_count && self.triangle_count as usize <= TRIANGLE_CAPACITY);
+        if prefix == 0 || prefix == self.triangle_count {
+            return;
+        }
+        self.reverse_commands(0, prefix);
+        self.reverse_commands(prefix, self.triangle_count);
+        self.reverse_commands(0, self.triangle_count);
+    }
+
+    #[inline(never)]
+    #[cfg_attr(target_arch = "mos", link_section = ".phase.geometry")]
+    fn reverse_commands(&mut self, mut first: u16, mut end: u16) {
+        while first < end {
+            end -= 1;
+            if first == end {
+                break;
+            }
+            // Whole-record assignment still lowers to a general memmove on
+            // LLVM-MOS. Scalar volatile byte swaps keep the operation bounded,
+            // prohibit that transformation and need only two temporary bytes.
+            // Both distinct command indices are within the initialized array;
+            // integer-only records remain valid throughout the exchange.
+            unsafe {
+                let commands = self.triangles.as_mut_ptr();
+                let left = commands.add(first as usize).cast::<u8>();
+                let right = commands.add(end as usize).cast::<u8>();
+                for byte in 0..16 {
+                    let a = left.add(byte).read_volatile();
+                    let b = right.add(byte).read_volatile();
+                    left.add(byte).write_volatile(b);
+                    right.add(byte).write_volatile(a);
+                }
+            }
+            first += 1;
+        }
     }
 
     /// Stable far-to-near radix sort: ties retain their authored ordering.
@@ -950,6 +1089,107 @@ fn glyph(c: u8) -> &'static [u8; 5] {
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn clipped_scenery(sink: &mut impl GeometrySink, index: u8) {
+        sink.triangle(
+            Vec3 { x: 0, y: 12, z: 16 },
+            Vec3 {
+                x: -12,
+                y: -12,
+                z: 64,
+            },
+            Vec3 {
+                x: 12,
+                y: -12,
+                z: 64,
+            },
+            index & 15,
+            TWO_SIDED,
+        );
+    }
+    fn tied_foreground(sink: &mut impl GeometrySink, index: u8) {
+        let z = if index & 1 == 0 { 42 } else { 53 };
+        sink.triangle(
+            Vec3 { x: -8, y: -8, z },
+            Vec3 { x: 8, y: -8, z },
+            Vec3 { x: 0, y: 8, z },
+            index.wrapping_add(7) & 15,
+            TWO_SIDED,
+        );
+    }
+    #[test]
+    fn staged_scenery_preserves_unread_records_and_foreground_tie_order() {
+        for count in [0, 1, 2, 16, 95, 96] {
+            let mut direct = Renderer::new();
+            let mut staged = Renderer::new();
+            direct.begin(6);
+            staged.begin(6);
+            for index in 0..64 {
+                tied_foreground(&mut direct, index);
+            }
+            for index in 0..count {
+                clipped_scenery(&mut direct, index);
+            }
+            let raw_count = {
+                let mut stage = staged.scenery_stage();
+                for index in 0..count {
+                    clipped_scenery(&mut stage, index);
+                }
+                stage.count()
+            };
+            assert_eq!(raw_count, count);
+            let prefix = staged.project_scenery(raw_count);
+            assert_eq!(prefix, count as u16 * 2, "every staged input splits");
+            for index in 0..64 {
+                tied_foreground(&mut staged, index);
+            }
+            staged.scenery_last(prefix);
+            direct.finish();
+            staged.finish();
+            assert_eq!(staged.triangle_count, 64 + count as u16 * 2);
+            assert_eq!((direct.dropped, staged.dropped), (0, 0));
+            for (a, b) in direct.triangles[..direct.triangle_count as usize]
+                .iter()
+                .zip(&staged.triangles[..staged.triangle_count as usize])
+            {
+                assert_eq!(
+                    (a.x, a.y, a.depth, a.color, a.reserved),
+                    (b.x, b.y, b.depth, b.color, b.reserved)
+                );
+            }
+            for band in 0..25 {
+                let mut expected = [0; BAND_PIXELS];
+                let mut actual = [0; BAND_PIXELS];
+                direct.render_band(band, &mut expected);
+                staged.render_band(band, &mut actual);
+                assert_eq!(actual, expected);
+            }
+        }
+    }
+    #[test]
+    fn scenery_stage_has_a_checked_ninety_six_record_limit() {
+        let mut renderer = Renderer::new();
+        let count = {
+            let mut stage = renderer.scenery_stage();
+            for index in 0..97 {
+                clipped_scenery(&mut stage, index);
+            }
+            stage.count()
+        };
+        assert_eq!(count, SCENERY_CAPACITY as u8);
+        assert_eq!(renderer.dropped, 1);
+        assert_eq!(renderer.project_scenery(count), 192);
+        // Starting another frame retires both the commands and overflow state.
+        renderer.begin(6);
+        assert_eq!(renderer.dropped, 0);
+        assert_eq!(renderer.scenery_stage().count(), 0);
+    }
+    #[test]
+    #[should_panic]
+    fn scenery_rotation_rejects_a_corrupted_public_command_count() {
+        let mut renderer = Renderer::new();
+        renderer.triangle_count = TRIANGLE_CAPACITY as u16 + 1;
+        renderer.scenery_last(1);
+    }
     #[test]
     fn commands_fit_four_kibibytes() {
         assert_eq!(core::mem::size_of::<Triangle>() * TRIANGLE_CAPACITY, 4096);

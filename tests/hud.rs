@@ -42,6 +42,23 @@ fn cockpit_leaves_playfield_untouched_and_displays_resource_levels() {
 }
 
 #[test]
+fn scenic_flight_retains_cockpit_without_obscuring_the_landscape() {
+    let playing = frame(&state(Mode::Playing), 0);
+    let mut status = state(Mode::Transition);
+    status.distance = 30_000;
+    let transit = frame(&status, 0);
+    assert_eq!(&transit[..8 * 160], &playing[..8 * 160]);
+    assert_eq!(&transit[184 * 160..], &playing[184 * 160..]);
+    assert!(transit[8 * 160..184 * 160].iter().all(|&pixel| pixel == 6));
+    status.mode = Mode::Playing;
+    status.section = 1;
+    let arrived = frame(&status, 0);
+    assert!(arrived[29 * 160..51 * 160]
+        .iter()
+        .any(|&pixel| pixel & HUD_INK != 0));
+}
+
+#[test]
 fn title_has_large_lettering_and_keeps_the_ship_visible() {
     let pixels = frame(&state(Mode::Title), 0);
     assert!(
@@ -130,6 +147,7 @@ fn every_mode_survives_native_bitmap_packing_with_readable_ink() {
         Mode::Victory,
         Mode::GameOver,
         Mode::Attract,
+        Mode::Transition,
     ] {
         for band in 0..25 {
             let mut pixels = [6; 1280];

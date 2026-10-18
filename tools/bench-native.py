@@ -138,6 +138,12 @@ def fixtures():
                         patch[f"{array}[{index}].{field}"] = value
         result.append({"name": name, "patch": patch, "section": rail // 3750,
                        "cache_miss": name == "section-boundary", "input_bits": 0})
+    for section in range(3):
+        for progress in (0, 200, 399):
+            patch = dict(result[1]["patch"], mode=6, rail_ticks=(section+1)*3750,
+                         transition_ticks=progress, spawn_segment=section)
+            result.append({"name": f"bridge-{section}-{progress}", "patch": patch,
+                           "section": section, "cache_miss": False, "input_bits": 16})
     return result
 
 
@@ -189,6 +195,14 @@ def cache_sequence():
                 {"rail_ticks": rail + (len(heights)-1)*7, "spawn_segment": section,
                  "player.y": heights[-1]}, section=section, theme_check=True,
                 camera_check=True, stable_check=frame == 2))
+    for section in range(3):
+        for progress in (0, 100, 200, 300, 399):
+            sequence.append(variant(f"bridge-{section}-{progress}",
+                {"mode": 6, "rail_ticks": (section+1)*3750,
+                 "transition_ticks": progress, "spawn_segment": section},
+                section=section, theme_check=True, bridge_check=True))
+        for frame in range(3):
+            sequence.append(theme_frame(section+1, f"bridge-recovery-{frame}", frame == 2))
     return sequence
 
 
@@ -611,7 +625,12 @@ def main():
                     raise RuntimeError("Forced cache miss unexpectedly reused a band")
                 if fixture.get("theme_check"):
                     cache = cached["sky_cache"]
-                    if cached["clear_color"] != (6, 8, 11, 4)[fixture["section"]]:
+                    expected_sky = (6, 8, 11, 4)[fixture["section"]]
+                    if fixture.get("bridge_check"):
+                        expected_sky = ((6, 14, 10, 8), (8, 9, 12, 11), (11, 6, 14, 4))[fixture["section"]][fixture["patch"]["transition_ticks"] // 100]
+                        if cache["eligible_bands"] or cache["reused_bands"] or cache["prepared_hex"] != bytes(8).hex():
+                            raise RuntimeError(f"Scenic flight {index} retained static sky cache data")
+                    if cached["clear_color"] != expected_sky:
                         raise RuntimeError(f"Theme transition {index} selected the wrong sky color")
                     if switched and cache["prepared_hex"] != bytes(8).hex():
                         raise RuntimeError(f"Theme transition {index} did not invalidate both VIC banks")

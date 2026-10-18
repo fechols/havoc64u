@@ -8,8 +8,10 @@ pub mod soundtrack;
 pub mod game;
 pub mod hud;
 pub mod math;
+pub mod presentation;
 pub mod projection;
 pub mod render;
+pub mod scenery;
 pub mod sky_cache;
 
 #[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]

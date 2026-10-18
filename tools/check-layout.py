@@ -29,6 +29,11 @@ assert symbols['__projection_cache_start']==0x8c00 and symbols['__projection_cac
 assert symbols['__projection_cache_end']<=symbols['__pixel_band_end']
 assert symbols['__projection_cache_start']+624<=symbols['__projection_cache_end']
 assert (symbols['__raster_heads_start'],symbols['__raster_heads_end'])==(0xd000,0xe000)
+assert (symbols['__scenery_records_start'],symbols['__scenery_records_end'])==(0xd880,0xe000)
+assert 0 < symbols['__phase_scenery_base_size'] < symbols['__phase_scenery_size'] <= 0x4200
+assert symbols['__phase_scenery_base_end'] == 0x3000 + symbols['__phase_scenery_base_size']
+assert 0 < symbols['__phase_geometry_base_size'] < symbols['__phase_geometry_size'] <= 0x4200
+assert symbols['__phase_geometry_base_end'] == 0x3000 + symbols['__phase_geometry_base_size']
 assert (symbols['__raster_tails_start'],symbols['__raster_tails_end'])==(0x6000,0x6c00)
 assert (symbols['__raster_masks_start'],symbols['__raster_masks_end'])==(0x6c00,0x6f20)
 assert symbols['__raster_masks_end']<=symbols['__irq_stack_bottom']
@@ -40,7 +45,7 @@ for line in listing.splitlines():
     name,address,size,flags=m.groups();address=int(address,16);size=int(size,16)
     if 'A' not in flags or not size:continue
     if name.startswith('.phase.'):
-        assert name in {'.phase.boot','.phase.sim','.phase.geometry','.phase.pixels','.phase.audio'},name
+        assert name in {'.phase.boot','.phase.sim','.phase.geometry','.phase.pixels','.phase.audio','.phase.scenery'},name
         limit=0x3000 if name=='.phase.pixels' else 0x4200
         assert address==0x3000 and size<=limit,name
     else:
@@ -57,3 +62,6 @@ print('Models8400-8BFF; band8C00-90FF; color9100-94FF; segments9500-98FF')
 print('Overlay3000-71FF; main stackC400-C7FF; IRQ stack7200-75FF')
 print('PIXELS code3000-5FFF; edge headsD000-DFFF tails6000-6BFF masks6C00-6F1F')
 print('GEOMETRY code3000-71FF; projection/sort cache8C00-8E7F shares PIXELS band')
+print('SCENERY code3000-71FF; raw recordsD880-DFFF share GEOMETRY commands')
+print(f'SCENERY ordinary prefix {symbols["__phase_scenery_base_size"]} bytes; transition tail {symbols["__phase_scenery_size"]-symbols["__phase_scenery_base_size"]} bytes')
+print(f'GEOMETRY transition prefix {symbols["__phase_geometry_base_size"]} bytes; combat tail {symbols["__phase_geometry_size"]-symbols["__phase_geometry_base_size"]} bytes')

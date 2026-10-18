@@ -9,9 +9,10 @@ use core::{
 use havoc::{
     assets::{self, AssetBank, Segment},
     audio::{AudioEngine, SidBus, VideoStandard},
-    game::{Game, Hud, InputSample},
+    game::{Game, Hud, InputSample, PresentationEvent},
     hud,
     music::{self, BANK_HEADER_SIZE, PAGE_SIZE},
+    presentation::BombEffect,
     render::{self, Renderer},
     sky_cache::SkyCache,
 };
@@ -39,6 +40,8 @@ pub static mut FRAME_SERIAL: u16 = 0;
 pub static mut VIDEO_FRAMES: u16 = 0;
 #[no_mangle]
 pub static mut AUDIO_TICKS: u16 = 0;
+#[no_mangle]
+pub static mut BOMB_EFFECT: BombEffect = BombEffect::new();
 #[no_mangle]
 pub static mut FRONT_BANK: u8 = 3;
 #[no_mangle]
@@ -95,8 +98,11 @@ extern "C" {
     static __phase_boot_size: u8;
     static __phase_sim_size: u8;
     static __phase_geometry_size: u8;
+    static __phase_geometry_base_size: u8;
     static __phase_pixels_size: u8;
     static __phase_audio_size: u8;
+    static __phase_scenery_size: u8;
+    static __phase_scenery_base_size: u8;
     static __resident_end: u8;
     static __startup_checks_start: u8;
     static __startup_checks_end: u8;
@@ -127,6 +133,12 @@ pub unsafe extern "C" fn irq_body() {
     if peek(0xd019) & 1 != 0 {
         poke(0xd019, 1);
         VIDEO_FRAMES = VIDEO_FRAMES.wrapping_add(1);
+        let [scroll, border] = BOMB_EFFECT.sample();
+        poke(0xd016, 0x18 | (scroll & 7));
+        // Keep display enable unchanged until the first published frame. Bit
+        // seven reads raster position but writes the IRQ compare high bit.
+        poke(0xd011, (peek(0xd011) & 0x78) | (scroll >> 3));
+        poke(0xd020, border);
         let bits = if TEST_INPUT == 0xff {
             (!peek(0xdc00)) & 31
         } else {
@@ -171,6 +183,7 @@ pub unsafe extern "C" fn irq_body() {
 unsafe fn audio_tick() {
     CLOCK_MS = CLOCK_MS.wrapping_add(20);
     AUDIO_TICKS = AUDIO_TICKS.wrapping_add(1);
+    BOMB_EFFECT.tick();
     let audio = AUDIO.assume_init_mut();
     audio.tick(&mut HardwareSid, NEXT_PAGE.assume_init_ref());
     MUSIC_CUE = audio.current_cue() as u8;
@@ -235,14 +248,26 @@ unsafe fn dma(mut reu: u32, mut cpu: u16, mut count: u16) {
 }
 #[inline(never)]
 unsafe fn load_phase(index: u8, size: u16) {
+    // The sixth overlay skips the paged soundtrack at REU $060000.
+    let page = if index == 5 { 7 } else { index + 1 };
     let mut offset = 0u16;
     while offset < size {
         let n = (size - offset).min(1024);
-        dma(
-            ((index as u32 + 1) << 16) + offset as u32,
-            0x3000 + offset,
-            n,
-        );
+        // Every caller uses one of six linker sizes (or a checked prefix),
+        // bounded by $4200; startup also validates each full package size.
+        // CPU $3000-$71FF never reaches I/O or wraps, and REU pages 1..5/7 plus
+        // this offset cannot cross a 512 KiB boundary or the 16 MiB image end.
+        // Thus general dma() would emit exactly one identical transfer here.
+        // Keep its register order and 1024-byte IRQ-latency limit, avoiding its
+        // repeated 32-bit bounds arithmetic for these statically bounded loads.
+        word(0xdf02, 0x3000 + offset);
+        poke(0xdf04, offset as u8);
+        poke(0xdf05, (offset >> 8) as u8);
+        poke(0xdf06, page);
+        word(0xdf07, n);
+        poke(0xdf09, 0);
+        poke(0xdf0a, 0);
+        poke(0xdf01, 0x91);
         offset += n;
     }
 }
@@ -251,7 +276,7 @@ unsafe fn load_phase(index: u8, size: u16) {
 unsafe fn check_code_package() {
     dma(0x100, 0x7600, 64);
     let directory = core::slice::from_raw_parts(0x7600 as *const u8, 64);
-    if &directory[..4] != b"OVL2"
+    if &directory[..4] != b"OVL3"
         || assets::checksum(&directory[..62]) != assets::u16_at(directory, 62)
     {
         fail(b"REU CODE DIRECTORY MISSING OR INVALID")
@@ -262,6 +287,7 @@ unsafe fn check_code_package() {
         core::ptr::addr_of!(__phase_geometry_size) as u16,
         core::ptr::addr_of!(__phase_pixels_size) as u16,
         core::ptr::addr_of!(__phase_audio_size) as u16,
+        core::ptr::addr_of!(__phase_scenery_size) as u16,
     ];
     let resident = core::slice::from_raw_parts(
         0x0801 as *const u8,
@@ -281,16 +307,18 @@ unsafe fn check_code_package() {
     {
         fail(b"PRG AND REU DO NOT MATCH")
     }
-    for index in 0..5 {
+    for index in 0..6 {
         let size = sizes[index];
-        if size != assets::u16_at(directory, 4 + index * 2) || size == 0 || size > 0x4200 {
+        let size_offset = if index == 5 { 34 } else { 4 + index * 2 };
+        let hash_offset = if index == 5 { 36 } else { 14 + index * 2 };
+        if size != assets::u16_at(directory, size_offset) || size == 0 || size > 0x4200 {
             fail(b"INVALID REU CODE SIZE")
         }
         load_phase(index as u8, size);
         if assets::checksum(core::slice::from_raw_parts(
             0x3000 as *const u8,
             size as usize,
-        )) != assets::u16_at(directory, 14 + index * 2)
+        )) != assets::u16_at(directory, hash_offset)
         {
             fail(b"REU CODE CHECKSUM FAILED")
         }
@@ -592,35 +620,53 @@ unsafe fn publish(bank: u8, last: &mut u16) {
     fast_copy_color();
     poke(0xdd00, (peek(0xdd00) & 0xfc) | (3 - bank));
     FRONT_BANK = bank;
-    poke(0xd011, 0x3b);
+    // Publishing a new bitmap must not interrupt the raster-driven shake.
+    poke(0xd011, 0x38 | (peek(0xd011) & 7));
     *last = VIDEO_FRAMES;
     enable_irq();
     frame_complete();
 }
 
-// Keep theme selection resident: both render phases have little spare space.
 // Screen bytes only prove reuse for identical pixels, so a section change must
 // invalidate both banks even when old and new clouds happen to share a palette.
 #[inline(never)]
+#[link_section = ".phase.scenery"]
 unsafe fn prepare_sky(section: u8) -> u8 {
-    if RENDER_SEGMENT != section {
+    let game = GAME.assume_init_ref();
+    if RENDER_SEGMENT != section || game.transition_progress().is_some() {
         SKY_CACHE = SkyCache::new();
     }
     RENDER_SEGMENT = section;
-    GAME.assume_init_ref().sky_color()
+    game.sky_color()
 }
 
-#[link_section = ".phase.geometry"]
+#[link_section = ".phase.scenery"]
 #[inline(never)]
-unsafe fn prepare_geometry(current: u8, bank: &AssetBank<'_>) {
-    havoc::projection::begin_frame();
+unsafe fn prepare_scenery(current: u8) -> u8 {
     let game = GAME.assume_init_ref();
     let renderer = RENDERER.assume_init_mut();
     let data = segment_data(current);
     renderer.begin(prepare_sky(data[4]));
-    game.render(renderer, bank, &Segment::from_validated(data));
+    let mut stage = renderer.scenery_stage();
+    game.render_scenery(&mut stage, &Segment::from_validated(data));
+    stage.count()
+}
+
+#[link_section = ".phase.geometry"]
+#[inline(never)]
+unsafe fn prepare_geometry(scenery_count: u8, bank: &AssetBank<'_>) {
+    havoc::projection::begin_frame();
+    let game = GAME.assume_init_ref();
+    let renderer = RENDERER.assume_init_mut();
+    let prefix = renderer.project_scenery(scenery_count);
+    game.render_foreground(renderer, bank, 174.min(233 - scenery_count as u16));
+    renderer.scenery_last(prefix);
     renderer.finish();
-    SKY_BANDS = renderer.static_sky_bands();
+    SKY_BANDS = if game.transition_progress().is_some() {
+        0
+    } else {
+        renderer.static_sky_bands()
+    };
     FRAME_TRIANGLES = renderer.triangle_count;
     FRAME_DROPPED = renderer.dropped;
 }
@@ -804,6 +850,16 @@ unsafe fn simulate(runtime: &mut Runtime) -> Hud {
         load_segment(runtime.current, need);
         runtime.loaded[runtime.current as usize] = need;
     }
+    // Present the latest event after catch-up so a bomb cannot expire before
+    // the display sees it. The IRQ owns only the resident effect countdown.
+    let presentation = game.take_presentation_event();
+    disable_irq();
+    match presentation {
+        PresentationEvent::None => {}
+        PresentationEvent::Bomb => BOMB_EFFECT.trigger(),
+        PresentationEvent::Reset => BOMB_EFFECT.reset(),
+    }
+    enable_irq();
     send_audio(game);
     let status = game.hud();
     GAME_MODE = status.mode as u8;
@@ -848,11 +904,32 @@ pub unsafe extern "C" fn main() -> i32 {
             wr(core::ptr::addr_of_mut!(PROF_PHASE), 9);
             service_audio();
         }
+        wr(core::ptr::addr_of_mut!(PROF_PHASE), 10);
+        // Simulation's mode is unchanged through AUDIO and both render phases.
+        // Only Transition can call the wildlife tail; ordinary frames load the
+        // common scenery prefix. Startup still checksums the entire overlay.
+        let scenery_size = if status.mode == havoc::game::Mode::Transition {
+            core::ptr::addr_of!(__phase_scenery_size) as u16
+        } else {
+            core::ptr::addr_of!(__phase_scenery_base_size) as u16
+        };
+        load_phase(5, scenery_size);
+        wr(core::ptr::addr_of_mut!(PROF_PHASE), 11);
+        io_off();
+        let scenery_count = prepare_scenery(runtime.current);
+        io_on();
         wr(core::ptr::addr_of_mut!(PROF_PHASE), 2);
-        load_phase(2, core::ptr::addr_of!(__phase_geometry_size) as u16);
+        // Bridges keep the common player/projectile renderer and replace enemy
+        // presentation with SCENERY wildlife. SIM remains a separate overlay.
+        let geometry_size = if status.mode == havoc::game::Mode::Transition {
+            core::ptr::addr_of!(__phase_geometry_base_size) as u16
+        } else {
+            core::ptr::addr_of!(__phase_geometry_size) as u16
+        };
+        load_phase(2, geometry_size);
         wr(core::ptr::addr_of_mut!(PROF_PHASE), 6);
         io_off();
-        prepare_geometry(runtime.current, &bank);
+        prepare_geometry(scenery_count, &bank);
         io_on();
         geometry_complete();
         load_phase(3, core::ptr::addr_of!(__phase_pixels_size) as u16);

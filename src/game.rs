@@ -10,9 +10,10 @@ pub const LEFT: u8 = 4;
 pub const RIGHT: u8 = 8;
 pub const FIRE: u8 = 16;
 pub const MISSION_DISTANCE: u32 = 120_000;
+/// Added scenic flight time between combat sections, at 50 simulation ticks/s.
+pub const TRANSITION_TICKS: u16 = 400;
 /// Fixed camera-space backdrop geometry; nearer scene geometry still occludes it.
 pub(crate) const STATIC_SKY: u8 = 2;
-const BACKDROP_CAMERA_Y: i16 = 40;
 const PLAYER_Z: i16 = 180;
 const SPEED: i16 = 8;
 const SECTION_TICKS: u16 = 3750;
@@ -39,6 +40,16 @@ pub enum Mode {
     Victory,
     GameOver,
     Attract,
+    Transition,
+}
+
+/// Latest effect request since presentation last sampled the simulation.
+#[repr(u8)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PresentationEvent {
+    None,
+    Bomb,
+    Reset,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -162,7 +173,6 @@ impl Controls {
         self.cached_charge
     }
     #[inline(never)]
-    #[cfg_attr(target_arch = "mos", link_section = ".phase.sim")]
     fn computed_charge(&self) -> u8 {
         if self.bits & FIRE != 0 {
             return 0;
@@ -240,10 +250,12 @@ impl Controls {
 pub struct Game {
     controls: Controls,
     mode: Mode,
+    presentation_event: PresentationEvent,
     player: Vec3,
     // One rail tick is eight world units. This keeps all simulation distance
     // arithmetic in 16 bits while representing the complete 120000-unit route.
     rail_ticks: u16,
+    transition_ticks: u16,
     score: u32,
     ticks: u16,
     menu_ticks: u16,
@@ -288,12 +300,14 @@ impl Game {
         Self {
             controls: Controls::NEW,
             mode: Mode::Title,
+            presentation_event: PresentationEvent::None,
             player: Vec3 {
                 x: 0,
                 y: 0,
                 z: PLAYER_Z,
             },
             rail_ticks: 0,
+            transition_ticks: 0,
             score: 0,
             ticks: 0,
             menu_ticks: 0,
@@ -358,25 +372,67 @@ impl Game {
         }
         game
     }
+    /// Inspect a scenic bridge without replaying the preceding combat section.
+    #[cfg(feature = "host-tools")]
+    pub fn preview_transition(section: u8, elapsed_ticks: u16) -> Self {
+        let section = section.min(2);
+        let mut game = Self::new();
+        game.reset_scene(Mode::Transition, (section as u16 + 1) * SECTION_TICKS);
+        if elapsed_ticks >= TRANSITION_TICKS {
+            game.mode = Mode::Playing;
+            game.spawn_segment = game.segment_index();
+        } else {
+            game.transition_ticks = elapsed_ticks;
+        }
+        game
+    }
     #[inline(never)]
     pub fn segment_index(&self) -> u8 {
-        if self.rail_ticks < SECTION_TICKS {
+        let ticks = self
+            .rail_ticks
+            .saturating_sub(u16::from(self.mode == Mode::Transition));
+        if ticks < SECTION_TICKS {
             0
-        } else if self.rail_ticks < SECTION_TICKS * 2 {
+        } else if ticks < SECTION_TICKS * 2 {
             1
-        } else if self.rail_ticks < SECTION_TICKS * 3 {
+        } else if ticks < SECTION_TICKS * 3 {
             2
         } else {
             3
         }
     }
-    /// Sky color follows the active mission section in every camera mode.
+    /// Outgoing section and elapsed ticks; the incoming checkpoint opens on exit.
     #[inline(never)]
-    pub fn sky_color(&self) -> u8 {
-        SKY_COLORS[self.segment_index() as usize]
+    pub fn transition_progress(&self) -> Option<(u8, u16)> {
+        if self.mode == Mode::Transition {
+            Some((self.segment_index(), self.transition_ticks))
+        } else {
+            None
+        }
+    }
+    /// Continuous world position including completed bridges. The attract tour
+    /// retains its original route and timing.
+    #[inline(never)]
+    #[cfg_attr(target_arch = "mos", link_section = ".phase.scenery")]
+    pub fn scenery_ticks(&self) -> u16 {
+        if matches!(self.mode, Mode::Title | Mode::Attract) {
+            self.rail_ticks
+        } else {
+            self.rail_ticks + self.segment_index() as u16 * TRANSITION_TICKS + self.transition_ticks
+        }
     }
     #[inline(never)]
-    #[cfg_attr(target_arch = "mos", link_section = ".phase.sim")]
+    #[cfg_attr(target_arch = "mos", link_section = ".phase.scenery")]
+    pub fn scenery_camera_y(&self) -> i16 {
+        chase_camera_y(self.mode, self.player.y)
+    }
+    /// Sky color follows the active mission section in every camera mode.
+    #[inline(never)]
+    #[cfg_attr(target_arch = "mos", link_section = ".phase.scenery")]
+    pub fn sky_color(&self) -> u8 {
+        crate::scenery::sky_color(self.segment_index(), self.transition_progress())
+    }
+    #[inline(never)]
     pub fn hud(&self) -> Hud {
         Hud {
             mode: self.mode,
@@ -421,6 +477,15 @@ impl Game {
         self.audio_len -= 1;
         Some(e)
     }
+    /// Drain the latest request after simulation catch-up. A later reset cancels
+    /// an earlier bomb, while a bomb after a reset starts a fresh effect.
+    #[inline(never)]
+    #[cfg_attr(target_arch = "mos", link_section = ".phase.sim")]
+    pub fn take_presentation_event(&mut self) -> PresentationEvent {
+        let event = self.presentation_event;
+        self.presentation_event = PresentationEvent::None;
+        event
+    }
     #[inline(never)]
     #[cfg_attr(target_arch = "mos", link_section = ".phase.sim")]
     fn sound(&mut self, effect: Effect, x: i16) {
@@ -460,6 +525,7 @@ impl Game {
         let bits = self.controls.bits;
         let now = self.controls.now;
         *self = Self::new();
+        self.presentation_event = PresentationEvent::Reset;
         self.mode = mode;
         self.rail_ticks = rail_ticks;
         self.spawn_segment = self.segment_index();
@@ -522,31 +588,45 @@ impl Game {
                 self.controls.clear_pending();
                 return;
             }
-            Mode::Playing => {}
+            Mode::Transition => {
+                self.update_player_controls();
+                self.controls.clear_pending();
+                self.update_shots();
+                self.update_explosions();
+                self.transition_ticks += 1;
+                if self.transition_ticks == TRANSITION_TICKS {
+                    self.transition_ticks = 0;
+                    self.mode = Mode::Playing;
+                    self.spawn_segment = self.segment_index();
+                    self.spawn_cursor = 0;
+                }
+                return;
+            }
+            Mode::Playing => {
+                let next = self.rail_ticks + 1;
+                if matches!(next, SECTION_TICKS | 7500 | 11250) {
+                    // Retire outgoing hazards before handling this tick's live
+                    // controls. Player projectiles and gestures remain intact.
+                    self.rail_ticks = next;
+                    self.mode = Mode::Transition;
+                    self.transition_ticks = 0;
+                    self.actors = [Actor::EMPTY; ACTORS];
+                    self.pickups = [Pickup::EMPTY; 4];
+                    for shot in &mut self.shots {
+                        if shot.kind == 2 {
+                            *shot = Shot::EMPTY;
+                        }
+                    }
+                    self.update_player_controls();
+                    self.controls.clear_pending();
+                    self.update_shots();
+                    self.update_explosions();
+                    return;
+                }
+            }
         }
         if self.mode == Mode::Playing {
-            self.invulnerability = self.invulnerability.saturating_sub(1);
-            self.hit_flash_ticks = self.hit_flash_ticks.saturating_sub(1);
-            self.roll_ticks = self.roll_ticks.saturating_sub(1);
-            self.roll_cooldown = self.roll_cooldown.saturating_sub(1);
-            self.shot_cooldown = self.shot_cooldown.saturating_sub(1);
-            if self.controls.roll_pending != 0 && self.roll_cooldown == 0 {
-                self.roll_direction = self.controls.roll_pending;
-                self.roll_ticks = 25;
-                self.roll_cooldown = 50;
-                self.sound(Effect::Roll, 0);
-            }
-            self.move_player();
-            if self.controls.shot_pending {
-                self.fire_player(self.controls.shot_charge);
-                self.shot_cooldown = 5;
-            } else if self.controls.bits & FIRE != 0 && self.shot_cooldown == 0 {
-                self.fire_player(0);
-                self.shot_cooldown = 5;
-            }
-            if self.controls.bomb_pending && self.bombs > 0 {
-                self.bomb();
-            }
+            self.update_player_controls();
         }
         self.controls.clear_pending();
         self.rail_ticks = (self.rail_ticks + 1).min(MISSION_TICKS);
@@ -579,6 +659,31 @@ impl Game {
     }
     #[inline(never)]
     #[cfg_attr(target_arch = "mos", link_section = ".phase.sim")]
+    fn update_player_controls(&mut self) {
+        self.invulnerability = self.invulnerability.saturating_sub(1);
+        self.hit_flash_ticks = self.hit_flash_ticks.saturating_sub(1);
+        self.roll_ticks = self.roll_ticks.saturating_sub(1);
+        self.roll_cooldown = self.roll_cooldown.saturating_sub(1);
+        self.shot_cooldown = self.shot_cooldown.saturating_sub(1);
+        if self.controls.roll_pending != 0 && self.roll_cooldown == 0 {
+            self.roll_direction = self.controls.roll_pending;
+            self.roll_ticks = 25;
+            self.roll_cooldown = 50;
+            self.sound(Effect::Roll, 0);
+        }
+        self.move_player();
+        if self.controls.shot_pending {
+            self.fire_player(self.controls.shot_charge);
+            self.shot_cooldown = 5;
+        } else if self.controls.bits & FIRE != 0 && self.shot_cooldown == 0 {
+            self.fire_player(0);
+            self.shot_cooldown = 5;
+        }
+        if self.controls.bomb_pending && self.bombs > 0 {
+            self.bomb();
+        }
+    }
+    #[inline(never)]
     fn move_player(&mut self) {
         let dx = ((self.controls.bits & RIGHT != 0) as i16
             - (self.controls.bits & LEFT != 0) as i16)
@@ -1004,6 +1109,7 @@ impl Game {
     #[cfg_attr(target_arch = "mos", link_section = ".phase.sim")]
     fn bomb(&mut self) {
         self.bombs -= 1;
+        self.presentation_event = PresentationEvent::Bomb;
         self.sound(Effect::Bomb, 0);
         for s in &mut self.shots {
             if s.kind == 2 {
@@ -1080,7 +1186,9 @@ impl Game {
     #[inline(never)]
     #[cfg_attr(target_arch = "mos", link_section = ".phase.sim")]
     fn respawn(&mut self) {
+        self.presentation_event = PresentationEvent::Reset;
         self.rail_ticks = self.segment_index() as u16 * SECTION_TICKS;
+        self.transition_ticks = 0;
         self.spawn_segment = self.segment_index();
         self.spawn_cursor = 0;
         self.actors = [Actor::EMPTY; ACTORS];
@@ -1171,20 +1279,40 @@ impl Game {
         }
     }
     /// Emit only constant-color triangles. The host and C64 use the same scene.
-    #[inline(never)]
-    #[cfg_attr(target_arch = "mos", link_section = ".phase.geometry")]
+    /// Host reference ordering: foreground commands precede scenery at equal depth.
+    #[cfg(not(target_arch = "mos"))]
     pub fn render(
         &self,
         sink: &mut impl GeometrySink,
         bank: &AssetBank<'_>,
         segment: &Segment<'_>,
     ) {
+        struct CountFaces(u16);
+        impl GeometrySink for CountFaces {
+            fn triangle(&mut self, _: Vec3, _: Vec3, _: Vec3, _: u8, _: u8) {
+                self.0 += 1;
+            }
+        }
+        let mut scenery = CountFaces(0);
+        self.render_scenery(&mut scenery, segment);
+        let foreground_limit = 174.min(233u16.saturating_sub(scenery.0));
+        self.render_foreground(sink, bank, foreground_limit);
+        self.render_scenery(sink, segment);
+    }
+    #[inline(never)]
+    #[cfg_attr(target_arch = "mos", link_section = ".phase.geometry")]
+    pub fn render_foreground(
+        &self,
+        sink: &mut impl GeometrySink,
+        bank: &AssetBank<'_>,
+        foreground_limit: u16,
+    ) {
         // Prioritize player, boss, projectiles and pickups before distant detail.
         // 233 raw faces leave room for near-plane splitting in the 256 commands.
         let mut budget = SceneBudget {
             sink,
             count: 0,
-            limit: 174,
+            limit: foreground_limit.min(174),
             // An elevated chase camera separates the nearby ship from targets
             // on its firing line. Keep the title's original showcase framing.
             // Follow a quarter of vertical movement so the lowest banked hull
@@ -1193,7 +1321,10 @@ impl Game {
             color_override: 0,
         };
         let sink = &mut budget;
-        if matches!(self.mode, Mode::Playing | Mode::Title | Mode::Victory) {
+        if matches!(
+            self.mode,
+            Mode::Playing | Mode::Transition | Mode::Title | Mode::Victory
+        ) {
             let appearance = self.player_appearance();
             sink.color_override = (appearance >> 8) as u8;
             emit_mesh(
@@ -1236,7 +1367,7 @@ impl Game {
             }
         }
         // World-space aiming reticle, held on the player's firing line.
-        if self.mode == Mode::Playing {
+        if matches!(self.mode, Mode::Playing | Mode::Transition) {
             let center = Vec3 {
                 x: self.player.x,
                 y: self.player.y,
@@ -1266,6 +1397,49 @@ impl Game {
                 );
             }
         }
+        if self.mode == Mode::Transition {
+            self.render_effects(sink);
+        } else {
+            self.render_combat(sink, bank);
+        }
+    }
+    #[inline(never)]
+    #[cfg_attr(target_arch = "mos", link_section = ".phase.geometry")]
+    fn render_effects(&self, sink: &mut SceneBudget<'_, impl GeometrySink>) {
+        for s in &self.shots {
+            if s.kind != 0 {
+                diamond(
+                    sink,
+                    s.pos,
+                    if s.kind == 2 { 5 } else { 3 + s.damage as i16 },
+                    if s.kind == 2 {
+                        2
+                    } else if s.damage > 1 {
+                        7
+                    } else {
+                        3
+                    },
+                );
+            }
+        }
+        for p in &self.pickups {
+            if p.kind == 1 {
+                shield_pickup(sink, p.pos);
+            } else if p.kind != 0 {
+                diamond(sink, p.pos, 13, 7);
+            }
+        }
+        for e in &self.explosions {
+            if e.ticks > 0 {
+                diamond(sink, e.pos, 4 + (18 - e.ticks) as i16 * 3, e.color);
+            }
+        }
+    }
+    // Native scenic flights load only the shared GEOMETRY prefix. This tail
+    // remains reachable exclusively while the complete combat overlay is loaded.
+    #[inline(never)]
+    #[cfg_attr(target_arch = "mos", link_section = ".phase.geometry.combat")]
+    fn render_combat(&self, sink: &mut SceneBudget<'_, impl GeometrySink>, bank: &AssetBank<'_>) {
         if self.boss_started && !self.boss_defeated {
             emit_mesh(
                 sink,
@@ -1326,32 +1500,7 @@ impl Game {
                 );
             }
         }
-        for s in &self.shots {
-            if s.kind != 0 {
-                diamond(
-                    sink,
-                    s.pos,
-                    if s.kind == 2 { 5 } else { 3 + s.damage as i16 },
-                    if s.kind == 2 {
-                        2
-                    } else if s.damage > 1 {
-                        7
-                    } else {
-                        3
-                    },
-                );
-            }
-        }
-        for p in &self.pickups {
-            if p.kind != 0 {
-                diamond(sink, p.pos, 13, if p.kind == 1 { 5 } else { 7 });
-            }
-        }
-        for e in &self.explosions {
-            if e.ticks > 0 {
-                diamond(sink, e.pos, 4 + (18 - e.ticks) as i16 * 3, e.color);
-            }
-        }
+        self.render_effects(sink);
         for (i, a) in self.actors.iter().enumerate() {
             if a.kind != 0 && a.pos.z >= 80 {
                 let reserve = (ACTORS - i - 1) as u16 * 2;
@@ -1374,8 +1523,19 @@ impl Game {
                 }
             }
         }
-        sink.limit = 233;
-        self.terrain(sink, segment);
+    }
+    #[inline(never)]
+    #[cfg_attr(target_arch = "mos", link_section = ".phase.scenery")]
+    pub fn render_scenery(&self, sink: &mut impl GeometrySink, segment: &Segment<'_>) {
+        crate::scenery::emit(
+            sink,
+            segment,
+            self.scenery_ticks(),
+            self.segment_index(),
+            self.transition_progress(),
+            self.scenery_camera_y(),
+            matches!(self.mode, Mode::Title | Mode::Attract),
+        );
     }
     // Keep these pure appearance calculations resident: the geometry overlay
     // is close to its limit, and this introduces no extra mesh instantiation.
@@ -1392,80 +1552,17 @@ impl Game {
                 || (self.hit_flash_ticks > 5 && self.hit_flash_ticks <= 15));
         roll as u16 | ((white as u16) << 8)
     }
-    #[inline(never)]
-    #[cfg_attr(target_arch = "mos", link_section = ".phase.geometry")]
+    #[cfg(test)]
     fn terrain(&self, sink: &mut impl GeometrySink, segment: &Segment<'_>) {
-        let row = self.rail_ticks >> 6;
-        let offset = ((self.rail_ticks & 63) * 8) as i16;
-        let style = segment.terrain();
-        let color = segment.ground_color();
-        let alternate = if color == 5 { 13 } else { 11 };
-        let palette = terrain_palette(style);
-        let facets = [palette as u8, (palette >> 8) as u8];
-        // Four coarse bands share world-anchored rows. The level flight lane
-        // keeps scenery and collisions unchanged while the shoulders undulate.
-        // Canyon caps and base guides bring their sections to at most 40 faces.
-        for band in 0..4i16 {
-            let world_row = row + band as u16;
-            let z0 = 40 + band * 512 - offset;
-            let z1 = z0 + 512;
-            let shade = if world_row & 1 == 0 { color } else { alternate };
-            strip(sink, -145, [-105; 2], 145, [-105; 2], z0, z1, [shade; 2]);
-            for side in [-1i16, 1] {
-                let heights = [
-                    terrain_height(world_row, side > 0, style),
-                    terrain_height(world_row + 1, side > 0, style),
-                ];
-                let edge = if style == 1 { 190 } else { 640 };
-                strip(
-                    sink,
-                    side * 145,
-                    [-105; 2],
-                    side * edge,
-                    heights,
-                    z0,
-                    z1,
-                    facets,
-                );
-                if style == 1 {
-                    // A raised outer cap keeps the canyon closed beyond each
-                    // steep wall, including where it meets the distant skyline.
-                    strip(
-                        sink,
-                        side * 190,
-                        heights,
-                        side * 640,
-                        heights,
-                        z0,
-                        z1,
-                        facets,
-                    );
-                } else if style == 2 {
-                    strip(
-                        sink,
-                        side * 95,
-                        [-103; 2],
-                        side * 100,
-                        [-103; 2],
-                        z0,
-                        z1,
-                        [15; 2],
-                    );
-                }
-            }
-        }
-        // Distant silhouettes and clouds use no gameplay object slots.
-        let section = self.segment_index();
-        for face in 0..14 {
-            let (points, color) = backdrop_face(section, face);
-            sink.triangle(
-                points[0],
-                points[1],
-                points[2],
-                color,
-                TWO_SIDED | STATIC_SKY,
-            );
-        }
+        crate::scenery::emit(
+            sink,
+            segment,
+            self.rail_ticks,
+            self.segment_index(),
+            None,
+            0,
+            true,
+        );
     }
 }
 
@@ -1518,127 +1615,6 @@ fn chase_camera_y(mode: Mode, player_y: i16) -> i16 {
         40 + player_y / 4
     }
 }
-// Keep the profile sampler resident: it needs no phase-owned data or mutable
-// state, and the small geometry overlay only emits the resulting triangles.
-#[inline(never)]
-fn terrain_palette(style: u8) -> u16 {
-    match style {
-        0 => 0x0d05,
-        1 => 0x0c09,
-        _ => 0x0c0b,
-    }
-}
-#[inline(never)]
-fn terrain_height(row: u16, right: bool, style: u8) -> i16 {
-    const PROFILE: [u8; 16] = [0, 1, 3, 2, 1, 0, 2, 4, 3, 1, 0, 1, 2, 4, 2, 1];
-    let phase = row.wrapping_add(if right { 7 } else { 0 });
-    let height = PROFILE[(phase & 15) as usize] as i16;
-    if style == 1 {
-        96 + (height << 4)
-    } else if style == 0 {
-        -105 + (height << 5)
-    } else {
-        -105 + (height << 4)
-    }
-}
-// Compact descriptors keep all four themes resident without enlarging the
-// geometry overlay. XY uses 32/16 world units; cloud depth uses 32 world units.
-// Every horizon base is -544, overlapping the far terrain through its complete
-// scroll/camera range. Each sky uses exactly three nonblack colors for caching.
-const SKY_COLORS: [u8; 4] = [6, 8, 11, 4];
-const HORIZON_COLORS: [[u8; 2]; 4] = [[14, 12], [9, 2], [6, 12], [6, 11]];
-const CLOUD_COLORS: [[u8; 2]; 4] = [[1, 15], [7, 10], [15, 12], [10, 14]];
-#[rustfmt::skip]
-const HORIZONS: [[[i8; 2]; 15]; 4] = [
-    // Uneven lowland ridges.
-    [[-88, -34], [-33, -34], [-60, 17],
-     [-45, -34], [3, -34], [-27, 9],
-     [-8, -34], [40, -34], [12, 14],
-     [26, -34], [73, -34], [51, 7],
-     [61, -34], [88, -34], [74, 12]],
-    // Two broad, flat mesa tops and a low central saddle.
-    [[-88, -34], [-7, -34], [-30, 21],
-     [-88, -34], [-30, 21], [-73, 21],
-     [6, -34], [88, -34], [75, 18],
-     [6, -34], [75, 18], [25, 18],
-     [-18, -34], [18, -34], [1, 4]],
-    // Flat industrial blocks with a narrow, off-center spire.
-    [[-88, -34], [-12, -34], [-12, 16],
-     [-88, -34], [-12, 16], [-88, 16],
-     [10, -34], [88, -34], [88, 12],
-     [10, -34], [88, 12], [10, 12],
-     [-15, -34], [15, -34], [-9, 24]],
-    // Low coastal headlands leave room for the carrier above a small island.
-    [[-88, -34], [-4, -34], [-40, 3],
-     [-88, -34], [-40, 3], [-88, 3],
-     [4, -34], [88, -34], [88, 0],
-     [4, -34], [88, 0], [50, 0],
-     [-14, -34], [14, -34], [3, 5]],
-];
-const CLOUD_CENTERS: [[[i8; 3]; 3]; 4] = [
-    [[-67, 78, 96], [4, 110, 112], [89, 69, 127]],
-    [[-72, 61, 96], [6, 96, 112], [98, 65, 127]],
-    [[-72, 82, 96], [4, 67, 112], [103, 124, 127]],
-    [[-67, 58, 96], [14, 101, 112], [102, 57, 127]],
-];
-const CLOUD_OUTLINES: [[[i8; 2]; 5]; 4] = [
-    [[-27, 0], [-13, 11], [4, 15], [27, 2], [20, -6]],
-    [[-37, 0], [-18, 5], [10, 9], [37, 2], [29, -6]],
-    [[-46, 0], [-28, 15], [7, 16], [46, 1], [38, -7]],
-    [[-33, 0], [-19, 5], [7, 7], [33, 1], [25, -5]],
-];
-// Pure backdrop construction stays resident. All faces retain fixed camera-space
-// positions; horizons use neutral gameplay framing and clouds keep their layout.
-#[inline(never)]
-fn backdrop_face(section: u8, face: u8) -> ([Vec3; 3], u8) {
-    let theme = (section & 3) as usize;
-    let outline: &[[i8; 2]];
-    let center: [i8; 3];
-    let first;
-    let second;
-    let depth;
-    let color;
-    let camera_y;
-    if face < 5 {
-        outline = &HORIZONS[theme];
-        center = [0; 3];
-        first = face * 3;
-        second = first + 1;
-        depth = 2350;
-        color = HORIZON_COLORS[theme][(face & 1) as usize];
-        camera_y = BACKDROP_CAMERA_Y;
-    } else {
-        let cloud = if face >= 11 {
-            2
-        } else if face >= 8 {
-            1
-        } else {
-            0
-        };
-        let facet = face - 5 - cloud * 3;
-        outline = &CLOUD_OUTLINES[theme];
-        center = CLOUD_CENTERS[theme][cloud as usize];
-        first = 0;
-        second = facet + 1;
-        depth = center[2] as i16 * 32;
-        color = CLOUD_COLORS[theme][(facet == 2) as usize];
-        camera_y = 0;
-    }
-    let points = core::array::from_fn(|corner| {
-        let vertex = if corner == 0 {
-            first as usize
-        } else {
-            second as usize + corner - 1
-        };
-        let xy = outline[vertex];
-        Vec3 {
-            x: (center[0] as i16 + xy[0] as i16) * 32,
-            y: (center[1] as i16 + xy[1] as i16) * 16 - camera_y,
-            z: depth,
-        }
-    });
-    (points, color)
-}
 #[inline(always)]
 fn actor_center(actor: Actor) -> Vec3 {
     Vec3 {
@@ -1682,51 +1658,6 @@ fn quad(sink: &mut impl GeometrySink, a: Vec3, b: Vec3, c: Vec3, d: Vec3, color:
 }
 #[inline(never)]
 #[cfg_attr(target_arch = "mos", link_section = ".phase.geometry")]
-fn strip(
-    sink: &mut impl GeometrySink,
-    x0: i16,
-    y0: [i16; 2],
-    x1: i16,
-    y1: [i16; 2],
-    z0: i16,
-    z1: i16,
-    colors: [u8; 2],
-) {
-    let a = Vec3 {
-        x: x0,
-        y: y0[0],
-        z: z0,
-    };
-    let c = Vec3 {
-        x: x1,
-        y: y1[1],
-        z: z1,
-    };
-    tri(
-        sink,
-        a,
-        Vec3 {
-            x: x1,
-            y: y1[0],
-            z: z0,
-        },
-        c,
-        colors[0],
-    );
-    tri(
-        sink,
-        a,
-        c,
-        Vec3 {
-            x: x0,
-            y: y0[1],
-            z: z1,
-        },
-        colors[1],
-    );
-}
-#[inline(never)]
-#[cfg_attr(target_arch = "mos", link_section = ".phase.geometry")]
 fn diamond(sink: &mut impl GeometrySink, p: Vec3, r: i16, color: u8) {
     quad(
         sink,
@@ -1754,9 +1685,53 @@ fn diamond(sink: &mut impl GeometrySink, p: Vec3, r: i16, color: u8) {
     );
 }
 
+#[inline(never)]
+#[cfg_attr(target_arch = "mos", link_section = ".phase.geometry")]
+fn shield_pickup(sink: &mut impl GeometrySink, p: Vec3) {
+    // Paint the pale rim before the green inset. Equal depths retain this
+    // order, keeping the camera-facing shield to six triangles in total.
+    // Use green for subpixel rims: a distant gray edge can otherwise
+    // displace the green face when terrain competes for cell colors.
+    let rim = if p.z > 600 { 5 } else { 15 };
+    for (r, color) in [(13, rim), (10, 5)] {
+        let left = Vec3 {
+            x: p.x - r,
+            y: p.y,
+            z: p.z,
+        };
+        let right = Vec3 { x: p.x + r, ..left };
+        quad(
+            sink,
+            Vec3 { y: p.y + r, ..left },
+            Vec3 {
+                y: p.y + r,
+                ..right
+            },
+            right,
+            left,
+            color,
+        );
+        tri(
+            sink,
+            left,
+            right,
+            Vec3 {
+                x: p.x,
+                y: p.y - r,
+                z: p.z,
+            },
+            color,
+        );
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::scenery::{
+        backdrop_face, terrain_height, BACKDROP_CAMERA_Y, CLOUD_CENTERS, CLOUD_COLORS,
+        CLOUD_OUTLINES, HORIZONS, HORIZON_COLORS, SKY_COLORS,
+    };
     #[test]
     fn music_follows_area_and_results_without_boss_or_respawn_restarts() {
         let mut game = Game::new();
@@ -1871,6 +1846,194 @@ mod tests {
         sample(game, 0, 120);
         sample(game, direction, 200);
         sample(game, 0, 220);
+    }
+    #[test]
+    fn scenic_bridges_add_exactly_eight_seconds_and_keep_the_outgoing_checkpoint() {
+        for outgoing in 0..3 {
+            let mut game = running();
+            let boundary = (outgoing as u16 + 1) * SECTION_TICKS;
+            game.rail_ticks = boundary - 1;
+            game.spawn_segment = outgoing;
+            game.spawn_cursor = 17;
+            game.score = 1234;
+            game.shield = 61;
+            let before_scene = game.scenery_ticks();
+            let cue = game.music_state();
+            let bytes = empty_segment(outgoing);
+            let segment = Segment::new(&bytes).unwrap();
+            game.tick(&segment);
+            for elapsed in 0..TRANSITION_TICKS {
+                assert_eq!(game.transition_progress(), Some((outgoing, elapsed)));
+                assert_eq!(game.hud().distance, boundary as u32 * 8);
+                assert_eq!(game.segment_index(), outgoing);
+                assert_eq!(game.music_state(), cue);
+                assert_eq!(game.scenery_ticks(), before_scene + elapsed + 1);
+                game.damage_player(100);
+                assert_eq!(
+                    (game.shield, game.score, game.lives, game.bombs),
+                    (61, 1234, 3, 3)
+                );
+                game.tick(&segment);
+            }
+            assert_eq!(game.mode, Mode::Playing);
+            assert_eq!(game.segment_index(), outgoing + 1);
+            assert_eq!(game.rail_ticks, boundary);
+            assert_eq!(game.scenery_ticks(), before_scene + TRANSITION_TICKS + 1);
+            assert_eq!((game.spawn_segment, game.spawn_cursor), (outgoing + 1, 0));
+            game.tick(&segment); // A stale outgoing view cannot spawn encounters.
+            assert_eq!((game.rail_ticks, game.spawn_cursor), (boundary + 1, 0));
+            let mut incoming = empty_segment(outgoing + 1);
+            incoming[7] = 1;
+            incoming[18] = assets::FIGHTER; // An encounter at local distance zero.
+            let incoming = Segment::new(&incoming).unwrap();
+            game.tick(&incoming);
+            assert_eq!(game.spawn_cursor, 1);
+            assert_eq!(
+                game.actors.iter().filter(|actor| actor.kind != 0).count(),
+                1
+            );
+            assert_eq!(game.actors[0].pos.z, 1776);
+            game.tick(&incoming);
+            assert_eq!(
+                game.actors.iter().filter(|actor| actor.kind != 0).count(),
+                1
+            );
+        }
+    }
+    #[test]
+    fn bridge_entry_removes_hostiles_before_live_bombs_and_keeps_player_projectiles() {
+        let mut game = running();
+        game.rail_ticks = SECTION_TICKS - 1;
+        game.actors[0] = enemy(assets::FIGHTER, 0, 0, 180);
+        game.shots[0] = Shot {
+            pos: game.player,
+            kind: 2,
+            damage: 100,
+            ..Shot::EMPTY
+        };
+        game.shots[1] = Shot {
+            pos: Vec3 {
+                x: 60,
+                y: 10,
+                z: 400,
+            },
+            kind: 3,
+            damage: 4,
+            ..Shot::EMPTY
+        };
+        game.pickups[0] = Pickup {
+            pos: game.player,
+            kind: 1,
+        };
+        game.controls.bomb_pending = true;
+        let bytes = empty_segment(0);
+        game.tick(&Segment::new(&bytes).unwrap());
+        assert!(game.actors.iter().all(|actor| actor.kind == 0));
+        assert!(game.shots.iter().all(|shot| shot.kind != 2));
+        assert!(game.pickups.iter().all(|pickup| pickup.kind == 0));
+        assert_eq!(game.shots[1].pos.z, 432);
+        assert_eq!(game.shots[1].kind, 3);
+        assert_eq!(game.missile_target(game.player), None);
+        assert_eq!((game.shield, game.score, game.bombs), (100, 0, 2));
+        assert!(game.explosions.iter().any(|explosion| explosion.ticks != 0));
+        assert_eq!(game.take_presentation_event(), PresentationEvent::Bomb);
+    }
+    #[test]
+    fn all_controls_and_double_taps_behave_identically_across_both_bridge_seams() {
+        for entering in [true, false] {
+            let mut game = running();
+            if entering {
+                game.rail_ticks = SECTION_TICKS - 2;
+            } else {
+                game.rail_ticks = SECTION_TICKS;
+                game.mode = Mode::Transition;
+                game.transition_ticks = TRANSITION_TICKS - 2;
+            }
+            let mut reference = running();
+            reference.rail_ticks = 1000;
+            let banks = [empty_segment(0), empty_segment(1)];
+            for (tick, bits) in [
+                LEFT | FIRE,
+                0,
+                LEFT | FIRE,
+                UP | FIRE,
+                RIGHT | FIRE,
+                0,
+                RIGHT,
+                0,
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                // The initial charged shot and each two-tap gesture crosses a seam.
+                let ms = 2200 + tick as u32 * 20;
+                sample(&mut game, bits, ms);
+                sample(&mut reference, bits, ms);
+                game.tick(&Segment::new(&banks[game.segment_index() as usize]).unwrap());
+                reference.tick(&Segment::new(&banks[0]).unwrap());
+                assert_eq!(game.player, reference.player);
+                assert_eq!(game.bank, reference.bank);
+                assert_eq!(game.roll_ticks, reference.roll_ticks);
+                assert_eq!(game.bombs, reference.bombs);
+                assert_eq!(
+                    game.take_presentation_event(),
+                    reference.take_presentation_event()
+                );
+                assert_eq!(game.controls.charge(), reference.controls.charge());
+                for (actual, expected) in game.shots.iter().zip(&reference.shots) {
+                    assert_eq!(
+                        (actual.kind, actual.pos, actual.damage),
+                        (expected.kind, expected.pos, expected.damage)
+                    );
+                }
+                while let Some(expected) = reference.pop_audio() {
+                    assert_eq!(game.pop_audio(), Some(expected));
+                }
+                assert!(game.pop_audio().is_none());
+            }
+            assert_eq!(game.bombs, 2);
+            assert!(game.roll_ticks > 0);
+        }
+    }
+    #[test]
+    fn checkpoints_and_carrier_start_use_combat_distance_after_bridges() {
+        let banks = [empty_segment(2), empty_segment(3)];
+        let mut before = running();
+        before.rail_ticks = SECTION_TICKS * 3 - 1;
+        before.damage_player(100);
+        before.respawn();
+        assert_eq!(before.rail_ticks, SECTION_TICKS * 2);
+        assert_eq!(
+            before.scenery_ticks(),
+            SECTION_TICKS * 2 + TRANSITION_TICKS * 2
+        );
+        let mut game = running();
+        game.rail_ticks = SECTION_TICKS * 3 - 1;
+        game.tick(&Segment::new(&banks[0]).unwrap());
+        for _ in 0..TRANSITION_TICKS {
+            game.tick(&Segment::new(&banks[0]).unwrap());
+            assert!(!game.boss_started);
+        }
+        for _ in 0..149 {
+            game.tick(&Segment::new(&banks[1]).unwrap());
+            assert!(!game.boss_started);
+        }
+        game.tick(&Segment::new(&banks[1]).unwrap());
+        assert!(game.boss_started);
+        assert_eq!(game.rail_ticks, 11_400);
+        game.damage_player(100);
+        game.respawn();
+        assert_eq!(game.rail_ticks, SECTION_TICKS * 3);
+        assert_eq!(game.transition_progress(), None);
+        assert_eq!(
+            game.scenery_ticks(),
+            SECTION_TICKS * 3 + TRANSITION_TICKS * 3
+        );
+        game.rail_ticks = MISSION_TICKS - 1;
+        game.boss_defeated = true;
+        game.tick(&Segment::new(&banks[1]).unwrap());
+        assert_eq!(game.mode, Mode::Victory);
+        assert_eq!(game.scenery_ticks(), MISSION_TICKS + 3 * TRANSITION_TICKS);
     }
     #[derive(Debug, PartialEq, Eq)]
     struct TerrainCapture {
@@ -2066,8 +2229,7 @@ mod tests {
                     game.player.y = player_y;
                     game.rail_ticks = ticks;
                     let theme = game.segment_index();
-                    let expected =
-                        core::array::from_fn(|face| backdrop_face(theme, face as u8));
+                    let expected = core::array::from_fn(|face| backdrop_face(theme, face as u8));
                     let segment_bytes = empty_segment(game.segment_index());
                     let segment = Segment::new(&segment_bytes).unwrap();
                     let mut capture = SkyCapture {
@@ -2245,7 +2407,9 @@ mod tests {
                 for face in 0..5 {
                     let (points, color) = backdrop_face(theme, face);
                     assert_ne!(color, SKY_COLORS[theme as usize]);
-                    assert!(points.iter().any(|point| point.y == -544 - BACKDROP_CAMERA_Y));
+                    assert!(points
+                        .iter()
+                        .any(|point| point.y == -544 - BACKDROP_CAMERA_Y));
                     assert!(points
                         .iter()
                         .all(|point| point.z == 2350 && point.y >= -544 - BACKDROP_CAMERA_Y));
@@ -2280,6 +2444,7 @@ mod tests {
     }
     #[test]
     fn resident_state_fits_budget() {
+        assert_eq!(core::mem::size_of::<PresentationEvent>(), 1);
         assert!(
             core::mem::size_of::<Game>() <= 640,
             "{}",
@@ -2670,6 +2835,74 @@ mod tests {
         assert_eq!(g.shots[0].kind, 0);
     }
     #[test]
+    fn bomb_presentation_survives_rewarded_inventory_full_audio_and_catch_up() {
+        let mut g = running();
+        for actor in &mut g.actors[..5] {
+            *actor = Actor {
+                kind: assets::FIGHTER,
+                hp: 1,
+                ..Actor::EMPTY
+            };
+        }
+        for _ in 0..AUDIO_CAPACITY {
+            g.sound(Effect::Fire, 0);
+        }
+        g.controls.bomb_pending = true;
+        let bytes = empty_segment(0);
+        let segment = Segment::new(&bytes).unwrap();
+        g.tick(&segment);
+        assert_eq!(g.bombs, 3, "the reward hides the inventory decrement");
+        assert_eq!(g.audio_len as usize, AUDIO_CAPACITY);
+        while g.pop_audio().is_some() {}
+        for _ in 0..50 {
+            g.tick(&segment);
+        }
+        assert_eq!(g.take_presentation_event(), PresentationEvent::Bomb);
+        assert_eq!(g.take_presentation_event(), PresentationEvent::None);
+    }
+    #[test]
+    fn killing_the_carrier_keeps_bomb_presentation_on_the_victory_screen() {
+        let mut g = running();
+        g.rail_ticks = MISSION_TICKS - 1;
+        g.boss_started = true;
+        g.boss_left = 0;
+        g.boss_right = 0;
+        g.boss_core = 8;
+        g.controls.bomb_pending = true;
+        let bytes = empty_segment(3);
+        let segment = Segment::new(&bytes).unwrap();
+        g.tick(&segment);
+        assert_eq!(g.mode, Mode::Victory);
+        assert!(g.boss_defeated);
+        for _ in 0..50 {
+            g.tick(&segment);
+        }
+        assert_eq!(g.take_presentation_event(), PresentationEvent::Bomb);
+    }
+    #[test]
+    fn presentation_resets_and_bombs_keep_only_the_latest_request() {
+        let mut g = Game::new();
+        assert_eq!(g.take_presentation_event(), PresentationEvent::None);
+        g.reset_run();
+        assert_eq!(g.take_presentation_event(), PresentationEvent::Reset);
+        assert_eq!(g.take_presentation_event(), PresentationEvent::None);
+        g.bomb();
+        g.reset_scene(Mode::Title, 0);
+        assert_eq!(g.take_presentation_event(), PresentationEvent::Reset);
+        g.reset_run();
+        g.bomb();
+        assert_eq!(g.take_presentation_event(), PresentationEvent::Bomb);
+        g.bomb();
+        g.bomb();
+        assert_eq!(g.take_presentation_event(), PresentationEvent::Bomb);
+        assert_eq!(g.take_presentation_event(), PresentationEvent::None);
+        g.reset_run();
+        g.bomb();
+        g.respawn();
+        assert_eq!(g.take_presentation_event(), PresentationEvent::Reset);
+        assert_eq!(g.take_presentation_event(), PresentationEvent::None);
+    }
+    #[test]
     fn every_fifth_projectile_kill_adds_a_bomb_up_to_three_without_banking_overflow() {
         let mut g = running();
         g.bombs = 0;
@@ -2718,10 +2951,22 @@ mod tests {
         let mut g = running();
         g.bombs = 1;
         for actor in &mut g.actors[..10] {
-            *actor = Actor { kind: assets::FIGHTER, hp: 1, ..Actor::EMPTY };
+            *actor = Actor {
+                kind: assets::FIGHTER,
+                hp: 1,
+                ..Actor::EMPTY
+            };
         }
-        g.actors[10] = Actor { kind: assets::ROCK, hp: 255, ..Actor::EMPTY };
-        g.actors[11] = Actor { kind: assets::TURRET, hp: 9, ..Actor::EMPTY };
+        g.actors[10] = Actor {
+            kind: assets::ROCK,
+            hp: 255,
+            ..Actor::EMPTY
+        };
+        g.actors[11] = Actor {
+            kind: assets::TURRET,
+            hp: 9,
+            ..Actor::EMPTY
+        };
         g.bomb();
         assert_eq!(g.kills, 10);
         assert_eq!(g.bombs, 2, "spend one bomb and immediately earn two");
@@ -2732,7 +2977,11 @@ mod tests {
     fn bomb_reward_progress_survives_respawn_and_kill_total_wrap_but_resets_with_run() {
         let mut g = running();
         for _ in 0..4 {
-            g.actors[0] = Actor { kind: assets::FIGHTER, hp: 1, ..Actor::EMPTY };
+            g.actors[0] = Actor {
+                kind: assets::FIGHTER,
+                hp: 1,
+                ..Actor::EMPTY
+            };
             g.kill_actor(0);
         }
         g.bombs = 0;
@@ -2740,7 +2989,11 @@ mod tests {
         assert_eq!(g.mode, Mode::Respawning);
         g.respawn();
         assert_eq!(g.bombs, 1);
-        g.actors[0] = Actor { kind: assets::FIGHTER, hp: 1, ..Actor::EMPTY };
+        g.actors[0] = Actor {
+            kind: assets::FIGHTER,
+            hp: 1,
+            ..Actor::EMPTY
+        };
         g.kill_actor(0);
         assert_eq!(
             g.bombs, 2,
@@ -2750,21 +3003,33 @@ mod tests {
         g.kills = u16::MAX - 1;
         g.bombs = 0;
         for kill in 1..=5 {
-            g.actors[0] = Actor { kind: assets::FIGHTER, hp: 1, ..Actor::EMPTY };
+            g.actors[0] = Actor {
+                kind: assets::FIGHTER,
+                hp: 1,
+                ..Actor::EMPTY
+            };
             g.kill_actor(0);
             assert_eq!(g.bombs, u8::from(kill == 5));
         }
         assert_eq!(g.kills, 3);
 
         for _ in 0..4 {
-            g.actors[0] = Actor { kind: assets::FIGHTER, hp: 1, ..Actor::EMPTY };
+            g.actors[0] = Actor {
+                kind: assets::FIGHTER,
+                hp: 1,
+                ..Actor::EMPTY
+            };
             g.kill_actor(0);
         }
         g.reset_run();
         assert_eq!((g.kills, g.bombs, g.bomb_kills), (0, 3, 0));
         g.bombs = 0;
         for kill in 1..=5 {
-            g.actors[0] = Actor { kind: assets::FIGHTER, hp: 1, ..Actor::EMPTY };
+            g.actors[0] = Actor {
+                kind: assets::FIGHTER,
+                hp: 1,
+                ..Actor::EMPTY
+            };
             g.kill_actor(0);
             assert_eq!(g.bombs, u8::from(kill == 5));
         }
@@ -3124,7 +3389,7 @@ mod tests {
         assert_eq!(g.hit_flash_ticks, 0);
     }
     #[test]
-    fn five_minute_mission_is_winnable_with_regular_joystick_input() {
+    fn full_mission_with_three_scenic_bridges_is_winnable_with_regular_joystick_input() {
         let banks = [
             mission_segment(0),
             mission_segment(1),
@@ -3133,6 +3398,7 @@ mod tests {
         ];
         let mut g = running();
         let mut visited = 0u8;
+        let mut scenic_ticks = 0u16;
         for tick in 1..=18_000u32 {
             let section = g.segment_index();
             visited |= 1 << section;
@@ -3198,6 +3464,9 @@ mod tests {
             }
             sample(&mut g, bits, tick * 20);
             g.tick(&segment);
+            if g.mode == Mode::Transition {
+                scenic_ticks += 1;
+            }
             while g.pop_audio().is_some() {}
             assert_ne!(
                 g.mode,
@@ -3207,7 +3476,8 @@ mod tests {
             );
             if g.mode == Mode::Victory {
                 assert_eq!(visited, 15);
-                assert!(tick >= 15_000);
+                assert!(tick >= 15_000 + 3 * TRANSITION_TICKS as u32);
+                assert!(scenic_ticks >= 3 * TRANSITION_TICKS);
                 assert!(g.score >= 5000);
                 return;
             }
@@ -3387,6 +3657,113 @@ mod tests {
                 assert_eq!(renderer.dropped, 0, "terrain phase {phase}");
                 assert!(renderer.triangle_count > 100);
                 assert!(renderer.triangle_count <= 256);
+            }
+        }
+    }
+    #[test]
+    fn saturated_bridge_weapons_preserve_foreground_and_match_staged_rendering() {
+        use crate::render::{Renderer, BAND_PIXELS};
+
+        let data = model_bank_for_tests();
+        let bank = AssetBank::new(&data).unwrap();
+        let hull_faces = bank.face_count(assets::PLAYER) as u16 + 2; // Ship and exhaust.
+        let essential_faces = hull_faces + 2 + SHOTS as u16 * 2 + 6 * 2;
+        let mut direct = Renderer::new();
+        let mut staged = Renderer::new();
+        let mut isolated_ship = Renderer::new();
+        for section in 0..3 {
+            let bytes = empty_segment(section);
+            let segment = Segment::new(&bytes).unwrap();
+            for x in [-100, 100] {
+                for y in [-65, 65] {
+                    let mut game = running();
+                    game.mode = Mode::Transition;
+                    game.rail_ticks = (section as u16 + 1) * SECTION_TICKS;
+                    game.player.x = x;
+                    game.player.y = y;
+                    for (index, shot) in game.shots.iter_mut().enumerate() {
+                        *shot = Shot {
+                            pos: Vec3 {
+                                x: (index as i16 % 7 - 3) * 30,
+                                y: (index as i16 % 5 - 2) * 22,
+                                z: 198 + index as i16 * 83,
+                            },
+                            kind: if index & 1 == 0 { 1 } else { 3 },
+                            damage: if index & 1 == 0 { 1 } else { 4 },
+                            ..Shot::EMPTY
+                        };
+                    }
+                    for (index, explosion) in game.explosions.iter_mut().enumerate() {
+                        *explosion = Explosion {
+                            pos: Vec3 {
+                                x: (index as i16 - 3) * 36,
+                                y: (index as i16 % 3 - 1) * 35,
+                                z: 400 + index as i16 * 150,
+                            },
+                            ticks: 1 + index as u8 * 3,
+                            color: 7,
+                        };
+                    }
+                    for elapsed in 0..TRANSITION_TICKS {
+                        game.transition_ticks = elapsed;
+                        game.ticks = elapsed;
+                        game.roll_ticks = 1 + (elapsed % 25) as u8;
+                        game.roll_direction = if elapsed & 1 == 0 { -1 } else { 1 };
+                        direct.begin(game.sky_color());
+                        game.render(&mut direct, &bank, &segment);
+                        direct.finish();
+
+                        staged.begin(game.sky_color());
+                        let raw_count = {
+                            let mut stage = staged.scenery_stage();
+                            game.render_scenery(&mut stage, &segment);
+                            stage.count()
+                        };
+                        let foreground_limit = 174.min(233 - raw_count as u16);
+                        assert!(foreground_limit >= essential_faces);
+                        let prefix = staged.project_scenery(raw_count);
+                        game.render_foreground(&mut staged, &bank, foreground_limit);
+                        staged.scenery_last(prefix);
+                        staged.finish();
+                        assert_eq!(
+                            (direct.dropped, staged.dropped),
+                            (0, 0),
+                            "bridge {section}, tick {elapsed}, player ({x},{y})"
+                        );
+                        assert_eq!(direct.triangle_count, staged.triangle_count);
+
+                        if matches!(elapsed, 0 | 199 | 399) {
+                            isolated_ship.begin(0);
+                            game.render_foreground(&mut isolated_ship, &bank, hull_faces);
+                            isolated_ship.finish();
+                            let mut visible_ship_pixels = 0;
+                            let mut ship_pixels = 0;
+                            for band in 0..25 {
+                                let mut expected = [0; BAND_PIXELS];
+                                let mut actual = [0; BAND_PIXELS];
+                                let mut ship = [0; BAND_PIXELS];
+                                direct.render_band(band, &mut expected);
+                                staged.render_band(band, &mut actual);
+                                isolated_ship.render_band(band, &mut ship);
+                                assert_eq!(
+                                    actual, expected,
+                                    "bridge {section}, tick {elapsed}, player ({x},{y}), band {band}"
+                                );
+                                for (&hull, &scene) in ship.iter().zip(&actual) {
+                                    if hull != 0 {
+                                        ship_pixels += 1;
+                                        visible_ship_pixels += usize::from(scene == hull);
+                                    }
+                                }
+                            }
+                            assert!(ship_pixels > 0, "the rolled ship left the viewport");
+                            // Terrain can overlap a rolled hull at camera extremes;
+                            // saturation must not remove all essential foreground.
+                            assert!(visible_ship_pixels > 0,
+                                "bridge {section}, tick {elapsed}, player ({x},{y}): only {visible_ship_pixels}/{ship_pixels} ship pixels visible");
+                        }
+                    }
+                }
             }
         }
     }

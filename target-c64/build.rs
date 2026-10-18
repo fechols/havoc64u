@@ -46,7 +46,7 @@ fn main() {
         "cargo:rustc-link-arg={}",
         directory.join("link.ld").display()
     );
-    // Exactly five phase sections deliberately share $3000-$71FF. Linker
+    // Exactly six phase sections deliberately share $3000-$71FF. Linker
     // assertions and tools/check-layout.py enforce every real memory boundary.
     println!("cargo:rustc-link-arg=-Wl,--no-check-sections");
     // The overlay audit uses retained section relocations to distinguish

@@ -34,8 +34,11 @@ existing native smoke-test setup; `--vice`, `--roms`, and `--llvm-nm` override t
 
 ## Deterministic matrix
 
-The default matrix has eight named states: title, lowlands, canyon, base, carrier,
-missiles, full pools, and a section boundary with a deliberate segment-cache miss.
+The default matrix has eight combat/menu states: title, lowlands, canyon, base,
+carrier, missiles, full pools, and a section boundary with a deliberate
+segment-cache miss. Nine scenic states cover elapsed ticks 0, 200, and 399 of
+each bridge. Ten-tick samples starting at tick 399 also exercise the handoff back
+to combat.
 Each runs with exactly zero or ten simulation ticks and either cold or retained
 palette state. Cold palettes clear both screen buffers and the color shadow.
 Retained palettes render the identical post-simulation state twice before the
@@ -62,6 +65,37 @@ The separate real-time pass leaves normal scheduling enabled and holds physical
 port-2 FIRE for 400 audio ticks. It reports completed-frame throughput after the
 first second and measured audio frequency. Its changing workload is useful for
 ordinary play behavior; use the fixed matrix for same-work speedup comparisons.
+
+## Scenic-flight measurements
+
+The scenic build adds a SCENERY transfer and stages raw geometry before the
+GEOMETRY pass. Ordinary frames omit the 3,079-byte wildlife tail; scenic frames
+omit the 1,423-byte enemy-drawing tail. Overlay transfers use the same bounded
+1,024-byte chunks, with address calculations specialized to the fixed code window.
+Startup still checksums all six complete overlays.
+
+The original checkout was preserved and built separately under
+`target/transitions-baseline/`. The final ordinary-scheduling probe gives:
+
+| Video | Original FPS | Scenic build FPS | Change |
+| --- | ---: | ---: | ---: |
+| PAL | 5.7285 | 5.4720 | -4.48% |
+| NTSC | 5.9262 | 5.6843 | -4.08% |
+
+This meets the five-percent budget for that eight-second ordinary-play probe;
+it does not establish the same bound for every fixed fixture or a whole mission.
+The lowlands fixed fixtures retain identical projected geometry and native
+pixels. Their timing varies with palette state and video-publication boundaries:
+for example, PAL zero-tick cold frames increase from 157,808 to 160,705 bus cycles,
+while retained-palette frames increase from 138,846 to 157,809 cycles. Later
+sections intentionally change world position because completed bridges add to
+the scenery clock, so their outputs are not compared as byte-preserving changes.
+
+The baseline reports are `target/transitions-baseline/bench-{pal,ntsc}/report.json`;
+the final loader measurements are `target/bench/scenic-dma-{pal,ntsc}/report.json`.
+Both final lowlands matrices use three samples per case across the three CIA
+phases. The expanded cache replay contains 157 frames, including all three
+flights and recovery of both VIC banks at each destination.
 
 ## Gates and interpretation
 
