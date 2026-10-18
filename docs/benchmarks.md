@@ -43,7 +43,8 @@ to combat. Twelve enemy states add representative, saturated, and deliberately
 wrong-bank fixtures for each of the four rosters. Model bytes and enemy profiles
 are restored along with segment caches; the driver verifies all 2,048 model bytes
 after each measured frame. Fixed-tick checks detect skipped or duplicated work
-when SIM returns to resident code to change its enemy bank.
+when SIM returns to resident code to change its enemy bank. Four victory states
+cover reveal entry, the midpoint of the fade, arrival, and the settled medal.
 Each runs with exactly zero or ten simulation ticks and either cold or retained
 palette state. Cold palettes clear both screen buffers and the color shadow.
 Retained palettes render the identical post-simulation state twice before the
@@ -70,6 +71,92 @@ The separate real-time pass leaves normal scheduling enabled and holds physical
 port-2 FIRE for 400 audio ticks. It reports completed-frame throughput after the
 first second and measured audio frequency. Its changing workload is useful for
 ordinary play behavior; use the fixed matrix for same-work speedup comparisons.
+
+## Enemy movement patterns: 2026-10-18
+
+All eight flying enemy types now have harmonic, crossing, pursuit, or feinting
+paths. Production SIM images grow from 16,793 to 16,809 bytes per
+profile; each of the five alternatives is padded to that same length. The
+instrumented image is 16,879 bytes. All four builds pass layout, overlay, and
+package validation; no actor fields, lookup tables, resident code, or constants
+were added. Each level shares its own small sine-scaling helper so constant
+division does not expand at every movement axis.
+
+The two-SID instrumented package passes 48 roster cases on each video standard:
+representative, saturated, and deliberately incorrect-bank fixtures for all four
+levels, each with zero/ten simulation ticks and cold/retained palettes. Three
+CIA phases give 144 samples per standard. Geometry, exact tick counts, model
+selection, deterministic repetitions, input, music, stack guards, and package
+hashes all pass. Every DMA transfer remains at most 1,024 bytes.
+
+| Measurement | PAL | NTSC |
+| --- | ---: | ---: |
+| Maximum audio-service lateness | 1.1916 ms | 1.1264 ms |
+| Ordinary-scheduling probe | 6.1758 FPS | 6.2815 FPS |
+
+Reports are under `target/enemy-motion/bench-{pal,ntsc}/`. These timings describe
+the new paths, which change the rendered workload; they are not a same-work
+renderer speedup measurement. Both host test profiles pass, including the
+full-mission pilot. Movement tests cover trajectory bounds, phase wrapping,
+late spawns, pursuit commitment, and preserved firing schedules. Saturated
+rendering also exercises actual moving poses at all player corners and near
+the camera, with matching direct/staged pixels and no dropped commands.
+
+A separate 40-frame held-FIRE production sample compares the preserved
+`target/motion-baseline/2sid` package with the new build. PAL changes from
+5.8454 to 6.0574 FPS; NTSC changes from 6.1360 to 6.2319 FPS. Neither sample
+shows a throughput regression. These changing encounters do not isolate the
+cost of the movement arithmetic. Reports are under
+`target/enemy-motion/baseline-{pal,ntsc}` and `smoke-2sid-{pal,ntsc}`.
+
+Both production SID profiles also pass PAL and NTSC smoke checks: six weapon
+scenarios, eleven streaming/restart scenarios, and seven attract-mode scenarios
+plus title setup per run. All sampled telemetry has zero dropped geometry,
+input overflows, and music underruns, with package hashes unchanged. The
+four-SID reports are `target/enemy-motion/smoke-4sid-{pal,ntsc}/report.json`.
+These remain emulator checks; physical C64 Ultimate acceptance is outstanding.
+
+## Gold-medal ending: 2026-10-17
+
+The pre-medal production packages were preserved under `target/medal-baseline/`
+before implementation. The same 40-frame, held-FIRE opening-game sample compares
+those packages with the final two-SID release, using the calibrated emulator:
+
+| Video standard | Before | After | FPS change |
+| --- | ---: | ---: | ---: |
+| PAL | 5.8628 FPS | 5.8454 FPS | -0.30% |
+| NTSC | 6.1360 FPS | 6.1360 FPS | approximately 0% |
+
+Both remain within the five-percent ordinary-play regression budget. These short
+samples include the simulation and memory-layout changes needed for the medal;
+they do not measure a complete mission or isolate the cost of any one change.
+Reports are `target/medal-baseline/vice-{pal,ntsc}/report.json` and
+`target/medal-native/2sid-{pal,ntsc}/report.json`.
+
+The instrumented two-SID build passes 20 fixed-work cases per standard: lowlands
+and all four victory fixtures, each with zero/ten simulation ticks and
+cold/retained palettes. Every case uses three CIA phases. All geometry, input,
+music, stack, and bounded-DMA checks pass; maximum audio-service lateness is
+1.177 ms PAL / 1.090 ms NTSC, below the 2 ms gate. The separate 400-audio-tick
+ordinary-scheduling probe measures 5.8550 FPS PAL / 6.0816 FPS NTSC, with audio
+at 50.099 / 50.048 Hz. This is a different timing protocol from the production
+comparison above.
+
+Each standard also passes 169 cached-versus-forced-repaint frame comparisons,
+including victory entry, fade, arrival, idle, and restart. Game state, projected
+geometry, bitmap, screen, and color data match exactly. Victory invalidates the
+sky cache and repaints all 25 bands. Reports and captures are under
+`target/medal-bench/check-{pal,ntsc}/`; package hashes remain unchanged.
+
+Both production SID profiles pass PAL and NTSC streaming/reveal checks. A fixture
+seeds the mission's final tick, then the complete 400-tick reveal advances
+naturally with physical joystick input. Checks cover frozen score/resources and
+camera, disappearance of the world, continuing victory music, consumed reveal
+inputs, and a fresh-fire restart. The two-SID PAL run additionally passes controls,
+weapons, checkpoints, and the full attract tour. Reports are under
+`target/medal-native/{2sid,4sid}-{pal,ntsc}/`. Both profiles pass 13 negative overlay
+audit cases and 29 startup-corruption cases, including both new code images and
+rejection of the old directory. Physical C64 Ultimate testing remains outstanding.
 
 ## Distinct transitions and effects: 2026-10-17
 
@@ -393,3 +480,157 @@ Reports are under `target/bench/baseline-static-{pal,ntsc}/`,
 `target/bench/candidate-{pal,ntsc}/`, and
 `target/bench/candidate-{pal,ntsc}-final-quality/`. The compact numeric summary is
 `target/bench/final-summary.json`. These generated artifacts are not committed.
+
+## Native triangle preparation port: 2026-10-17
+
+The native Q16 preparation kernel developed in the Kaiju project now replaces
+HAVOC's native Rust preparation path. Host builds retain the reference path.
+The comparison uses clean commit `f52ea20` plus the same benchmark-only memory
+repair on both sides; the candidate adds the preparation kernel and signed slope
+helper. This is a new, byte-exact optimization of the existing Q16 renderer, so
+the earlier Q8-to-Q16 pixel-difference allowance does not apply.
+
+Both PAL and NTSC passed 120 fixed cases with three samples each: all 30 current
+fixtures, zero/ten simulation ticks, cold/retained palettes, and three initial
+CIA phases. All **720 before/after sample pairs** have identical game state,
+projected geometry including metadata, static background, and native
+bitmap/screen/color hashes. Each case also retained its exact seeded state and
+CIA phase. No geometry drops, input overflows, music underruns, or stack-guard
+changes occurred. The fixture set includes all three bridge exits and the four
+enemy profiles with warm, cold, and full pools.
+
+| Measurement | PAL before -> after | NTSC before -> after |
+| --- | ---: | ---: |
+| Median whole-frame speedup across 120 cases | 1.091x | 1.083x |
+| Ordinary scheduling, 400 audio ticks, held FIRE | 5.503 -> 5.872 FPS | 5.644 -> 6.096 FPS |
+| Preparation plus first-band work, median excluding title | 26.40 -> 14.16 ms | 25.42 -> 13.74 ms |
+| Full pools, zero ticks, retained palettes, whole frame | 282.82 -> 259.94 ms | 284.72 -> 251.29 ms |
+
+Whole-frame speedups are medians of the 120 per-case ratios; every case time is
+the median of its three samples. The separate ordinary-scheduling probe improves
+6.7% PAL and 8.0% NTSC. It lets the real scheduler determine simulation work,
+whereas the fixed matrix holds that work constant. Preparation timing is the
+existing first raster marker through the first HUD marker: it includes triangle
+setup and advancement through the opaque, unpainted first band. Title is excluded
+because it paints that band. This component improves approximately 1.86x PAL and
+1.87x NTSC. It is not an isolated assembly instruction count.
+
+Frame publication still waits for a permitted raster window. For example, NTSC
+Lowlands at zero ticks with retained palettes reduces preparation/first-band work
+from 16.30 to 8.91 ms while whole-frame time remains approximately 151.00 ms.
+The preparation gain therefore does not translate into the same frame-rate gain
+in every fixture. The slowest per-case ratios are within four microseconds of
+unchanged timing; no material whole-frame regression was measured.
+
+The instrumented PIXELS image shrinks from 12,196 to 10,890 bytes, and ordinary
+frame DMA falls from 58,330 to 57,015 bytes. Runtime transfers remain bounded to
+1,024 bytes each. Maximum measured audio-service lateness is 1.195 ms PAL and
+1.150 ms NTSC, within the existing 2 ms gate. Both two-SID and four-SID benchmark
+packages pass the linker, memory, overlay-reference, switch-table, IRQ, and
+startup audits. No audit exemption was added.
+
+The old benchmark build no longer fit the current SIM allocation before the
+port. Its test-only deadline calculation now runs once in resident `main` before
+SIM reentry, preserving the same frozen deadline across an enemy-bank change.
+Benchmark-only validation placement and checkpoints use existing resident space;
+the checkpoints have a separate executable `.benchmark_resident` section in the
+already loaded and checksummed `$7800-$7FFF` region. Keeping that section separate
+preserves non-executable jump-table ownership checks. The four-SID build places
+its 37-byte frame-start checkpoint in ordinary resident RAM to fit its larger
+constant table. Shipping builds omit these benchmark changes. Both shipping
+PRG/REU pairs were rebuilt from the final source and remained byte-identical to
+the packages used by the completed smoke tests.
+
+The production two-SID PAL and four-SID NTSC smoke tests passed exact host title
+bytes, physical controls and weapons, all three streamed section crossings,
+carrier, checkpoints, and result restarts. Their short eight-frame timing samples
+were 5.797 FPS PAL and 5.909 FPS NTSC; those samples are separate from the fixed
+matrix and the 400-tick ordinary-scheduling results above. The native preparation
+suite additionally passed 17,728 exact head/tail comparisons and 1,024 ABI-canary
+calls, including actual in-place replacement, unaligned buffers, and guards.
+
+Separate candidate cache replays passed all 158 cached-versus-forced-miss pairs
+per standard (316 rendered frames each). Every pair had identical native output,
+with the dynamic-occlusion, HUD, camera, theme, and transition invalidation checks
+passing. Their reports are
+`target/bench/native-prep-cache-{pal,ntsc}/report.json`.
+
+The fixed matrix used `--samples 3 --fixtures all --ticks 0,10 --palettes
+cold,retained --real-time-ticks 400 --skip-cache-checks`, with the calibrated
+`x64sc-64x` executable and matching ROM directory recorded in each report.
+Cache replays used `--cache-checks-only --real-time-ticks 0`. This is calibrated
+emulator evidence; physical C64 Ultimate timing remains a separate acceptance check.
+
+Candidate reports are `target/bench/native-prep-after-{pal,ntsc}/report.json`;
+clean-source baseline reports are copied to
+`target/bench/native-prep-before-{pal,ntsc}/report.json`. The complete baseline
+source, package, captures, and monitor traces remain in the neighboring Kaiju
+workspace at `target/sueme64-prep-baseline`. The all-sample comparison and component
+timings are summarized in `target/bench/native-prep-summary.json`, and shipping
+hash identity is recorded in `target/bench/native-prep-shipping-verification.json`.
+Shipping smoke reports are `target/vice/native-prep-2sid-pal/report.json` and
+`target/vice/native-prep-4sid-ntsc/report.json`. Generated reports are not committed.
+
+
+## Terrain visibility correction: 2026-10-18
+
+Near-clipped terrain can have a smaller average-depth sort key than a ship or
+ground enemy that is actually in front of it. The lower-right ship reproduction
+also occurs in the frozen pre-port renderer; the preparation port did not cause
+it. The correction protects player hull/exhaust, Lowlands tracked guns and
+Fortress bunkers from exterior terrain while retaining ordinary foreground
+ordering. Canyon wall batteries are unchanged. See the geometric bounds and
+coverage-bit lifetime in [hardware.md](hardware.md#terrain-visibility-coverage).
+
+This comparison freezes the complete working source before the correction,
+including its existing medal/OVL5 changes. It is not a comparison against HEAD.
+Both standards passed 136 cases with three samples each: 816 before/after sample
+pairs retain identical game states and projected geometry after masking the new
+visibility metadata. Expected display differences repair terrain overlap.
+
+| Measurement | PAL before -> after | NTSC before -> after |
+| --- | ---: | ---: |
+| Ordinary scheduling, 400 audio ticks, held FIRE | 5.855 -> 5.872 FPS | 6.082 -> 6.082 FPS |
+| Change in mean fixed-case frame time | -0.004% | +0.048% |
+| Median per-case frame-time change | 0.000% | 0.000% |
+| Largest individual frame-time increase | +0.571% | +6.526% |
+
+The dense NTSC Lowlands case at ten ticks with cold palettes is the only case
+above the planned 5% per-case limit. Its median increases from 225,200 to 239,897
+bus cycles because the changed overlay transfer schedule misses a publication
+window. In the middle sample, PIXELS work decreases from 87,585 to 87,372 cycles,
+while publication wait rises from 189 to 14,706 cycles. Average frame cost and
+ordinary throughput therefore do not imply every fixed case meets that limit.
+The constant-color fill also omits a redundant comparison: STA preserves DEY's
+zero flag. Coverage-preserving and terrain-skipping loops keep their comparison.
+
+Both SID profiles pass 224 host tests, with 101 no-default-feature library tests
+also passing (one intentionally ignored fixture exporter in each suite).
+Visibility regressions include 9,800 ship/terrain comparisons and 15,360 ground
+enemy/terrain comparisons, actual mesh/proxy bounds, roll extremes, spawn timing,
+transitions and exclusion of Canyon batteries and unrelated geometry.
+Native checks pass 17,728 exact preparations, 1,024 preparation ABI calls,
+25,600 raster-band calls, 48 ordered coverage cases, 256 sky-mask cases and 168
+packer bands including coverage/HUD mixtures. The final constant-color loop has
+been checked against the independent native raster reference.
+
+Seven targeted scenes captured before and after on both standards pass all 28
+independent Q16/coverage-oracle comparisons, each checking all 10,000 native
+display bytes. These include the lower-right ship, a tracked gun, mirrored near
+and far bunkers, and a Canyon wall battery. The battery's entire display is
+byte-identical before and after on both standards. Each standard also passes all
+169 cached-versus-forced-miss pairs. Shipping two/four-SID PAL/NTSC smoke tests
+pass exact title output, controls, weapons, streaming and result restarts.
+
+Both shipping profiles pass the memory, overlay-reference, IRQ and package
+audits. GEOMETRY uses 16,690 of 16,896 bytes; PIXELS 11,713 of 12,288; SCENERY
+16,880 of 16,896; resident tables 1,691 of 1,792. Resident headroom is 121 bytes
+for two SIDs and 109 for four. There are no added triangles or framebuffers.
+
+The baseline, final instrumented packages, captures, matrix/cache/smoke reports
+and comparisons are in the neighboring Kaiju workspace under
+`target/terrain-visibility/{before,after-ground}/`,
+`target/terrain-visibility/final-comparison.json` and
+`target/terrain-visibility/native-oracle.json`. These generated files are not
+committed. Timing is measured in calibrated VICE; physical C64 Ultimate
+acceptance remains separate.

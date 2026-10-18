@@ -2,7 +2,7 @@
 //! Decorative crossings deliberately have no gameplay objects or collision state.
 use crate::assets::Segment;
 use crate::game::STATIC_SKY;
-use crate::{GeometrySink, Vec3, TWO_SIDED};
+use crate::{GeometrySink, Vec3, EXTERIOR_TERRAIN, TWO_SIDED};
 
 pub(crate) const BACKDROP_CAMERA_Y: i16 = 40;
 pub(crate) const SKY_COLORS: [u8; 4] = [6, 8, 11, 4];
@@ -49,7 +49,8 @@ struct Row {
 }
 
 #[inline(never)]
-#[cfg_attr(target_arch = "mos", link_section = ".phase.scenery")]
+// Standalone arithmetic uses resident table space to keep SCENERY bounded.
+#[cfg_attr(target_arch = "mos", link_section = ".tables.scenery_weight")]
 fn weight(elapsed: u16) -> i16 {
     if elapsed >= 399 {
         256
@@ -164,7 +165,12 @@ fn triangle(sink: &mut impl GeometrySink, points: [Vec3; 3], color: u8, camera_y
         point.y = point.y.saturating_sub(camera_y);
         point
     });
-    sink.triangle(points[0], points[1], points[2], color, TWO_SIDED);
+    // This private helper packs the exterior tag above the palette nibble to
+    // keep its native calling convention compact. Public emissions stay separate.
+    sink.triangle(
+        points[0], points[1], points[2], color & 15,
+        TWO_SIDED | (color & EXTERIOR_TERRAIN),
+    );
 }
 
 #[inline(never)]
@@ -178,6 +184,7 @@ fn strip(
     z: [i16; 2],
     colors: [u8; 2],
     camera_y: i16,
+    flags: u8,
 ) {
     let a = Vec3 {
         x: x0[0],
@@ -199,8 +206,8 @@ fn strip(
         y: y0[1],
         z: z[1],
     };
-    triangle(sink, [a, b, c], colors[0], camera_y);
-    triangle(sink, [a, c, d], colors[1], camera_y);
+    triangle(sink, [a, b, c], colors[0] | flags, camera_y);
+    triangle(sink, [a, c, d], colors[1] | flags, camera_y);
 }
 
 /// Emit camera-space triangles. Legacy mode preserves title and attract terrain.
@@ -254,6 +261,7 @@ pub fn emit(
             z,
             [shade; 2],
             camera_y,
+            EXTERIOR_TERRAIN,
         );
         for side in [-1i16, 1] {
             let heights = if side < 0 {
@@ -271,6 +279,7 @@ pub fn emit(
                 z,
                 facets,
                 camera_y,
+                EXTERIOR_TERRAIN,
             );
             if first.edge < 640 || last.edge < 640 {
                 strip(
@@ -282,6 +291,7 @@ pub fn emit(
                     z,
                     facets,
                     camera_y,
+                    EXTERIOR_TERRAIN,
                 );
             } else if first.style == 2 && last.style == 2 {
                 // Runway markings have world-anchored ends outside the canyon
@@ -295,6 +305,7 @@ pub fn emit(
                     z,
                     [15; 2],
                     camera_y,
+                    EXTERIOR_TERRAIN,
                 );
             }
         }
@@ -505,6 +516,7 @@ fn wildlife(
                 [z + depth, z + depth + 1],
                 [palette[0]; 2],
                 camera_y,
+                0,
             );
         }
         for face in CREATURE_FACES {
@@ -641,6 +653,7 @@ fn transport(sink: &mut impl GeometrySink, elapsed: u16, camera_y: i16) {
             [1980, 1980],
             [12, 11],
             camera_y,
+            0,
         );
         triangle(
             sink,

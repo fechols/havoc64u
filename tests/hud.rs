@@ -2,6 +2,7 @@ use havoc::{
     game::{Hud, Mode},
     hud,
     render::{pack_band, HUD_INK},
+    victory::REVEAL_TICKS,
 };
 
 fn state(mode: Mode) -> Hud {
@@ -16,6 +17,7 @@ fn state(mode: Mode) -> Hud {
         section: 0,
         roll_ticks: 0,
         boss_shield: 0,
+        victory_ticks: 0,
     }
 }
 
@@ -92,26 +94,62 @@ fn sector_banner_expires_and_boss_meter_uses_normalized_health() {
 }
 
 #[test]
-fn respawn_and_results_show_distinct_status_and_restart_cues() {
+fn respawn_and_defeat_show_status_and_restart_cues() {
     let respawn = frame(&state(Mode::Respawning), 0);
     assert!(respawn[84 * 160..89 * 160]
         .iter()
         .any(|&p| p == HUD_INK | 10));
-    let victory = frame(&state(Mode::Victory), 0);
     let defeat = frame(&state(Mode::GameOver), 0);
-    assert!(victory[77 * 160..87 * 160]
-        .iter()
-        .any(|&p| p == HUD_INK | 7));
     assert!(defeat[77 * 160..87 * 160]
         .iter()
         .any(|&p| p == HUD_INK | 10));
-    assert!(victory[124 * 160..129 * 160]
-        .iter()
-        .any(|&p| p == HUD_INK | 1));
     assert!(defeat[124 * 160..129 * 160]
         .iter()
         .any(|&p| p == HUD_INK | 1));
-    assert_ne!(victory, defeat);
+}
+
+#[test]
+fn victory_reveal_hides_all_hud_and_cockpit_until_arrival() {
+    let mut status = state(Mode::Victory);
+    status.boss_shield = 100;
+    status.distance = 0;
+    for tick in [0, 1, 100, REVEAL_TICKS - 1] {
+        status.victory_ticks = tick;
+        assert!(frame(&status, 0).iter().all(|&pixel| pixel == 6));
+    }
+}
+
+#[test]
+fn victory_results_leave_the_star_clear_and_show_score_and_restart() {
+    let mut status = state(Mode::Victory);
+    status.victory_ticks = REVEAL_TICKS;
+    let victory = frame(&status, 0);
+    assert!(victory[13 * 160..23 * 160]
+        .iter()
+        .any(|&pixel| pixel == HUD_INK | 7));
+    assert!(victory[180 * 160..185 * 160]
+        .iter()
+        .any(|&pixel| pixel == HUD_INK | 1));
+    assert!(victory[190 * 160..195 * 160]
+        .iter()
+        .any(|&pixel| pixel == HUD_INK | 1));
+    assert!(victory[27 * 160..177 * 160].iter().all(|&pixel| pixel == 6));
+    assert!(victory[..8 * 160].iter().all(|&pixel| pixel == 6));
+    for y in 185..200 {
+        assert!(victory[y * 160..y * 160 + 36]
+            .iter()
+            .all(|&pixel| pixel == 6));
+        assert!(victory[y * 160 + 124..(y + 1) * 160]
+            .iter()
+            .all(|&pixel| pixel == 6));
+    }
+    assert_ne!(victory, frame(&status, 16));
+    status.score += 1;
+    let different_score = frame(&status, 0);
+    assert_ne!(
+        &victory[180 * 160..185 * 160],
+        &different_score[180 * 160..185 * 160]
+    );
 }
 
 #[test]
@@ -151,7 +189,9 @@ fn every_mode_survives_native_bitmap_packing_with_readable_ink() {
     ] {
         for band in 0..25 {
             let mut pixels = [6; 1280];
-            hud::draw(band, &mut pixels, &state(mode), 0);
+            let mut status = state(mode);
+            status.victory_ticks = REVEAL_TICKS;
+            hud::draw(band, &mut pixels, &status, 0);
             let mut bitmap = [0; 320];
             let mut screen = [0; 40];
             let mut color = [0; 40];

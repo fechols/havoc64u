@@ -50,6 +50,7 @@ def main():
     if len(original["reu"]) != 16*1024*1024:
         parser.error("input REU image must contain exactly 16 MiB")
     before = {extension: hashlib.sha256(data).hexdigest() for extension, data in original.items()}
+    format = vice.package_model_layout(original["reu"])
     summary = {"passed": False, "scope": "Private corrupt REU copies in calibrated VICE; not physical hardware acceptance",
                "package": str(package), "original_sha256": before, "cases": []}
     native_command = vice.Monitor.command
@@ -82,8 +83,16 @@ def main():
         ("directory-profile", 0x120, "PRG AND REU DO NOT MATCH"),
         ("music-page", 0x60080+12+5*(10 if original["reu"][17] == 4 else 4), "INVALID MUSIC PAGE"),
         ("model-directory", 0x40, "INVALID MODEL DIRECTORY"),
-        ("model-hp-sentinel", 0xb0000 + 2*2048 + 80, "INVALID LEVEL MODEL BANK"),
+        ("model-hp-sentinel", 0xb0000 + 2*2048 + format["descriptors"], "INVALID LEVEL MODEL BANK"),
     ]
+    if format["medal"]:
+        for name, page, size_at in (("victory-geometry", 0xc0000, 0x132),
+                                    ("terminal-simulation", 0xd0000, 0x136)):
+            size = int.from_bytes(original["reu"][size_at:size_at+2], "little")
+            if not 16 < size < 0x10000:
+                parser.error(f"invalid {name} overlay size")
+            cases.append((f"{name}-code", page + 16, "REU CODE CHECKSUM FAILED"))
+            cases.append((f"{name}-tail", page + size - 1, "REU CODE CHECKSUM FAILED"))
     for level, page in enumerate((2, 8, 9, 10)):
         cases.append((f"level-{level}-enemy-code", page*0x10000 + 16, "REU CODE CHECKSUM FAILED"))
         # Include the last byte: startup checks the entire padded composite,
@@ -108,7 +117,7 @@ def main():
             damaged[0x50:0x52] = checksum(damaged[model_start:model_start+2048]).to_bytes(2, "little")
             damaged[0x5e:0x60] = checksum(damaged[0x40:0x5e]).to_bytes(2, "little")
         if name == "old-code-directory":
-            damaged[0x100:0x104] = b"OVL3"
+            damaged[0x100:0x104] = b"OVL4" if format["medal"] else b"OVL3"
         if name == "directory-profile":
             damaged[offset] = 2 if original["reu"][17] == 4 else 4
         if name in ("resident-pair", "directory-profile", "old-code-directory"):

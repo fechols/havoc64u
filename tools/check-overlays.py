@@ -176,6 +176,10 @@ ENEMY_ENTRIES = {
     f".phase.enemy.{level}": f"enemy_{level}"
     for level in ("lowlands", "canyon", "fortress", "carrier")
 }
+ALTERNATE_ENTRIES = {
+    ".phase.terminal": "game_terminal",
+    ".phase.victory": "medal_geometry",
+}
 STARTUP_SECTION = ".startup_checks"
 STARTUP_ENTRY = "havoc_c64::check_code_package"
 
@@ -223,9 +227,10 @@ def audit(path):
     elf = Elf(path)
     audit_startup(elf)
     phases = {section.name: section for section in elf.sections if section.name.startswith(".phase.")}
-    require(set(phases) == set(ENTRIES) | set(ENEMY_ENTRIES), "ELF must contain the six common phases and four enemy tails")
+    require(set(phases) == set(ENTRIES) | set(ENEMY_ENTRIES) | set(ALTERNATE_ENTRIES),
+            "ELF must contain six common phases, four enemy tails, terminal SIM and victory GEOMETRY")
     entry_functions = {}
-    for name, expected in {**ENTRIES, **ENEMY_ENTRIES}.items():
+    for name, expected in {**ENTRIES, **ENEMY_ENTRIES, **ALTERNATE_ENTRIES}.items():
         matches = [function for function in elf.functions[phases[name].index] if function.name == expected]
         require(len(matches) == 1, f"missing or ambiguous overlay entry {expected}")
         entry_functions[name] = matches[0]
@@ -239,6 +244,15 @@ def audit(path):
         require(phases[name].address == enemy_address == entry_functions[name].address,
                 f"{name} must begin with its ABI entry")
         require(enemy_address + phases[name].size <= 0x7200, f"{name} exceeds the execution window")
+    for name, alias, boundary in (
+        (".phase.terminal", "terminal_step", "__phase_sim_base_end"),
+        (".phase.victory", "victory_geometry", "__phase_geometry_base_end"),
+    ):
+        require(symbols[alias].address == symbols[boundary].address
+                == phases[name].address == entry_functions[name].address,
+                f"{name} ABI must begin at its common prefix boundary")
+        require(phases[name].address + phases[name].size <= 0x7200,
+                f"{name} exceeds the execution window")
     partial_phases = []
     for name, caller_name, tail_name in (
         ("scenery", "havoc::scenery::emit", "havoc::scenery::wildlife"),
@@ -273,6 +287,7 @@ def audit(path):
     errors = []
     partial_tail_calls = Counter()
     enemy_calls = 0
+    alternate_calls = Counter()
     relocations = list(elf.relocations())
     # LLVM places switch tables in resident .rodata and drops their local
     # symbol names. Recover their contiguous relocation runs, then require
@@ -301,6 +316,20 @@ def audit(path):
         if not source.flags & 2:  # Ignore debug metadata; it is not loaded.
             continue
         sources[source.name] += 1
+        if symbol.name in ("terminal_step", "victory_geometry"):
+            phase, caller_name, tail_name = {
+                "terminal_step": (".phase.sim", "havoc::game::Game::tick", ".phase.terminal"),
+                "victory_geometry": (".phase.geometry", "havoc_c64::prepare_geometry", ".phase.victory"),
+            }[symbol.name]
+            caller = elf.function_at(source.index, address) if source.executable else None
+            instruction = address - source.address - 1
+            require(source.name == phase and caller is not None and caller.name == caller_name
+                    and addend == 0 and kind == 3 and 0 <= instruction < source.size
+                    and elf.contents(source)[instruction] == 0x20,
+                    f"opaque {symbol.name} ABI may only be called directly by its reviewed dispatcher")
+            graph[caller].add(entry_functions[tail_name])
+            alternate_calls[symbol.name] += 1
+            continue
         if symbol.name == "enemy_step":
             caller = elf.function_at(source.index, address) if source.executable else None
             instruction = address - source.address - 1
@@ -346,8 +375,12 @@ def audit(path):
             continue
         origin = caller.name if caller else f"{source.name}+${address - source.address:X}"
         if source.name in phases or source.name == STARTUP_SECTION:
-            if source.name in ENEMY_ENTRIES and target.name == ".phase.sim":
+            if (source.name in ENEMY_ENTRIES or source.name == ".phase.terminal") and target.name == ".phase.sim":
                 # Only the active tail and this same immutable prefix coexist.
+                local_references[source.name] += 1
+            elif source.name == ".phase.victory" and target.name == ".phase.geometry":
+                require(destination < symbols["__phase_geometry_base_end"].address,
+                        "victory tail references the unloaded combat tail")
                 local_references[source.name] += 1
             elif source.name != target.name:
                 errors.append(f"{origin} in {source.name} references {target.name} at ${destination:04X}")
@@ -357,7 +390,7 @@ def audit(path):
         if not source.executable:
             # Validated as an owned switch table below.
             continue
-        if target.name in ENEMY_ENTRIES:
+        if target.name in ENEMY_ENTRIES or target.name in ALTERNATE_ENTRIES:
             errors.append(f"unapproved direct enemy-tail reference: {origin} -> {target.name}")
             continue
         expected = startup_entry if target.name == STARTUP_SECTION else entry_functions[target.name]
@@ -381,6 +414,8 @@ def audit(path):
         require(sources[name] > 0, f"no retained relocations for {name}; link with --emit-relocs")
     require(not errors, "unsafe overlay references:\n  " + "\n  ".join(errors))
     require(enemy_calls == 1, f"expected exactly one opaque SIM enemy call, got {enemy_calls}")
+    require(alternate_calls == {"terminal_step": 1, "victory_geometry": 1},
+            f"expected one call to each terminal/victory dispatcher, got {dict(alternate_calls)}")
     require(all(partial_tail_calls[phase.name] == 1 for phase, *_ in partial_phases),
             f"expected one guarded call to each mode-dependent tail, got {dict(partial_tail_calls)}")
     require(all(entry_references[name] == 1 for name in ENTRIES), f"expected one main JSR to each overlay entry, got {dict(entry_references)}")
@@ -406,6 +441,7 @@ def audit(path):
         print(f"{phase.name} prefix: {boundary-phase.address} bytes; one reviewed mode-dependent call to {tail.name}")
     print("Resident entry calls: " + ", ".join(ENTRIES.values()))
     print("Enemy ABI: one opaque SIM call; four entries at the shared prefix boundary")
+    print("Victory ABI: one terminal SIM and one medal GEOMETRY call; matching alternate tails")
     print(f"IRQ relocation graph: {len(reached)} functions, all resident")
     print("Startup: ROMs disabled before BSS; only BSS clear, data copy, main are called")
     print("Startup checks: one main call before BOOT; no phase or IRQ references into retired workspace")

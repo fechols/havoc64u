@@ -19,15 +19,15 @@ fn test_bank(level: u8) -> havoc::assets::AssetBank<'static> {
             #[cfg(not(feature = "host-tools"))]
             {
                 let mut data = [0; MODEL_SIZE];
-                data[..4].copy_from_slice(b"SMA2");
-                data[4] = 8;
+                data[..4].copy_from_slice(b"SMA3");
+                data[4] = havoc::assets::MODEL_COUNT;
                 data[5] = level as u8;
                 data[6] = if level == 3 { 2 } else { 3 };
                 for kind in 0..3 {
-                    let at = 80 + kind * 8;
+                    let at = havoc::assets::ENEMY_SPECS_OFFSET + kind * 8;
                     data[at..at + 8].copy_from_slice(&[3, 0, 19, 18, 100, 0, 8, 0]);
                 }
-                for mesh in 0..8 {
+                for mesh in 0..havoc::assets::MODEL_COUNT as usize {
                     let at = 16 + mesh * 8;
                     data[at..at + 2].copy_from_slice(&(MODEL_DATA_OFFSET as u16).to_le_bytes());
                     data[at + 2] = 3;
@@ -496,6 +496,11 @@ fn original_asset_previews_fit_the_triangle_budget_in_every_section() {
 #[derive(Default)]
 struct CapturedGeometry(Vec<([havoc::Vec3; 3], u8, u8)>);
 
+// Scene authoring adds this internal semantic flag around the actual player
+// draw. Direct emit_mesh remains a general, untagged mesh operation.
+#[cfg(feature = "host-tools")]
+const TERRAIN_CLEAR_SCENE_FLAG: u8 = 0x20;
+
 #[cfg(feature = "host-tools")]
 impl havoc::GeometrySink for CapturedGeometry {
     fn triangle(&mut self, a: havoc::Vec3, b: havoc::Vec3, c: havoc::Vec3, color: u8, flags: u8) {
@@ -606,6 +611,9 @@ fn chase_camera_translates_foreground_without_moving_world_geometry_or_backdrop(
         0,
         256,
     );
+    for face in &mut world_ship.0 {
+        face.2 |= TERRAIN_CLEAR_SCENE_FLAG;
+    }
     assert_eq!(
         &title_geometry.0[..bank.face_count(PLAYER) as usize],
         world_ship.0.as_slice()
@@ -696,6 +704,7 @@ fn chase_camera_reveals_carrier_and_reticle_and_keeps_controlled_hull_on_screen(
                 y: p.y - eye_y,
                 ..p
             });
+            face.2 |= TERRAIN_CLEAR_SCENE_FLAG;
         }
         assert_eq!(
             &geometry.0[..ship_faces],

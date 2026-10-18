@@ -22,8 +22,8 @@ pub fn common_bank() -> [u8; COMMON_SIZE] {
 pub fn model_bank(level: u8) -> [u8; MODEL_SIZE] {
     assert!(level < SEGMENT_COUNT);
     let mut b = [0; MODEL_SIZE];
-    b[..4].copy_from_slice(b"SMA2");
-    b[4] = 8;
+    b[..4].copy_from_slice(b"SMA3");
+    b[4] = MODEL_COUNT;
     b[5] = level;
     b[6] = if level == 3 { 2 } else { 3 };
     let hp = [[3, 2, 6], [2, 3, 4], [4, 2, 6], [3, 2, 6]][level as usize];
@@ -234,6 +234,8 @@ pub fn model_bank(level: u8) -> [u8; MODEL_SIZE] {
     for (slot, model) in section_enemy_models(level).into_iter().enumerate() {
         models[slot + 1] = model;
     }
+    let medal = medal_model(&models[PLAYER as usize]);
+    models.push(medal);
     // Bake the larger combat meshes so the C64 retains identity transforms and
     // the existing model-bank size. Slot three also supplies the boss turrets.
     for id in FIGHTER..=CARRIER {
@@ -267,6 +269,83 @@ pub fn model_bank(level: u8) -> [u8; MODEL_SIZE] {
 }
 
 type Model = (Vec<[i16; 3]>, Vec<[u8; 4]>);
+
+/// A closed twelve-sided coin with a raised relief of the player's Kestrel.
+/// Clockwise rings face the camera (-Z); reverse winding closes the back.
+fn medal_model(player: &Model) -> Model {
+    let circle = [
+        [0, 100],
+        [50, 87],
+        [87, 50],
+        [100, 0],
+        [87, -50],
+        [50, -87],
+        [0, -100],
+        [-50, -87],
+        [-87, -50],
+        [-100, 0],
+        [-87, 50],
+        [-50, 87],
+    ];
+    // Use the actual PLAYER footprint and upper hull, viewed nose-up. The
+    // underside stays buried in the coin; the cockpit and aft fin retain relief.
+    let footprint = [0usize, 2, 6, 7, 5, 1];
+    let top_vertices = [0usize, 1, 2, 3, 5, 6, 7];
+    let top_index = [43u8, 44, 45, 46, u8::MAX, 47, 48, 49];
+    let mut vertices = Vec::new();
+    // Cache the most frequently shared front/bevel rings first.
+    for (radius, z) in [(120, -8), (104, -14), (120, 10)] {
+        for [x, y] in circle {
+            vertices.push([x * radius / 100, y * radius / 100, z]);
+        }
+    }
+    vertices.push([0, 0, -14]); // 36: coin front center.
+    for index in footprint {
+        let [x, _, z] = player.0[index];
+        vertices.push([x * 44 / 36, (z - 4) * 44 / 36, -14]);
+    }
+    for index in top_vertices {
+        let [x, y, z] = player.0[index];
+        vertices.push([x, z - 4, -26 - y / 2]);
+    }
+    let mut faces = Vec::new();
+    for i in 0u8..12 {
+        let next = (i + 1) % 12;
+        let bevel = if i >= 9 || i <= 1 { 7 } else { 8 };
+        let side = if i >= 8 { 8 } else { 9 };
+        // Thick, flat edge and the sloping bevel are separate surfaces.
+        faces.push([i, i + 24, next + 24, side]);
+        faces.push([i, next + 24, next, side]);
+        faces.push([i, next, next + 12, bevel]);
+        faces.push([i, next + 12, i + 12, bevel]);
+        faces.push([36, i + 12, next + 12, 8]);
+    }
+    // Triangulate the convex back without adding a redundant center vertex.
+    for i in 1u8..11 {
+        faces.push([24, 24 + i + 1, 24 + i, 9]);
+    }
+    for i in 0u8..6 {
+        let next = (i + 1) % 6;
+        let top = top_index[footprint[i as usize]];
+        let top_next = top_index[footprint[next as usize]];
+        // The wider foot forms a brown bevel around the complete silhouette.
+        faces.push([37 + i, 37 + next, top_next, 9]);
+        faces.push([37 + i, top_next, top, 9]);
+    }
+    for (face, color) in [(0, 7), (1, 7), (4, 7), (5, 8), (6, 7), (7, 8)] {
+        let [a, b, c, _] = player.1[face];
+        // PLAYER renders two-sided; reverse its upper winding for the solid
+        // medal's backface culling. Shaded aft facets show the cockpit ridge.
+        faces.push([
+            top_index[a as usize],
+            top_index[c as usize],
+            top_index[b as usize],
+            color,
+        ]);
+    }
+    assert_eq!((vertices.len(), faces.len()), (50, 88));
+    (vertices, faces)
+}
 
 fn section_enemy_models(level: u8) -> Vec<Model> {
     match level {

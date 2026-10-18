@@ -325,7 +325,8 @@ def dwarf_game_layout(elf, tool, syms, output, controls=False):
             modes[name[1]] = int(value[1], 0)
     required = {"rail_ticks": "u16", "boss_z": "i16", "mode": "havoc::game::Mode",
                 "boss_started": "bool", "boss_defeated": "bool", "score": "u32",
-                "shield": "u8", "lives": "u8", "bombs": "u8", "respawn_ticks": "u8"}
+                "shield": "u8", "lives": "u8", "bombs": "u8", "respawn_ticks": "u8",
+                "menu_ticks": "u16"}
     if "Transition" in modes:
         required.update(transition_ticks="u16", ticks="u16")
     sizes = {"u8": 1, "i8": 1, "u16": 2, "u32": 4, "i16": 2, "bool": 1, "havoc::game::Mode": 1}
@@ -388,35 +389,48 @@ def active_section(rail_ticks, mode):
     return min((rail_ticks - (mode == 6)) // 3750, 3)
 
 
+def package_model_layout(package):
+    """Keep baseline benchmarks compatible while checking the current format."""
+    version = int.from_bytes(package[4:8], "little")
+    formats = {0x534d0300: (b"SMA2", 80), 0x534d0400: (b"SMA3", 88)}
+    if package[:4] != b"SM64" or version not in formats or package[16] != 4 or package[17] not in (2, 4):
+        raise RuntimeError("Expected a four-roster version 3.0 or 4.0 package")
+    magic, descriptors = formats[version]
+    return {"version": version, "magic": magic, "descriptors": descriptors,
+            "medal": version == 0x534d0400}
+
+
 def enemy_bank_check(mon, syms, package, section):
     """Prove the selected executable and every resident model byte agree."""
     required = ("ENEMY_CODE_PROFILE", "ENEMY_MODEL_PROFILE", "MODEL_STREAM_BYTES")
     if any(name not in syms for name in required):
         raise RuntimeError("Enemy streaming requires code/model identity telemetry")
+    format = package_model_layout(package)
     reference = package[0xb0000+section*2048:0xb0000+(section+1)*2048]
-    if len(reference) != 2048 or reference[:4] != b"SMA2" or reference[5] != section:
+    if len(reference) != 2048 or reference[:4] != format["magic"] or reference[5] != section:
         raise RuntimeError(f"Invalid packaged level {section} model reference")
     mon.command("bank ram")
     cache = mon.read(0x8400, 2048)
     code = mon.integer(syms["ENEMY_CODE_PROFILE"], 1)
     models = mon.integer(syms["ENEMY_MODEL_PROFILE"], 1)
+    mode = mon.integer(syms["GAME_MODE"], 1)
+    expected_code = 4 if format["medal"] and mode in (3, 4) else section
     mon.command("bank cpu")
-    if code != section or models != section or cache != reference:
-        raise RuntimeError(f"Stale enemy bank: expected {section}, code {code}, models {models}, bytes match {cache == reference}")
+    if code != expected_code or models != section or cache != reference:
+        raise RuntimeError(f"Stale enemy bank: expected code {expected_code}, model {section}; code {code}, models {models}, bytes match {cache == reference}")
     return {"section": section, "code_profile": code, "model_profile": models,
             "all_2048_bytes_match": True, "sha256": hashlib.sha256(cache).hexdigest()}
 
 
 def streaming_checks(mon, syms, failures, elf, reu, dwarf_tool, output, result):
     """Monitor-assisted boundary scenarios, deliberately separate from timing."""
-    layout = dwarf_game_layout(elf, dwarf_tool, syms, output)
+    layout = dwarf_game_layout(elf, dwarf_tool, syms, output, controls=True)
     result.update(passed=False, monitor_assisted=True,
-                  scope="Seeded section boundaries and results modes; not a full native playthrough. Crossings check both effects voices alongside music with neutral physical input. All restart input uses the physical joystick port.",
+                  scope="Seeded section boundaries and final winning condition; not a full native playthrough. Crossings check both effects voices alongside music. Victory checks the natural 400-tick reveal and held/fresh physical FIRE. All restart input uses the physical joystick port.",
                   excluded_from_timing=True, render_segment_telemetry="RENDER_SEGMENT" in syms,
                   layout=layout, scenarios=[])
     data = reu.read_bytes()
-    if data[:4] != b"SM64" or int.from_bytes(data[4:8], "little") != 0x534d0300 or data[16] != 4 or data[17] not in (2, 4):
-        raise RuntimeError("Streaming checks require the four-roster version 3.0 package")
+    format = package_model_layout(data)
     segment_base = int.from_bytes(data[12:16], "little")
     references = [data[segment_base+i*2048:segment_base+i*2048+512] for i in range(4)]
     checksums = [int.from_bytes(data[20+i*2:22+i*2], "little") for i in range(4)]
@@ -473,7 +487,8 @@ def streaming_checks(mon, syms, failures, elf, reu, dwarf_tool, output, result):
         mon.run_until(syms["frame_complete"], failures)
         frame = counters(mon, syms)
         mon.command("bank ram")
-        observed = ["mode", "rail_ticks", "boss_z", "boss_started", "boss_defeated", "score", "shield", "lives", "bombs"]
+        observed = ["mode", "rail_ticks", "boss_z", "boss_started", "boss_defeated", "score", "shield", "lives", "bombs", "menu_ticks",
+                    "player.x", "player.y", "player.z"]
         if "Transition" in layout["modes"]:
             observed += ["ticks", "transition_ticks"]
         frame["game"] = {name: field_read(name) for name in observed}
@@ -605,6 +620,89 @@ def streaming_checks(mon, syms, failures, elf, reu, dwarf_tool, output, result):
             raise RuntimeError("Checkpoint respawn failed to restore health and preserve lives/score")
         finish_capture(scenario, f"checkpoint-{section}")
 
+    if format["medal"]:
+        scenario = {"name": "natural-gold-medal-reveal", "captures": {},
+                    "note": "Seed the last mission tick with the carrier defeated; the normal win path and all 400 reveal ticks run in native code. Joystick FIRE is pressed during the reveal, held through arrival, then released and freshly pressed to restart."}
+        result["scenarios"].append(scenario)
+        mon.command("jpdb 1 $1f")
+        observe(scenario)
+        observe(scenario)
+        seed(scenario, {"rail_ticks": 14999, "mode": layout["modes"]["Playing"],
+                        "boss_started": 1, "boss_defeated": 1,
+                        "score": 24000, "shield": 76, "lives": 2, "bombs": 1})
+        mon.command("jpdb 1 $0f")
+        frozen = epoch = None
+        music_pages = []
+        repress = 0
+        for _ in range(200):
+            frame = observe(scenario)
+            game = frame["game"]
+            if game["mode"] != layout["modes"]["Victory"]:
+                raise RuntimeError("Natural victory entry failed or FIRE skipped the medal reveal")
+            if epoch is None:
+                if game["menu_ticks"] >= 400:
+                    raise RuntimeError("First victory frame skipped the reveal")
+                epoch = (game["ticks"] - game["menu_ticks"]) & 0xffff
+                frozen = {name: game[name] for name in
+                          ("score", "shield", "lives", "bombs", "rail_ticks", "player.x", "player.y", "player.z")}
+            elapsed = (game["ticks"] - epoch) & 0xffff
+            if game["menu_ticks"] != min(elapsed, 400):
+                raise RuntimeError("Victory reveal did not advance exactly 400 simulation ticks")
+            if any(game[name] != value for name, value in frozen.items()):
+                raise RuntimeError("Victory reveal changed the frozen ship, mission state, or resources")
+            if frame.get("music_cue") != 5 or ("music_active_cue" in frame and frame["music_active_cue"] != 5):
+                raise RuntimeError("Victory reveal interrupted the homecoming music")
+            page = frame.get("music_page", 0)
+            if music_pages and page < music_pages[-1]:
+                raise RuntimeError("Victory reveal restarted its music before the full cue loop")
+            music_pages.append(page)
+            progress = game["menu_ticks"]
+            label = "hold" if progress == 400 else "approach" if progress >= 100 else "fade" if progress >= 40 else "entry"
+            if label not in scenario["captures"]:
+                saved = capture(mon, syms, output, f"victory-reveal-{label}")
+                saved.update(reveal_ticks=progress, elapsed_ticks=elapsed)
+                scenario["captures"][label] = saved
+                if label == "approach":
+                    # Only the gold mesh remains after blackout; cockpit white,
+                    # gray, cyan and green must all be absent before results.
+                    native = Path(saved["native"]).read_bytes()
+                    palette = set()
+                    for y in range(200):
+                        for x in range(160):
+                            cell = y//8*40 + x//4
+                            slot = native[cell*8+y%8] >> (6 - 2*(x%4)) & 3
+                            palette.add((saved["background"], native[8000+cell] >> 4,
+                                         native[8000+cell] & 15, native[9000+cell] & 15)[slot])
+                    if not palette <= {0, 7, 8, 9}:
+                        raise RuntimeError(f"Cinematic retained battlefield or cockpit ink after blackout: {palette}")
+                    scenario["cinematic_cockpit_hidden"] = True
+            if progress >= 100 and repress == 0:
+                mon.command("jpdb 1 $1f")
+                repress = 1
+            elif progress >= 120 and repress == 1:
+                mon.command("jpdb 1 $0f")
+                repress = 2
+            if elapsed >= 450:
+                if frame["joystick_port2"] != 15 or repress != 2:
+                    raise RuntimeError("Victory results were not exercised with held physical FIRE")
+                break
+        else:
+            raise RuntimeError("Victory reveal did not reach its settled results")
+        scenario.update(duration_ticks=400, held_fire_consumed=True, frozen_state=frozen,
+                        uninterrupted_music_pages=music_pages)
+        mon.command("jpdb 1 $1f")
+        observe(scenario)
+        released = observe(scenario)
+        if released["game_mode"] != layout["modes"]["Victory"] or released["joystick_port2"] != 31:
+            raise RuntimeError("Releasing FIRE dismissed the settled medal")
+        mon.command("jpdb 1 $0f")
+        restarted = wait_ready(scenario, layout["modes"]["Playing"], 0, 1)
+        expected = {"shield": 100, "lives": 3, "bombs": 3, "score": 0, "boss_started": 0, "boss_defeated": 0}
+        if any(restarted["game"][name] != value for name, value in expected.items()):
+            raise RuntimeError("Fresh FIRE failed to reset the mission after the medal reveal")
+        scenario["fresh_fire_restarted"] = True
+        finish_capture(scenario, "victory-reveal-restarted")
+
     for mode_name in ("Victory", "GameOver"):
         scenario = {"name": f"restart-from-{mode_name.lower()}",
                     "note": "Results mode is a monitor fixture; release and fresh FIRE use joystick port 2."}
@@ -614,6 +712,8 @@ def streaming_checks(mon, syms, failures, elf, reu, dwarf_tool, output, result):
         observe(scenario)
         observe(scenario)
         values = {"rail_ticks": 11400, "mode": layout["modes"][mode_name]}
+        if mode_name == "Victory" and format["medal"]:
+            values["menu_ticks"] = 400
         if mode_name == "GameOver":
             values.update(shield=0, lives=0)
         seed(scenario, values)
@@ -1537,7 +1637,7 @@ def music_checks(mon, syms, failures, elf, reu, dwarf_tool, output, result, sid_
                        "player.x": 0}
         else:
             fixture = {"mode": modes["Victory"] if cue == 5 else modes["GameOver"],
-                       "rail_ticks": 11400, "menu_ticks": 0}
+                       "rail_ticks": 11400, "menu_ticks": 400 if cue == 5 else 0}
         scenario = {"name": name, "cue": cue, "pages": pages, "row_ticks": row_ticks,
                     "loop_ticks": loop_ticks, "loop_seconds": loop_ticks/50,
                     "fixture": fixture, "page_transitions": [], "observed_frames": 0}

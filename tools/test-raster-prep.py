@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Differential-test the production Rust raster preparation on the MOS CPU.
+"""Differential-test production raster preparation on the MOS CPU.
 
 The row-walker test starts from host-prepared records. This separate test
-compiles the actual production preparation helpers for MOS and checks all 28
-head/tail bytes against an independent Python integer-arithmetic reference.
+compiles the actual Rust entry point and native preparation kernel for MOS,
+then checks all 28 head/tail bytes against independent Python arithmetic.
+Both entry points run with guarded buffers, including true in-place input.
 No production source or final game artifact is changed.
 """
 import hashlib
@@ -69,7 +70,7 @@ def fixtures():
             yield x, y
 
 
-def expected(x, y, color):
+def expected(x, y, color, flags):
     a, b, c = sorted(zip(x, y), key=lambda point: (point[1], point[0]))
 
     def edge(p, q):
@@ -89,7 +90,7 @@ def expected(x, y, color):
     return struct.pack(
         "<6i4B", *edge(a, c), *edge(a, b), *edge(b, c),
         max(0, min(200, a[1])), max(0, min(200, b[1])), max(0, min(200, c[1])),
-        color | (16 if orientation > 0 else 0),
+        color | (16 if orientation > 0 else 0) | (flags & 0x60),
     )
 
 
@@ -98,6 +99,7 @@ HARNESS = r'''
 #include <stdio.h>
 #include <string.h>
 extern void check_prepare(const void*,void*,void*);
+extern void fast_prepare_triangle(const void*,void*,void*);
 struct Fixture { uint8_t triangle[16],prepared[28]; };
 #include "fixtures.h"
 static uint8_t input[304],saved_input[304],head[304],tail[304],want_head[304],want_tail[304];
@@ -106,6 +108,7 @@ int main(void) {
   uint16_t cases=0;
   for(uint16_t f=0;f<sizeof(fixtures)/sizeof(fixtures[0]);f++)
     for(uint8_t alignment=0;alignment<4;alignment++)
+      for(uint8_t direct=0;direct<2;direct++)
       for(uint8_t inplace=0;inplace<2;inplace++) {
         uint16_t offset=16+offsets[alignment];
         memset(input,0xa5,sizeof(input));memset(head,0xa5,sizeof(head));memset(tail,0xa5,sizeof(tail));
@@ -114,9 +117,11 @@ int main(void) {
         memcpy(want_head+offset,fixtures[f].prepared,16);
         memcpy(want_tail+offset,fixtures[f].prepared+16,12);
         if(inplace)memcpy(head+offset,fixtures[f].triangle,16);
-        check_prepare(inplace?head+offset:input+offset,head+offset,tail+offset);
-        if(memcmp(input,saved_input,sizeof(input)) || memcmp(head,want_head,sizeof(head)) || memcmp(tail,want_tail,sizeof(tail))) {
-          printf("FAIL fixture=%u alignment=%u inplace=%u\n",f,alignment,inplace);
+        *(volatile uint8_t*)0x779f=0xc3;*(volatile uint8_t*)0x77bf=0x3c;
+        if(direct)fast_prepare_triangle(inplace?head+offset:input+offset,head+offset,tail+offset);
+        else check_prepare(inplace?head+offset:input+offset,head+offset,tail+offset);
+        if(memcmp(input,saved_input,sizeof(input)) || memcmp(head,want_head,sizeof(head)) || memcmp(tail,want_tail,sizeof(tail)) || *(volatile uint8_t*)0x779f!=0xc3 || *(volatile uint8_t*)0x77bf!=0x3c) {
+          printf("FAIL fixture=%u alignment=%u inplace=%u direct=%u\n",f,alignment,inplace,direct);
           for(uint16_t i=0;i<304;i++)if(head[i]!=want_head[i] || tail[i]!=want_tail[i]) {
             printf("offset=%u head=%u/%u tail=%u/%u\n",i,head[i],want_head[i],tail[i],want_tail[i]);break;
           }
@@ -167,8 +172,8 @@ const POSITIVE_AREA:u8=4;
         area = (x[1] - x[0]) * (y[2] - y[0]) - (y[1] - y[0]) * (x[2] - x[0])
         color = index & 15
         # STATIC_SKY must not leak into raster color or orientation flags.
-        flags = (4 if area > 0 else 0) | (2 if index & 1 else 0)
-        cases.append((struct.pack("<7h2B", *x, *y, 100, color, flags), expected(x, y, color)))
+        flags = (4 if area > 0 else 0) | (2 if index & 1 else 0) | ((index & 3) << 5)
+        cases.append((struct.pack("<7h2B", *x, *y, 100, color, flags), expected(x, y, color, flags)))
     (BUILD / "check.c").write_text(HARNESS)
     outputs = []
     for base in range(0, len(cases), 256):
@@ -178,21 +183,23 @@ const POSITIVE_AREA:u8=4;
         executable = BUILD / f"check-{base // 256}"
         subprocess.run([
             SDK / "mos-sim-clang", "-Os", "-mlto-zp=0", BUILD / "check.c", BUILD / "prepare.a",
-            ROOT / "target-c64/asm/division.S", "-o", executable,
+            ROOT / "target-c64/asm/division.S", ROOT / "target-c64/asm/preparation.S", "-o", executable,
         ], check=True)
         result = subprocess.run([SDK / "mos-sim", "--cycles", executable], text=True, capture_output=True, timeout=60)
         print(f"Batch {base // 256}: {result.stdout.strip()} {result.stderr.strip()}", flush=True)
-        if result.returncode or f"PASS {len(batch) * 8} native preparation cases" not in result.stdout:
+        if result.returncode or f"PASS {len(batch) * 16} native preparation cases" not in result.stdout:
             raise SystemExit(result.returncode or "native preparation suite did not finish")
         outputs.append(result.stdout.strip() + " " + result.stderr.strip())
     report = {
-        "passed": True, "triangles": len(cases), "preparations": len(cases) * 8,
+        "passed": True, "triangles": len(cases), "preparations": len(cases) * 16,
         "alignments": [0, 1, 127, 255], "in_place_and_separate": True,
+        "rust_wrapper_and_direct_kernel": True, "scratch_guards_intact": True,
         "reference": "independent Python unbounded integer Q16 preparation",
         "render_source_sha256": hashlib.sha256(render.encode()).hexdigest(),
         "extracted_helpers_sha256": hashlib.sha256(items.encode()).hexdigest(),
         "math_source_sha256": hashlib.sha256((ROOT / "src/math.rs").read_bytes()).hexdigest(),
         "division_assembly_sha256": hashlib.sha256((ROOT / "target-c64/asm/division.S").read_bytes()).hexdigest(),
+        "preparation_assembly_sha256": hashlib.sha256((ROOT / "target-c64/asm/preparation.S").read_bytes()).hexdigest(),
         "fixtures_sha256": hashlib.sha256(b"".join(a + b for a, b in cases)).hexdigest(),
         "cpu": "LLVM-MOS 6502 simulator", "cycles_include_harness": True, "output": outputs,
     }

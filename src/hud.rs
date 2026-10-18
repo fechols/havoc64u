@@ -4,6 +4,7 @@
 use crate::assets::SEGMENT_DISTANCE;
 use crate::game::{Hud, Mode};
 use crate::render::{draw_bar, draw_text, draw_text_scaled, fill_color, HUD_INK};
+use crate::victory::REVEAL_TICKS;
 
 /// Shared with sky eligibility so cached bands exclude the same sector panel.
 #[inline(never)]
@@ -19,6 +20,10 @@ pub(crate) fn sector_banner_visible(hud: &Hud) -> bool {
 #[cfg_attr(target_arch = "mos", link_section = ".phase.pixels")]
 pub fn draw(band: u8, pixels: &mut [u8; 1280], hud: &Hud, frame: u16) {
     if band >= 25 {
+        return;
+    }
+    if hud.mode == Mode::Victory {
+        victory(band, pixels, hud, frame);
         return;
     }
     // The map tour keeps the entire world visible around two short labels.
@@ -38,7 +43,7 @@ pub fn draw(band: u8, pixels: &mut [u8; 1280], hud: &Hud, frame: u16) {
         return;
     }
     match hud.mode {
-        Mode::Attract | Mode::Transition => {}
+        Mode::Attract | Mode::Transition | Mode::Victory => {}
         Mode::Title => title(band, pixels, frame),
         Mode::Playing => {
             if (1..=2).contains(&band) && hud.boss_shield != 0 {
@@ -75,35 +80,46 @@ pub fn draw(band: u8, pixels: &mut [u8; 1280], hud: &Hud, frame: u16) {
             lives[17] = b'0' + hud.lives.min(9);
             centered(band, pixels, 106, &lives, 3);
         }
-        Mode::Victory | Mode::GameOver => {
+        Mode::GameOver => {
             if !(8..=16).contains(&band) {
                 return;
             }
             panel(band, pixels, 8, 69, 144, 65, 12);
-            if hud.mode == Mode::Victory {
-                centered_scaled(band, pixels, 77, b"MISSION COMPLETE", 7, 2);
-                centered(band, pixels, 96, b"KESTREL RETURNS", 3);
-            } else {
-                centered_scaled(band, pixels, 77, b"MISSION LOST", 10, 2);
-                centered(band, pixels, 96, b"NO SHIPS REMAIN", 15);
-            }
+            centered_scaled(band, pixels, 77, b"MISSION LOST", 10, 2);
+            centered(band, pixels, 96, b"NO SHIPS REMAIN", 15);
             if band == 13 || band == 14 {
                 let mut score = *b"SCORE 000000";
                 digits(hud.score, &mut score[6..]);
                 centered(band, pixels, 109, &score, 1);
             }
-            centered(
-                band,
-                pixels,
-                124,
-                if hud.mode == Mode::Victory {
-                    b"FIRE: FLY AGAIN"
-                } else {
-                    b"FIRE: RETRY MISSION"
-                },
-                blink(frame),
-            );
+            centered(band, pixels, 124, b"FIRE: RETRY MISSION", blink(frame));
         }
+    }
+}
+
+#[inline(never)]
+#[cfg_attr(target_arch = "mos", link_section = ".phase.pixels")]
+fn victory(band: u8, pixels: &mut [u8; 1280], hud: &Hud, frame: u16) {
+    if hud.victory_ticks < REVEAL_TICKS {
+        return;
+    }
+    // Narrow opaque strips keep the raised star and most of the medal clear.
+    if (1..=3).contains(&band) {
+        rect(band, pixels, 8, 9, 144, 18, 0);
+        centered_scaled(band, pixels, 13, b"MISSION COMPLETE", 7, 2);
+    }
+    if band >= 22 {
+        rect(band, pixels, 36, 177, 88, 22, 0);
+        let mut score = *b"SCORE 000000";
+        digits(hud.score, &mut score[6..]);
+        centered(band, pixels, 180, &score, 1);
+        centered(
+            band,
+            pixels,
+            190,
+            b"FIRE: FLY AGAIN",
+            if frame & 16 == 0 { 1 } else { 7 },
+        );
     }
 }
 

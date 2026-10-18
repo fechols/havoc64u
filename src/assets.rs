@@ -16,11 +16,12 @@ pub const MUSIC_OFFSET: u32 = 0x060000;
 pub const MODEL_DIRECTORY_OFFSET: u32 = 0x40;
 pub const MODEL_DIRECTORY_SIZE: usize = 32;
 pub const MODEL_BANKS_OFFSET: u32 = 0x0b0000;
-pub const ENEMY_SPECS_OFFSET: usize = 80;
+pub const MODEL_COUNT: u8 = 9;
+pub const ENEMY_SPECS_OFFSET: usize = 16 + MODEL_COUNT as usize * 8;
 pub const ENEMY_SPEC_SIZE: usize = 8;
 pub const MODEL_DATA_OFFSET: usize = ENEMY_SPECS_OFFSET + 3 * ENEMY_SPEC_SIZE;
-// Version 3 pairs each section's enemy behavior with its checked model bank.
-pub const PACKAGE_ID: u32 = 0x534D0300;
+// Version 4 adds the victory medal to each checked section model bank.
+pub const PACKAGE_ID: u32 = 0x534D0400;
 pub const PLAYER: u8 = 0;
 pub const FIGHTER: u8 = 1;
 pub const DIVER: u8 = 2;
@@ -29,6 +30,7 @@ pub const CARRIER: u8 = 4;
 pub const CRYSTAL: u8 = 5;
 pub const BUILDING: u8 = 6;
 pub const ROCK: u8 = 7;
+pub const MEDAL: u8 = 8;
 /// Uniform enemy enlargement, baked into meshes and collision descriptors.
 pub const ENEMY_SCALE: i16 = 2;
 
@@ -142,10 +144,10 @@ impl<'a> AssetBank<'a> {
         if data.len() != COMMON_SIZE && data.len() != MODEL_SIZE {
             return Err(AssetError::Size);
         }
-        if &data[..4] != b"SMA2" {
+        if &data[..4] != b"SMA3" {
             return Err(AssetError::Magic);
         }
-        if data[4] != 8 {
+        if data[4] != MODEL_COUNT {
             return Err(AssetError::Version);
         }
         if data[5] >= SEGMENT_COUNT || data[6] != if data[5] == 3 { 2 } else { 3 } {
@@ -166,7 +168,7 @@ impl<'a> AssetBank<'a> {
                 return Err(AssetError::Bounds);
             }
         }
-        for id in 0..8 {
+        for id in 0..MODEL_COUNT {
             let d = 16 + id as usize * 8;
             let vo = u16_at(data, d) as usize;
             let fo = u16_at(data, d + 4) as usize;
@@ -206,7 +208,7 @@ impl<'a> AssetBank<'a> {
         Self { data }
     }
     pub fn mesh_count(&self) -> u8 {
-        8
+        MODEL_COUNT
     }
     #[inline(always)]
     pub fn level(&self) -> u8 {
@@ -224,7 +226,7 @@ impl<'a> AssetBank<'a> {
             return EnemySpec::default();
         }
         let at = ENEMY_SPECS_OFFSET + (kind - 1) as usize * ENEMY_SPEC_SIZE;
-        // SAFETY: validated banks contain three complete descriptors at 80..104;
+        // SAFETY: validated banks contain three complete descriptors at 88..112;
         // the guard above restricts kind to the bank's two or three valid slots.
         // Read explicitly to preserve the package's little-endian layout.
         unsafe {
@@ -242,40 +244,75 @@ impl<'a> AssetBank<'a> {
             }
         }
     }
+    #[inline(always)]
     pub fn vertex_count(&self, id: u8) -> u8 {
-        if id < 8 {
-            self.data[18 + id as usize * 8]
+        if id < MODEL_COUNT {
+            // SAFETY: validated banks contain all MODEL_COUNT descriptors.
+            unsafe { *self.data.get_unchecked(18 + id as usize * 8) }
         } else {
             0
         }
     }
+    #[inline(always)]
     pub fn face_count(&self, id: u8) -> u8 {
-        if id < 8 {
-            self.data[19 + id as usize * 8]
+        if id < MODEL_COUNT {
+            // SAFETY: validated banks contain all MODEL_COUNT descriptors.
+            unsafe { *self.data.get_unchecked(19 + id as usize * 8) }
         } else {
             0
         }
     }
+    #[inline(always)]
     pub fn vertex(&self, id: u8, index: u8) -> Vec3 {
         if index >= self.vertex_count(id) {
             return Vec3::default();
         }
-        let p = u16_at(self.data, 16 + id as usize * 8) as usize + index as usize * 6;
-        Vec3 {
-            x: u16_at(self.data, p) as i16,
-            y: u16_at(self.data, p + 2) as i16,
-            z: u16_at(self.data, p + 4) as i16,
+        // SAFETY: the count guard proves a valid mesh and vertex; validation
+        // proves that its directory offset and complete six-byte record fit.
+        unsafe {
+            let d = 16 + id as usize * 8;
+            let p =
+                u16::from_le_bytes([*self.data.get_unchecked(d), *self.data.get_unchecked(d + 1)])
+                    as usize
+                    + index as usize * 6;
+            Vec3 {
+                x: i16::from_le_bytes([
+                    *self.data.get_unchecked(p),
+                    *self.data.get_unchecked(p + 1),
+                ]),
+                y: i16::from_le_bytes([
+                    *self.data.get_unchecked(p + 2),
+                    *self.data.get_unchecked(p + 3),
+                ]),
+                z: i16::from_le_bytes([
+                    *self.data.get_unchecked(p + 4),
+                    *self.data.get_unchecked(p + 5),
+                ]),
+            }
         }
     }
+    #[inline(always)]
     pub fn face(&self, id: u8, index: u8) -> ([u8; 3], u8) {
         if index >= self.face_count(id) {
             return ([0; 3], 0);
         }
-        let p = u16_at(self.data, 20 + id as usize * 8) as usize + index as usize * 4;
-        (
-            [self.data[p], self.data[p + 1], self.data[p + 2]],
-            self.data[p + 3],
-        )
+        // SAFETY: the count guard proves a valid mesh and face; validation
+        // proves that its directory offset and complete four-byte record fit.
+        unsafe {
+            let d = 20 + id as usize * 8;
+            let p =
+                u16::from_le_bytes([*self.data.get_unchecked(d), *self.data.get_unchecked(d + 1)])
+                    as usize
+                    + index as usize * 4;
+            (
+                [
+                    *self.data.get_unchecked(p),
+                    *self.data.get_unchecked(p + 1),
+                    *self.data.get_unchecked(p + 2),
+                ],
+                *self.data.get_unchecked(p + 3),
+            )
+        }
     }
     /// A model-only cache has no score; return an empty slice instead of panicking.
     pub fn audio(&self) -> &[u8] {

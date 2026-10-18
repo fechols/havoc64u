@@ -3,6 +3,9 @@
 //! Camera coordinates are integer world units, +X right, +Y up, +Z forward.
 //! A face whose normal points toward the camera is front-facing. Bit 7 in a
 //! band pixel marks HUD ink that must take precedence during cell quantization.
+//! Bit 6 remembers coverage by geometry proven to be in front of the terrain
+//! (the player and authored ground enemies). Exterior terrain cannot erase it;
+//! ordinary foreground still paints normally and retains the bit.
 
 use crate::projection::project;
 use crate::{GeometrySink, Vec3, TWO_SIDED};
@@ -18,6 +21,7 @@ pub const SCENERY_CAPACITY: usize = 96;
 const SCENERY_OFFSET: usize = 2176;
 pub const NEAR: i16 = 32;
 pub const HUD_INK: u8 = 0x80;
+const TERRAIN_CLEAR_INK: u8 = 0x40;
 const POSITIVE_AREA: u8 = 4;
 // An indexed byte avoids a variable-width bit test on the 6502.
 const STATIC_SKY_COLORS: [bool; 16] = [
@@ -136,6 +140,17 @@ impl Renderer {
         self.dropped = 0;
         self.clear_color = clear_color & 15;
         self.padding = 0;
+    }
+
+    /// The victory overlay darkens the completed battlefield before adding
+    /// its medal. Commands and the clear color are each mapped exactly once.
+    #[inline(never)]
+    #[cfg_attr(target_arch = "mos", link_section = ".phase.victory")]
+    pub fn fade_scene(&mut self, ticks: u16) {
+        self.clear_color = crate::victory::fade_color(self.clear_color, ticks);
+        for triangle in &mut self.triangles[..self.triangle_count as usize] {
+            triangle.color = crate::victory::fade_color(triangle.color, ticks);
+        }
     }
 
     /// Borrow the command tail for unprojected scenery after begin().
@@ -288,10 +303,11 @@ impl Renderer {
         if band >= 25 {
             return;
         }
+        let mut coverage_seen = false;
         for triangle in &self.triangles[..self.triangle_count as usize] {
             let (mut head, tail) = prepare_triangle(triangle);
             seek_row(&mut head, &tail, band * 8);
-            raster_rows_reference(&mut head, &tail, band * 8, pixels, true);
+            raster_rows_reference(&mut head, &tail, band * 8, pixels, true, &mut coverage_seen);
         }
     }
 
@@ -373,8 +389,9 @@ impl Renderer {
         // Clipping leaves positive i16 depths, so their average fits in i16.
         triangle.depth = crate::math::div_u32_u16(a.z as u32 + b.z as u32 + c.z as u32, 3) as i16;
         triangle.color = color & 15;
-        triangle.reserved =
-            (flags & crate::game::STATIC_SKY) | if area > 0 { POSITIVE_AREA } else { 0 };
+        triangle.reserved = (flags
+            & (crate::game::STATIC_SKY | crate::TERRAIN_CLEAR_GEOMETRY | crate::EXTERIOR_TERRAIN))
+            | if area > 0 { POSITIVE_AREA } else { 0 };
         self.triangles[self.triangle_count as usize] = triangle;
         self.triangle_count += 1;
     }
@@ -525,6 +542,14 @@ impl RasterPass<'_> {
             return None;
         }
         self.next_band += 1;
+        #[cfg(target_arch = "mos")]
+        unsafe {
+            // PIXELS owns this byte between preparation and packing. It is
+            // reset even for hidden/empty bands; the IRQ never accesses it.
+            (0x77ab as *mut u8).write_volatile(0);
+        }
+        #[cfg(not(target_arch = "mos"))]
+        let mut coverage_seen = false;
         if paint_scene {
             fill_color(pixels, self.renderer.clear_color);
         }
@@ -561,7 +586,14 @@ impl RasterPass<'_> {
                     {
                         let mut head = unsafe { self.head_ptr(index).read_unaligned() };
                         let tail = self.tails[index];
-                        raster_rows_reference(&mut head, &tail, band * 8, pixels, paint_scene);
+                        raster_rows_reference(
+                            &mut head,
+                            &tail,
+                            band * 8,
+                            pixels,
+                            paint_scene,
+                            &mut coverage_seen,
+                        );
                         self.write_head(index, head);
                     }
                 }
@@ -577,7 +609,7 @@ impl RasterPass<'_> {
 // Projected coordinates are within +/-8191. dx*65536 and dx*t*2 fit i32;
 // the visible-center fraction t is below 32768 and its numerator below 2^28.
 #[inline(never)]
-#[cfg_attr(target_arch = "mos", link_section = ".phase.pixels")]
+#[cfg(not(target_arch = "mos"))]
 fn prepare_edge(ax: i16, ay: i16, bx: i16, by: i16) -> (i32, i32) {
     if ay == by || by <= 0 || ay >= 200 {
         return (0, 0);
@@ -608,43 +640,66 @@ fn prepare_triangle(triangle: &Triangle) -> (RasterHead, RasterTail) {
 #[inline(never)]
 #[cfg_attr(target_arch = "mos", link_section = ".phase.pixels")]
 fn prepare_triangle_into(triangle: &Triangle, head: &mut RasterHead, tail: &mut RasterTail) {
-    // Separate objects and scalar swaps keep LLVM-MOS from materializing the
-    // generic overlapping-memory swap machinery (over a kilobyte of runtime).
-    let mut a = Point2 {
-        x: triangle.x[0],
-        y: triangle.y[0],
-    };
-    let mut b = Point2 {
-        x: triangle.x[1],
-        y: triangle.y[1],
-    };
-    let mut c = Point2 {
-        x: triangle.x[2],
-        y: triangle.y[2],
-    };
-    let mut orientation = (triangle.reserved & POSITIVE_AREA) << 2;
-    orientation ^= sort_pair(&mut a, &mut b);
-    orientation ^= sort_pair(&mut b, &mut c);
-    orientation ^= sort_pair(&mut a, &mut b);
-    let Point2 { x: ax, y: ay } = a;
-    let Point2 { x: bx, y: by } = b;
-    let Point2 { x: cx, y: cy } = c;
-    tail.top = ay.clamp(0, 200) as u8;
-    tail.middle = by.clamp(0, 200) as u8;
-    tail.bottom = cy.clamp(0, 200) as u8;
-    tail.color_flags = triangle.color | orientation;
-    (head.long_x, head.long_step) = prepare_edge(ax, ay, cx, cy);
-    (head.short_x, head.short_step) = prepare_edge(ax, ay, bx, by);
-    (tail.lower_x, tail.lower_step) = prepare_edge(bx, by, cx, cy);
+    #[cfg(target_arch = "mos")]
+    {
+        extern "C" {
+            fn fast_prepare_triangle(
+                triangle: *const Triangle,
+                head: *mut RasterHead,
+                tail: *mut RasterTail,
+            );
+        }
+        // PIXELS owns $77A0-$77BE until all edges have been prepared;
+        // row walking and packing reuse it afterward. The kernel copies all
+        // input bytes before writing either output, preserving the reference's
+        // signed rounding and sorting parity.
+        unsafe {
+            fast_prepare_triangle(triangle, head, tail);
+        }
+    }
+    #[cfg(not(target_arch = "mos"))]
+    {
+        // Keep the independent host reference explicit: sort each endpoint
+        // pair and retain parity before preparing three canonical edges.
+        let mut a = Point2 {
+            x: triangle.x[0],
+            y: triangle.y[0],
+        };
+        let mut b = Point2 {
+            x: triangle.x[1],
+            y: triangle.y[1],
+        };
+        let mut c = Point2 {
+            x: triangle.x[2],
+            y: triangle.y[2],
+        };
+        let mut orientation = (triangle.reserved & POSITIVE_AREA) << 2;
+        orientation ^= sort_pair(&mut a, &mut b);
+        orientation ^= sort_pair(&mut b, &mut c);
+        orientation ^= sort_pair(&mut a, &mut b);
+        let Point2 { x: ax, y: ay } = a;
+        let Point2 { x: bx, y: by } = b;
+        let Point2 { x: cx, y: cy } = c;
+        tail.top = ay.clamp(0, 200) as u8;
+        tail.middle = by.clamp(0, 200) as u8;
+        tail.bottom = cy.clamp(0, 200) as u8;
+        tail.color_flags = triangle.color
+            | orientation
+            | (triangle.reserved & (crate::TERRAIN_CLEAR_GEOMETRY | crate::EXTERIOR_TERRAIN));
+        (head.long_x, head.long_step) = prepare_edge(ax, ay, cx, cy);
+        (head.short_x, head.short_step) = prepare_edge(ax, ay, bx, by);
+        (tail.lower_x, tail.lower_step) = prepare_edge(bx, by, cx, cy);
+    }
 }
 
+#[cfg(not(target_arch = "mos"))]
 struct Point2 {
     x: i16,
     y: i16,
 }
 
 #[inline(never)]
-#[cfg_attr(target_arch = "mos", link_section = ".phase.pixels")]
+#[cfg(not(target_arch = "mos"))]
 fn sort_pair(a: &mut Point2, b: &mut Point2) -> u8 {
     if a.y > b.y || (a.y == b.y && a.x > b.x) {
         let x = a.x;
@@ -676,6 +731,7 @@ fn raster_rows_reference(
     band_y: u8,
     pixels: &mut [u8; BAND_PIXELS],
     paint: bool,
+    coverage_seen: &mut bool,
 ) {
     for y in tail.top.max(band_y)..tail.bottom.min(band_y + 8) {
         if y == tail.middle {
@@ -691,7 +747,26 @@ fn raster_rows_reference(
         let end = ((right + 32767) >> 16).clamp(0, WIDTH as i32) as usize;
         if paint && first < end {
             let offset = (y - band_y) as usize * WIDTH;
-            pixels[offset + first..offset + end].fill(tail.color_flags & 15);
+            let span = &mut pixels[offset + first..offset + end];
+            let color = tail.color_flags & 15;
+            if tail.color_flags & crate::TERRAIN_CLEAR_GEOMETRY != 0 {
+                *coverage_seen = true;
+                span.fill(color | TERRAIN_CLEAR_INK);
+            } else if !*coverage_seen {
+                span.fill(color);
+            } else if tail.color_flags & crate::EXTERIOR_TERRAIN != 0 {
+                for pixel in span {
+                    if *pixel & TERRAIN_CLEAR_INK == 0 {
+                        *pixel = color;
+                    }
+                }
+            } else {
+                // Keep coverage when a nearer object replaces protected geometry.
+                // A later terrain command must not erase that object either.
+                for pixel in span {
+                    *pixel = (*pixel & TERRAIN_CLEAR_INK) | color;
+                }
+            }
         }
         head.long_x += head.long_step;
         head.short_x += head.short_step;
@@ -1199,5 +1274,148 @@ mod tests {
         assert_eq!(core::mem::offset_of!(Renderer, triangles), 6);
         assert_eq!(core::mem::size_of::<Renderer>(), 4102);
     }
+    #[test]
+    fn terrain_clear_coverage_survives_foreground_and_only_blocks_exterior_terrain() {
+        for foreground_color in [0, 8] {
+            let mut renderer = Renderer::new();
+            let mut add = |depth, color, flags| {
+                renderer.triangle(
+                    Vec3 {
+                        x: -40,
+                        y: -40,
+                        z: depth,
+                    },
+                    Vec3 {
+                        x: 0,
+                        y: 40,
+                        z: depth,
+                    },
+                    Vec3 {
+                        x: 40,
+                        y: -40,
+                        z: depth,
+                    },
+                    color,
+                    TWO_SIDED | flags,
+                );
+            };
+            add(200, 1, crate::TERRAIN_CLEAR_GEOMETRY);
+            add(150, foreground_color, 0);
+            // Deliberately misleading terrain key, matching the clipped
+            // terrain failure: the protection must outlive the hull color.
+            add(100, 5, crate::EXTERIOR_TERRAIN);
+            renderer.finish();
+            let mut expected = [[0; BAND_PIXELS]; 25];
+            for band in 0..25 {
+                renderer.render_band(band, &mut expected[band as usize]);
+            }
+            assert_eq!(expected[12][4 * WIDTH + 80], foreground_color | TERRAIN_CLEAR_INK);
+            assert!(expected.iter().flatten().any(|&pixel| pixel == 5));
+            let mut pass = renderer.raster_pass().unwrap();
+            let mut pixels = [0; BAND_PIXELS];
+            for band in 0..25 {
+                pass.next_band(&mut pixels, true);
+                assert_eq!(pixels, expected[band as usize]);
+            }
+            // Normal geometry can still cover the same protected pixel.
+            renderer.begin(0);
+            renderer.triangle(
+                Vec3 {
+                    x: -40,
+                    y: -40,
+                    z: 200,
+                },
+                Vec3 {
+                    x: 0,
+                    y: 40,
+                    z: 200,
+                },
+                Vec3 {
+                    x: 40,
+                    y: -40,
+                    z: 200,
+                },
+                1,
+                TWO_SIDED | crate::TERRAIN_CLEAR_GEOMETRY,
+            );
+            renderer.triangle(
+                Vec3 {
+                    x: -40,
+                    y: -40,
+                    z: 100,
+                },
+                Vec3 {
+                    x: 0,
+                    y: 40,
+                    z: 100,
+                },
+                Vec3 {
+                    x: 40,
+                    y: -40,
+                    z: 100,
+                },
+                5,
+                TWO_SIDED,
+            );
+            renderer.finish();
+            renderer.render_band(12, &mut pixels);
+            assert_eq!(pixels[4 * WIDTH + 80], 5 | TERRAIN_CLEAR_INK);
+        }
+    }
+
+    #[test]
+    fn clipping_and_preparation_retain_visibility_flags() {
+        for flags in [crate::TERRAIN_CLEAR_GEOMETRY, crate::EXTERIOR_TERRAIN] {
+            let mut renderer = Renderer::new();
+            renderer.triangle(
+                Vec3 {
+                    x: -16,
+                    y: -16,
+                    z: 16,
+                },
+                Vec3 { x: 0, y: 16, z: 64 },
+                Vec3 {
+                    x: 16,
+                    y: -16,
+                    z: 64,
+                },
+                2,
+                TWO_SIDED | flags,
+            );
+            assert_eq!(renderer.triangle_count, 2);
+            for triangle in &renderer.triangles[..2] {
+                assert_eq!(triangle.reserved & 0x60, flags);
+                assert_eq!(prepare_triangle(triangle).1.color_flags & 0x60, flags);
+            }
+        }
+    }
+
+    #[test]
+    fn terrain_clear_coverage_bit_does_not_change_packing_or_hud_priority() {
+        let mut pixels = [0u8; BAND_PIXELS];
+        for (i, pixel) in pixels.iter_mut().enumerate() {
+            *pixel = (i % 16) as u8 | if i % 7 == 0 { HUD_INK } else { 0 };
+        }
+        let mut marked = pixels;
+        for (i, pixel) in marked.iter_mut().enumerate() {
+            if i % 3 != 0 {
+                *pixel |= TERRAIN_CLEAR_INK;
+            }
+        }
+        let pack = |input: &[u8; BAND_PIXELS]| {
+            let (mut bitmap, mut screen, mut colors) = ([0; 320], [0; 40], [0; 40]);
+            pack_band(
+                input,
+                &[0x12; 40],
+                &[3; 40],
+                &mut bitmap,
+                &mut screen,
+                &mut colors,
+            );
+            (bitmap, screen, colors)
+        };
+        assert_eq!(pack(&pixels), pack(&marked));
+    }
+
     include!("../tools/raster-fixtures.inc.rs");
 }

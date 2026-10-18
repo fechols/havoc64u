@@ -102,7 +102,7 @@ class Layouts:
                 for key, field in fields.items()}
 
 
-def fixtures():
+def fixtures(include_victory=True):
     result = []
     for name, rail in (("title", 0), ("lowlands", 625), ("canyon", 4375),
                        ("base", 8125), ("carrier", 12025), ("missiles", 4375),
@@ -170,10 +170,18 @@ def fixtures():
             result.append(fixture)
             if not saturated:
                 result.append(dict(fixture, name=f"enemies-{label}-cold", enemy_cache_miss=True))
+    if include_victory:
+        for name, elapsed in (("start", 0), ("midfade", 50), ("arrival", 400), ("hold", 600)):
+            patch = dict(result[1]["patch"], mode=3, rail_ticks=15000, ticks=elapsed,
+                         menu_ticks=min(elapsed, 400), spawn_segment=3,
+                         boss_started=1, boss_defeated=1, score=24000,
+                         shield=76, lives=2, bombs=1, invulnerability=0)
+            result.append({"name": f"victory-{name}", "patch": patch,
+                           "section": 3, "cache_miss": False, "input_bits": 0})
     return result
 
 
-def cache_sequence():
+def cache_sequence(include_victory=True):
     """Entry/exit histories that can leave stale pixels in either VIC bank."""
     base = next(fixture for fixture in fixtures() if fixture["name"] == "lowlands")
 
@@ -230,6 +238,13 @@ def cache_sequence():
                 section=section, theme_check=True, bridge_check=True))
         for frame in range(3):
             sequence.append(theme_frame(section+1, f"bridge-recovery-{frame}", frame == 2))
+    if include_victory:
+        for fixture in fixtures():
+            if fixture["name"].startswith("victory-"):
+                # Each cinematic stage must repaint both physical bitmap banks.
+                sequence.extend([dict(fixture, victory_check=True)] * 2)
+        sequence.extend(theme_frame(0, f"victory-recovery-{frame}", frame == 2)
+                        for frame in range(3))
     return sequence
 
 
@@ -312,7 +327,10 @@ def main():
     args = parser.parse_args()
     output, package = args.out_dir.resolve(), args.package_dir.resolve()
     output.mkdir(parents=True, exist_ok=True)
-    chosen = [fixture for fixture in fixtures() if args.fixtures == "all" or fixture["name"] in args.fixtures.split(",")]
+    package_image = (package/"havoc.reu").read_bytes()
+    package_format = vice.package_model_layout(package_image)
+    chosen = [fixture for fixture in fixtures(package_format["medal"])
+              if args.fixtures == "all" or fixture["name"] in args.fixtures.split(",")]
     ticks_values = list(map(int, args.ticks.split(",")))
     palettes = args.palettes.split(",")
     if not chosen or any(n not in (0, 10) for n in ticks_values) or any(p not in ("cold", "retained") for p in palettes):
@@ -425,7 +443,7 @@ def main():
         mon.command("trace store d400 d418 if @cpu:$01 == $35")
         mon.command("trace store d420 d438 if @cpu:$01 == $35")
         mon.command(f"trace exec {audio_tick_address:04x}")
-        segment_image = reu.read_bytes()
+        segment_image = package_image
         baseline = None
         if args.compare:
             baseline = json.loads(args.compare.read_text())
@@ -446,7 +464,7 @@ def main():
                 for index in range(12):
                     kind = fixture["patch"].get(f"actors[{index}].kind", 0)
                     if 1 <= kind <= (2 if fixture["section"] == 3 else 3):
-                        descriptor = 0xb0000 + fixture["section"]*2048 + 80 + (kind-1)*8
+                        descriptor = 0xb0000 + fixture["section"]*2048 + package_format["descriptors"] + (kind-1)*8
                         layouts.patch(game, "Game", f"actors[{index}].approach_speed", segment_image[descriptor+6])
             write(game_address, game)
             write(audio_address, initial_audio)
@@ -456,10 +474,11 @@ def main():
                 layouts.patch(runtime, "Runtime", field, value)
             if "profile" in layouts.load("Runtime")["fields"]:
                 profile = (fixture["section"] + int(fixture.get("enemy_cache_miss", False))) % 4
-                layouts.patch(runtime, "Runtime", "profile", profile)
+                code_profile = 4 if package_format["medal"] and fixture["patch"]["mode"] in (3, 4) else profile
+                layouts.patch(runtime, "Runtime", "profile", code_profile)
                 write(0x8400, segment_image[0xb0000+profile*2048:0xb0000+(profile+1)*2048])
                 word(syms["ENEMY_MODEL_PROFILE"], profile, 1)
-                word(syms["ENEMY_CODE_PROFILE"], profile, 1)
+                word(syms["ENEMY_CODE_PROFILE"], code_profile, 1)
             write(runtime_address, runtime)
             for slot, section in enumerate(sections):
                 write(0x9500+slot*512, segment_image[0x2000+section*2048:0x2200+section*2048])
@@ -508,7 +527,7 @@ def main():
             return [layouts.decode("Triangle", mon.read(renderer_address+triangles_offset+n*triangle_size, triangle_size)) for n in range(count)]
 
         def apply_cache_policy(geometry, sky_bands):
-            if args.cloud_only_cache:
+            if args.cloud_only_cache and sky_bands:
                 sky_bands = cloud_only_bands(sky_bands, geometry)
                 # Monitor writes consume no emulated CPU cycles. Both policies
                 # run identical geometry/audio code; only cache eligibility differs.
@@ -625,7 +644,7 @@ def main():
                                 mon.run_until(syms["benchmark_frame_ready"], failures)
                         seeded = seed(fixture, ticks, palette == "cold", phase)
                         sample = measured_frame(folder, sample_index == 0)
-                        if fixture["patch"]["mode"] in (1, 6):
+                        if fixture["patch"]["mode"] in (1, 3, 6):
                             expected_ticks = (fixture["patch"].get("ticks", 0) + ticks) & 0xffff
                             if sample["simulation_ticks"] != expected_ticks:
                                 raise RuntimeError("Code/model reentry skipped or duplicated fixed simulation ticks")
@@ -646,7 +665,7 @@ def main():
                     print(f"BENCH {args.video} {fixture['name']} ticks={ticks} palette={palette}: {case['median_cycles']/bus_hz*1000:.3f}ms DMA={case['samples'][0]['dma']['bytes']}B", flush=True)
                     (output/"report.json").write_text(json.dumps(report, indent=2)+"\n")
         if "SKY_CACHE" in syms and not args.skip_cache_checks:
-            cache_report = {"passed": False, "sequence": cache_sequence(), "runs": {}}
+            cache_report = {"passed": False, "sequence": cache_sequence(package_format["medal"]), "runs": {}}
             report["cache_checks"] = cache_report
             for forced in (False, True):
                 name = "forced-misses" if forced else "normal-cache"
@@ -675,6 +694,12 @@ def main():
                         raise RuntimeError(f"Cache transition {index} changed {key}")
                 if uncached["sky_cache"]["reused_bands"] != 0:
                     raise RuntimeError("Forced cache miss unexpectedly reused a band")
+                if fixture.get("victory_check"):
+                    cache = cached["sky_cache"]
+                    if cache["eligible_bands"] or cache["reused_bands"] or cache["prepared_hex"] != bytes(8).hex():
+                        raise RuntimeError(f"Victory frame {index} retained cached sky or skipped a screen band")
+                    if fixture["patch"]["menu_ticks"] >= 100 and cached["clear_color"] != 0:
+                        raise RuntimeError(f"Victory frame {index} retained the outgoing sky after blackout")
                 if fixture.get("theme_check"):
                     cache = cached["sky_cache"]
                     expected_sky = (6, 8, 11, 4)[fixture["section"]]

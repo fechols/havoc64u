@@ -15,17 +15,18 @@ impl GeometrySink for Capture {
 
 fn bank_bytes(points: &[Vec3]) -> Vec<u8> {
     let mut bytes = baked_assets::model_bank(0).to_vec();
-    let faces = 104 + points.len() * 6;
-    for id in 0..8 {
+    let data_offset = havoc::assets::MODEL_DATA_OFFSET;
+    let faces = data_offset + points.len() * 6;
+    for id in 0..havoc::assets::MODEL_COUNT as usize {
         let at = 16 + id * 8;
-        bytes[at..at + 2].copy_from_slice(&104u16.to_le_bytes());
+        bytes[at..at + 2].copy_from_slice(&(data_offset as u16).to_le_bytes());
         bytes[at + 2] = points.len() as u8;
         bytes[at + 3] = 2;
         bytes[at + 4..at + 6].copy_from_slice(&(faces as u16).to_le_bytes());
     }
     for (index, point) in points.iter().enumerate() {
         for (axis, value) in [point.x, point.y, point.z].into_iter().enumerate() {
-            let at = 104 + index * 6 + axis * 2;
+            let at = data_offset + index * 6 + axis * 2;
             bytes[at..at + 2].copy_from_slice(&value.to_le_bytes());
         }
     }

@@ -282,7 +282,7 @@ fn trusted_views_match_prior_validation_of_the_same_immutable_bytes() {
 }
 
 #[test]
-fn version_30_checksums_only_the_segment_runtime_prefix() {
+fn version_40_checksums_only_the_segment_runtime_prefix() {
     let mut bytes = package();
     for index in 0..SEGMENT_COUNT as usize {
         let at = SEGMENTS_OFFSET as usize + index * SEGMENT_SIZE;
@@ -339,7 +339,7 @@ fn level_model_banks_share_common_meshes_and_have_eleven_distinct_enemy_shapes()
         for kind in [0, bank.enemy_count() + 1, 255] {
             assert_eq!(bank.enemy(kind), EnemySpec::default());
         }
-        for mesh in [PLAYER, CARRIER, CRYSTAL, BUILDING, ROCK] {
+        for mesh in [PLAYER, CARRIER, CRYSTAL, BUILDING, ROCK, MEDAL] {
             assert_eq!(bank.vertex_count(mesh), first.vertex_count(mesh));
             assert_eq!(bank.face_count(mesh), first.face_count(mesh));
             for index in 0..bank.vertex_count(mesh) {
@@ -445,13 +445,13 @@ fn model_identity_descriptors_and_vertex_ranges_are_checked() {
     for (offset, value) in [
         (5, 4),
         (6, 2),
-        (80, 0),
-        (80, 255),
-        (82, 0),
-        (83, 0),
-        (86, 0),
-        (86, 255),
-        (87, 2),
+        (ENEMY_SPECS_OFFSET, 0),
+        (ENEMY_SPECS_OFFSET, 255),
+        (ENEMY_SPECS_OFFSET + 2, 0),
+        (ENEMY_SPECS_OFFSET + 3, 0),
+        (ENEMY_SPECS_OFFSET + 6, 0),
+        (ENEMY_SPECS_OFFSET + 6, 255),
+        (ENEMY_SPECS_OFFSET + 7, 2),
     ] {
         let mut bad = good;
         bad[offset] = value;

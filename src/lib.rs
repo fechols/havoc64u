@@ -16,9 +16,10 @@ pub mod projection;
 pub mod render;
 pub mod scenery;
 pub mod sky_cache;
-pub mod transition;
 #[cfg(feature = "host-tools")]
 pub mod soundtrack;
+pub mod transition;
+pub mod victory;
 
 #[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]
 #[repr(C)]
@@ -29,6 +30,10 @@ pub struct Vec3 {
 }
 
 pub const TWO_SIDED: u8 = 1;
+// Geometry proven above/in front of every exterior terrain face preserves
+// its coverage against terrain without changing other foreground ordering.
+pub(crate) const TERRAIN_CLEAR_GEOMETRY: u8 = 0x20;
+pub(crate) const EXTERIOR_TERRAIN: u8 = 0x40;
 pub trait GeometrySink {
     fn triangle(&mut self, a: Vec3, b: Vec3, c: Vec3, color: u8, flags: u8);
 }
@@ -71,7 +76,10 @@ pub fn emit_mesh(
                 transformed_mesh_vertex(bank, &transform, index)
             };
         }
-        sink.triangle(points[0], points[1], points[2], color, TWO_SIDED);
+        // The solid medallion has consistently outward-facing triangles;
+        // culling its concealed faces also avoids painter-order artifacts.
+        let flags = if id == assets::MEDAL { 0 } else { TWO_SIDED };
+        sink.triangle(points[0], points[1], points[2], color, flags);
     }
 }
 

@@ -25,7 +25,7 @@ def main():
     reu = bytearray(reu_path.read_bytes())
     assert len(reu) == 16*1024*1024
     directory = bytearray(64)
-    directory[:4] = b'OVL4'
+    directory[:4] = b'OVL5'
     def put(at, value): directory[at:at+2] = value.to_bytes(2, 'little')
     def extract(name):
         output = elf.parent / f'phase-{name}.bin'
@@ -58,6 +58,13 @@ def main():
         package(f'sim-{name}', code, (2 if level == 0 else level+7)*0x10000,
                 6 if level == 0 else 38+(level-1)*4,
                 16 if level == 0 else 40+(level-1)*4)
+    terminal = (prefix + extract('terminal')).ljust(symbols['__phase_sim_size'], b'\0')
+    assert len(terminal) == symbols['__phase_sim_size']
+    package('sim-terminal', terminal, 0xD0000, 54, 56)
+    geometry_prefix = extract('geometry')[:symbols['__phase_geometry_base_size']]
+    victory = geometry_prefix + extract('victory')
+    assert len(victory) == symbols['__phase_victory_size']
+    package('victory', victory, 0xC0000, 50, 52)
     def span(start, end): return image[2+start-0x801:2+end-0x801]
     put(24, checksum(span(0x801, symbols['__resident_end'])))
     put(26, checksum(span(0x7800, 0x8000)))

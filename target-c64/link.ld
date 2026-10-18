@@ -54,6 +54,11 @@ SECTIONS {
     /* Each composed SIM image has the same prefix and one opaque ABI entry.
      * Keep the bodies invisible to the caller's LTO optimization. */
     enemy_step = __phase_sim_base_end;
+    terminal_step = __phase_sim_base_end;
+    .phase.terminal terminal_step : AT(0xD0000 + SIZEOF(.phase.sim)) {
+        KEEP(*(.phase.terminal.entry))
+        *(.phase.terminal .phase.terminal.*)
+    } >phase
     .phase.enemy.lowlands enemy_step : AT(0x20000 + SIZEOF(.phase.sim)) {
         KEEP(*(.phase.enemy.lowlands.entry))
         *(.phase.enemy.lowlands .phase.enemy.lowlands.*)
@@ -77,6 +82,11 @@ SECTIONS {
         /* Bridges omit enemy meshes but retain the player and projectiles. */
         *(.phase.geometry.combat .phase.geometry.combat.*)
         __phase_geometry_end = .;
+    } >phase
+    victory_geometry = __phase_geometry_base_end;
+    .phase.victory victory_geometry : AT(0xC0000 + __phase_geometry_base_end - 0x3000) {
+        KEEP(*(.phase.victory.entry))
+        *(.phase.victory .phase.victory.*)
     } >phase
     .phase.pixels 0x3000 : AT(0x40000) {
         __phase_pixels_start = .;
@@ -111,6 +121,9 @@ SECTIONS {
         *(.rodata.*RECIPROCAL* .rodata.*COLOR_DISTANCE* .rodata.*SIN*)
     } >tables
     .rodata : { INCLUDE rodata-sections.ld } >constants
+    /* Benchmark-only checkpoints use free, loaded/checksummed constant RAM.
+     * Keep executable code separate so the audit still owns data jump tables. */
+    .benchmark_resident : { *(.benchmark_resident .benchmark_resident.*) } >constants
     INCLUDE data.ld
     INCLUDE bss.ld
     INCLUDE noinit.ld
@@ -155,11 +168,12 @@ __resident_end = MAX(LOADADDR(.data) + SIZEOF(.data), ADDR(.text) + SIZEOF(.text
 __phase_run = 0x3000;
 __phase_boot_size = SIZEOF(.phase.boot);
 __phase_sim_base_size = SIZEOF(.phase.sim);
-__phase_enemy_size = MAX(MAX(SIZEOF(.phase.enemy.lowlands), SIZEOF(.phase.enemy.canyon)), MAX(SIZEOF(.phase.enemy.fortress), SIZEOF(.phase.enemy.carrier)));
+__phase_enemy_size = MAX(SIZEOF(.phase.terminal), MAX(MAX(SIZEOF(.phase.enemy.lowlands), SIZEOF(.phase.enemy.canyon)), MAX(SIZEOF(.phase.enemy.fortress), SIZEOF(.phase.enemy.carrier))));
 __phase_sim_size = __phase_sim_base_size + __phase_enemy_size;
 __phase_sim_end = __phase_sim_start + __phase_sim_size;
 __phase_geometry_size = SIZEOF(.phase.geometry);
 __phase_geometry_base_size = __phase_geometry_base_end - __phase_geometry_start;
+__phase_victory_size = __phase_geometry_base_size + SIZEOF(.phase.victory);
 __phase_pixels_size = SIZEOF(.phase.pixels);
 __phase_audio_size = SIZEOF(.phase.audio);
 __phase_scenery_size = SIZEOF(.phase.scenery);
@@ -182,6 +196,12 @@ __raster_tails_start = 0x6000;
 __raster_tails_end = 0x6C00;
 __raster_masks_start = 0x6C00;
 __raster_masks_end = 0x6F20;
+/* Preparation is complete before the row walker or packer uses this scratch.
+ * The IRQ never borrows it; persistent models at $8400 are untouched. */
+__raster_prepare_scratch_start = 0x77A0;
+__raster_prepare_scratch_end = 0x77BF;
+/* PIXELS resets this byte per band; preparation and packing own it before/after. */
+__raster_player_seen = 0x77AB;
 
 ASSERT(__rc31 == 0x21, "IRQ save range must match compiler imaginary registers")
 ASSERT(__resident_end <= 0x3000, "resident code exceeds $0801-$2FFF")
@@ -193,12 +213,14 @@ ASSERT(SIZEOF(.noinit) <= 0x0440, "IRQ static-frame backup exceeds 1088 bytes")
 ASSERT(SIZEOF(.unexpected_static_stack) == 0, "compiler static locals outside .noinit are not IRQ-safe")
 ASSERT(SIZEOF(.audio_state) <= 0x01B0, "audio state exceeds $CE00-$CFAF")
 ASSERT(SIZEOF(.rodata) <= 0x0800, "resident constants exceed $7800-$7FFF")
+ASSERT(SIZEOF(.rodata) + SIZEOF(.benchmark_resident) <= 0x0800, "benchmark checkpoints exceed constant RAM")
 ASSERT(SIZEOF(.tables) <= 0x0700, "resident tables exceed $9900-$9FFF")
 ASSERT(SIZEOF(.phase.boot) <= 0x4200, "BOOT overlay exceeds $3000-$71FF")
 ASSERT(__phase_sim_size <= 0x4200, "composed SIM overlay exceeds $3000-$71FF")
 ASSERT(enemy_lowlands == enemy_step && enemy_canyon == enemy_step && enemy_fortress == enemy_step && enemy_carrier == enemy_step, "enemy ABI entries must start every SIM tail")
 ASSERT(SIZEOF(.phase.enemy.lowlands) > 0 && SIZEOF(.phase.enemy.canyon) > 0 && SIZEOF(.phase.enemy.fortress) > 0 && SIZEOF(.phase.enemy.carrier) > 0, "all four enemy tails are required")
 ASSERT(SIZEOF(.phase.geometry) <= 0x4200, "GEOMETRY overlay exceeds $3000-$71FF")
+ASSERT(__phase_victory_size <= 0x4200, "victory GEOMETRY overlay exceeds $3000-$71FF")
 ASSERT(__phase_geometry_base_size > 0 && __phase_geometry_base_size < __phase_geometry_size, "GEOMETRY needs a common prefix and a combat tail")
 ASSERT(SIZEOF(.phase.pixels) <= 0x3000, "PIXELS overlay overlaps prepared edges at $6000")
 ASSERT(SIZEOF(.phase.audio) <= 0x4200, "AUDIO overlay exceeds $3000-$71FF")
@@ -213,6 +235,9 @@ ASSERT(__raster_heads_end - __raster_heads_start == 256 * 16, "incorrect raster 
 ASSERT(__raster_tails_end - __raster_tails_start == 256 * 12, "incorrect raster tail allocation")
 ASSERT(__raster_masks_start >= __raster_tails_end && __raster_masks_end - __raster_masks_start == 25 * 32, "incorrect ordered band mask allocation")
 ASSERT(__raster_masks_end <= __irq_stack_bottom, "prepared raster data overlaps IRQ stack")
+ASSERT(__raster_prepare_scratch_start >= __irq_stack && __raster_prepare_scratch_end <= ORIGIN(constants), "preparation scratch overlaps IRQ stack or constants")
+ASSERT(__raster_prepare_scratch_end - __raster_prepare_scratch_start == 31, "incorrect native preparation scratch allocation")
+ASSERT(__raster_player_seen == 0x77AB && __raster_player_seen >= __raster_prepare_scratch_start && __raster_player_seen < __raster_prepare_scratch_end, "player coverage state must stay in sequential raster scratch")
 
 OUTPUT_FORMAT {
     SHORT(ORIGIN(ram))

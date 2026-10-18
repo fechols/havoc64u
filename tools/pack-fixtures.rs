@@ -21,6 +21,7 @@ fn main(){
             let sample=random(&mut rng);
             *pixel=if case<16 {case as u8} else if case<24 {[0,1+(case%15)as u8,1+((case*3)%15)as u8,1+((case*7)%15)as u8][(sample&3)as usize]} else {sample&15};
             if sample&0x30==0 {*pixel|=0x80;}
+            if sample&0x40!=0 {*pixel|=0x40;} // Coverage metadata never affects quantization.
         }
         if case%5==0 {for c in 0..40 {let v=old_color[c];old_screen[c]=(v<<4)|v;}}
         if case%7==0 {old_screen.fill(0);old_color.fill(0);}

@@ -282,6 +282,8 @@ fn export_native_raster_fixtures() {
         if count >= 256 {
             return;
         }
+        let mut triangle = triangle;
+        triangle.reserved |= ((count & 3) as u8) << 5;
         let (h, t) = prepare_triangle(&triangle);
         writeln!(
             &mut output,

@@ -3,7 +3,10 @@
 ; Head16: i32 long_x,long_step,short_x,short_step.
 ; Tail12: i32 lower_x,lower_step; u8 top,middle,bottom,color_flags.
 ; flags bit4: long is left. Caller owns sequential bands and ordered masks.
-; rc2..13 and $77A0-$77AA are volatile; IRQ never accesses private scratch.
+; rc2..13 and $77A0-$77AB are volatile; IRQ never accesses private scratch.
+; $77AB is reset once per band, then retains whether a terrain-clear span was painted.
+; Tail bit5 marks terrain-clear geometry; bit6 marks exterior terrain. Pixel bit6
+; retains protected coverage through later ordinary foreground writes.
 .zeropage __rc2
 .zeropage __rc3
 .zeropage __rc4
@@ -27,8 +30,9 @@
 .set RR_LAST, $77a8
 .set RR_BOUND, $77a9
 .set RR_OFFSET, $77aa
+.set RR_PLAYER_SEEN, $77ab
 
-.section .tables.raster,"ax",@progbits
+.section .phase.pixels.raster,"ax",@progbits
 .globl fast_raster_rows
 fast_raster_rows:
     ldy #0
@@ -149,11 +153,47 @@ fast_raster_rows:
     lda __rc9
     adc #0
     sta __rc11
+    ; The span is painted and nonempty. No earlier branch may mark a band.
+    lda RR_FLAGS
+    and #$20
+    beq .Lrr_ordinary
+    lda #1
+    sta RR_PLAYER_SEEN
+    lda RR_COLOR
+    ora #$40
+    jmp .Lrr_fill
+.Lrr_ordinary:
+    lda RR_PLAYER_SEEN
+    beq .Lrr_plain
+    lda RR_FLAGS
+    and #$40
+    bne .Lrr_terrain
+.Lrr_preserve:
+    dey
+    lda (__rc10),y
+    and #$40
+    ora RR_COLOR
+    sta (__rc10),y
+    cpy #0
+    bne .Lrr_preserve
+    jmp .Lrr_advance
+.Lrr_terrain:
+    dey
+    lda (__rc10),y
+    and #$40
+    bne .Lrr_protected
+    lda RR_COLOR
+    sta (__rc10),y
+.Lrr_protected:
+    cpy #0
+    bne .Lrr_terrain
+    jmp .Lrr_advance
+.Lrr_plain:
     lda RR_COLOR
 .Lrr_fill:
     dey
     sta (__rc10),y
-    cpy #0
+    ; STA preserves the DEY flags, including widths128..160.
     bne .Lrr_fill
 .Lrr_advance:
     clc
@@ -252,7 +292,7 @@ fast_raster_rows:
 .set SK_BIT, $77ab
 .set SK_TEMP, $77ac
 .set SK_BAND, $77ad
-.section .phase.geometry,"ax",@progbits
+.section .tables.static_sky,"ax",@progbits
 .globl fast_static_sky_bands
 fast_static_sky_bands:
     sta SK_COUNT

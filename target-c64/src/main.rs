@@ -107,6 +107,8 @@ extern "C" {
     static __phase_sim_size: u8;
     static __phase_geometry_size: u8;
     static __phase_geometry_base_size: u8;
+    static __phase_victory_size: u8;
+    fn victory_geometry(game: *const (), renderer: *mut Renderer, bank: *const ());
     static __phase_pixels_size: u8;
     static __phase_audio_size: u8;
     static __phase_scenery_size: u8;
@@ -280,7 +282,13 @@ unsafe fn load_phase(page: u8, size: u16) {
 #[inline(never)]
 unsafe fn load_sim(profile: u8) {
     load_phase(
-        if profile == 0 { 2 } else { profile + 7 },
+        if profile == 4 {
+            13
+        } else if profile == 0 {
+            2
+        } else {
+            profile + 7
+        },
         core::ptr::addr_of!(__phase_sim_size) as u16,
     );
     ENEMY_CODE_PROFILE = profile;
@@ -290,7 +298,7 @@ unsafe fn load_sim(profile: u8) {
 unsafe fn check_code_package() {
     dma(0x100, 0x7600, 64);
     let directory = core::slice::from_raw_parts(0x7600 as *const u8, 64);
-    if &directory[..4] != b"OVL4"
+    if &directory[..4] != b"OVL5"
         || assets::checksum(&directory[..62]) != assets::u16_at(directory, 62)
     {
         fail(b"REU CODE DIRECTORY MISSING OR INVALID")
@@ -304,6 +312,8 @@ unsafe fn check_code_package() {
         core::ptr::addr_of!(__phase_scenery_size) as u16,
         core::ptr::addr_of!(__phase_sim_size) as u16,
         core::ptr::addr_of!(__phase_sim_size) as u16,
+        core::ptr::addr_of!(__phase_sim_size) as u16,
+        core::ptr::addr_of!(__phase_victory_size) as u16,
         core::ptr::addr_of!(__phase_sim_size) as u16,
     ];
     let resident = core::slice::from_raw_parts(
@@ -324,7 +334,7 @@ unsafe fn check_code_package() {
     {
         fail(b"PRG AND REU DO NOT MATCH")
     }
-    for index in 0..9 {
+    for index in 0..11 {
         let size = sizes[index];
         let size_offset = if index >= 6 {
             38 + (index - 6) * 4
@@ -344,7 +354,9 @@ unsafe fn check_code_package() {
             fail(b"INVALID REU CODE SIZE")
         }
         load_phase(
-            if index >= 5 {
+            if index >= 9 {
+                index as u8 + 3
+            } else if index >= 5 {
                 index as u8 + 2
             } else {
                 index as u8 + 1
@@ -656,6 +668,7 @@ pub unsafe extern "C" fn frame_complete() {
 }
 #[no_mangle]
 #[inline(never)]
+#[cfg_attr(feature = "benchmarks", link_section = ".benchmark_resident")]
 pub unsafe extern "C" fn geometry_complete() {
     // This resident checkpoint precedes any PIXELS reuse of command storage.
     wr(core::ptr::addr_of_mut!(PROF_PHASE), 3);
@@ -663,6 +676,7 @@ pub unsafe extern "C" fn geometry_complete() {
 #[cfg(feature = "benchmarks")]
 #[no_mangle]
 #[inline(never)]
+#[link_section = ".benchmark_resident"]
 pub unsafe extern "C" fn benchmark_frame_begin() {
     if rd(core::ptr::addr_of!(BENCH_TICKS)) != 255 {
         while raster() != 250 {}
@@ -672,14 +686,14 @@ pub unsafe extern "C" fn benchmark_frame_begin() {
 #[cfg(feature = "benchmarks")]
 #[no_mangle]
 #[inline(never)]
+#[link_section = ".benchmark_resident"]
 pub unsafe extern "C" fn benchmark_frame_ready() {
     wr(core::ptr::addr_of_mut!(PROF_PHASE), 1);
 }
-// The benchmark deadline is captured once by SIM and survives profile reentry.
-// Keep this test-only arithmetic out of the small resident code allocation.
+// Capture the benchmark deadline in resident main before SIM reentry.
 #[cfg(feature = "benchmarks")]
-#[link_section = ".phase.sim"]
 #[inline(never)]
+#[link_section = ".benchmark_resident"]
 unsafe fn benchmark_now(sim_ms: u32, ticks: u8) -> u32 {
     sim_ms.wrapping_add((ticks as u16 * 20) as u32)
 }
@@ -711,7 +725,10 @@ unsafe fn publish(bank: u8, last: &mut u16) {
 #[link_section = ".phase.scenery"]
 unsafe fn prepare_sky(section: u8) -> u8 {
     let game = GAME.assume_init_ref();
-    if RENDER_SEGMENT != section || game.transition_progress().is_some() {
+    if RENDER_SEGMENT != section
+        || game.transition_progress().is_some()
+        || game.hud().mode == havoc::game::Mode::Victory
+    {
         SKY_CACHE = SkyCache::new();
     }
     RENDER_SEGMENT = section;
@@ -755,6 +772,13 @@ unsafe fn prepare_geometry(scenery_count: u8, bank: &AssetBank<'_>) {
     let prefix = renderer.project_scenery(scenery_count);
     game.render_foreground(renderer, bank, 174.min(233 - scenery_count as u16));
     renderer.scenery_last(prefix);
+    if game.hud().mode == havoc::game::Mode::Victory {
+        victory_geometry(
+            (game as *const Game).cast(),
+            renderer,
+            (bank as *const AssetBank<'_>).cast(),
+        );
+    }
     renderer.finish();
     SKY_BANDS = if game.transition_progress().is_some() {
         0
@@ -763,6 +787,18 @@ unsafe fn prepare_geometry(scenery_count: u8, bank: &AssetBank<'_>) {
     };
     FRAME_TRIANGLES = renderer.triangle_count;
     FRAME_DROPPED = renderer.dropped;
+}
+
+// This entry replaces the combat tail at the same execution address. The
+// common prefix calls only its opaque linker alias after the matching DMA.
+#[no_mangle]
+#[inline(never)]
+#[link_section = ".phase.victory.entry"]
+pub unsafe extern "C" fn medal_geometry(game: *const (), renderer: *mut Renderer, bank: *const ()) {
+    let game = &*game.cast::<Game>();
+    let renderer = &mut *renderer;
+    renderer.fade_scene(game.victory_ticks());
+    game.render_medal(renderer, &*bank.cast::<AssetBank<'_>>());
 }
 #[link_section = ".phase.pixels"]
 #[inline(never)]
@@ -795,7 +831,7 @@ unsafe fn draw_pixels(status: &Hud) -> u8 {
         let paint_scene = !reuse_sky
             && (matches!(
                 status.mode,
-                havoc::game::Mode::Title | havoc::game::Mode::Attract
+                havoc::game::Mode::Title | havoc::game::Mode::Attract | havoc::game::Mode::Victory
             ) || (band != 0 && band != 24));
         if pass.next_band(pixels, paint_scene) != Some(band) {
             fail(b"INVALID RASTER BAND ORDER")
@@ -866,10 +902,6 @@ struct Runtime {
     loaded: [u8; 2],
     current: u8,
     profile: u8,
-    #[cfg(feature = "benchmarks")]
-    benchmark_deadline: u32,
-    #[cfg(feature = "benchmarks")]
-    benchmark_pending: bool,
 }
 #[link_section = ".phase.sim"]
 #[inline(never)]
@@ -887,8 +919,8 @@ unsafe fn load_segment(slot: u8, index: u8) {
 unsafe fn simulate(runtime: &mut Runtime, now: u32) -> Option<Hud> {
     let game = GAME.assume_init_mut();
     let need = game.segment_index();
-    if need != ENEMY_CODE_PROFILE {
-        runtime.profile = need;
+    if game.simulation_profile() != ENEMY_CODE_PROFILE {
+        runtime.profile = game.simulation_profile();
         return None;
     }
     if ENEMY_MODEL_PROFILE != need {
@@ -931,20 +963,10 @@ unsafe fn simulate(runtime: &mut Runtime, now: u32) -> Option<Hud> {
     let bench_ticks = rd(core::ptr::addr_of!(BENCH_TICKS));
     #[cfg(not(feature = "benchmarks"))]
     let bench_ticks = 255u8;
-    #[cfg(feature = "benchmarks")]
-    let now = if bench_ticks != 255 {
-        if runtime.benchmark_pending {
-            runtime.benchmark_deadline = benchmark_now(runtime.sim_ms, bench_ticks);
-            runtime.benchmark_pending = false;
-        }
-        runtime.benchmark_deadline
-    } else {
-        now
-    };
     while now.wrapping_sub(runtime.sim_ms) >= 20 {
         let need = game.segment_index();
-        if need != ENEMY_CODE_PROFILE {
-            runtime.profile = need;
+        if game.simulation_profile() != ENEMY_CODE_PROFILE {
+            runtime.profile = game.simulation_profile();
             return None;
         }
         if runtime.loaded[0] == need {
@@ -974,8 +996,8 @@ unsafe fn simulate(runtime: &mut Runtime, now: u32) -> Option<Hud> {
     // The last catch-up tick can cross a checkpoint or restart the mission.
     // Select that tick's resulting section before rendering this same frame.
     let need = game.segment_index();
-    if need != ENEMY_CODE_PROFILE {
-        runtime.profile = need;
+    if game.simulation_profile() != ENEMY_CODE_PROFILE {
+        runtime.profile = game.simulation_profile();
         return None;
     }
     if runtime.loaded[0] == need {
@@ -1018,10 +1040,6 @@ pub unsafe extern "C" fn main() -> i32 {
         loaded: [0xff; 2],
         current: 0,
         profile: 0,
-        #[cfg(feature = "benchmarks")]
-        benchmark_deadline: 0,
-        #[cfg(feature = "benchmarks")]
-        benchmark_pending: true,
     };
     let mut last_present = 0;
     #[cfg(feature = "benchmarks")]
@@ -1035,15 +1053,20 @@ pub unsafe extern "C" fn main() -> i32 {
         wr(core::ptr::addr_of_mut!(PROF_PHASE), 1);
         STREAM_BYTES = 0;
         MODEL_STREAM_BYTES = 0;
-        #[cfg(feature = "benchmarks")]
-        {
-            runtime.benchmark_pending = true;
-        }
         load_sim(runtime.profile);
         // Freeze one deadline for every same-frame reentry. A section-changing
         // tick returns before using the incoming AI; reload and finish catch-up
         // without adding simulation time or delaying the new level a frame.
         let now = clock_ms();
+        #[cfg(feature = "benchmarks")]
+        let now = {
+            let ticks = rd(core::ptr::addr_of!(BENCH_TICKS));
+            if ticks != 255 {
+                benchmark_now(runtime.sim_ms, ticks)
+            } else {
+                now
+            }
+        };
         let status = loop {
             wr(core::ptr::addr_of_mut!(PROF_PHASE), 5);
             if let Some(status) = simulate(&mut runtime, now) {
@@ -1078,12 +1101,21 @@ pub unsafe extern "C" fn main() -> i32 {
         wr(core::ptr::addr_of_mut!(PROF_PHASE), 2);
         // Bridges keep the common player/projectile renderer and replace enemy
         // presentation with SCENERY wildlife. SIM remains a separate overlay.
-        let geometry_size = if status.mode == havoc::game::Mode::Transition {
+        let geometry_size = if status.mode == havoc::game::Mode::Victory {
+            core::ptr::addr_of!(__phase_victory_size) as u16
+        } else if status.mode == havoc::game::Mode::Transition {
             core::ptr::addr_of!(__phase_geometry_base_size) as u16
         } else {
             core::ptr::addr_of!(__phase_geometry_size) as u16
         };
-        load_phase(3, geometry_size);
+        load_phase(
+            if status.mode == havoc::game::Mode::Victory {
+                12
+            } else {
+                3
+            },
+            geometry_size,
+        );
         wr(core::ptr::addr_of_mut!(PROF_PHASE), 6);
         io_off();
         {

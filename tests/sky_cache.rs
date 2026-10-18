@@ -18,6 +18,7 @@ fn hud() -> Hud {
         section: 0,
         roll_ticks: 0,
         boss_shield: 0,
+        victory_ticks: 0,
     }
 }
 

@@ -39,6 +39,7 @@ extern uint32_t fast_static_sky_bands(const struct Command *,uint16_t);
 static uint8_t actual[1568],expected[1568];
 static uint8_t actual_head[304],expected_head[304],actual_tail[304],expected_tail[304];
 static uint8_t offsets[]={0,1,127,255};
+static uint8_t expected_seen;
 static struct Command sky_commands[256];
 static uint16_t sky_counts[]={0,1,13,14,15,51,255,256};
 static uint32_t reference_sky(uint16_t count){
@@ -61,7 +62,16 @@ static void reference(struct Head *h,const struct Tail *t,uint8_t *pixels,uint8_
     if(y==t->middle){h->short_x=t->lower_x;h->short_step=t->lower_step;}
     uint8_t left=clamp((t->flags&16)?h->long_x:h->short_x);
     uint8_t right=clamp((t->flags&16)?h->short_x:h->long_x);
-    if(paint)for(uint8_t x=left;x<right;++x)pixels[(uint16_t)(y-band)*160+x]=t->flags&15;
+    if(paint && left<right){
+      if(t->flags&32)expected_seen=1;
+      for(uint8_t x=left;x<right;++x){
+        uint8_t *p=pixels+(uint16_t)(y-band)*160+x,color=t->flags&15;
+        if(t->flags&32)*p=color|64;
+        else if(!expected_seen)*p=color;
+        else if(t->flags&64){if(!(*p&64))*p=color;}
+        else *p=color|(*p&64);
+      }
+    }
     h->long_x+=h->long_step;h->short_x+=h->short_step;
   }
 }
@@ -81,11 +91,12 @@ int main(void){
         uint8_t *ap=actual+16+offsets[alignment],*ep=expected+16+offsets[alignment];
         uint8_t paint=(band%3)!=1;
         struct Job job={ah,at,ap,(uint8_t)(band*8),paint};
-        *(volatile uint8_t*)0x779f=0x39;*(volatile uint8_t*)0x77ab=0x93;
+        *(volatile uint8_t*)0x779f=0x39;*(volatile uint8_t*)0x77ac=0x93;
+        *(volatile uint8_t*)0x77ab=expected_seen=0;
         fast_raster_rows(&job);
         reference(eh,et,ep,band*8,paint);
         if(memcmp(actual,expected,sizeof(actual)) || memcmp(actual_head,expected_head,sizeof(actual_head)) ||
-           memcmp(actual_tail,expected_tail,sizeof(actual_tail)) || *(volatile uint8_t*)0x779f!=0x39 || *(volatile uint8_t*)0x77ab!=0x93){
+           memcmp(actual_tail,expected_tail,sizeof(actual_tail)) || *(volatile uint8_t*)0x779f!=0x39 || *(volatile uint8_t*)0x77ac!=0x93 || *(volatile uint8_t*)0x77ab!=expected_seen){
           printf("FAIL fixture=%u alignment=%u band=%u\n",f,alignment,band);
           for(uint16_t i=0;i<sizeof(actual);++i)if(actual[i]!=expected[i]){printf("pixel%u got%u want%u\n",i,actual[i],expected[i]);break;}
           printf("head %ld/%ld short %ld/%ld\n",ah->long_x,eh->long_x,ah->short_x,eh->short_x);
@@ -96,6 +107,31 @@ int main(void){
     }
   }
   printf("PASS %u native raster cases; 25 bands each, split state and pixel guards intact\n",cases);
+  // Independent ordered-layer cases prove that protection survives ordinary
+  // foreground overwrites and never starts for hidden/empty player spans.
+  for(uint8_t scenario=0;scenario<48;++scenario){
+    memset(actual,0xa5,sizeof(actual));memset(expected,0xa5,sizeof(expected));
+    uint8_t *ap=actual+16,*ep=expected+16;
+    memset(ap,0,1280);memset(ep,0,1280);
+    *(volatile uint8_t*)0x77ab=expected_seen=0;
+    for(uint8_t layer=0;layer<5;++layer){
+      uint8_t role=(layer+scenario%3)%3;
+      uint8_t flags=16|(role==0?32:role==2?64:0)|(layer+1);
+      uint8_t left=role==0?40:20,right=role==0?80:100;
+      if(role==0 && scenario&4)right=left;
+      struct Head ah={(int32_t)left*65536L,0,(int32_t)right*65536L,0},eh=ah;
+      struct Tail at={0,0,0,8,8,flags},et=at;
+      uint8_t paint=!(role==0 && scenario&8);
+      if(role==0 && scenario&16)at.top=et.top=8;
+      struct Job job={&ah,&at,ap,0,paint};
+      fast_raster_rows(&job);reference(&eh,&et,ep,0,paint);
+      if(memcmp(actual,expected,sizeof(actual)) || memcmp(&ah,&eh,sizeof(ah)) ||
+         memcmp(&at,&et,sizeof(at)) || *(volatile uint8_t*)0x77ab!=expected_seen){
+        printf("FAIL stencil scenario%u layer%u seen%u/%u\n",scenario,layer,*(volatile uint8_t*)0x77ab,expected_seen);return 3;
+      }
+    }
+  }
+  puts("PASS 48 native ordered visibility cases");
   for(uint8_t scenario=0;scenario<32;++scenario){
     for(uint16_t i=0;i<256;++i){
       sky_commands[i].flags=i<(uint16_t)(13+scenario%3)?2:0;
@@ -116,11 +152,11 @@ subprocess.run([sdk/"mos-sim-clang", "-Os", "-mlto-zp=0", build/"check.c", assem
 result = subprocess.run([sdk/"mos-sim", "--cycles", build/"check"], text=True, capture_output=True)
 print(result.stdout.strip(), flush=True)
 print(result.stderr.strip(), flush=True)
-if result.returncode or "PASS 1024 native raster cases" not in result.stdout or "PASS 256 native conservative sky-mask cases" not in result.stdout:
+if result.returncode or "PASS 1024 native raster cases" not in result.stdout or "PASS 256 native conservative sky-mask cases" not in result.stdout or "PASS 48 native ordered visibility cases" not in result.stdout:
     raise SystemExit(result.returncode or "native raster fixture suite did not finish")
 report = {"passed": True, "assembly_sha256": hashlib.sha256(assembly.read_bytes()).hexdigest(),
           "fixtures_sha256": hashlib.sha256((build/"fixtures.h").read_bytes()).hexdigest(),
-          "cases": 1024, "band_calls": 25600, "sky_mask_cases": 256, "reference": "independent C Q16 row traversal and conservative sky masks",
+          "cases": 1024, "band_calls": 25600, "visibility_cases":48, "sky_mask_cases": 256, "reference": "independent C Q16 row traversal and conservative sky masks",
           "cpu": "LLVM-MOS mos-sim 6502 instruction simulator", "cycles_include_test_harness": True,
           "simulator_output": result.stdout.strip()+" "+result.stderr.strip()}
 (build/"report.json").write_text(json.dumps(report, indent=2)+"\n", encoding="utf-8")

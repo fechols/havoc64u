@@ -2,7 +2,7 @@
 //! display refresh rate, so PAL and NTSC use the same millisecond gesture windows.
 use crate::assets::{self, AssetBank, Segment, Spawn};
 use crate::audio::{AudioEvent, Effect, MusicState};
-use crate::{emit_mesh, GeometrySink, Vec3, TWO_SIDED};
+use crate::{emit_mesh, GeometrySink, Vec3, TERRAIN_CLEAR_GEOMETRY, TWO_SIDED};
 
 pub const UP: u8 = 1;
 pub const DOWN: u8 = 2;
@@ -36,6 +36,19 @@ const AUDIO_CAPACITY: usize = 8;
 const DOUBLE_TAP_WINDOW_MS: u32 = 500;
 
 mod enemies;
+
+#[cfg(target_arch = "mos")]
+extern "C" {
+    fn terminal_step(game: *mut ());
+}
+
+/// Terminal simulation replaces the level-specific enemy tail on the C64.
+#[no_mangle]
+#[inline(never)]
+#[cfg_attr(target_arch = "mos", link_section = ".phase.terminal.entry")]
+pub unsafe extern "C" fn game_terminal(game: *mut ()) {
+    (*(game as *mut Game)).tick_terminal();
+}
 
 #[derive(Clone, Copy, Default, Debug)]
 pub struct InputSample {
@@ -78,10 +91,13 @@ pub struct Hud {
     pub roll_ticks: u8,
     /// Combined remaining boss health, normalized to 0..100.
     pub boss_shield: u8,
+    /// Elapsed victory-reveal ticks, capped at the settled results screen.
+    pub victory_ticks: u16,
 }
 
 #[repr(C)]
 #[derive(Clone, Copy)]
+#[cfg_attr(test, derive(Debug, PartialEq, Eq))]
 pub(crate) struct Actor {
     pos: Vec3,
     origin_x: i16,
@@ -101,10 +117,11 @@ impl Actor {
         kind: 0,
         hp: 0,
         flags: 0,
-        approach_speed: 8,
+        approach_speed: 0,
     };
 }
 #[derive(Clone, Copy)]
+#[cfg_attr(test, derive(Debug, PartialEq, Eq))]
 struct Shot {
     pos: Vec3,
     dx: i8,
@@ -122,6 +139,7 @@ impl Shot {
     };
 }
 #[derive(Clone, Copy)]
+#[cfg_attr(test, derive(Debug, PartialEq, Eq))]
 struct Pickup {
     pos: Vec3,
     kind: u8,
@@ -133,6 +151,7 @@ impl Pickup {
     };
 }
 #[derive(Clone, Copy)]
+#[cfg_attr(test, derive(Debug, PartialEq, Eq))]
 struct Explosion {
     pos: Vec3,
     ticks: u8,
@@ -147,6 +166,7 @@ impl Explosion {
 }
 
 #[derive(Clone, Copy)]
+#[cfg_attr(test, derive(Debug, PartialEq, Eq))]
 struct Controls {
     bits: u8,
     now: u32,
@@ -252,7 +272,6 @@ impl Controls {
         self.cached_charge = self.computed_charge();
     }
     #[inline(never)]
-    #[cfg_attr(target_arch = "mos", link_section = ".phase.sim")]
     fn clear_pending(&mut self) {
         self.shot_pending = false;
         self.bomb_pending = false;
@@ -263,6 +282,7 @@ impl Controls {
 
 /// All simulation state is resident; no heap, filesystem, or REU access occurs
 /// here. Asset records and meshes are supplied by the platform's prefetched views.
+#[cfg_attr(test, derive(Debug, PartialEq, Eq))]
 pub struct Game {
     controls: Controls,
     mode: Mode,
@@ -402,6 +422,47 @@ impl Game {
         }
         game
     }
+    /// Inspect the final carrier scene, medal reveal, and settled victory sway.
+    #[cfg(feature = "host-tools")]
+    pub fn preview_victory(elapsed_ticks: u16) -> Self {
+        let mut game = Self::new();
+        game.reset_scene(Mode::Victory, MISSION_TICKS);
+        game.menu_ticks = elapsed_ticks.min(crate::victory::REVEAL_TICKS);
+        game.ticks = elapsed_ticks;
+        game.score = 24_000;
+        game.shield = 76;
+        game.bombs = 1;
+        game.lives = 2;
+        game.boss_started = true;
+        game.boss_defeated = true;
+        game.boss_z = 680;
+        game.boss_left = 0;
+        game.boss_right = 0;
+        game.boss_core = 0;
+        game
+    }
+    /// Select terminal simulation independently of the active scene/model bank.
+    #[inline(never)]
+    #[cfg_attr(target_arch = "mos", link_section = ".phase.sim")]
+    pub fn simulation_profile(&self) -> u8 {
+        if matches!(self.mode, Mode::Victory | Mode::GameOver) {
+            4
+        } else {
+            self.segment_index()
+        }
+    }
+    #[inline(always)]
+    pub fn victory_ticks(&self) -> u16 {
+        if self.mode == Mode::Victory {
+            self.menu_ticks
+        } else {
+            0
+        }
+    }
+    #[inline(always)]
+    pub fn animation_ticks(&self) -> u16 {
+        self.ticks
+    }
     #[inline(never)]
     pub fn segment_index(&self) -> u8 {
         let ticks = self
@@ -446,7 +507,12 @@ impl Game {
     #[inline(never)]
     #[cfg_attr(target_arch = "mos", link_section = ".phase.scenery")]
     pub fn sky_color(&self) -> u8 {
-        crate::scenery::sky_color(self.segment_index(), self.transition_progress())
+        let color = crate::scenery::sky_color(self.segment_index(), self.transition_progress());
+        #[cfg(not(target_arch = "mos"))]
+        if self.mode == Mode::Victory {
+            return crate::victory::fade_color(color, self.menu_ticks);
+        }
+        color
     }
     #[inline(never)]
     pub fn hud(&self) -> Hud {
@@ -465,10 +531,10 @@ impl Game {
             } else {
                 0
             },
+            victory_ticks: self.victory_ticks(),
         }
     }
     #[inline(never)]
-    #[cfg_attr(target_arch = "mos", link_section = ".phase.sim")]
     pub fn music_state(&self) -> MusicState {
         match self.mode {
             Mode::Title => MusicState::Title,
@@ -529,8 +595,7 @@ impl Game {
         self.audio[i] = event;
         self.audio_len += 1;
     }
-    #[inline(never)]
-    #[cfg_attr(target_arch = "mos", link_section = ".phase.sim")]
+    #[inline(always)]
     fn reset_run(&mut self) {
         self.reset_scene(Mode::Playing, 0);
         self.invulnerability = 50;
@@ -540,7 +605,7 @@ impl Game {
     fn reset_scene(&mut self, mode: Mode, rail_ticks: u16) {
         let bits = self.controls.bits;
         let now = self.controls.now;
-        *self = Self::new();
+        self.reset_in_place();
         self.presentation_event = PresentationEvent::Reset;
         self.mode = mode;
         self.rail_ticks = rail_ticks;
@@ -548,6 +613,34 @@ impl Game {
         self.controls.bits = bits;
         self.controls.now = now;
         self.controls.released_at = now;
+    }
+    #[inline(always)]
+    fn reset_in_place(&mut self) {
+        // A bulk clear is much smaller on the 6510 than constructing and copying
+        // the complete value. Every field is an integer, bool, or fieldless enum.
+        // Restore every enum using raw writes before accessing the value again;
+        // this does not depend on an enum's unspecified physical representation.
+        unsafe {
+            let game = self as *mut Self;
+            core::ptr::write_bytes(game.cast::<u8>(), 0, core::mem::size_of::<Self>());
+            core::ptr::addr_of_mut!((*game).mode).write(Mode::Title);
+            core::ptr::addr_of_mut!((*game).presentation_event).write(PresentationEvent::None);
+            let audio = core::ptr::addr_of_mut!((*game).audio).cast::<AudioEvent>();
+            for index in 0..AUDIO_CAPACITY {
+                audio.add(index).write(AudioEvent {
+                    effect: Effect::Fire,
+                    pan: 0,
+                });
+            }
+        }
+        self.player.z = PLAYER_Z;
+        self.shield = 100;
+        self.bombs = 3;
+        self.lives = 3;
+        self.boss_z = 1800;
+        self.boss_left = 20;
+        self.boss_right = 20;
+        self.boss_core = 60;
     }
     /// One 20 ms simulation step. Feed every captured input sample first.
     /// `bank` must belong to `segment_index()` before this step. If the step
@@ -591,10 +684,12 @@ impl Game {
                 }
             }
             Mode::Victory | Mode::GameOver => {
-                if self.controls.start_pending {
-                    self.reset_run();
+                #[cfg(target_arch = "mos")]
+                unsafe {
+                    terminal_step(self as *mut Self as *mut ());
                 }
-                self.controls.clear_pending();
+                #[cfg(not(target_arch = "mos"))]
+                self.tick_terminal();
                 return;
             }
             Mode::Respawning => {
@@ -673,9 +768,22 @@ impl Game {
         self.update_explosions();
         if self.mode == Mode::Playing && self.rail_ticks >= MISSION_TICKS && self.boss_defeated {
             self.mode = Mode::Victory;
+            self.menu_ticks = 0;
             self.shots = [Shot::EMPTY; SHOTS];
             self.sound(Effect::Pickup, 0);
         }
+    }
+    #[inline(never)]
+    #[cfg_attr(target_arch = "mos", link_section = ".phase.terminal")]
+    fn tick_terminal(&mut self) {
+        if self.mode == Mode::Victory && self.menu_ticks < crate::victory::REVEAL_TICKS {
+            // Consume every reveal gesture, including the tick that reaches the
+            // result screen. A held fire button cannot skip or restart it.
+            self.menu_ticks += 1;
+        } else if self.controls.start_pending {
+            self.reset_run();
+        }
+        self.controls.clear_pending();
     }
     #[inline(never)]
     #[cfg_attr(target_arch = "mos", link_section = ".phase.sim")]
@@ -1345,8 +1453,48 @@ impl Game {
         let mut scenery = CountFaces(0);
         self.render_scenery(&mut scenery, segment);
         let foreground_limit = 174.min(233u16.saturating_sub(scenery.0));
-        self.render_foreground(sink, bank, foreground_limit);
-        self.render_scenery(sink, segment);
+        if self.mode == Mode::Victory {
+            struct Fade<'a, S> {
+                sink: &'a mut S,
+                ticks: u16,
+            }
+            impl<S: GeometrySink> GeometrySink for Fade<'_, S> {
+                fn triangle(&mut self, a: Vec3, b: Vec3, c: Vec3, color: u8, flags: u8) {
+                    self.sink.triangle(
+                        a,
+                        b,
+                        c,
+                        crate::victory::fade_color(color, self.ticks),
+                        flags,
+                    );
+                }
+            }
+            let mut world = Fade {
+                sink,
+                ticks: self.menu_ticks,
+            };
+            self.render_foreground(&mut world, bank, foreground_limit);
+            self.render_scenery(&mut world, segment);
+            self.render_medal(sink, bank);
+        } else {
+            self.render_foreground(sink, bank, foreground_limit);
+            self.render_scenery(sink, segment);
+        }
+    }
+    #[inline(never)]
+    #[cfg_attr(target_arch = "mos", link_section = ".phase.victory")]
+    pub fn render_medal(&self, sink: &mut impl GeometrySink, bank: &AssetBank<'_>) {
+        // Match the ship's sink type so native meshes share one bounded
+        // transform/vertex-cache implementation in the geometry prefix.
+        let mut budget = SceneBudget {
+            sink,
+            count: 0,
+            limit: 174,
+            camera_y: 0,
+            color_override: 0,
+            extra_flags: 0,
+        };
+        crate::victory::emit(&mut budget, bank, self.menu_ticks, self.ticks);
     }
     #[inline(never)]
     #[cfg_attr(target_arch = "mos", link_section = ".phase.geometry")]
@@ -1356,6 +1504,9 @@ impl Game {
         bank: &AssetBank<'_>,
         foreground_limit: u16,
     ) {
+        if self.mode == Mode::Victory && self.menu_ticks >= crate::victory::FADE_TICKS {
+            return;
+        }
         // Prioritize player, boss, projectiles and pickups before distant detail.
         // 233 raw faces leave room for near-plane splitting in the 256 commands.
         let mut budget = SceneBudget {
@@ -1368,6 +1519,7 @@ impl Game {
             // stays above the cockpit while neutral targets remain exposed.
             camera_y: chase_camera_y(self.mode, self.player.y),
             color_override: 0,
+            extra_flags: 0,
         };
         let sink = &mut budget;
         if matches!(
@@ -1375,6 +1527,7 @@ impl Game {
             Mode::Playing | Mode::Transition | Mode::Title | Mode::Victory
         ) {
             let appearance = self.player_appearance();
+            sink.extra_flags = TERRAIN_CLEAR_GEOMETRY;
             sink.color_override = (appearance >> 8) as u8;
             emit_mesh(
                 sink,
@@ -1409,12 +1562,19 @@ impl Game {
                     Vec3 {
                         x: p.x,
                         y: p.y,
-                        z: p.z - 12 - (self.ticks & 7) as i16,
+                        z: p.z
+                            - 12
+                            - (if self.mode == Mode::Victory {
+                                self.ticks.wrapping_sub(self.menu_ticks)
+                            } else {
+                                self.ticks
+                            } & 7) as i16,
                     },
                     8,
                 );
             }
         }
+        sink.extra_flags = 0;
         // World-space aiming reticle, held on the player's firing line.
         if matches!(self.mode, Mode::Playing | Mode::Transition) {
             let center = Vec3 {
@@ -1446,7 +1606,9 @@ impl Game {
                 );
             }
         }
-        if self.mode == Mode::Transition {
+        if self.mode == Mode::Victory {
+            return;
+        } else if self.mode == Mode::Transition {
             self.render_effects(sink);
         } else {
             self.render_combat(sink, bank);
@@ -1552,6 +1714,15 @@ impl Game {
         self.render_effects(sink);
         for (i, a) in self.actors.iter().enumerate() {
             if a.kind != 0 && a.pos.z >= 80 {
+                // Authored ground guns and their proxies are terrain-clear:
+                // Lowlands fits the flight corridor; Fortress lies above its
+                // low shoulders. Its first spawn follows the Canyon bridge.
+                // Wall batteries, boss turrets and obstacles keep normal order.
+                sink.extra_flags = if a.kind == assets::TURRET && matches!(bank.level(), 0 | 2) {
+                    TERRAIN_CLEAR_GEOMETRY
+                } else {
+                    0
+                };
                 let reserve = (ACTORS - i - 1) as u16 * 2;
                 if a.pos.z > 1200
                     || sink.count + bank.face_count(a.kind) as u16 + reserve > sink.limit
@@ -1576,12 +1747,16 @@ impl Game {
                     };
                     emit_mesh(sink, bank, a.kind, a.pos, 0, 0, roll, 256);
                 }
+                sink.extra_flags = 0;
             }
         }
     }
     #[inline(never)]
     #[cfg_attr(target_arch = "mos", link_section = ".phase.scenery")]
     pub fn render_scenery(&self, sink: &mut impl GeometrySink, segment: &Segment<'_>) {
+        if self.mode == Mode::Victory && self.menu_ticks >= crate::victory::FADE_TICKS {
+            return;
+        }
         crate::scenery::emit(
             sink,
             segment,
@@ -1626,6 +1801,7 @@ struct SceneBudget<'a, S: GeometrySink> {
     limit: u16,
     camera_y: i16,
     color_override: u8,
+    extra_flags: u8,
 }
 impl<S: GeometrySink> GeometrySink for SceneBudget<'_, S> {
     #[inline(never)]
@@ -1647,7 +1823,7 @@ impl<S: GeometrySink> GeometrySink for SceneBudget<'_, S> {
                 } else {
                     color
                 },
-                flags,
+                flags | self.extra_flags,
             );
         }
     }
@@ -1803,8 +1979,8 @@ mod tests {
         data[0] = b'S';
         data[1] = b'M';
         data[2] = b'A';
-        data[3] = b'2';
-        data[4] = 8;
+        data[3] = b'3';
+        data[4] = assets::MODEL_COUNT;
         data[5] = level;
         data[6] = if level == 3 { 2 } else { 3 };
         let health = [[3, 2, 6], [2, 3, 4], [4, 2, 6], [3, 2, 6]];
@@ -1826,7 +2002,7 @@ mod tests {
             kind += 1;
         }
         let mut mesh = 0;
-        while mesh < 8 {
+        while mesh < assets::MODEL_COUNT as usize {
             let at = 16 + mesh * 8;
             data[at] = assets::MODEL_DATA_OFFSET as u8;
             data[at + 2] = 3;
@@ -2209,7 +2385,14 @@ mod tests {
     }
     impl GeometrySink for TerrainCapture {
         fn triangle(&mut self, a: Vec3, b: Vec3, c: Vec3, color: u8, flags: u8) {
-            assert_eq!(flags & !STATIC_SKY, TWO_SIDED);
+            assert_eq!(
+                flags,
+                TWO_SIDED | if flags & STATIC_SKY != 0 {
+                    STATIC_SKY
+                } else {
+                    crate::EXTERIOR_TERRAIN
+                }
+            );
             assert!(
                 self.count < self.faces.len(),
                 "terrain exceeded its face reservation"
@@ -2783,6 +2966,274 @@ mod tests {
             }
             assert_eq!(g.mode, mode);
             assert_eq!(g.rail_ticks, 0);
+        }
+    }
+    #[test]
+    fn compact_reset_matches_every_constructor_field_without_comparing_padding() {
+        let mut game = running();
+        game.mode = Mode::GameOver;
+        game.presentation_event = PresentationEvent::Bomb;
+        game.controls = Controls {
+            bits: FIRE | LEFT,
+            now: 14_000,
+            released_at: 12_000,
+            fire_at: 13_960,
+            left_at: 13_980,
+            right_at: 13_990,
+            fire_armed: true,
+            left_armed: true,
+            right_armed: true,
+            cached_charge: 255,
+            shot_pending: true,
+            shot_charge: 255,
+            bomb_pending: true,
+            roll_pending: -1,
+            start_pending: true,
+        };
+        game.player = Vec3 {
+            x: 90,
+            y: -65,
+            z: 180,
+        };
+        game.rail_ticks = MISSION_TICKS;
+        game.transition_ticks = 99;
+        game.score = 28_000;
+        game.ticks = 36_000;
+        game.menu_ticks = 400;
+        game.menu_activity = true;
+        game.actors.fill(enemy(1, 40, 20, 700));
+        game.shots.fill(Shot {
+            pos: game.player,
+            dx: 2,
+            dy: 3,
+            damage: 4,
+            kind: 3,
+        });
+        game.pickups.fill(Pickup {
+            pos: game.player,
+            kind: 2,
+        });
+        game.explosions.fill(Explosion {
+            pos: game.player,
+            ticks: 10,
+            color: 7,
+        });
+        game.audio.fill(AudioEvent {
+            effect: Effect::Bomb,
+            pan: -127,
+        });
+        game.audio_head = 7;
+        game.audio_len = 8;
+        game.spawn_cursor = 12;
+        game.spawn_segment = 3;
+        game.shield = 17;
+        game.bombs = 1;
+        game.bomb_kills = 4;
+        game.lives = 1;
+        game.shot_cooldown = 4;
+        game.invulnerability = 29;
+        game.hit_flash_ticks = 18;
+        game.roll_ticks = 14;
+        game.roll_cooldown = 33;
+        game.roll_direction = -1;
+        game.respawn_ticks = 12;
+        game.bank = -20;
+        game.boss_z = 680;
+        game.boss_left = 0;
+        game.boss_right = 0;
+        game.boss_core = 0;
+        game.boss_started = true;
+        game.boss_defeated = true;
+        game.kills = 279;
+        game.reset_in_place();
+        // Derived equality visits semantic fields, including every array member;
+        // raw padding bytes are deliberately excluded from this comparison.
+        assert_eq!(game, Game::new());
+    }
+    #[test]
+    fn victory_freezes_the_run_and_consumes_inputs_through_all_four_hundred_ticks() {
+        let bytes = empty_segment(3);
+        let segment = Segment::new(&bytes).unwrap();
+        let bank = test_bank(3);
+        let mut game = running();
+        game.rail_ticks = MISSION_TICKS - 1;
+        game.boss_started = true;
+        game.boss_defeated = true;
+        game.boss_left = 0;
+        game.boss_right = 0;
+        game.boss_core = 0;
+        game.player.x = 24;
+        game.player.y = -32;
+        game.score = 12_345;
+        game.shield = 76;
+        game.bombs = 2;
+        game.lives = 2;
+        game.menu_ticks = 749;
+        game.tick(&segment, &bank);
+        assert_eq!(game.mode, Mode::Victory);
+        assert_eq!(game.victory_ticks(), 0);
+        assert_eq!((game.simulation_profile(), game.segment_index()), (4, 3));
+        let frozen = (
+            game.player,
+            game.rail_ticks,
+            game.bank,
+            game.roll_ticks,
+            game.boss_z,
+            game.scenery_ticks(),
+            game.scenery_camera_y(),
+        );
+        let resources = (game.score, game.shield, game.bombs, game.lives);
+        while game.pop_audio().is_some() {}
+        for elapsed in 1..=crate::victory::REVEAL_TICKS {
+            // Alternate fire edges throughout the reveal, with a final press
+            // on its very last tick. Direction and bomb gestures also expire.
+            sample(
+                &mut game,
+                UP | RIGHT | if elapsed & 1 == 0 { FIRE } else { 0 },
+                elapsed as u32 * 20,
+            );
+            game.tick(&segment, &bank);
+            assert_eq!(game.mode, Mode::Victory);
+            assert_eq!(game.hud().victory_ticks, elapsed);
+            assert_eq!(game.music_state(), MusicState::Victory);
+            assert_eq!((game.score, game.shield, game.bombs, game.lives), resources);
+            assert_eq!(
+                (
+                    game.player,
+                    game.rail_ticks,
+                    game.bank,
+                    game.roll_ticks,
+                    game.boss_z,
+                    game.scenery_ticks(),
+                    game.scenery_camera_y(),
+                ),
+                frozen
+            );
+            assert!(!game.controls.start_pending);
+            assert!(!game.controls.shot_pending);
+            assert!(!game.controls.bomb_pending);
+            assert_eq!(game.controls.roll_pending, 0);
+            assert!(game.pop_audio().is_none());
+        }
+        for elapsed in 401..=450 {
+            sample(&mut game, FIRE, elapsed * 20);
+            game.tick(&segment, &bank);
+            assert_eq!(game.mode, Mode::Victory);
+            assert_eq!(game.victory_ticks(), crate::victory::REVEAL_TICKS);
+        }
+        sample(&mut game, 0, 9020);
+        game.tick(&segment, &bank);
+        assert_eq!(game.mode, Mode::Victory);
+        sample(&mut game, FIRE, 9040);
+        game.tick(&segment, &bank);
+        assert_eq!(game.mode, Mode::Playing);
+        assert_eq!(game.simulation_profile(), 0);
+        assert_eq!(game.victory_ticks(), 0);
+        assert_eq!(
+            (game.score, game.shield, game.bombs, game.lives),
+            (0, 100, 3, 3)
+        );
+    }
+    #[test]
+    fn victory_world_keeps_only_the_frozen_ship_and_scenery_until_blackout() {
+        #[derive(Default)]
+        struct Capture(std::vec::Vec<([Vec3; 3], u8, u8)>);
+        impl GeometrySink for Capture {
+            fn triangle(&mut self, a: Vec3, b: Vec3, c: Vec3, color: u8, flags: u8) {
+                self.0.push(([a, b, c], color, flags));
+            }
+        }
+        let bytes = empty_segment(3);
+        let segment = Segment::new(&bytes).unwrap();
+        let bank = test_bank(3);
+        let mut game = running();
+        game.mode = Mode::Victory;
+        game.rail_ticks = MISSION_TICKS;
+        game.player.x = -65;
+        game.player.y = 42;
+        game.bank = -20;
+        game.boss_started = true;
+        game.actors[0] = enemy(1, 0, 0, 700);
+        game.shots[0] = Shot {
+            kind: 2,
+            ..Shot::EMPTY
+        };
+        game.pickups[0] = Pickup {
+            kind: 1,
+            ..Pickup::EMPTY
+        };
+        game.explosions[0] = Explosion {
+            ticks: 10,
+            color: 7,
+            ..Explosion::EMPTY
+        };
+        let mut foreground = Capture::default();
+        game.render_foreground(&mut foreground, &bank, 174);
+        assert_eq!(
+            foreground.0.len(),
+            bank.face_count(assets::PLAYER) as usize + 2
+        );
+        let mut scenery = Capture::default();
+        game.render_scenery(&mut scenery, &segment);
+        assert!(!scenery.0.is_empty());
+        for elapsed in [1, 20, 50, 99] {
+            game.menu_ticks = elapsed;
+            game.ticks = elapsed;
+            let mut actual = Capture::default();
+            game.render_foreground(&mut actual, &bank, 174);
+            assert_eq!(actual.0, foreground.0);
+            let mut actual = Capture::default();
+            game.render_scenery(&mut actual, &segment);
+            assert_eq!(actual.0, scenery.0);
+        }
+        for elapsed in [100, 101, 399, 400] {
+            game.menu_ticks = elapsed;
+            let mut actual = Capture::default();
+            game.render_foreground(&mut actual, &bank, 174);
+            game.render_scenery(&mut actual, &segment);
+            assert!(actual.0.is_empty());
+        }
+    }
+    #[cfg(feature = "host-tools")]
+    #[test]
+    fn victory_host_and_native_staging_match_through_fade_reveal_and_idle() {
+        use crate::render::{Renderer, BAND_PIXELS};
+        let bank = test_bank(3);
+        let bytes = mission_segment(3);
+        let segment = Segment::new(&bytes).unwrap();
+        for elapsed in [
+            0, 1, 20, 40, 60, 80, 99, 100, 101, 200, 399, 400, 401, 800, 65535,
+        ] {
+            let game = Game::preview_victory(elapsed);
+            let mut direct = Renderer::new();
+            direct.begin(game.sky_color());
+            game.render(&mut direct, &bank, &segment);
+            direct.finish();
+            let mut staged = Renderer::new();
+            staged.begin(crate::scenery::sky_color(3, None));
+            let raw_count = {
+                let mut stage = staged.scenery_stage();
+                game.render_scenery(&mut stage, &segment);
+                stage.count()
+            };
+            let prefix = staged.project_scenery(raw_count);
+            game.render_foreground(&mut staged, &bank, 174.min(233 - raw_count as u16));
+            staged.scenery_last(prefix);
+            staged.fade_scene(game.victory_ticks());
+            game.render_medal(&mut staged, &bank);
+            staged.finish();
+            assert_eq!((direct.dropped, staged.dropped), (0, 0), "tick {elapsed}");
+            assert_eq!(
+                direct.triangle_count, staged.triangle_count,
+                "tick {elapsed}"
+            );
+            for band in 0..25 {
+                let mut expected = [0; BAND_PIXELS];
+                let mut actual = [0; BAND_PIXELS];
+                direct.render_band(band, &mut expected);
+                staged.render_band(band, &mut actual);
+                assert_eq!(actual, expected, "tick {elapsed}, band {band}");
+            }
         }
     }
     #[test]
@@ -3650,6 +4101,7 @@ mod tests {
                             limit,
                             camera_y: 0,
                             color_override: 0,
+                            extra_flags: 0,
                         },
                         &bank,
                     );
@@ -4031,7 +4483,7 @@ mod tests {
         assert_eq!(attacks[2][1], 2, "lance fires twice during its hold");
         assert_eq!(attacks[2][2], 2, "bunker requests a fan attack");
         assert!(
-            poses[3][0].iter().all(|p| (-106..=-74).contains(&p.x)),
+            poses[3][0].iter().all(|p| (-122..=-58).contains(&p.x)),
             "guard holds the flank"
         );
         assert!(
@@ -4145,7 +4597,7 @@ mod tests {
     fn model_bank_for_tests() -> [u8; assets::COMMON_SIZE] {
         let mut data = test_bank_bytes(0);
         let mut cursor = assets::MODEL_DATA_OFFSET;
-        for id in 0..8 {
+        for id in 0..assets::MODEL_COUNT as usize {
             let directory = 16 + id * 8;
             data[directory..directory + 2].copy_from_slice(&(cursor as u16).to_le_bytes());
             data[directory + 2] = 3;
@@ -4317,8 +4769,8 @@ mod tests {
             let bank = AssetBank::new(&models).unwrap();
             let bytes = mission_segment(level);
             let segment = Segment::new(&bytes).unwrap();
-            for &(x, y) in &[(0, 0), (-100, -65), (100, 65)] {
-                for near in [false, true] {
+            for &(x, y) in &[(0, 0), (-100, -65), (100, 65), (-100, 65), (100, -65)] {
+                for (near, moving) in [(false, false), (true, false), (false, true), (true, true)] {
                     let mut g = running();
                     g.rail_ticks = level as u16 * SECTION_TICKS + 60;
                     g.player.x = x;
@@ -4334,6 +4786,18 @@ mod tests {
                             if near { 80 } else { 700 + i as i16 * 20 },
                         );
                         actor.hp = bank.enemy(kind).hp;
+                        if moving {
+                            let depth = actor.pos.z;
+                            actor.pos.z = 1800;
+                            // Include extrema, the sentry's feint, and pursuit
+                            // commitment before stressing the near-plane pass.
+                            let age = [16, 32, 48, 80, 96, 112, 128, 192, 255, 256, 124, 92][i];
+                            for tick in 1..=age {
+                                actor.age = tick;
+                                enemies::step(level, actor, &g.player, i as u8);
+                            }
+                            actor.pos.z = depth;
+                        }
                     }
                     for (i, shot) in g.shots.iter_mut().enumerate() {
                         *shot = Shot {
@@ -4386,7 +4850,7 @@ mod tests {
                     assert_eq!(
                         (direct.dropped, staged.dropped),
                         (0, 0),
-                        "level {level}, near {near}"
+                        "level {level}, near {near}, moving {moving}"
                     );
                     assert_eq!(direct.triangle_count, staged.triangle_count);
                     for band in 0..25 {
@@ -4396,7 +4860,7 @@ mod tests {
                         staged.render_band(band, &mut b);
                         assert_eq!(
                             a, b,
-                            "level {level}, near {near}, player ({x},{y}), band {band}"
+                            "level {level}, near {near}, moving {moving}, player ({x},{y}), band {band}"
                         );
                     }
                 }
@@ -4501,7 +4965,7 @@ mod tests {
                                 }
                             }
                             assert!(ship_pixels > 0, "the rolled ship left the viewport");
-                            // Terrain can overlap a rolled hull at camera extremes;
+                            // Other foreground can overlap a rolled hull at camera extremes;
                             // saturation must not remove all essential foreground.
                             assert!(visible_ship_pixels > 0,
                                 "bridge {section}, tick {elapsed}, player ({x},{y}): only {visible_ship_pixels}/{ship_pixels} ship pixels visible");
@@ -4511,4 +4975,5 @@ mod tests {
             }
         }
     }
+    include!("game/terrain_visibility_tests.rs");
 }

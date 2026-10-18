@@ -10,16 +10,20 @@ An original polygon rail shooter for the **64 MHz C64 Ultimate**, written in Rus
 
 The first mission travels across open terrain, a canyon, and a defended base before a carrier boss. It includes enemies, scenery collisions, shields, pickups, explosions, three lives, section checkpoints, and victory/restart screens. This is a working prototype: rendering is still below the intended frame rate, and physical C64 Ultimate testing remains outstanding.
 
-Each pair of levels is connected by an eight-second scenic flight. Hills rise into canyon walls around a walking creature and distant birds; a cargo hovercraft crosses right to left as the canyon opens onto the fortress; and eight staggered meteors streak across the darkening carrier coast. The hovercraft has faceted engine pods, hovering motion, and pulsing exhaust. The meteor shower ends before carrier combat begins. These three breaks add 24 seconds to the five-minute combat route; there is no extra transition after the carrier battle.
+Each pair of levels is connected by an eight-second scenic flight. Hills rise into canyon walls around a walking creature and distant birds; a cargo hovercraft crosses right to left as the canyon opens onto the fortress; and eight staggered meteors streak across the darkening carrier coast. The hovercraft has faceted engine pods, hovering motion, and pulsing exhaust. The meteor shower ends before carrier combat begins. These three breaks add 24 seconds to the five-minute combat route.
+
+Completing the mission and defeating the carrier starts a final eight-second victory reveal. The landscape, sky, and ship fade to black during the first two seconds while a fully 3D gold medal turns toward the player and grows beyond the screen edges. Its thick body, beveled rim, and raised silhouette of the player's ship are polygon geometry. The emblem shows the ship from above, nose upward, with swept wings and a raised cockpit. The medal settles into a gentle sway behind **MISSION COMPLETE**, the final score, and **FIRE: FLY AGAIN**. Victory music begins with the reveal and continues through the results. Controls are ignored during the reveal; afterward, release and press fire again to restart. The results remain on screen until then.
 
 Each level has its own mechanical enemies, with distinct polygon models and behavior code loaded from REU. Eleven types make up the four exclusive rosters:
 
 | Level | Enemies and behavior |
 |---|---|
-| Lowland Approach | **Kite patrol** weaves and fires steadily; **Needle diver** pursues the player; **Tracked gun** provides predictable ground fire. |
-| Iron Canyon | **Razor skimmer** crosses the ravine sideways; **Gorge swooper** makes deep vertical passes; **Cliff battery** fires a two-shot burst from the wall. |
-| Fortress Run | **Iron gunship** advances slowly with heavy armor; **Lance sentry** pauses to fire, then accelerates; **Citadel bunker** fires a three-shot fan. |
-| Carrier Assault | **Wing guard** weaves and fires paired bursts; **Sting rammer** tracks the player, then commits to a fast unarmed attack. Both escort the existing carrier boss. |
+| Lowland Approach | **Kite patrol** flies a broad figure-eight and fires steadily; **Needle diver** weaves toward the player before committing to its dive; **Tracked gun** provides predictable ground fire. |
+| Iron Canyon | **Razor skimmer** crosses the ravine with a rising and falling arc; **Gorge swooper** loops sideways through deep vertical passes; **Cliff battery** fires a two-shot burst from the wall. |
+| Fortress Run | **Iron gunship** advances slowly in a shallow ellipse with heavy armor; **Lance sentry** feints inward and returns to its lane, pauses to fire, then accelerates; **Citadel bunker** fires a three-shot fan. |
+| Carrier Assault | **Wing guard** flies an elliptical patrol and fires paired bursts; **Sting rammer** weaves while tracking the player, then commits to a fast unarmed attack. Both escort the existing carrier boss. |
+
+All eight flying enemies have distinct movement patterns. Harmonic paths reuse the existing sine lookup table, while the sentry's feint uses a few age thresholds. Starting positions and age already stored on each enemy drive the patterns, with no additional tables or per-enemy state. Divers and rammers retain bounded steering and commit to their final approach before reaching the player.
 
 The carrier's two turrets and protected core retain their existing rules. Scenic crossings clear the outgoing roster before the next level begins; attract previews and checkpoint restarts use the same level-specific enemies as gameplay.
 
@@ -120,6 +124,8 @@ cargo run --release -- snapshot 1 5000 target/previews/canyon
 cargo run --release -- snapshot attract 35000 target/previews/attract-canyon
 cargo run --release -- snapshot transition 0 4000 target/previews/lowlands-canyon
 cargo run --release -- snapshot transition 2 8000 target/previews/carrier-arrival
+cargo run --release -- snapshot victory 1000 target/previews/victory-fade
+cargo run --release -- snapshot victory 8000 target/previews/victory-results
 python3 tools/previews.py
 ```
 
@@ -128,6 +134,8 @@ Snapshots produce an aspect-correct PPM and the exact 10,000 native bitmap/scree
 `snapshot attract` takes elapsed milliseconds from a fresh title screen and replays the actual idle/preview simulation. For example, `35000` captures five seconds into Iron Canyon; `75000` captures the automatic return to the title.
 
 `snapshot transition <0|1|2> <elapsed-ms> [output-prefix]` selects the outgoing section and a time from `0` through `8000`, rounded down to a 20 ms simulation tick. `4000` shows the bridge midpoint; `8000` shows the incoming checkpoint. These inspection snapshots do not replay preceding combat.
+
+`snapshot victory <elapsed-ms> [output-prefix]` captures the final reveal from a representative completed mission, also rounded down to a 20 ms tick. `1000` shows the fading battlefield, `4000` shows the approaching medal, and `8000` shows the results. Later times capture the continuing sway and restart prompt; the preview supports up to 65,535 elapsed ticks (`1310719` ms before rounding). It does not replay preceding combat.
 
 Optional native checks run the assembly helpers in the LLVM-MOS 6502 simulator:
 
@@ -177,13 +185,26 @@ Original synthesized music runs on a 50 Hz CIA interrupt independently of render
 
 Simulation uses fixed 20 ms steps, while joystick gestures use timestamped display-rate input. Executable phases share a RAM window and are loaded from REU; audio and the interrupt handler remain resident. Detailed memory ownership and configuration references are in [docs/hardware.md](docs/hardware.md).
 
-The six execution phases are BOOT, SIM, GEOMETRY, PIXELS, AUDIO, and SCENERY. SIM has four packaged images, each combining shared simulation with one level's enemy code. Every SIM pass loads the matching image into the shared RAM window; a section change during catch-up returns to the resident loader before the next tick or render. The 2,048-byte model cache changes only when the selected level changes. After SIM, each frame runs AUDIO when a score page is needed, SCENERY, GEOMETRY, then PIXELS. SCENERY stages up to 96 camera-space triangles in the existing command array; GEOMETRY projects them, adds the foreground, and preserves foreground-first ordering at equal depth.
+The six execution phases are BOOT, SIM, GEOMETRY, PIXELS, AUDIO, and SCENERY. SIM has four level images combining shared simulation with each level's enemy code, plus a terminal image for victory and defeat. Every SIM pass loads the matching image into the shared RAM window; a section or terminal-mode change during catch-up returns to the resident loader before the next tick or render. The 2,048-byte model cache changes only when the selected level changes. After SIM, each frame runs AUDIO when a score page is needed, SCENERY, GEOMETRY, then PIXELS. SCENERY stages up to 96 camera-space triangles in the existing command array; GEOMETRY projects them, adds the foreground, and preserves foreground-first ordering at equal depth. Victory substitutes a medal-drawing tail for combat geometry and repaints all 25 screen bands.
 
-Package version 3 uses the `OVL4` code directory and four checked `SMA2` model banks. Startup validates every code image and model bank; old PRG/REU packages are incompatible. The original SIM image remains at REU `$020000`, the other three occupy `$080000` through `$0A0000`, and the model banks begin at `$0B0000`. The score and scenery banks remain at `$060000` and `$070000`.
+Package version 4 uses the `OVL5` code directory and four checked `SMA3` model banks, each including the medal mesh. Startup validates every code image and model bank; old PRG/REU packages are incompatible. The original SIM image remains at REU `$020000`, the other three level images occupy `$080000` through `$0A0000`, and the model banks begin at `$0B0000`. Victory geometry occupies `$0C0000` and terminal simulation `$0D0000`. The score and scenery banks remain at `$060000` and `$070000`.
 
 During bridges, native transfers omit enemy/boss drawing code and include wildlife code in the shared overlay memory. Ordinary frames skip the wildlife code. Player and weapon rendering stay available in both cases; enemy simulation is paused throughout the crossing.
 
 ## Validation history and performance
+
+The ship-medal revision passes **225 host tests per SID profile**, with one existing native-fixture export ignored. The emblem uses the player's actual upper hull and footprint, reducing the medal from 58 vertices / 100 triangles to 50 / 88. Both packages pass native memory and overlay audits plus PAL/NTSC checks for the complete reveal, frozen state, uninterrupted music, and held/fresh-fire behavior. Native captures show the raised silhouette with clear captions and no retained battlefield after blackout. Reports and previews are under `target/medal-silhouette/`; physical C64 Ultimate testing remains outstanding.
+
+The terrain visibility correction prevents ground triangles from covering the
+ship, its exhaust, Lowlands tracked guns and Fortress bunkers. Canyon wall batteries
+and ordinary foreground occlusion keep their existing behavior. It uses a spare
+coverage bit without adding triangles or framebuffers; the geometric limits are
+documented in [the hardware notes](docs/hardware.md#terrain-visibility-coverage).
+
+
+The gold-medal ending passes **212 host tests per SID profile**, with one existing native-fixture export ignored. Both packages pass memory and overlay audits, 13 negative relocation cases, and 29 startup-corruption cases per profile. PAL and NTSC native checks for both profiles verify the complete 400-tick reveal, frozen player state, continuing victory music, and fresh-fire restart. Two-SID PAL also passes controls, weapons, checkpoints, and the full attract tour. Each video standard passes 169 cached-versus-forced-repaint comparisons. The same 40-frame opening-game sample changes from 5.8628 to 5.8454 FPS PAL and remains 6.1360 FPS NTSC, within the five-percent regression budget. See [the medal measurements](docs/benchmarks.md#gold-medal-ending-2026-10-17). Physical C64 Ultimate testing remains outstanding.
+
+Kaiju's native triangle preparation port preserves exact state, geometry, and pixels in 720 paired fixed-work samples. Median whole-frame case speed improves 9.1% PAL / 8.3% NTSC; the separate 400-tick ordinary-play probe improves from 5.503 to 5.872 FPS PAL and 5.644 to 6.096 FPS NTSC. Both SID packages and the cache replays pass. See [the native preparation measurements](docs/benchmarks.md#native-triangle-preparation-port-2026-10-17).
 
 The doubled-enemy build passes **201 host tests per SID profile**, with one existing native-fixture export ignored, plus 95 library tests without host tools. Both native packages pass memory and overlay audits. Two-SID PAL checks pass weapons, section streaming, and the full attract tour; two-SID NTSC smoke and four-SID NTSC weapon checks also pass. The same 40-frame opening gameplay sample measures **5.4816 FPS PAL / 5.6573 FPS NTSC**, compared with 5.4517 / 5.6440 before enlargement (changes of +0.55% / +0.24%). These small differences show no slowdown in that sample, not a whole-mission speedup. Reports and before/after captures are under `target/enemy-scale/`. Physical C64 Ultimate testing remains outstanding.
 

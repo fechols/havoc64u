@@ -65,12 +65,18 @@ enum Snapshot {
     Section(u8, u16),
     Attract(u32),
     Transition(u8, u16),
+    Victory(u16),
 }
 
 fn snapshot(source: Snapshot, out: &Path) -> Result<(), Box<dyn std::error::Error>> {
     let models: [_; 4] = core::array::from_fn(|i| host::model_bank(i as u8));
+    let hud_frame = match &source {
+        Snapshot::Victory(elapsed_ticks) => *elapsed_ticks,
+        _ => 0,
+    };
     let game = match source {
         Snapshot::Title => Game::new(),
+        Snapshot::Victory(elapsed_ticks) => Game::preview_victory(elapsed_ticks),
         Snapshot::Transition(section, elapsed_ticks) => {
             Game::preview_transition(section, elapsed_ticks)
         }
@@ -109,7 +115,7 @@ fn snapshot(source: Snapshot, out: &Path) -> Result<(), Box<dyn std::error::Erro
     let data = host::segment_bank(game.segment_index());
     let segment = Segment::new(&data).unwrap();
     let bank = AssetBank::new(&models[game.segment_index() as usize]).unwrap();
-    let (bytes, triangles, dropped) = frame(&game, &bank, &segment, 0);
+    let (bytes, triangles, dropped) = frame(&game, &bank, &segment, hud_frame);
     if let Some(p) = out.parent() {
         fs::create_dir_all(p)?;
     }
@@ -125,6 +131,13 @@ fn snapshot(source: Snapshot, out: &Path) -> Result<(), Box<dyn std::error::Erro
     }
     Ok(())
 }
+
+fn victory_ticks(elapsed_ms: &str) -> Result<u16, Box<dyn std::error::Error>> {
+    let elapsed_ms = elapsed_ms.parse::<u32>()?;
+    u16::try_from(elapsed_ms / 20)
+        .map_err(|_| "victory elapsed milliseconds exceed the 65535-tick preview range".into())
+}
+
 fn run() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = env::args().collect();
     match args.get(1).map(String::as_str) {
@@ -151,6 +164,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     );
                 }
                 Snapshot::Transition(section, elapsed_ms / 20)
+            } else if args.get(2).map(String::as_str) == Some("victory") {
+                Snapshot::Victory(victory_ticks(
+                    args.get(3).ok_or("victory needs elapsed milliseconds")?,
+                )?)
             } else if args.get(2).map(String::as_str) == Some("attract") {
                 Snapshot::Attract(
                     args.get(3)
@@ -164,7 +181,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     .map(|s| s.parse::<u8>())
                     .transpose()?;
                 if section.is_some_and(|s| s >= 4) {
-                    return Err("section must be 0..3, title, or attract".into());
+                    return Err(
+                        "section must be 0..3, title, attract, transition, or victory".into(),
+                    );
                 }
                 let distance = args
                     .get(3)
@@ -194,7 +213,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             Ok(())
         }
         _ => {
-            println!("H.A.V.O.C. tools\n  bake [directory]\n  check game.reu\n  snapshot <title|0|1|2|3> [distance] [output-prefix]\n  snapshot attract <elapsed-ms> [output-prefix]\n  snapshot transition <0|1|2> <elapsed-ms:0..8000> [output-prefix]\n  sizes");
+            println!("H.A.V.O.C. tools\n  bake [directory]\n  check game.reu\n  snapshot <title|0|1|2|3> [distance] [output-prefix]\n  snapshot attract <elapsed-ms> [output-prefix]\n  snapshot transition <0|1|2> <elapsed-ms:0..8000> [output-prefix]\n  snapshot victory <elapsed-ms> [output-prefix]\n  sizes");
             Ok(())
         }
     }
@@ -209,6 +228,17 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn victory_preview_time_quantizes_and_accepts_settled_animation() {
+        assert_eq!(victory_ticks("0").unwrap(), 0);
+        assert_eq!(victory_ticks("7999").unwrap(), 399);
+        assert_eq!(victory_ticks("8000").unwrap(), 400);
+        assert_eq!(victory_ticks("12019").unwrap(), 600);
+        assert_eq!(victory_ticks("1310719").unwrap(), u16::MAX);
+        assert!(victory_ticks("1310720").is_err());
+        assert!(victory_ticks("-1").is_err());
+        assert!(victory_ticks("not-a-time").is_err());
+    }
     #[test]
     fn original_assets_fit_and_validate() {
         let b = host::common_bank();

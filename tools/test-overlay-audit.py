@@ -29,6 +29,8 @@ def main():
         struct.pack_into("<Ii", data, position + 4, (symbol_index(table, name) << 8) | kind, 0)
 
     opaque = next(entry for entry in entries if entry[4].name == "enemy_step")
+    terminal = next(entry for entry in entries if entry[4].name == "terminal_step")
+    victory = next(entry for entry in entries if entry[4].name == "victory_geometry")
     geometry = next(entry for entry in entries if entry[1].name == ".phase.geometry" and entry[3] == 3)
     lowlands = next(entry for entry in entries if entry[1].name == ".phase.enemy.lowlands" and entry[3] == 3)
     pointer = next(entry for entry in entries
@@ -56,6 +58,11 @@ def main():
         ("irq-calls-enemy", lambda data: replace_target(data, irq, "enemy_step"), "opaque enemy ABI"),
         ("escaped-enemy-pointer", lambda data: replace_target(data, pointer, "enemy_step"), None),
         ("foreign-switch-table", lambda data: replace_target(data, pointer, "enemy_canyon"), "unsafe overlay references"),
+        ("geometry-calls-terminal", lambda data: replace_target(data, geometry, "terminal_step"), "opaque terminal_step ABI"),
+        ("sim-calls-victory", lambda data: replace_target(data, opaque, "victory_geometry"), "opaque victory_geometry ABI"),
+        ("direct-terminal-tail", lambda data: replace_target(data, terminal, "game_terminal"), "unsafe overlay references"),
+        ("direct-victory-tail", lambda data: replace_target(data, victory, "medal_geometry"), "unsafe overlay references"),
+        ("irq-calls-medal", lambda data: replace_target(data, irq, "victory_geometry"), "opaque victory_geometry ABI"),
     ]
     with tempfile.TemporaryDirectory(prefix="havoc-overlay-audit-") as temporary:
         target = Path(temporary) / "damaged.elf"
