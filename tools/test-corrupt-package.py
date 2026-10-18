@@ -81,7 +81,17 @@ def main():
         ("resident-pair", 0x118, "PRG AND REU DO NOT MATCH"),
         ("directory-profile", 0x120, "PRG AND REU DO NOT MATCH"),
         ("music-page", 0x60080+12+5*(10 if original["reu"][17] == 4 else 4), "INVALID MUSIC PAGE"),
+        ("model-directory", 0x40, "INVALID MODEL DIRECTORY"),
+        ("model-hp-sentinel", 0xb0000 + 2*2048 + 80, "INVALID LEVEL MODEL BANK"),
     ]
+    for level, page in enumerate((2, 8, 9, 10)):
+        cases.append((f"level-{level}-enemy-code", page*0x10000 + 16, "REU CODE CHECKSUM FAILED"))
+        # Include the last byte: startup checks the entire padded composite,
+        # even when a shorter enemy tail leaves zero padding at its end.
+        size_at = 0x106 if level == 0 else 0x126 + (level-1)*4
+        size = int.from_bytes(original["reu"][size_at:size_at+2], "little")
+        cases.append((f"level-{level}-enemy-tail", page*0x10000 + size-1, "REU CODE CHECKSUM FAILED"))
+        cases.append((f"level-{level}-models", 0xb0000 + level*2048 + 200, "INVALID LEVEL MODEL BANK"))
     for name, offset, expected in cases:
         case_output = output/name
         private_package = case_output/"package"
@@ -90,8 +100,15 @@ def main():
             (private_package/f"havoc.{extension}").write_bytes(original[extension])
         damaged = bytearray(original["reu"])
         damaged[offset] ^= 1
+        if name == "model-hp-sentinel":
+            # HP 255 belongs to indestructible scenery, never an enemy. Repair
+            # both checksums so only structural model validation can reject it.
+            damaged[offset] = 255
+            model_start = 0xb0000 + 2*2048
+            damaged[0x50:0x52] = checksum(damaged[model_start:model_start+2048]).to_bytes(2, "little")
+            damaged[0x5e:0x60] = checksum(damaged[0x40:0x5e]).to_bytes(2, "little")
         if name == "old-code-directory":
-            damaged[0x100:0x104] = b"OVL2"
+            damaged[0x100:0x104] = b"OVL3"
         if name == "directory-profile":
             damaged[offset] = 2 if original["reu"][17] == 4 else 4
         if name in ("resident-pair", "directory-profile", "old-code-directory"):

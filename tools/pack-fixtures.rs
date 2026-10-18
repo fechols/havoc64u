@@ -57,9 +57,9 @@ fn main(){
             save(dir,id,&pixels,&old_screen,&old_color);id+=1;
         }
     }
-    let common=host::common_bank();let bank=AssetBank::new(&common).unwrap();
     for scene in 0..5 {
         let game=if scene==0 {Game::new()}else{Game::preview_at(scene-1,5000)};
+        let models=host::model_bank(game.segment_index());let bank=AssetBank::new(&models).unwrap();
         let segment_data=host::segment_bank(game.segment_index());let segment=Segment::new(&segment_data).unwrap();
         let mut renderer=Renderer::new();renderer.begin(game.sky_color());game.render(&mut renderer,&bank,&segment);renderer.finish();
         for band in [0,4,8,12,16,20,23,24] {

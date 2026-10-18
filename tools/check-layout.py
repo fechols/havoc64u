@@ -34,6 +34,12 @@ assert 0 < symbols['__phase_scenery_base_size'] < symbols['__phase_scenery_size'
 assert symbols['__phase_scenery_base_end'] == 0x3000 + symbols['__phase_scenery_base_size']
 assert 0 < symbols['__phase_geometry_base_size'] < symbols['__phase_geometry_size'] <= 0x4200
 assert symbols['__phase_geometry_base_end'] == 0x3000 + symbols['__phase_geometry_base_size']
+assert symbols['enemy_step'] == symbols['__phase_sim_base_end'] == 0x3000 + symbols['__phase_sim_base_size']
+assert 0 < symbols['__phase_sim_base_size'] < symbols['__phase_sim_size'] <= 0x4200
+assert symbols['__phase_sim_size'] == symbols['__phase_sim_base_size'] + symbols['__phase_enemy_size']
+enemy_sections = {f'.phase.enemy.{level}' for level in ('lowlands', 'canyon', 'fortress', 'carrier')}
+for level in ('lowlands', 'canyon', 'fortress', 'carrier'):
+    assert symbols[f'enemy_{level}'] == symbols['enemy_step'], f'{level} ABI entry is not first'
 assert (symbols['__raster_tails_start'],symbols['__raster_tails_end'])==(0x6000,0x6c00)
 assert (symbols['__raster_masks_start'],symbols['__raster_masks_end'])==(0x6c00,0x6f20)
 assert symbols['__raster_masks_end']<=symbols['__irq_stack_bottom']
@@ -44,7 +50,10 @@ for line in listing.splitlines():
     if not m:continue
     name,address,size,flags=m.groups();address=int(address,16);size=int(size,16)
     if 'A' not in flags or not size:continue
-    if name.startswith('.phase.'):
+    if name in enemy_sections:
+        assert address == symbols['enemy_step'] and 0 < size <= symbols['__phase_enemy_size'], name
+        assert address + size <= 0x7200, name
+    elif name.startswith('.phase.'):
         assert name in {'.phase.boot','.phase.sim','.phase.geometry','.phase.pixels','.phase.audio','.phase.scenery'},name
         limit=0x3000 if name=='.phase.pixels' else 0x4200
         assert address==0x3000 and size<=limit,name
@@ -65,3 +74,4 @@ print('GEOMETRY code3000-71FF; projection/sort cache8C00-8E7F shares PIXELS band
 print('SCENERY code3000-71FF; raw recordsD880-DFFF share GEOMETRY commands')
 print(f'SCENERY ordinary prefix {symbols["__phase_scenery_base_size"]} bytes; transition tail {symbols["__phase_scenery_size"]-symbols["__phase_scenery_base_size"]} bytes')
 print(f'GEOMETRY transition prefix {symbols["__phase_geometry_base_size"]} bytes; combat tail {symbols["__phase_geometry_size"]-symbols["__phase_geometry_base_size"]} bytes')
+print(f'SIM common prefix {symbols["__phase_sim_base_size"]} bytes; largest enemy tail {symbols["__phase_enemy_size"]} bytes; four padded images {symbols["__phase_sim_size"]} bytes each')

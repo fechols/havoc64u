@@ -146,6 +146,28 @@ fn both_video_clocks_produce_concert_a_within_register_precision() {
 }
 
 #[test]
+fn pitch_lookup_preserves_every_previous_frequency_and_invalid_note() {
+    // FNV-1a of all 256 little-endian results from the original octave/rounding
+    // implementation. This also checks both invalid ranges, including 0/255.
+    for (standard, expected) in [
+        (VideoStandard::Pal, 0xec87_49a2),
+        (VideoStandard::Ntsc, 0x67b1_1702),
+    ] {
+        let mut hash = 2_166_136_261u32;
+        for note in 0..=255 {
+            let frequency = note_frequency(standard, note);
+            if !(24..=95).contains(&note) {
+                assert_eq!(frequency, 0);
+            }
+            for byte in frequency.to_le_bytes() {
+                hash = (hash ^ byte as u32).wrapping_mul(16_777_619);
+            }
+        }
+        assert_eq!(hash, expected, "{standard:?} pitch compatibility");
+    }
+}
+
+#[test]
 fn stereo_routing_uses_only_reserved_effects_voices() {
     let (mut player, mut bus) = engine();
     player.tick(&mut bus);
@@ -468,7 +490,9 @@ fn enemy_fire_has_a_noise_attack_falling_sawtooth_and_release_in_each_stereo_lan
                         }
                     );
                     if (1..6).contains(&age) {
-                        assert!(writes.iter().all(|&(reg, value)| reg != 18 || value & 1 != 0));
+                        assert!(writes
+                            .iter()
+                            .all(|&(reg, value)| reg != 18 || value & 1 != 0));
                     }
                     if age == 1 {
                         let sawtooth = writes
@@ -476,10 +500,8 @@ fn enemy_fire_has_a_noise_attack_falling_sawtooth_and_release_in_each_stereo_lan
                             .position(|&write| write == (18, 0x21))
                             .unwrap();
                         for register in [14, 15] {
-                            let pitch = writes
-                                .iter()
-                                .position(|&(reg, _)| reg == register)
-                                .unwrap();
+                            let pitch =
+                                writes.iter().position(|&(reg, _)| reg == register).unwrap();
                             assert!(pitch < sawtooth, "body pitch must precede its waveform");
                         }
                     } else if age == 6 {
@@ -562,7 +584,8 @@ fn sustained_enemy_fire_preserves_every_music_lane_filter_and_music_write() {
     let mut first = page(MusicState::Title, 0, 0, 5);
     for row in 0..PAGE_ROWS {
         for voice in 0..MUSIC_VOICES {
-            first[EVENT_OFFSET + row * MUSIC_VOICES + voice] = 48 + voice as u8 + (row % 4) as u8 * 2;
+            first[EVENT_OFFSET + row * MUSIC_VOICES + voice] =
+                48 + voice as u8 + (row % 4) as u8 * 2;
         }
     }
     seal(&mut first);
@@ -707,6 +730,210 @@ fn queued_missiles_reject_lower_priority_overflow_but_admit_bombs() {
     player.tick(&mut bus);
     for sid in 0..2 {
         assert_eq!(&bus.registers[sid][18..21], &[0x81, 0x08, 0xd8]);
+    }
+}
+
+#[test]
+fn scenic_cues_have_distinct_short_envelopes_and_preserve_the_entire_score() {
+    for standard in [VideoStandard::Pal, VideoStandard::Ntsc] {
+        let mut first = page(MusicState::Title, 0, 0, 3);
+        for row in 0..PAGE_ROWS {
+            for voice in 0..MUSIC_VOICES {
+                first[EVENT_OFFSET + row * MUSIC_VOICES + voice] =
+                    48 + voice as u8 + (row % 4) as u8 * 2;
+            }
+        }
+        seal(&mut first);
+        for (effect, note, waveform, duration) in [
+            (Effect::Footstep, 42, 0x80, 5),
+            (Effect::BirdCall, 84, 0x10, 10),
+            (Effect::Transport, 42, 0x40, 30),
+            (Effect::TransportAway, 35, 0x40, 30),
+            (Effect::Meteor, 84, 0x10, 21),
+        ] {
+            for (pan, sid) in [(-100, 0), (100, 1)] {
+                let (mut player, mut bus) = ready_player(&first, standard);
+                let (mut baseline, mut baseline_bus) = ready_player(&first, standard);
+                player.queue(event(effect, pan));
+                let mut frequencies = Vec::new();
+                for age in 0..=duration + 3 {
+                    if let Some(request) = player.page_request() {
+                        player.publish_page(request, &first).unwrap();
+                    }
+                    if let Some(request) = baseline.page_request() {
+                        baseline.publish_page(request, &first).unwrap();
+                    }
+                    bus.writes.clear();
+                    baseline_bus.writes.clear();
+                    player.tick(&mut bus, &first);
+                    baseline.tick(&mut baseline_bus, &first);
+                    let registers = bus.registers[sid];
+                    let waveform = if effect == Effect::Meteor && age >= 4 {
+                        0x80
+                    } else {
+                        waveform
+                    };
+                    assert_eq!(registers[18], waveform | u8::from(age < duration));
+                    if effect == Effect::Meteor && age == 4 {
+                        assert!(bus.writes.contains(&(sid as u8, 18, 0x81)));
+                        assert!(
+                            bus.writes.iter().all(|&(chip, reg, value)| {
+                                chip as usize != sid || reg != 18 || value & 1 != 0
+                            }),
+                            "meteor changes waveform without retriggering its gate"
+                        );
+                    }
+                    assert!(registers[20] & 15 <= 2, "short SID release: {effect:?}");
+                    assert!(registers[20] >> 4 <= 6, "scenery stays below weapon level");
+                    if age < duration {
+                        frequencies.push(u16::from_le_bytes([registers[14], registers[15]]));
+                    }
+                    let music_writes: Vec<_> = bus
+                        .writes
+                        .iter()
+                        .copied()
+                        .filter(|&(chip, reg, _)| chip >= 2 || !(14..=20).contains(&reg))
+                        .collect();
+                    assert_eq!(music_writes, baseline_bus.writes);
+                    assert_eq!(bus.registers[1 - sid], baseline_bus.registers[1 - sid]);
+                    for chip in 0..SID_COUNT {
+                        let end = if chip < 2 { 14 } else { 21 };
+                        assert_eq!(
+                            &bus.registers[chip][..end],
+                            &baseline_bus.registers[chip][..end]
+                        );
+                        assert_eq!(
+                            &bus.registers[chip][21..],
+                            &baseline_bus.registers[chip][21..]
+                        );
+                    }
+                }
+                assert_eq!(frequencies[0], note_frequency(standard, note));
+                assert!(
+                    frequencies.windows(2).all(|pair| {
+                        if matches!(effect, Effect::Transport | Effect::TransportAway) {
+                            pair[0] == pair[1]
+                        } else {
+                            pair[0] > pair[1]
+                        }
+                    }),
+                    "{effect:?} pitch contour on {standard:?}"
+                );
+                assert_eq!(player.underruns(), 0);
+            }
+        }
+    }
+}
+
+#[test]
+fn scenic_priority_beats_gunfire_and_yields_to_player_actions() {
+    for scene in [
+        Effect::Footstep,
+        Effect::BirdCall,
+        Effect::Transport,
+        Effect::TransportAway,
+        Effect::Meteor,
+    ] {
+        assert_eq!(scene.priority(), 1);
+        for fire in [Effect::Fire, Effect::EnemyFire] {
+            assert_eq!(fire.priority(), 0);
+            let (mut player, mut bus) = engine();
+            let (mut baseline, mut baseline_bus) = engine();
+            player.queue(event(fire, 0));
+            player.tick(&mut bus);
+            baseline.tick(&mut baseline_bus);
+            player.queue(event(scene, 0));
+            baseline.queue(event(scene, 0));
+            player.tick(&mut bus);
+            baseline.tick(&mut baseline_bus);
+            player.queue(event(fire, 0));
+            player.tick(&mut bus);
+            baseline.tick(&mut baseline_bus);
+            assert_eq!(bus.registers, baseline_bus.registers);
+        }
+        for stronger in [
+            Effect::Pickup,
+            Effect::Roll,
+            Effect::Hit,
+            Effect::MissileLaunch,
+            Effect::Bomb,
+            Effect::Death,
+        ] {
+            let (mut player, mut bus) = engine();
+            let (mut baseline, mut baseline_bus) = engine();
+            player.queue(event(scene, 0));
+            player.tick(&mut bus);
+            baseline.tick(&mut baseline_bus);
+            player.queue(event(stronger, 0));
+            baseline.queue(event(stronger, 0));
+            player.tick(&mut bus);
+            baseline.tick(&mut baseline_bus);
+            player.queue(event(scene, 0));
+            player.tick(&mut bus);
+            baseline.tick(&mut baseline_bus);
+            assert_eq!(bus.registers, baseline_bus.registers);
+        }
+        let (mut player, _) = engine();
+        for _ in 0..4 {
+            assert!(player.queue(event(scene, 0)));
+        }
+        assert!(!player.queue(event(Effect::Fire, 0)));
+        assert!(player.queue(event(Effect::Roll, 0)));
+    }
+}
+
+#[test]
+fn scene_cancellation_releases_on_the_next_tick_and_retains_player_events() {
+    for standard in [VideoStandard::Pal, VideoStandard::Ntsc] {
+        let (mut player, mut bus) = engine_for(standard);
+        let (mut baseline, mut baseline_bus) = engine_for(standard);
+        player.queue(event(Effect::Transport, -100));
+        player.queue(event(Effect::Roll, 100));
+        baseline.queue(event(Effect::Roll, 100));
+        player.tick(&mut bus);
+        baseline.tick(&mut baseline_bus);
+        bus.writes.clear();
+        player.cancel_scene_effects();
+        player.cancel_scene_effects();
+        assert!(
+            bus.writes.is_empty(),
+            "foreground cancellation never touches SID"
+        );
+        assert_eq!(bus.registers[0][18] & 1, 1);
+        player.tick(&mut bus);
+        baseline.tick(&mut baseline_bus);
+        assert_eq!(bus.registers[0][18] & 1, 0);
+        assert_eq!(bus.registers[1], baseline_bus.registers[1]);
+
+        for effect in [
+            Effect::Footstep,
+            Effect::Fire,
+            Effect::Meteor,
+            Effect::Pickup,
+        ] {
+            let pan = if matches!(effect, Effect::Footstep | Effect::Fire) {
+                -100
+            } else {
+                100
+            };
+            player.queue(event(effect, pan));
+            if matches!(effect, Effect::Fire | Effect::Pickup) {
+                baseline.queue(event(effect, pan));
+            }
+        }
+        player.cancel_scene_effects();
+        for _ in 0..35 {
+            player.tick(&mut bus);
+            baseline.tick(&mut baseline_bus);
+            assert_eq!(bus.registers, baseline_bus.registers);
+        }
+        player.queue(event(Effect::Meteor, 0));
+        player.tick(&mut bus);
+        player.queue(event(Effect::BirdCall, 0));
+        player.cancel_scene_effects();
+        player.tick(&mut bus);
+        assert_eq!(bus.registers[0][18] & 1, 0);
+        assert_eq!(bus.registers[1][18] & 1, 0);
     }
 }
 

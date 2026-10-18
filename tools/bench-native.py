@@ -106,7 +106,7 @@ def fixtures():
     result = []
     for name, rail in (("title", 0), ("lowlands", 625), ("canyon", 4375),
                        ("base", 8125), ("carrier", 12025), ("missiles", 4375),
-                       ("full-pools", 7462), ("section-boundary", 3749)):
+                       ("full-pools", 12025), ("section-boundary", 3749)):
         patch = {"mode": 0 if name == "title" else 1, "rail_ticks": rail, "ticks": 0,
                  "player.x": 0, "player.y": 0, "player.z": 180,
                  "spawn_segment": rail // 3750, "spawn_cursor": 255,
@@ -135,15 +135,41 @@ def fixtures():
             ):
                 for index in range(count):
                     for field, value in fields.items():
+                        if array == "actors" and field == "kind":
+                            value = 1 + index % 2
                         patch[f"{array}[{index}].{field}"] = value
         result.append({"name": name, "patch": patch, "section": rail // 3750,
                        "cache_miss": name == "section-boundary", "input_bits": 0})
     for section in range(3):
-        for progress in (0, 200, 399):
+        # Four final meteor streaks overlap at tick 306, before the oldest
+        # expires at tick 310; midpoint alone misses this geometry peak.
+        progress_ticks = (0, 200, 306, 399) if section == 2 else (0, 200, 399)
+        for progress in progress_ticks:
             patch = dict(result[1]["patch"], mode=6, rail_ticks=(section+1)*3750,
                          transition_ticks=progress, spawn_segment=section)
             result.append({"name": f"bridge-{section}-{progress}", "patch": patch,
                            "section": section, "cache_miss": False, "input_bits": 16})
+    # Exercise the real per-level enemies, including simultaneous escorts and
+    # carrier weak points. Warm and cold model-bank fixtures are distinct.
+    for section, label in enumerate(("lowlands", "canyon", "fortress", "carrier")):
+        for saturated in (False, True):
+            patch = dict(result[1]["patch"], rail_ticks=section*3750+625,
+                         spawn_segment=section)
+            if section == 3:
+                patch.update(boss_started=1, boss_z=680, boss_left=20, boss_right=20, boss_core=60)
+            count = 12 if saturated else (2 if section == 3 else 3)
+            for index in range(count):
+                kind = 1 + index % (2 if section == 3 else 3)
+                x, y = (index % 3-1)*75, -90 if kind == 3 else (index % 2)*50-25
+                for field, value in {"kind": kind, "hp": 6, "age": 54,
+                        "origin_x": x, "origin_y": y, "pos.x": x, "pos.y": y,
+                        "pos.z": 650 + index%3*160}.items():
+                    patch[f"actors[{index}].{field}"] = value
+            fixture = {"name": f"enemies-{label}{'-full' if saturated else ''}",
+                       "patch": patch, "section": section, "cache_miss": False, "input_bits": 0}
+            result.append(fixture)
+            if not saturated:
+                result.append(dict(fixture, name=f"enemies-{label}-cold", enemy_cache_miss=True))
     return result
 
 
@@ -196,7 +222,8 @@ def cache_sequence():
                  "player.y": heights[-1]}, section=section, theme_check=True,
                 camera_check=True, stable_check=frame == 2))
     for section in range(3):
-        for progress in (0, 100, 200, 300, 399):
+        progress_ticks = (0, 100, 200, 300, 306, 399) if section == 2 else (0, 100, 200, 300, 399)
+        for progress in progress_ticks:
             sequence.append(variant(f"bridge-{section}-{progress}",
                 {"mode": 6, "rail_ticks": (section+1)*3750,
                  "transition_ticks": progress, "spawn_segment": section},
@@ -413,12 +440,26 @@ def main():
             game = bytearray(initial_game)
             for field, value in fixture["patch"].items():
                 layouts.patch(game, "Game", field, value)
+            # Speeds are initialized exactly as spawning would do, including
+            # zero-tick missile fixtures that have not run enemy movement yet.
+            if "approach_speed" in layouts.load("Actor")["fields"]:
+                for index in range(12):
+                    kind = fixture["patch"].get(f"actors[{index}].kind", 0)
+                    if 1 <= kind <= (2 if fixture["section"] == 3 else 3):
+                        descriptor = 0xb0000 + fixture["section"]*2048 + 80 + (kind-1)*8
+                        layouts.patch(game, "Game", f"actors[{index}].approach_speed", segment_image[descriptor+6])
             write(game_address, game)
             write(audio_address, initial_audio)
             runtime = bytearray(initial_runtime)
             sections = [fixture["section"], (fixture["section"] + (2 if fixture["cache_miss"] else 1)) % 4]
             for field, value in (("sim_ms", 0), ("current", 0), ("loaded[0]", sections[0]), ("loaded[1]", sections[1])):
                 layouts.patch(runtime, "Runtime", field, value)
+            if "profile" in layouts.load("Runtime")["fields"]:
+                profile = (fixture["section"] + int(fixture.get("enemy_cache_miss", False))) % 4
+                layouts.patch(runtime, "Runtime", "profile", profile)
+                write(0x8400, segment_image[0xb0000+profile*2048:0xb0000+(profile+1)*2048])
+                word(syms["ENEMY_MODEL_PROFILE"], profile, 1)
+                word(syms["ENEMY_CODE_PROFILE"], profile, 1)
             write(runtime_address, runtime)
             for slot, section in enumerate(sections):
                 write(0x9500+slot*512, segment_image[0x2000+section*2048:0x2200+section*2048])
@@ -521,6 +562,11 @@ def main():
                                     "reused_bands": 25 - sum(event["address"] == syms["PROF_DETAIL"] and event["value"] == 2 for event in events)}
             mon.command("bank ram")
             state = layouts.decode("Game", mon.read(game_address, layouts.size("Game")))
+            end["simulation_ticks"] = state["ticks"]
+            if "ENEMY_CODE_PROFILE" in syms:
+                section = vice.active_section(state["rail_ticks"], state["mode"])
+                end["enemy_bank"] = vice.enemy_bank_check(mon, syms, segment_image, section)
+                mon.command("bank ram")
             end["stack_guards"] = {name: mon.integer(syms[name], 1) for name in ("__stack_bottom", "__irq_stack_bottom")}
             mon.command("bank cpu")
             native = native_bytes(mon, syms)
@@ -539,6 +585,8 @@ def main():
                 (folder/"geometry.json").write_text(json.dumps(geometry, indent=2)+"\n")
             if end["input_overflows"] or end["frame_dropped"] or any(value != 0xa5 for value in end["stack_guards"].values()):
                 raise RuntimeError("Fixed-work frame dropped data or changed a stack guard")
+            if end.get("music_underruns", 0):
+                raise RuntimeError("Fixed-work frame underrun the score prefetch")
             if end["dma"]["max_bytes"] > 1024:
                 raise RuntimeError("Runtime DMA exceeded the 1024-byte IRQ latency bound")
             service = end["audio_service_cycles"]
@@ -577,6 +625,10 @@ def main():
                                 mon.run_until(syms["benchmark_frame_ready"], failures)
                         seeded = seed(fixture, ticks, palette == "cold", phase)
                         sample = measured_frame(folder, sample_index == 0)
+                        if fixture["patch"]["mode"] in (1, 6):
+                            expected_ticks = (fixture["patch"].get("ticks", 0) + ticks) & 0xffff
+                            if sample["simulation_ticks"] != expected_ticks:
+                                raise RuntimeError("Code/model reentry skipped or duplicated fixed simulation ticks")
                         sample.update(initial=seeded, cia_phase=phase)
                         if case["samples"] and any(sample[key] != case["samples"][0][key] for key in ("geometry_sha256", "game_sha256", "native_sha256")):
                             raise RuntimeError("Identical fixture repeats changed geometry, game state, or pixels")

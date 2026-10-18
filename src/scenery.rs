@@ -1,5 +1,5 @@
 //! World-anchored scenery, emitted before projection by the SCENERY overlay.
-//! Decorative animals deliberately have no gameplay objects or collision state.
+//! Decorative crossings deliberately have no gameplay objects or collision state.
 use crate::assets::Segment;
 use crate::game::STATIC_SKY;
 use crate::{GeometrySink, Vec3, TWO_SIDED};
@@ -461,11 +461,21 @@ fn wildlife(
     elapsed: u16,
     camera_y: i16,
 ) {
+    // Keep the audited entry point in the transition-only overlay tail. Every
+    // decoration is generated from the scene clock, with no simulation state.
+    if section == 1 {
+        transport(sink, elapsed, camera_y);
+        return;
+    }
+    if section == 2 {
+        meteors(sink, elapsed);
+        return;
+    }
     // This crossing is fixed in the world: the camera closes eight units/tick.
     // It enters and leaves beyond the viewport, so no visible actor pops at a cut.
     let z = 3000 - elapsed as i16 * 8;
     let x = -3200 + elapsed as i16 * 16;
-    if section == 0 && z > 180 {
+    if z > 180 {
         let row = row_at((scene_ticks + (z as u16 / 8)) >> 6, None);
         let height = if x < 0 { row.left } else { row.right };
         let lateral = x.abs();
@@ -551,6 +561,211 @@ fn wildlife(
             ],
             0,
             camera_y,
+        );
+    }
+}
+
+#[cfg_attr(target_arch = "mos", link_section = ".phase.scenery.wildlife.data")]
+static TRANSPORT_POINTS: [[i8; 2]; 20] = [
+    [-100, 0],
+    [-72, 28],
+    [58, 28],
+    [92, 8],
+    [92, -8],
+    [66, -20],
+    [-72, -20],
+    [-32, 0],
+    [64, 7],
+    [-55, 28],
+    [-40, 50],
+    [36, 50],
+    [48, 28],
+    [-72, 18],
+    [-58, 18],
+    [-64, 8],
+    [-26, 12],
+    [44, 12],
+    [44, 0],
+    [-26, 0],
+];
+#[cfg_attr(target_arch = "mos", link_section = ".phase.scenery.wildlife.data")]
+static TRANSPORT_FACES: [[u8; 4]; 14] = [
+    [0, 1, 7, 12],
+    [1, 2, 7, 15],
+    [2, 8, 7, 12],
+    [2, 3, 8, 15],
+    [3, 4, 8, 11],
+    [8, 4, 5, 11],
+    [7, 8, 5, 9],
+    [0, 7, 6, 11],
+    [7, 5, 6, 11],
+    [9, 10, 11, 12],
+    [9, 11, 12, 15],
+    [13, 14, 15, 14],
+    [16, 17, 18, 7],
+    [16, 18, 19, 7],
+];
+
+#[inline(never)]
+#[cfg_attr(target_arch = "mos", link_section = ".phase.scenery.wildlife")]
+fn transport(sink: &mut impl GeometrySink, elapsed: u16, camera_y: i16) {
+    // At both boundaries the entire craft (including its broad hull) is beyond
+    // the viewport. The camera passes beneath it during the central four seconds.
+    if !(50..350).contains(&elapsed) {
+        return;
+    }
+    let x = 4800 - elapsed as i16 * 24;
+    let y = 700 + crate::math::sin8((elapsed as u8).wrapping_mul(2)) / 8;
+    for face in TRANSPORT_FACES {
+        let points = core::array::from_fn(|corner| {
+            let p = TRANSPORT_POINTS[face[corner] as usize];
+            Vec3 {
+                x: x + p[0] as i16 * 8,
+                y: y + p[1] as i16 * 8,
+                z: 2000,
+            }
+        });
+        triangle(sink, points, face[3], camera_y);
+    }
+    let pulse = 144 + crate::math::sin8((elapsed as u8).wrapping_mul(7)) / 4;
+    for pod in [-480, 440] {
+        let x = x + pod;
+        let y = y - 210;
+        // Three faceted engine faces and two tapered exhaust triangles per pod.
+        strip(
+            sink,
+            [x - 120, x - 85],
+            [y + 90, y - 35],
+            [x + 120, x + 85],
+            [y + 90, y - 35],
+            [1980, 1980],
+            [12, 11],
+            camera_y,
+        );
+        triangle(
+            sink,
+            [
+                Vec3 {
+                    x: x - 85,
+                    y: y - 35,
+                    z: 1978,
+                },
+                Vec3 {
+                    x: x + 85,
+                    y: y - 35,
+                    z: 1978,
+                },
+                Vec3 {
+                    x,
+                    y: y - 65,
+                    z: 1978,
+                },
+            ],
+            7,
+            camera_y,
+        );
+        triangle(
+            sink,
+            [
+                Vec3 {
+                    x: x - 65,
+                    y: y - 45,
+                    z: 1982,
+                },
+                Vec3 {
+                    x: x + 65,
+                    y: y - 45,
+                    z: 1982,
+                },
+                Vec3 {
+                    x: x + 55,
+                    y: y - pulse,
+                    z: 1982,
+                },
+            ],
+            10,
+            camera_y,
+        );
+        triangle(
+            sink,
+            [
+                Vec3 {
+                    x: x - 30,
+                    y: y - 45,
+                    z: 1976,
+                },
+                Vec3 {
+                    x: x + 30,
+                    y: y - 45,
+                    z: 1976,
+                },
+                Vec3 {
+                    x: x + 25,
+                    y: y - pulse / 2,
+                    z: 1976,
+                },
+            ],
+            1,
+            camera_y,
+        );
+    }
+}
+
+#[inline(never)]
+#[cfg_attr(target_arch = "mos", link_section = ".phase.scenery.wildlife")]
+fn meteors(sink: &mut impl GeometrySink, elapsed: u16) {
+    for (index, start) in crate::transition::METEOR_STARTS.iter().enumerate() {
+        let age = elapsed.wrapping_sub(*start);
+        if age == 0 || age >= crate::transition::METEOR_DURATION {
+            continue;
+        }
+        // Alternating left/right lanes also identify the two sound channels.
+        let origin = if index & 1 == 0 {
+            -600 + (index as i16 / 2) * 200
+        } else {
+            2200 - (index as i16 / 2) * 240
+        };
+        let x = origin - age as i16 * 12;
+        let y = 1550 + (index as i16 % 3) * 90 - age as i16 * 12;
+        let remaining = crate::transition::METEOR_DURATION - age;
+        let width = age.min(remaining).min(8) as i16 * 5;
+        let tail = if age < 24 {
+            age as i16 * 28
+        } else if remaining < 16 {
+            remaining as i16 * 42
+        } else {
+            672
+        };
+        // These are camera-independent sky coordinates. A depth beyond the
+        // horizon lets its silhouettes occlude streaks; no STATIC_SKY flags are
+        // used because each head and its tapered trail move every frame.
+        let a = Vec3 {
+            x: x - width,
+            y: y + width,
+            z: 2600,
+        };
+        let b = Vec3 {
+            x: x + width,
+            y: y - width,
+            z: 2600,
+        };
+        let tip = Vec3 {
+            x: x + tail,
+            y: y + tail,
+            z: 2600,
+        };
+        sink.triangle(a, b, tip, 10, TWO_SIDED);
+        sink.triangle(a, Vec3 { x, y, z: 2600 }, tip, 7, TWO_SIDED);
+        sink.triangle(
+            a,
+            b,
+            Vec3 {
+                x: x - width,
+                y: y - width,
+                z: 2600,
+            },
+            if remaining < 8 { 7 } else { 1 },
+            TWO_SIDED,
         );
     }
 }
@@ -705,16 +920,126 @@ mod tests {
         assert!(a.0.iter().all(|face| face.2 == TWO_SIDED));
         assert_ne!(a.0[0].0, c.0[0].0, "feet must stride");
         assert_ne!(a.0[20].0, c.0[20].0, "wings must flap");
-        for section in [1, 2] {
-            let mut birds = Capture::default();
-            wildlife(
-                &mut birds,
-                BRIDGES[section as usize] + 200,
-                section,
-                200,
-                40,
-            );
-            assert_eq!(birds.0.len(), 6, "later bridges have only the three birds");
+    }
+
+    fn decoration(section: u8, elapsed: u16, camera: i16) -> Capture {
+        let mut result = Capture::default();
+        wildlife(
+            &mut result,
+            BRIDGES[section as usize] + elapsed,
+            section,
+            elapsed,
+            camera,
+        );
+        result
+    }
+
+    #[test]
+    fn bridges_have_distinct_deterministic_decorations_with_reserved_capacity() {
+        let wildlife = decoration(0, 200, 40);
+        let transport = decoration(1, 200, 40);
+        let meteors = decoration(2, 200, 40);
+        assert_eq!(wildlife.0.len(), 26);
+        assert_eq!(transport.0.len(), 24);
+        assert_eq!(meteors.0.len(), 6);
+        assert_ne!(wildlife, transport);
+        assert_ne!(transport, meteors);
+        for section in 0..3 {
+            for elapsed in 0..400 {
+                let first = decoration(section, elapsed, 40);
+                assert_eq!(first, decoration(section, elapsed, 40));
+                assert!(first.0.len() <= 26);
+                assert!(first.0.iter().all(|face| face.2 == TWO_SIDED));
+            }
+        }
+    }
+
+    #[test]
+    fn transport_crosses_right_to_left_bobs_and_pulses_then_leaves_offscreen() {
+        let start = decoration(1, 50, 40);
+        let end = decoration(1, 349, 40);
+        assert!(start
+            .0
+            .iter()
+            .flat_map(|face| face.0)
+            .all(|p| crate::projection::project(p).0 >= 160));
+        assert!(end
+            .0
+            .iter()
+            .flat_map(|face| face.0)
+            .all(|p| crate::projection::project(p).0 < 0));
+        assert!(decoration(1, 49, 40).0.is_empty());
+        assert!(decoration(1, 350, 40).0.is_empty());
+        let a = decoration(1, 200, 40);
+        let b = decoration(1, 208, 40);
+        assert!(a.0[0].0[0].x > b.0[0].0[0].x);
+        assert_ne!(a.0[0].0[0].y, b.0[0].0[0].y, "hull must hover");
+        assert_ne!(
+            a.0[17].0[2].y - a.0[17].0[0].y,
+            b.0[17].0[2].y - b.0[17].0[0].y,
+            "exhaust must pulse independently"
+        );
+    }
+
+    #[test]
+    fn meteor_shower_is_sky_fixed_above_cockpit_and_has_smooth_boundaries() {
+        assert!(decoration(2, 100, 40).0.is_empty());
+        assert!(decoration(2, 380, 40).0.is_empty());
+        let mut peak = 0;
+        for elapsed in 0..400 {
+            let scene = decoration(2, elapsed, 24);
+            assert_eq!(scene, decoration(2, elapsed, 56));
+            peak = peak.max(scene.0.len());
+            for (points, _, _) in scene.0 {
+                for point in points {
+                    assert_eq!(point.z, 2600, "streaks remain behind the horizon");
+                    assert!(
+                        crate::projection::project(point).1 < 75,
+                        "keep the sky show above gameplay"
+                    );
+                }
+            }
+        }
+        assert_eq!(peak, 12, "four overlapping meteors build the shower");
+        let first = decoration(2, 101, 40);
+        let later = decoration(2, 120, 40);
+        assert!(first.0[0].0[0].x > later.0[0].0[0].x);
+        assert!(first.0[0].0[0].y > later.0[0].0[0].y);
+        assert!(
+            first.0[0].0[2].x - first.0[0].0[0].x < later.0[0].0[2].x - later.0[0].0[0].x,
+            "trail grows into view"
+        );
+        // The first emitted meteor is the oldest, now on its last visible tick.
+        let mut ending = Capture::default();
+        meteors(&mut ending, 179);
+        let first_tail = ending.0[0].0;
+        assert!(first_tail[2].x - first_tail[0].x < 60);
+    }
+
+    #[test]
+    fn meteor_sound_onsets_match_the_visible_head_hemisphere() {
+        for (index, start) in crate::transition::METEOR_STARTS.into_iter().enumerate() {
+            // The sound cue begins eight ticks after each head appears. Find
+            // this meteor among all older, still-visible three-face streaks.
+            let elapsed = start + 8;
+            let prior = crate::transition::METEOR_STARTS[..index]
+                .iter()
+                .filter(|&&earlier| elapsed - earlier < crate::transition::METEOR_DURATION)
+                .count();
+            let scene = decoration(2, elapsed, 40);
+            let head = scene.0[prior * 3 + 2].0;
+            for point in head {
+                let screen_x = crate::projection::project(point).0;
+                assert!(
+                    (0..160).contains(&screen_x),
+                    "meteor {index} must be visible at sound onset"
+                );
+                assert_eq!(
+                    screen_x < 80,
+                    index & 1 == 0,
+                    "meteor {index} head must match its left/right sound channel"
+                );
+            }
         }
     }
 

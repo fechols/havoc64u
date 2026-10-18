@@ -13,8 +13,14 @@ pub const REU_SIZE: u32 = 0x1000000;
 pub const COMMON_OFFSET: u32 = 0x1000;
 pub const SEGMENTS_OFFSET: u32 = 0x2000;
 pub const MUSIC_OFFSET: u32 = 0x060000;
-// Version 2 pairs the SID profile and paged soundtrack with the common assets.
-pub const PACKAGE_ID: u32 = 0x534D0200;
+pub const MODEL_DIRECTORY_OFFSET: u32 = 0x40;
+pub const MODEL_DIRECTORY_SIZE: usize = 32;
+pub const MODEL_BANKS_OFFSET: u32 = 0x0b0000;
+pub const ENEMY_SPECS_OFFSET: usize = 80;
+pub const ENEMY_SPEC_SIZE: usize = 8;
+pub const MODEL_DATA_OFFSET: usize = ENEMY_SPECS_OFFSET + 3 * ENEMY_SPEC_SIZE;
+// Version 3 pairs each section's enemy behavior with its checked model bank.
+pub const PACKAGE_ID: u32 = 0x534D0300;
 pub const PLAYER: u8 = 0;
 pub const FIGHTER: u8 = 1;
 pub const DIVER: u8 = 2;
@@ -23,6 +29,8 @@ pub const CARRIER: u8 = 4;
 pub const CRYSTAL: u8 = 5;
 pub const BUILDING: u8 = 6;
 pub const ROCK: u8 = 7;
+/// Uniform enemy enlargement, baked into meshes and collision descriptors.
+pub const ENEMY_SCALE: i16 = 2;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AssetError {
@@ -80,6 +88,50 @@ pub fn validate_header(data: &[u8]) -> Result<(), AssetError> {
     Ok(())
 }
 
+#[inline(never)]
+#[cfg_attr(target_arch = "mos", link_section = ".phase.boot")]
+pub fn validate_model_directory(data: &[u8]) -> Result<(), AssetError> {
+    if data.len() != MODEL_DIRECTORY_SIZE {
+        return Err(AssetError::Size);
+    }
+    if &data[..4] != b"MDL1" {
+        return Err(AssetError::Magic);
+    }
+    if data[5] != 1 {
+        return Err(AssetError::Version);
+    }
+    if data[4] != SEGMENT_COUNT
+        || u16_at(data, 6) as usize != MODEL_SIZE
+        || u32_at(data, 8) != MODEL_BANKS_OFFSET
+        || data[20..30].iter().any(|&byte| byte != 0)
+    {
+        return Err(AssetError::Bounds);
+    }
+    if checksum(&data[..30]) != u16_at(data, 30) {
+        return Err(AssetError::Checksum);
+    }
+    Ok(())
+}
+
+pub fn model_checksum(directory: &[u8], level: u8) -> u16 {
+    if directory.len() == MODEL_DIRECTORY_SIZE && level < SEGMENT_COUNT {
+        u16_at(directory, 12 + level as usize * 2)
+    } else {
+        0
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct EnemySpec {
+    pub hp: u8,
+    pub center_y: i8,
+    pub shot_radius: u8,
+    pub ram_radius: u8,
+    pub score: u16,
+    pub speed: u8,
+    pub render_mode: u8,
+}
+
 pub struct AssetBank<'a> {
     data: &'a [u8],
 }
@@ -90,13 +142,30 @@ impl<'a> AssetBank<'a> {
         if data.len() != COMMON_SIZE && data.len() != MODEL_SIZE {
             return Err(AssetError::Size);
         }
-        if &data[..4] != b"SMA1" {
+        if &data[..4] != b"SMA2" {
             return Err(AssetError::Magic);
         }
         if data[4] != 8 {
             return Err(AssetError::Version);
         }
+        if data[5] >= SEGMENT_COUNT || data[6] != if data[5] == 3 { 2 } else { 3 } {
+            return Err(AssetError::Bounds);
+        }
         let bank = Self { data };
+        for kind in 1..=bank.enemy_count() {
+            let spec = bank.enemy(kind);
+            if spec.hp == 0
+                || spec.hp == 255
+                || spec.shot_radius == 0
+                || spec.ram_radius == 0
+                || spec.score == 0
+                || spec.speed == 0
+                || spec.speed > 31
+                || spec.render_mode > 1
+            {
+                return Err(AssetError::Bounds);
+            }
+        }
         for id in 0..8 {
             let d = 16 + id as usize * 8;
             let vo = u16_at(data, d) as usize;
@@ -105,7 +174,7 @@ impl<'a> AssetBank<'a> {
             let fc = data[d + 3] as usize;
             if vc == 0
                 || vc > 128
-                || vo < 80
+                || vo < MODEL_DATA_OFFSET
                 || vo > MODEL_SIZE
                 || fo > MODEL_SIZE
                 || fo < vo + vc * 6
@@ -138,6 +207,40 @@ impl<'a> AssetBank<'a> {
     }
     pub fn mesh_count(&self) -> u8 {
         8
+    }
+    #[inline(always)]
+    pub fn level(&self) -> u8 {
+        // SAFETY: both constructors require a complete, validated bank.
+        unsafe { *self.data.get_unchecked(5) }
+    }
+    #[inline(always)]
+    pub fn enemy_count(&self) -> u8 {
+        // SAFETY: both constructors require a complete, validated bank.
+        unsafe { *self.data.get_unchecked(6) }
+    }
+    #[inline(always)]
+    pub fn enemy(&self, kind: u8) -> EnemySpec {
+        if kind == 0 || kind > self.enemy_count() {
+            return EnemySpec::default();
+        }
+        let at = ENEMY_SPECS_OFFSET + (kind - 1) as usize * ENEMY_SPEC_SIZE;
+        // SAFETY: validated banks contain three complete descriptors at 80..104;
+        // the guard above restricts kind to the bank's two or three valid slots.
+        // Read explicitly to preserve the package's little-endian layout.
+        unsafe {
+            EnemySpec {
+                hp: *self.data.get_unchecked(at),
+                center_y: *self.data.get_unchecked(at + 1) as i8,
+                shot_radius: *self.data.get_unchecked(at + 2),
+                ram_radius: *self.data.get_unchecked(at + 3),
+                score: u16::from_le_bytes([
+                    *self.data.get_unchecked(at + 4),
+                    *self.data.get_unchecked(at + 5),
+                ]),
+                speed: *self.data.get_unchecked(at + 6),
+                render_mode: *self.data.get_unchecked(at + 7),
+            }
+        }
     }
     pub fn vertex_count(&self, id: u8) -> u8 {
         if id < 8 {
@@ -197,7 +300,7 @@ pub struct Segment<'a> {
 }
 impl<'a> Segment<'a> {
     #[inline(never)]
-    #[cfg_attr(target_arch = "mos", link_section = ".phase.sim")]
+    #[cfg_attr(target_arch = "mos", link_section = ".phase.boot")]
     pub fn new(data: &'a [u8]) -> Result<Self, AssetError> {
         if data.len() != SEGMENT_SIZE && data.len() != SEGMENT_CACHE_SIZE {
             return Err(AssetError::Size);
@@ -213,19 +316,21 @@ impl<'a> Segment<'a> {
         {
             return Err(AssetError::Bounds);
         }
-        let s = Self { data };
         let mut prev = 0;
-        for i in 0..s.spawn_count() {
-            let e = s.spawn(i);
-            if e.distance < prev
-                || e.distance as u32 >= SEGMENT_DISTANCE
-                || !matches!(e.kind, 1 | 2 | 3 | 5 | 6 | 7)
+        for i in 0..data[7] {
+            let at = 16 + i as usize * 8;
+            let distance = u16_at(data, at);
+            let kind = data[at + 2];
+            if distance < prev
+                || distance as u32 >= SEGMENT_DISTANCE
+                || !matches!(kind, 1 | 2 | 3 | 5 | 6 | 7)
+                || (data[4] == 3 && kind == TURRET)
             {
                 return Err(AssetError::Bounds);
             }
-            prev = e.distance;
+            prev = distance;
         }
-        Ok(s)
+        Ok(Self { data })
     }
     /// Reconstruct a prefetched, previously checked mission view without scanning it.
     ///

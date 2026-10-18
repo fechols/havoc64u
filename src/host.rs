@@ -1,6 +1,6 @@
 //! Original assets and portable package tools. Never linked into the C64 game.
 use havoc::{assets::*, music, soundtrack};
-use std::{fs, path::Path};
+use std::{boxed::Box, format, fs, path::Path, println, vec, vec::Vec};
 
 fn put16(b: &mut [u8], p: usize, n: u16) {
     b[p..p + 2].copy_from_slice(&n.to_le_bytes());
@@ -10,10 +10,41 @@ fn put32(b: &mut [u8], p: usize, n: u32) {
 }
 pub fn common_bank() -> [u8; COMMON_SIZE] {
     let mut b = [0; COMMON_SIZE];
-    b[..4].copy_from_slice(b"SMA1");
+    b[..MODEL_SIZE].copy_from_slice(&model_bank(0));
+    let score = soundtrack::score_bank();
+    b[MODEL_SIZE..MODEL_SIZE + music::BANK_HEADER_SIZE]
+        .copy_from_slice(&score[..music::BANK_HEADER_SIZE]);
+    AssetBank::new(&b).expect("generated common bank");
+    b
+}
+
+/// A complete resident model image, including the section's local enemy stats.
+pub fn model_bank(level: u8) -> [u8; MODEL_SIZE] {
+    assert!(level < SEGMENT_COUNT);
+    let mut b = [0; MODEL_SIZE];
+    b[..4].copy_from_slice(b"SMA2");
     b[4] = 8;
-    let mut cursor = 80;
-    let models: Vec<(Vec<[i16; 3]>, Vec<[u8; 4]>)> = vec![
+    b[5] = level;
+    b[6] = if level == 3 { 2 } else { 3 };
+    let hp = [[3, 2, 6], [2, 3, 4], [4, 2, 6], [3, 2, 6]][level as usize];
+    let speed = [[8, 12, 8], [10, 8, 8], [6, 8, 8], [8, 14, 8]][level as usize];
+    // Keep the lowland gun and fortress bunker seated on their original bases.
+    // The cliff battery and carrier-mounted turrets scale around their origins.
+    let ground_pivot_y = if matches!(level, 0 | 2) { -8 } else { 0 };
+    for slot in 0..3 {
+        let at = ENEMY_SPECS_OFFSET + slot * ENEMY_SPEC_SIZE;
+        b[at] = hp[slot];
+        let center_y = if slot == 2 && level != 1 { 10 } else { 0 };
+        let pivot_y = if slot == 2 { ground_pivot_y } else { 0 };
+        b[at + 1] = (pivot_y + (center_y - pivot_y) * ENEMY_SCALE) as u8;
+        b[at + 2] = (19 * ENEMY_SCALE) as u8;
+        b[at + 3] = (18 * ENEMY_SCALE) as u8;
+        put16(&mut b, at + 4, if slot == 2 { 250 } else { 100 });
+        b[at + 6] = speed[slot];
+        b[at + 7] = u8::from(slot == 1 && level != 2);
+    }
+    let mut cursor = MODEL_DATA_OFFSET;
+    let mut models: Vec<(Vec<[i16; 3]>, Vec<[u8; 4]>)> = vec![
         // Kestrel: swept delta wings, raised cockpit, split aft fins.
         (
             vec![
@@ -200,6 +231,19 @@ pub fn common_bank() -> [u8; COMMON_SIZE] {
             ],
         ),
     ];
+    for (slot, model) in section_enemy_models(level).into_iter().enumerate() {
+        models[slot + 1] = model;
+    }
+    // Bake the larger combat meshes so the C64 retains identity transforms and
+    // the existing model-bank size. Slot three also supplies the boss turrets.
+    for id in FIGHTER..=CARRIER {
+        let pivot_y = if id == TURRET { ground_pivot_y } else { 0 };
+        for vertex in &mut models[id as usize].0 {
+            vertex[0] *= ENEMY_SCALE;
+            vertex[1] = pivot_y + (vertex[1] - pivot_y) * ENEMY_SCALE;
+            vertex[2] *= ENEMY_SCALE;
+        }
+    }
     for (id, (vertices, faces)) in models.iter().enumerate() {
         let d = 16 + id * 8;
         put16(&mut b, d, cursor as u16);
@@ -217,12 +261,241 @@ pub fn common_bank() -> [u8; COMMON_SIZE] {
             cursor += 4;
         }
     }
-    assert!(cursor <= MODEL_SIZE, "model bank exceeds common arena");
-    let score = soundtrack::score_bank();
-    b[MODEL_SIZE..MODEL_SIZE + music::BANK_HEADER_SIZE]
-        .copy_from_slice(&score[..music::BANK_HEADER_SIZE]);
-    AssetBank::new(&b).expect("generated common bank");
+    assert!(cursor <= MODEL_SIZE, "model bank exceeds resident arena");
+    AssetBank::new(&b).expect("generated model bank");
     b
+}
+
+type Model = (Vec<[i16; 3]>, Vec<[u8; 4]>);
+
+fn section_enemy_models(level: u8) -> Vec<Model> {
+    match level {
+        0 => vec![], // The original lowland patrol, diver and ground turret.
+        1 => vec![
+            // Ravine skimmer: narrow keel with two long outboard engine rails.
+            (
+                vec![
+                    [0, 0, -28],
+                    [-12, 5, -8],
+                    [12, 5, -8],
+                    [0, -7, 20],
+                    [-38, 0, -20],
+                    [-38, 0, 26],
+                    [38, 0, -20],
+                    [38, 0, 26],
+                ],
+                vec![
+                    [0, 1, 2, 14],
+                    [0, 3, 1, 6],
+                    [0, 2, 3, 6],
+                    [1, 3, 2, 15],
+                    [1, 4, 5, 3],
+                    [1, 5, 3, 14],
+                    [2, 7, 6, 3],
+                    [2, 3, 7, 14],
+                    [0, 4, 1, 11],
+                    [0, 2, 6, 11],
+                ],
+            ),
+            // Cliff swooper: high gull wings around a hanging armored cockpit.
+            (
+                vec![
+                    [0, -3, -35],
+                    [-18, 19, 7],
+                    [-34, 34, 23],
+                    [18, 19, 7],
+                    [34, 34, 23],
+                    [0, -17, 12],
+                    [0, 8, 29],
+                ],
+                vec![
+                    [0, 1, 6, 8],
+                    [0, 6, 3, 10],
+                    [1, 2, 6, 7],
+                    [3, 6, 4, 7],
+                    [0, 5, 1, 9],
+                    [0, 3, 5, 9],
+                    [1, 5, 6, 12],
+                    [3, 6, 5, 12],
+                ],
+            ),
+            // Wall battery: vertical mounting plate and a forward cannon wedge.
+            (
+                vec![
+                    [-15, -28, 14],
+                    [15, -28, 14],
+                    [15, 28, 14],
+                    [-15, 28, 14],
+                    [-11, -18, -5],
+                    [11, -18, -5],
+                    [11, 18, -5],
+                    [-11, 18, -5],
+                    [0, 0, -34],
+                ],
+                vec![
+                    [0, 1, 4, 11],
+                    [1, 5, 4, 12],
+                    [1, 2, 5, 11],
+                    [2, 6, 5, 12],
+                    [2, 3, 6, 11],
+                    [3, 7, 6, 15],
+                    [3, 0, 7, 11],
+                    [0, 4, 7, 12],
+                    [4, 5, 8, 2],
+                    [5, 6, 8, 8],
+                    [6, 7, 8, 15],
+                    [7, 4, 8, 12],
+                ],
+            ),
+        ],
+        2 => vec![
+            // Siege gunship: broad rectangular armor and two forward gun pods.
+            (
+                vec![
+                    [-32, -7, -18],
+                    [32, -7, -18],
+                    [32, -7, 22],
+                    [-32, -7, 22],
+                    [-24, 11, -12],
+                    [24, 11, -12],
+                    [24, 11, 18],
+                    [-24, 11, 18],
+                    [-22, 0, -38],
+                    [22, 0, -38],
+                ],
+                vec![
+                    [0, 4, 1, 11],
+                    [1, 4, 5, 12],
+                    [1, 5, 2, 11],
+                    [2, 5, 6, 12],
+                    [2, 6, 3, 11],
+                    [3, 6, 7, 12],
+                    [3, 7, 0, 11],
+                    [0, 7, 4, 15],
+                    [4, 7, 6, 15],
+                    [4, 6, 5, 12],
+                    [0, 8, 4, 2],
+                    [1, 5, 9, 2],
+                ],
+            ),
+            // Lance interceptor: exceptionally long needle nose and small fins.
+            (
+                vec![
+                    [0, 0, -48],
+                    [-12, 0, 21],
+                    [12, 0, 21],
+                    [0, 9, 12],
+                    [0, -8, 16],
+                    [0, 0, 34],
+                ],
+                vec![
+                    [0, 1, 3, 7],
+                    [0, 3, 2, 15],
+                    [0, 4, 1, 8],
+                    [0, 2, 4, 8],
+                    [1, 5, 3, 2],
+                    [3, 5, 2, 10],
+                    [1, 4, 5, 11],
+                    [2, 5, 4, 11],
+                ],
+            ),
+            // Fan bunker: low trapezoid armored roof and a broad gun aperture.
+            (
+                vec![
+                    [-34, -8, -25],
+                    [34, -8, -25],
+                    [34, -8, 25],
+                    [-34, -8, 25],
+                    [-24, 15, -18],
+                    [24, 15, -18],
+                    [18, 15, 18],
+                    [-18, 15, 18],
+                    [0, 7, -39],
+                ],
+                vec![
+                    [0, 4, 1, 12],
+                    [1, 4, 5, 15],
+                    [1, 5, 2, 11],
+                    [2, 5, 6, 12],
+                    [2, 6, 3, 11],
+                    [3, 6, 7, 12],
+                    [3, 7, 0, 11],
+                    [0, 7, 4, 12],
+                    [4, 7, 6, 15],
+                    [4, 6, 5, 15],
+                    [4, 8, 5, 2],
+                ],
+            ),
+        ],
+        3 => vec![
+            // Carrier guard: split forward pincers surrounding a shielded hub.
+            (
+                vec![
+                    [-30, 0, -28],
+                    [-10, 0, -12],
+                    [10, 0, -12],
+                    [30, 0, -28],
+                    [-23, 0, 25],
+                    [23, 0, 25],
+                    [0, 13, 8],
+                    [0, -10, 8],
+                ],
+                vec![
+                    [0, 4, 1, 4],
+                    [1, 4, 6, 14],
+                    [1, 6, 2, 15],
+                    [2, 6, 5, 14],
+                    [2, 5, 3, 4],
+                    [4, 5, 6, 6],
+                    [0, 1, 7, 11],
+                    [1, 2, 7, 12],
+                    [2, 3, 7, 11],
+                    [4, 7, 5, 11],
+                ],
+            ),
+            // Reactor rammer: a pointed drill body with a tall triangular fin.
+            (
+                vec![
+                    [0, 0, -42],
+                    [-17, -5, 18],
+                    [17, -5, 18],
+                    [0, 27, 11],
+                    [0, -12, 11],
+                    [0, 0, 27],
+                ],
+                vec![
+                    [0, 1, 3, 2],
+                    [0, 3, 2, 7],
+                    [0, 4, 1, 8],
+                    [0, 2, 4, 8],
+                    [1, 5, 3, 10],
+                    [3, 5, 2, 15],
+                    [1, 4, 5, 11],
+                    [2, 5, 4, 11],
+                ],
+            ),
+        ],
+        _ => unreachable!(),
+    }
+}
+
+pub fn model_directory() -> [u8; MODEL_DIRECTORY_SIZE] {
+    let mut directory = [0; MODEL_DIRECTORY_SIZE];
+    directory[..4].copy_from_slice(b"MDL1");
+    directory[4] = SEGMENT_COUNT;
+    directory[5] = 1;
+    put16(&mut directory, 6, MODEL_SIZE as u16);
+    put32(&mut directory, 8, MODEL_BANKS_OFFSET);
+    for level in 0..SEGMENT_COUNT {
+        put16(
+            &mut directory,
+            12 + level as usize * 2,
+            checksum(&model_bank(level)),
+        );
+    }
+    let sum = checksum(&directory[..30]);
+    put16(&mut directory, 30, sum);
+    directory
 }
 
 pub fn segment_bank(index: u8) -> [u8; SEGMENT_SIZE] {
@@ -232,7 +505,7 @@ pub fn segment_bank(index: u8) -> [u8; SEGMENT_SIZE] {
     b[5] = index;
     b[6] = [5, 9, 11, 6][index as usize];
     let mut events: Vec<Spawn> = Vec::new();
-    if index < 3 {
+    if index == 0 {
         for wave in 0..10u16 {
             let base = 1200 + wave * 2700;
             for lane in 0..3i16 {
@@ -254,6 +527,65 @@ pub fn segment_bank(index: u8) -> [u8; SEGMENT_SIZE] {
                 });
             }
         }
+    } else if index < 3 {
+        for wave in 0..10u16 {
+            let base = 1200 + wave * 2700;
+            for lane in 0..2i16 {
+                let side = if lane == 0 { -1 } else { 1 };
+                let fortress_pair = index == 2 && wave % 2 == 0;
+                events.push(Spawn {
+                    distance: base + lane as u16 * if fortress_pair { 300 } else { 160 },
+                    kind: if wave % 2 == 0 && (!fortress_pair || lane == 0) {
+                        FIGHTER
+                    } else {
+                        DIVER
+                    },
+                    x: side
+                        * if index == 1 && wave % 2 == 0 {
+                            110
+                        } else if fortress_pair {
+                            60
+                        } else {
+                            70
+                        },
+                    y: if fortress_pair {
+                        30
+                    } else if index == 2 {
+                        side * 25
+                    } else {
+                        0
+                    },
+                    flags: u8::from(wave % 4 == 0 && lane == 1),
+                });
+            }
+            events.push(Spawn {
+                distance: base + if index == 1 { 800 } else { 1000 },
+                kind: TURRET,
+                x: if wave % 2 == 0 { -90 } else { 90 },
+                y: if index == 1 { 0 } else { -90 },
+                flags: 0,
+            });
+        }
+    } else {
+        for (wave, distance) in [3200, 6400, 12800, 19200, 25600].into_iter().enumerate() {
+            let side = if wave % 2 == 0 { -1 } else { 1 };
+            events.push(Spawn {
+                distance,
+                kind: FIGHTER,
+                x: side * 75,
+                y: 25,
+                flags: 0,
+            });
+            events.push(Spawn {
+                distance,
+                kind: DIVER,
+                x: -side * 75,
+                y: -15,
+                flags: u8::from(wave % 2 == 0),
+            });
+        }
+    }
+    if index < 3 {
         for i in 0..6u16 {
             events.push(Spawn {
                 distance: 2200 + i * 4300,
@@ -292,11 +624,16 @@ pub fn bake(out: &Path) -> Result<(), Box<dyn std::error::Error>> {
     put32(&mut reu, 12, SEGMENTS_OFFSET);
     reu[16] = SEGMENT_COUNT;
     reu[17] = music::SID_COUNT as u8;
+    reu[MODEL_DIRECTORY_OFFSET as usize..MODEL_DIRECTORY_OFFSET as usize + MODEL_DIRECTORY_SIZE]
+        .copy_from_slice(&model_directory());
     put16(&mut reu, 18, checksum(&common));
     reu[COMMON_OFFSET as usize..COMMON_OFFSET as usize + COMMON_SIZE].copy_from_slice(&common);
     let score = soundtrack::score_bank();
     reu[MUSIC_OFFSET as usize..MUSIC_OFFSET as usize + score.len()].copy_from_slice(&score);
     for i in 0..4u8 {
+        let model = model_bank(i);
+        let model_start = MODEL_BANKS_OFFSET as usize + i as usize * MODEL_SIZE;
+        reu[model_start..model_start + MODEL_SIZE].copy_from_slice(&model);
         let segment = segment_bank(i);
         let p = SEGMENTS_OFFSET as usize + i as usize * SEGMENT_SIZE;
         reu[p..p + SEGMENT_SIZE].copy_from_slice(&segment);
@@ -318,7 +655,7 @@ pub fn bake(out: &Path) -> Result<(), Box<dyn std::error::Error>> {
             include_str!("../config/havoc.cfg")
         },
     )?;
-    fs::write(out.join("assets.txt"),format!("H.A.V.O.C. package {PACKAGE_ID:08X}\n16 MiB REU; common {COMMON_OFFSET:06X} (3072 bytes; 2048 resident model bytes); four 2048-byte segments at {SEGMENTS_OFFSET:06X}, each with a checksummed 512-byte runtime prefix (up to 62 encounters)\n{} SIDs: {} music voices + 2 effects voices. Seven original cues; {} bytes of paged score data at {MUSIC_OFFSET:06X}.\nOriginal models and music; no external ROMs or samples.\n", music::SID_COUNT, music::MUSIC_VOICES, score.len()))?;
+    fs::write(out.join("assets.txt"),format!("H.A.V.O.C. package {PACKAGE_ID:08X}\n16 MiB REU; common {COMMON_OFFSET:06X} (3072 bytes; 2048 resident model bytes); four checked 2048-byte level model banks at {MODEL_BANKS_OFFSET:06X}; model directory at {MODEL_DIRECTORY_OFFSET:06X}; four 2048-byte segments at {SEGMENTS_OFFSET:06X}, each with a checksummed 512-byte runtime prefix (up to 62 encounters)\nEleven original section-exclusive enemies: 3 lowland, 3 canyon, 3 fortress, 2 carrier escorts.\n{} SIDs: {} music voices + 2 effects voices. Seven original cues; {} bytes of paged score data at {MUSIC_OFFSET:06X}.\nOriginal models and music; no external ROMs or samples.\n", music::SID_COUNT, music::MUSIC_VOICES, score.len()))?;
     println!(
         "Baked {} ({} bytes)",
         out.join("havoc.reu").display(),
@@ -333,6 +670,23 @@ pub fn check_package(reu: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
     validate_header(reu).map_err(|e| format!("package header: {e:?}"))?;
     let common = &reu[COMMON_OFFSET as usize..COMMON_OFFSET as usize + COMMON_SIZE];
     let bank = AssetBank::new(common).map_err(|e| format!("common bank: {e:?}"))?;
+    if bank.level() != 0 {
+        return Err("common bank must contain lowland models".into());
+    }
+    let directory = &reu
+        [MODEL_DIRECTORY_OFFSET as usize..MODEL_DIRECTORY_OFFSET as usize + MODEL_DIRECTORY_SIZE];
+    validate_model_directory(directory).map_err(|e| format!("model directory: {e:?}"))?;
+    for level in 0..SEGMENT_COUNT {
+        let start = MODEL_BANKS_OFFSET as usize + level as usize * MODEL_SIZE;
+        let data = &reu[start..start + MODEL_SIZE];
+        let models = AssetBank::new(data).map_err(|e| format!("model bank {level}: {e:?}"))?;
+        if models.level() != level || checksum(data) != model_checksum(directory, level) {
+            return Err("model checksum/index".into());
+        }
+        if level == 0 && data != &common[..MODEL_SIZE] {
+            return Err("common and lowland model bank differ".into());
+        }
+    }
     let music_bank = &reu[MUSIC_OFFSET as usize..MUSIC_OFFSET as usize + 0x10000];
     if bank.audio()[..music::BANK_HEADER_SIZE] != music_bank[..music::BANK_HEADER_SIZE] {
         return Err("music directory does not match common assets".into());

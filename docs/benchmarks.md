@@ -36,9 +36,14 @@ existing native smoke-test setup; `--vice`, `--roms`, and `--llvm-nm` override t
 
 The default matrix has eight combat/menu states: title, lowlands, canyon, base,
 carrier, missiles, full pools, and a section boundary with a deliberate
-segment-cache miss. Nine scenic states cover elapsed ticks 0, 200, and 399 of
-each bridge. Ten-tick samples starting at tick 399 also exercise the handoff back
-to combat.
+segment-cache miss. Ten scenic states cover elapsed ticks 0, 200, and 399 of
+each bridge, plus tick 306 of the meteor shower when four streaks overlap.
+Ten-tick samples starting at tick 399 also exercise the handoff back
+to combat. Twelve enemy states add representative, saturated, and deliberately
+wrong-bank fixtures for each of the four rosters. Model bytes and enemy profiles
+are restored along with segment caches; the driver verifies all 2,048 model bytes
+after each measured frame. Fixed-tick checks detect skipped or duplicated work
+when SIM returns to resident code to change its enemy bank.
 Each runs with exactly zero or ten simulation ticks and either cold or retained
 palette state. Cold palettes clear both screen buffers and the color shadow.
 Retained palettes render the identical post-simulation state twice before the
@@ -66,7 +71,91 @@ port-2 FIRE for 400 audio ticks. It reports completed-frame throughput after the
 first second and measured audio frequency. Its changing workload is useful for
 ordinary play behavior; use the fixed matrix for same-work speedup comparisons.
 
+## Distinct transitions and effects: 2026-10-17
+
+The final transition build passes 12 fixed-work cases per video standard: the
+wildlife and hovercraft crossings at tick 200 and the meteor overlap at tick 306,
+each with zero/ten simulation ticks, cold/retained palettes, and three CIA phases
+(36 measured samples per standard). Complete-frame medians are about 220 ms PAL
+for wildlife and the hovercraft and 200 ms for meteors; NTSC ranges from 202 to
+218 ms for wildlife, 218 ms for the hovercraft, and 184 ms for meteors. All geometry,
+input, music, stack, and bounded-DMA checks pass. Maximum audio-service lateness
+is 1.191 ms PAL / 1.143 ms NTSC, below the 2 ms gate.
+
+The instrumented opening-game probe measures 5.4250 FPS PAL / 5.5819 FPS NTSC,
+compared with the preceding enemy build's 5.4892 / 5.6724 (1.17% / 1.60% lower).
+A separate 40-frame production check against the preserved pre-change package
+measures 5.4950 to 5.4517 FPS PAL and 5.7664 to 5.6440 FPS NTSC (0.79% / 2.12%
+lower). Both remain within the five-percent ordinary-play regression budget.
+These comparisons include the current shield-pickup magnet and memory-layout
+adjustments, so they do not isolate the cost of scenic sound selection.
+
+The final PAL and NTSC cache replays each compare 158 retained-cache frames
+against 158 forced repaints, including the meteor peak and both scene seams.
+Every pair matches game state, projected geometry, bitmap, screen, and color
+bytes. Reports are in `target/bench/transition-sfx-cache-{pal,ntsc}/report.json`.
+
+Reports are in `target/bench/transition-sfx-{pal,ntsc}/report.json` and
+`target/vice/transition-final-2sid-{pal,ntsc}/report.json`; preserved production
+reports are in `target/vice/transition-baseline-{pal,ntsc}/report.json`.
+The transition fixtures deliberately change their decorations, so their images
+are checked for determinism and cache correctness rather than equality to the
+previous scenes. These are calibrated-emulator measurements, not hardware results.
+
+Stereo WAV captures of all three final-package transitions are under
+`target/transition-audio/{pal,ntsc}/`, alongside `recordings.json`. All six
+recordings contain both channels, have zero clipped samples, and retain zero
+music underruns, dropped geometry, and input overflows. The recordings include
+the surrounding rendered-frame boundary; the gameplay transition itself remains
+exactly 400 ticks. This is an objective signal check, not subjective listening
+or physical SID mixer validation.
+
+## Per-level enemy measurements
+
+The preceding source and packages were preserved under `target/enemies-baseline/`.
+The two-SID instrumented build's eight-second ordinary-play probe measured:
+
+| Video | Preserved build FPS | Enemy build FPS | Change |
+| --- | ---: | ---: | ---: |
+| PAL | 5.4254 | 5.4892 | +1.17% |
+| NTSC | 5.6319 | 5.6724 | +0.72% |
+
+This passes the five-percent regression budget for that opening lowland probe.
+It does not establish a speedup for the entire mission: later levels deliberately
+change their enemy models, movement, and encounter density. Baseline reports are
+`target/enemies-baseline/{pal,ntsc}/report.json`; candidate reports are
+`target/enemies-bench-{pal,ntsc}/report.json`.
+
+Each candidate matrix covers 22 fixtures with zero/ten ticks and cold/retained
+palettes: 88 cases and 264 measured samples per video standard, spanning all
+three CIA phases. It includes all four real rosters, saturated scenes, deliberate
+model misses, and all three bridge exits. Repeated game, geometry, and pixel
+hashes agree. There are no input overflows, dropped triangles, music underruns,
+or stack-guard changes. Maximum audio lateness is 1.195 ms PAL / 1.147 ms NTSC,
+below the 2 ms gate; every DMA command stays within 1,024 bytes.
+
+These instrumented fixtures transfer 56,589 bytes for an ordinary frame with
+score-page service. A deliberate enemy-bank miss adds one 16,746-byte SIM reload
+and 2,048 model bytes, totaling 75,383 bytes. A bridge-exit fixture also fetches
+a 512-byte segment, totaling 75,895 bytes. Model telemetry records zero bytes
+for warm ordinary frames and 2,048 for these swaps. Representative enemy scenes
+take roughly 168–220 ms; saturated scenes reach 300 ms PAL / 285 ms NTSC.
+These are complete frame times including publication, rather than isolated AI costs.
+
+Focused reruns at `target/enemies-reentry-{pal,ntsc}/report.json` check all four
+bank misses and three bridge exits with ten requested ticks. Every frame completes
+exactly ten ticks, keeps code/model selection synchronized, and matches the full
+2,048-byte model cache to its packaged bank after the reload.
+
+Cache replay reports at `target/enemies-cache-{pal,ntsc}/report.json` compare
+157 retained-cache frames with 157 forced-repaint frames per video standard.
+Every pair matches game state, projected geometry, bitmap, screen, and color
+bytes. The instrumented builds precede a final BOOT-only validation change that
+rejects the scenery health sentinel in enemy metadata; gameplay source is identical.
+
 ## Scenic-flight measurements
+
+These measurements describe the earlier scenic-flight build.
 
 The scenic build adds a SCENERY transfer and stages raw geometry before the
 GEOMETRY pass. Ordinary frames omit the 3,079-byte wildlife tail; scenic frames

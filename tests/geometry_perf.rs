@@ -1,5 +1,9 @@
 use havoc::{assets::AssetBank, emit_mesh, math, GeometrySink, Vec3, TWO_SIDED};
 
+#[allow(dead_code)]
+#[path = "../src/host.rs"]
+mod baked_assets;
+
 #[derive(Default)]
 struct Capture(Vec<([Vec3; 3], u8, u8)>);
 
@@ -10,20 +14,18 @@ impl GeometrySink for Capture {
 }
 
 fn bank_bytes(points: &[Vec3]) -> Vec<u8> {
-    let mut bytes = vec![0; havoc::assets::COMMON_SIZE];
-    bytes[..4].copy_from_slice(b"SMA1");
-    bytes[4] = 8;
-    let faces = 80 + points.len() * 6;
+    let mut bytes = baked_assets::model_bank(0).to_vec();
+    let faces = 104 + points.len() * 6;
     for id in 0..8 {
         let at = 16 + id * 8;
-        bytes[at..at + 2].copy_from_slice(&80u16.to_le_bytes());
+        bytes[at..at + 2].copy_from_slice(&104u16.to_le_bytes());
         bytes[at + 2] = points.len() as u8;
         bytes[at + 3] = 2;
         bytes[at + 4..at + 6].copy_from_slice(&(faces as u16).to_le_bytes());
     }
     for (index, point) in points.iter().enumerate() {
         for (axis, value) in [point.x, point.y, point.z].into_iter().enumerate() {
-            let at = 80 + index * 6 + axis * 2;
+            let at = 104 + index * 6 + axis * 2;
             bytes[at..at + 2].copy_from_slice(&value.to_le_bytes());
         }
     }

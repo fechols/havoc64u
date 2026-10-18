@@ -68,8 +68,7 @@ enum Snapshot {
 }
 
 fn snapshot(source: Snapshot, out: &Path) -> Result<(), Box<dyn std::error::Error>> {
-    let common = host::common_bank();
-    let bank = AssetBank::new(&common).unwrap();
+    let models: [_; 4] = core::array::from_fn(|i| host::model_bank(i as u8));
     let game = match source {
         Snapshot::Title => Game::new(),
         Snapshot::Transition(section, elapsed_ticks) => {
@@ -84,7 +83,8 @@ fn snapshot(source: Snapshot, out: &Path) -> Result<(), Box<dyn std::error::Erro
                 pressed: 0,
                 ms: 6000,
             });
-            game.tick(&segment);
+            let bank = AssetBank::new(&models[game.segment_index() as usize]).unwrap();
+            game.tick(&segment, &bank);
             game
         }
         Snapshot::Attract(elapsed_ms) => {
@@ -99,7 +99,8 @@ fn snapshot(source: Snapshot, out: &Path) -> Result<(), Box<dyn std::error::Erro
                     ms: tick * 20,
                 });
                 let segment = Segment::new(&banks[game.segment_index() as usize]).unwrap();
-                game.tick(&segment);
+                let bank = AssetBank::new(&models[game.segment_index() as usize]).unwrap();
+                game.tick(&segment, &bank);
             }
             game
         }
@@ -107,6 +108,7 @@ fn snapshot(source: Snapshot, out: &Path) -> Result<(), Box<dyn std::error::Erro
     // A simulation step may transition sections; render its resulting section.
     let data = host::segment_bank(game.segment_index());
     let segment = Segment::new(&data).unwrap();
+    let bank = AssetBank::new(&models[game.segment_index() as usize]).unwrap();
     let (bytes, triangles, dropped) = frame(&game, &bank, &segment, 0);
     if let Some(p) = out.parent() {
         fs::create_dir_all(p)?;

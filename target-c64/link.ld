@@ -1,4 +1,4 @@
-/* C64 Ultimate PRG with six explicitly selected REU code overlays. The PRG
+/* C64 Ultimate PRG with selected REU code overlays and four SIM tails. The PRG
  * initializes resident code, startup checks and high constants in one LOAD.
  * Overlay load addresses are REU package offsets, not C64 RAM addresses.
  */
@@ -49,7 +49,26 @@ SECTIONS {
     .phase.sim 0x3000 : AT(0x20000) {
         __phase_sim_start = .;
         *(.phase.sim .phase.sim.*)
-        __phase_sim_end = .;
+        __phase_sim_base_end = .;
+    } >phase
+    /* Each composed SIM image has the same prefix and one opaque ABI entry.
+     * Keep the bodies invisible to the caller's LTO optimization. */
+    enemy_step = __phase_sim_base_end;
+    .phase.enemy.lowlands enemy_step : AT(0x20000 + SIZEOF(.phase.sim)) {
+        KEEP(*(.phase.enemy.lowlands.entry))
+        *(.phase.enemy.lowlands .phase.enemy.lowlands.*)
+    } >phase
+    .phase.enemy.canyon enemy_step : AT(0x80000 + SIZEOF(.phase.sim)) {
+        KEEP(*(.phase.enemy.canyon.entry))
+        *(.phase.enemy.canyon .phase.enemy.canyon.*)
+    } >phase
+    .phase.enemy.fortress enemy_step : AT(0x90000 + SIZEOF(.phase.sim)) {
+        KEEP(*(.phase.enemy.fortress.entry))
+        *(.phase.enemy.fortress .phase.enemy.fortress.*)
+    } >phase
+    .phase.enemy.carrier enemy_step : AT(0xA0000 + SIZEOF(.phase.sim)) {
+        KEEP(*(.phase.enemy.carrier.entry))
+        *(.phase.enemy.carrier .phase.enemy.carrier.*)
     } >phase
     .phase.geometry 0x3000 : AT(0x30000) {
         __phase_geometry_start = .;
@@ -135,7 +154,10 @@ __irq_static_tail_start = ADDR(.noinit) + __irq_static_first_size;
 __resident_end = MAX(LOADADDR(.data) + SIZEOF(.data), ADDR(.text) + SIZEOF(.text));
 __phase_run = 0x3000;
 __phase_boot_size = SIZEOF(.phase.boot);
-__phase_sim_size = SIZEOF(.phase.sim);
+__phase_sim_base_size = SIZEOF(.phase.sim);
+__phase_enemy_size = MAX(MAX(SIZEOF(.phase.enemy.lowlands), SIZEOF(.phase.enemy.canyon)), MAX(SIZEOF(.phase.enemy.fortress), SIZEOF(.phase.enemy.carrier)));
+__phase_sim_size = __phase_sim_base_size + __phase_enemy_size;
+__phase_sim_end = __phase_sim_start + __phase_sim_size;
 __phase_geometry_size = SIZEOF(.phase.geometry);
 __phase_geometry_base_size = __phase_geometry_base_end - __phase_geometry_start;
 __phase_pixels_size = SIZEOF(.phase.pixels);
@@ -173,7 +195,9 @@ ASSERT(SIZEOF(.audio_state) <= 0x01B0, "audio state exceeds $CE00-$CFAF")
 ASSERT(SIZEOF(.rodata) <= 0x0800, "resident constants exceed $7800-$7FFF")
 ASSERT(SIZEOF(.tables) <= 0x0700, "resident tables exceed $9900-$9FFF")
 ASSERT(SIZEOF(.phase.boot) <= 0x4200, "BOOT overlay exceeds $3000-$71FF")
-ASSERT(SIZEOF(.phase.sim) <= 0x4200, "SIM overlay exceeds $3000-$71FF")
+ASSERT(__phase_sim_size <= 0x4200, "composed SIM overlay exceeds $3000-$71FF")
+ASSERT(enemy_lowlands == enemy_step && enemy_canyon == enemy_step && enemy_fortress == enemy_step && enemy_carrier == enemy_step, "enemy ABI entries must start every SIM tail")
+ASSERT(SIZEOF(.phase.enemy.lowlands) > 0 && SIZEOF(.phase.enemy.canyon) > 0 && SIZEOF(.phase.enemy.fortress) > 0 && SIZEOF(.phase.enemy.carrier) > 0, "all four enemy tails are required")
 ASSERT(SIZEOF(.phase.geometry) <= 0x4200, "GEOMETRY overlay exceeds $3000-$71FF")
 ASSERT(__phase_geometry_base_size > 0 && __phase_geometry_base_size < __phase_geometry_size, "GEOMETRY needs a common prefix and a combat tail")
 ASSERT(SIZEOF(.phase.pixels) <= 0x3000, "PIXELS overlay overlaps prepared edges at $6000")

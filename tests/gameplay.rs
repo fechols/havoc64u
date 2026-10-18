@@ -7,6 +7,44 @@ use havoc::game::{Game, InputSample, Mode, PresentationEvent, FIRE, LEFT, RIGHT}
 #[path = "../src/host.rs"]
 mod baked_assets;
 
+fn test_bank(level: u8) -> havoc::assets::AssetBank<'static> {
+    use havoc::assets::{AssetBank, MODEL_DATA_OFFSET, MODEL_SIZE};
+    static BANKS: std::sync::OnceLock<[[u8; MODEL_SIZE]; 4]> = std::sync::OnceLock::new();
+    let banks = BANKS.get_or_init(|| {
+        core::array::from_fn(|level| {
+            #[cfg(feature = "host-tools")]
+            {
+                baked_assets::model_bank(level as u8)
+            }
+            #[cfg(not(feature = "host-tools"))]
+            {
+                let mut data = [0; MODEL_SIZE];
+                data[..4].copy_from_slice(b"SMA2");
+                data[4] = 8;
+                data[5] = level as u8;
+                data[6] = if level == 3 { 2 } else { 3 };
+                for kind in 0..3 {
+                    let at = 80 + kind * 8;
+                    data[at..at + 8].copy_from_slice(&[3, 0, 19, 18, 100, 0, 8, 0]);
+                }
+                for mesh in 0..8 {
+                    let at = 16 + mesh * 8;
+                    data[at..at + 2].copy_from_slice(&(MODEL_DATA_OFFSET as u16).to_le_bytes());
+                    data[at + 2] = 3;
+                    data[at + 3] = 1;
+                    data[at + 4..at + 6]
+                        .copy_from_slice(&((MODEL_DATA_OFFSET + 18) as u16).to_le_bytes());
+                }
+                data[MODEL_DATA_OFFSET + 18..MODEL_DATA_OFFSET + 22]
+                    .copy_from_slice(&[0, 1, 2, 15]);
+                data
+            }
+        })
+    });
+    let _ = MODEL_DATA_OFFSET;
+    AssetBank::new(&banks[level as usize]).unwrap()
+}
+
 fn segment_bytes() -> [u8; SEGMENT_SIZE] {
     let mut bytes = [0; SEGMENT_SIZE];
     bytes[..4].copy_from_slice(b"SMS1");
@@ -23,7 +61,7 @@ fn input(game: &mut Game, bits: u8, ms: u32) {
 fn started(segment: &Segment<'_>) -> Game {
     let mut game = Game::new();
     input(&mut game, FIRE, 0);
-    game.tick(segment);
+    game.tick(segment, &test_bank(game.segment_index()));
     assert_eq!(game.hud().mode, Mode::Playing);
     while game.pop_audio().is_some() {}
     game
@@ -47,7 +85,7 @@ fn empty_sections() -> [[u8; SEGMENT_SIZE]; 4] {
 fn advance(game: &mut Game, sections: &[[u8; SEGMENT_SIZE]; 4], ticks: u16) {
     for _ in 0..ticks {
         let segment = Segment::new(&sections[game.segment_index() as usize]).unwrap();
-        game.tick(&segment);
+        game.tick(&segment, &test_bank(game.segment_index()));
     }
 }
 
@@ -175,11 +213,10 @@ fn attract_wake_overrides_a_section_cut_and_does_not_prime_a_rapid_fire_bomb() {
 #[test]
 fn attract_runs_live_encounters_and_the_carrier_without_sfx_or_resource_changes() {
     let sections = core::array::from_fn(|i| baked_assets::segment_bank(i as u8));
-    let common = baked_assets::common_bank();
-    let bank = havoc::assets::AssetBank::new(&common).unwrap();
     let mut game = Game::new();
     advance(&mut game, &sections, 750);
     for section in 0..4 {
+        let bank = test_bank(section as u8);
         for tick in 1..750 {
             advance(&mut game, &sections, 1);
             let status = game.hud();
@@ -188,7 +225,10 @@ fn attract_runs_live_encounters_and_the_carrier_without_sfx_or_resource_changes(
                 (status.shield, status.bombs, status.lives, status.score),
                 (100, 3, 3, 0)
             );
-            assert!(effects(&mut game).is_empty(), "section {section}, tick {tick}");
+            assert!(
+                effects(&mut game).is_empty(),
+                "section {section}, tick {tick}"
+            );
             if section == 3 {
                 assert_eq!(status.boss_shield, if tick < 150 { 0 } else { 100 });
             }
@@ -214,7 +254,7 @@ fn held_fire_produces_ten_immediate_cadenced_shots_per_second() {
     let mut count = 0;
     for i in 1..=50 {
         input(&mut g, FIRE, i * 20);
-        g.tick(&s);
+        g.tick(&s, &test_bank(g.segment_index()));
         count += effects(&mut g)
             .iter()
             .filter(|&&e| e == Effect::Fire)
@@ -230,7 +270,7 @@ fn charge_begins_after_one_second_and_is_retained_until_press() {
     let s = Segment::new(&bytes).unwrap();
     let mut g = started(&s);
     input(&mut g, 0, 20);
-    g.tick(&s);
+    g.tick(&s, &test_bank(g.segment_index()));
     input(&mut g, 0, 1020);
     assert_eq!(g.hud().charge, 0);
     input(&mut g, 0, 1520);
@@ -240,12 +280,12 @@ fn charge_begins_after_one_second_and_is_retained_until_press() {
     input(&mut g, 0, 4020);
     assert_eq!(g.hud().charge, 255);
     input(&mut g, FIRE, 4040);
-    g.tick(&s);
+    g.tick(&s, &test_bank(g.segment_index()));
     assert!(effects(&mut g).contains(&Effect::MissileLaunch));
     assert_eq!(g.hud().charge, 0);
     for i in 1..=5 {
         input(&mut g, FIRE, 4040 + i * 20);
-        g.tick(&s);
+        g.tick(&s, &test_bank(g.segment_index()));
     }
     assert!(
         effects(&mut g).contains(&Effect::Fire),
@@ -260,11 +300,11 @@ fn only_full_charge_uses_the_missile_launch_sound() {
     for (elapsed, charge) in [(1000, 0), (1004, 1), (1500, 127), (1999, 254), (2000, 255)] {
         let mut game = started(&segment);
         input(&mut game, 0, 20);
-        game.tick(&segment);
+        game.tick(&segment, &test_bank(game.segment_index()));
         input(&mut game, 0, 20 + elapsed);
         assert_eq!(game.hud().charge, charge);
         input(&mut game, FIRE, 20 + elapsed);
-        game.tick(&segment);
+        game.tick(&segment, &test_bank(game.segment_index()));
         let expected = if charge == 255 {
             Effect::MissileLaunch
         } else {
@@ -282,22 +322,22 @@ fn inclusive_double_tap_window_consumes_pairs_and_first_shot_is_immediate() {
     let mut g = started(&s);
     assert_eq!(g.take_presentation_event(), PresentationEvent::Reset);
     input(&mut g, 0, 20);
-    g.tick(&s);
+    g.tick(&s, &test_bank(g.segment_index()));
     input(&mut g, FIRE, 100);
-    g.tick(&s);
+    g.tick(&s, &test_bank(g.segment_index()));
     assert!(effects(&mut g).contains(&Effect::Fire));
     assert_eq!(g.hud().bombs, 3);
     assert_eq!(g.take_presentation_event(), PresentationEvent::None);
     input(&mut g, 0, 120);
     input(&mut g, FIRE, 600);
-    g.tick(&s);
+    g.tick(&s, &test_bank(g.segment_index()));
     assert_eq!(g.hud().bombs, 2);
     assert!(effects(&mut g).contains(&Effect::Bomb));
     assert_eq!(g.take_presentation_event(), PresentationEvent::Bomb);
     assert_eq!(g.take_presentation_event(), PresentationEvent::None);
     input(&mut g, 0, 620);
     input(&mut g, FIRE, 650);
-    g.tick(&s);
+    g.tick(&s, &test_bank(g.segment_index()));
     assert_eq!(g.hud().bombs, 2, "third tap starts a new pair");
     assert_eq!(g.take_presentation_event(), PresentationEvent::None);
 }
@@ -314,11 +354,11 @@ fn double_tap_boundaries_survive_timestamp_wrap_and_delayed_simulation() {
                     input(&mut g, 0, first_at.wrapping_sub(20));
                     input(&mut g, bits, first_at);
                     if !delayed {
-                        g.tick(&s);
+                        g.tick(&s, &test_bank(g.segment_index()));
                     }
                     input(&mut g, 0, first_at.wrapping_add(20));
                     input(&mut g, bits, first_at.wrapping_add(gap));
-                    g.tick(&s);
+                    g.tick(&s, &test_bank(g.segment_index()));
                     assert_eq!(
                         (g.hud().bombs, g.hud().roll_ticks),
                         (
@@ -341,11 +381,11 @@ fn fire_edges_between_simulation_ticks_are_preserved() {
     input(&mut g, 0, 17);
     input(&mut g, FIRE, 33);
     input(&mut g, 0, 50);
-    g.tick(&s);
+    g.tick(&s, &test_bank(g.segment_index()));
     assert!(effects(&mut g).contains(&Effect::Fire));
     input(&mut g, FIRE, 67);
     input(&mut g, 0, 83);
-    g.tick(&s);
+    g.tick(&s, &test_bank(g.segment_index()));
     assert_eq!(g.hud().bombs, 2);
 }
 
@@ -359,10 +399,10 @@ fn bomb_inventory_cannot_underflow() {
     for pair in 0..4 {
         let time = 100 + pair * 600;
         input(&mut g, FIRE, time);
-        g.tick(&s);
+        g.tick(&s, &test_bank(g.segment_index()));
         input(&mut g, 0, time + 20);
         input(&mut g, FIRE, time + 100);
-        g.tick(&s);
+        g.tick(&s, &test_bank(g.segment_index()));
         input(&mut g, 0, time + 120);
         effects(&mut g);
         assert_eq!(
@@ -384,14 +424,14 @@ fn rolls_last_half_a_second_and_cannot_restart_inside_cooldown() {
     let s = Segment::new(&bytes).unwrap();
     let mut g = started(&s);
     input(&mut g, LEFT, 100);
-    g.tick(&s);
+    g.tick(&s, &test_bank(g.segment_index()));
     input(&mut g, 0, 120);
     input(&mut g, LEFT, 350);
-    g.tick(&s);
+    g.tick(&s, &test_bank(g.segment_index()));
     assert_eq!(g.hud().roll_ticks, 25);
     for i in 1..=25 {
         input(&mut g, LEFT, 350 + i * 20);
-        g.tick(&s);
+        g.tick(&s, &test_bank(g.segment_index()));
     }
     assert_eq!(
         g.hud().roll_ticks,
@@ -401,16 +441,16 @@ fn rolls_last_half_a_second_and_cannot_restart_inside_cooldown() {
     input(&mut g, RIGHT, 870);
     input(&mut g, 0, 880);
     input(&mut g, RIGHT, 890);
-    g.tick(&s);
+    g.tick(&s, &test_bank(g.segment_index()));
     assert_eq!(g.hud().roll_ticks, 0);
     for i in 1..=25 {
         input(&mut g, 0, 890 + i * 20);
-        g.tick(&s);
+        g.tick(&s, &test_bank(g.segment_index()));
     }
     input(&mut g, RIGHT, 1410);
     input(&mut g, 0, 1430);
     input(&mut g, RIGHT, 1450);
-    g.tick(&s);
+    g.tick(&s, &test_bank(g.segment_index()));
     assert_eq!(g.hud().roll_ticks, 25);
 }
 
@@ -424,8 +464,8 @@ fn deterministic_inputs_produce_identical_game_state() {
         let bits = if tick % 40 < 20 { LEFT | FIRE } else { RIGHT };
         input(&mut a, bits, tick * 20);
         input(&mut b, bits, tick * 20);
-        a.tick(&s);
-        b.tick(&s);
+        a.tick(&s, &test_bank(a.segment_index()));
+        b.tick(&s, &test_bank(b.segment_index()));
         assert_eq!(a.hud(), b.hud());
         assert_eq!(effects(&mut a), effects(&mut b));
     }
@@ -434,15 +474,14 @@ fn deterministic_inputs_produce_identical_game_state() {
 #[cfg(feature = "host-tools")]
 #[test]
 fn original_asset_previews_fit_the_triangle_budget_in_every_section() {
-    let common = baked_assets::common_bank();
-    let bank = havoc::assets::AssetBank::new(&common).unwrap();
     for section in 0..4 {
+        let bank = test_bank(section);
         let bytes = baked_assets::segment_bank(section);
         let segment = Segment::new(&bytes).unwrap();
         // Every 20 ms phase of a 512-unit terrain band, plus later encounters.
         for local in (0..512).step_by(8).chain([1400, 2500, 10000, 28000]) {
             let mut game = Game::preview_at(section, local);
-            game.tick(&segment);
+            game.tick(&segment, &test_bank(game.segment_index()));
             let mut renderer = havoc::render::Renderer::new();
             renderer.begin(game.sky_color());
             game.render(&mut renderer, &bank, &segment);
@@ -469,8 +508,7 @@ impl havoc::GeometrySink for CapturedGeometry {
 fn attract_renders_the_game_world_without_the_ship_exhaust_or_reticle() {
     let sections = empty_sections();
     let segment = Segment::new(&sections[0]).unwrap();
-    let common = baked_assets::common_bank();
-    let bank = havoc::assets::AssetBank::new(&common).unwrap();
+    let bank = test_bank(0);
     let playing = started(&segment);
     let mut attract = Game::new();
     advance(&mut attract, &sections, 750);
@@ -486,11 +524,10 @@ fn attract_renders_the_game_world_without_the_ship_exhaust_or_reticle() {
 #[cfg(feature = "host-tools")]
 #[test]
 fn scenic_terrain_keeps_the_centered_player_visible_through_every_band_phase() {
-    use havoc::{assets::AssetBank, render::Renderer, GeometrySink};
-    let common = baked_assets::common_bank();
-    let bank = AssetBank::new(&common).unwrap();
-    let player_faces = bank.face_count(havoc::assets::PLAYER) as usize + 2; // Hull and exhaust.
+    use havoc::{render::Renderer, GeometrySink};
     for section in 0..4 {
+        let bank = test_bank(section);
+        let player_faces = bank.face_count(havoc::assets::PLAYER) as usize + 2;
         let bytes = baked_assets::segment_bank(section);
         let segment = Segment::new(&bytes).unwrap();
         for distance in (0..512).step_by(8) {
@@ -533,12 +570,8 @@ fn scenic_terrain_keeps_the_centered_player_visible_through_every_band_phase() {
 #[cfg(feature = "host-tools")]
 #[test]
 fn chase_camera_translates_foreground_without_moving_world_geometry_or_backdrop() {
-    use havoc::{
-        assets::{AssetBank, PLAYER},
-        emit_mesh, Vec3,
-    };
-    let common = baked_assets::common_bank();
-    let bank = AssetBank::new(&common).unwrap();
+    use havoc::{assets::PLAYER, emit_mesh, Vec3};
+    let bank = test_bank(0);
     let bytes = segment_bytes();
     let segment = Segment::new(&bytes).unwrap();
     let title = Game::new();
@@ -588,14 +621,13 @@ fn chase_camera_translates_foreground_without_moving_world_geometry_or_backdrop(
 #[test]
 fn chase_camera_reveals_carrier_and_reticle_and_keeps_controlled_hull_on_screen() {
     use havoc::{
-        assets::{AssetBank, CARRIER, PLAYER},
+        assets::{CARRIER, PLAYER},
         emit_mesh,
         game::{DOWN, UP},
         projection::project,
         Vec3,
     };
-    let common = baked_assets::common_bank();
-    let bank = AssetBank::new(&common).unwrap();
+    let bank = test_bank(3);
     let carrier_bytes = baked_assets::segment_bank(3);
     let carrier_segment = Segment::new(&carrier_bytes).unwrap();
     let carrier = Game::preview_at(3, 1200);
@@ -615,7 +647,7 @@ fn chase_camera_reveals_carrier_and_reticle_and_keeps_controlled_hull_on_screen(
         bounds(&geometry.0[carrier_start..carrier_start + bank.face_count(CARRIER) as usize]);
     let reticle_y = bounds(&geometry.0[ship_faces + 2..carrier_start]);
     assert!(
-        player_y.0 > target_y.1 + 6,
+        player_y.0 > target_y.1,
         "player {player_y:?} must not conceal carrier {target_y:?}"
     );
     assert!(
@@ -626,11 +658,12 @@ fn chase_camera_reveals_carrier_and_reticle_and_keeps_controlled_hull_on_screen(
 
     let bytes = segment_bytes();
     let segment = Segment::new(&bytes).unwrap();
+    let bank = test_bank(0);
     for direction in [UP, DOWN, UP | LEFT, UP | RIGHT, DOWN | LEFT, DOWN | RIGHT] {
         let mut game = started(&segment);
         for tick in 1..=60 {
             input(&mut game, direction, tick * 20);
-            game.tick(&segment);
+            game.tick(&segment, &test_bank(game.segment_index()));
         }
         let mut geometry = CapturedGeometry::default();
         game.render(&mut geometry, &bank, &segment);

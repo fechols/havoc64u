@@ -168,6 +168,7 @@ def counters(mon, syms):
                         ("FRAME_TRIANGLES", 2), ("FRAME_DROPPED", 2), ("STREAM_BYTES", 2),
                         ("INPUT_OVERFLOWS", 2), ("GAME_MODE", 1), ("GAME_DISTANCE", 4),
                         ("FRONT_BANK", 1), ("TEST_INPUT", 1), ("RENDER_SEGMENT", 1),
+                        ("ENEMY_CODE_PROFILE", 1), ("ENEMY_MODEL_PROFILE", 1), ("MODEL_STREAM_BYTES", 2),
                         ("MUSIC_CUE", 1), ("MUSIC_ACTIVE_CUE", 1), ("MUSIC_PAGE", 1),
                         ("MUSIC_UNDERRUNS", 2)):
         if name in syms:
@@ -324,7 +325,7 @@ def dwarf_game_layout(elf, tool, syms, output, controls=False):
             modes[name[1]] = int(value[1], 0)
     required = {"rail_ticks": "u16", "boss_z": "i16", "mode": "havoc::game::Mode",
                 "boss_started": "bool", "boss_defeated": "bool", "score": "u32",
-                "shield": "u8", "lives": "u8", "bombs": "u8"}
+                "shield": "u8", "lives": "u8", "bombs": "u8", "respawn_ticks": "u8"}
     if "Transition" in modes:
         required.update(transition_ticks="u16", ticks="u16")
     sizes = {"u8": 1, "i8": 1, "u16": 2, "u32": 4, "i16": 2, "bool": 1, "havoc::game::Mode": 1}
@@ -387,16 +388,35 @@ def active_section(rail_ticks, mode):
     return min((rail_ticks - (mode == 6)) // 3750, 3)
 
 
+def enemy_bank_check(mon, syms, package, section):
+    """Prove the selected executable and every resident model byte agree."""
+    required = ("ENEMY_CODE_PROFILE", "ENEMY_MODEL_PROFILE", "MODEL_STREAM_BYTES")
+    if any(name not in syms for name in required):
+        raise RuntimeError("Enemy streaming requires code/model identity telemetry")
+    reference = package[0xb0000+section*2048:0xb0000+(section+1)*2048]
+    if len(reference) != 2048 or reference[:4] != b"SMA2" or reference[5] != section:
+        raise RuntimeError(f"Invalid packaged level {section} model reference")
+    mon.command("bank ram")
+    cache = mon.read(0x8400, 2048)
+    code = mon.integer(syms["ENEMY_CODE_PROFILE"], 1)
+    models = mon.integer(syms["ENEMY_MODEL_PROFILE"], 1)
+    mon.command("bank cpu")
+    if code != section or models != section or cache != reference:
+        raise RuntimeError(f"Stale enemy bank: expected {section}, code {code}, models {models}, bytes match {cache == reference}")
+    return {"section": section, "code_profile": code, "model_profile": models,
+            "all_2048_bytes_match": True, "sha256": hashlib.sha256(cache).hexdigest()}
+
+
 def streaming_checks(mon, syms, failures, elf, reu, dwarf_tool, output, result):
     """Monitor-assisted boundary scenarios, deliberately separate from timing."""
     layout = dwarf_game_layout(elf, dwarf_tool, syms, output)
     result.update(passed=False, monitor_assisted=True,
-                  scope="Seeded section boundaries and results modes; not a full native playthrough. All restart input uses the physical joystick port.",
+                  scope="Seeded section boundaries and results modes; not a full native playthrough. Crossings check both effects voices alongside music with neutral physical input. All restart input uses the physical joystick port.",
                   excluded_from_timing=True, render_segment_telemetry="RENDER_SEGMENT" in syms,
                   layout=layout, scenarios=[])
     data = reu.read_bytes()
-    if data[:4] != b"SM64" or int.from_bytes(data[4:8], "little") != 0x534d0200 or data[16] != 4 or data[17] not in (2, 4):
-        raise RuntimeError("Streaming checks require the four-section version 2.0 package")
+    if data[:4] != b"SM64" or int.from_bytes(data[4:8], "little") != 0x534d0300 or data[16] != 4 or data[17] not in (2, 4):
+        raise RuntimeError("Streaming checks require the four-roster version 3.0 package")
     segment_base = int.from_bytes(data[12:16], "little")
     references = [data[segment_base+i*2048:segment_base+i*2048+512] for i in range(4)]
     checksums = [int.from_bytes(data[20+i*2:22+i*2], "little") for i in range(4)]
@@ -460,6 +480,8 @@ def streaming_checks(mon, syms, failures, elf, reu, dwarf_tool, output, result):
         frame["stack_guards"] = {name: mon.integer(syms[name], 1) for name in ("__stack_bottom", "__irq_stack_bottom")}
         mon.command("bank cpu")
         frame["cache_views"] = caches()
+        frame["enemy_bank"] = enemy_bank_check(mon, syms, data,
+            active_section(frame["game"]["rail_ticks"], frame["game_mode"]))
         scenario.setdefault("frames", []).append(frame)
         if frame["frame_dropped"] or frame["input_overflows"] or any(value != 0xa5 for value in frame["stack_guards"].values()):
             raise RuntimeError("Seeded scenario dropped input/geometry or changed a stack guard")
@@ -475,6 +497,9 @@ def streaming_checks(mon, syms, failures, elf, reu, dwarf_tool, output, result):
             captures = scenario.setdefault("transition_captures", {})
             if label not in captures:
                 captures[label] = capture(mon, syms, output, f"{scenario['name']}-{label}")
+            if scenario.get("expected_section") == 3 and 300 <= progress < 330 and "peak" not in captures:
+                captures["peak"] = dict(capture(mon, syms, output, f"{scenario['name']}-peak"),
+                                        transition_ticks=progress)
         return frame
 
     def wait_ready(scenario, mode, section, desired):
@@ -492,11 +517,16 @@ def streaming_checks(mon, syms, failures, elf, reu, dwarf_tool, output, result):
         scenario["passed"] = True
         print(f"STREAM {scenario['name']}: passed ({len(scenario.get('frames', []))} observed frames)", flush=True)
 
-    # Ordinary traces and metrics have already been finalized. Reinstall only
-    # fatal checkpoints so monitor-seeded captures cannot contaminate them.
+    # Ordinary traces and metrics have already been finalized. Trace only the
+    # core SID gate registers here; the two third voices belong to effects.
+    # This catches silent crossings without adding full per-register logs.
     mon.command("delete")
     for address in failures:
         mon.command(f"break exec {address:04x}")
+    for base in (0xd400, 0xd420):
+        for register in (4, 11, 18):
+            address = base + register
+            mon.command(f"trace store {address:04x} if @cpu:$01 == $35")
     path = output / "streaming-monitor.log"
     path.unlink(missing_ok=True)
     mon.command(f'logname "{path.as_posix()}"')
@@ -529,8 +559,31 @@ def streaming_checks(mon, syms, failures, elf, reu, dwarf_tool, output, result):
             if duration != 400:
                 raise RuntimeError(f"Scenic flight lasted {duration} ticks instead of 400")
             scenario["transition"] = {"duration_ticks": duration, "observed_frames": len(bridge), "resources_preserved": True}
+            # Exclude entry/exit and any effects left over from the preceding
+            # gameplay sample. No physical FIRE is held during these flights.
+            sounding = [frame for frame in bridge if 100 <= frame["game"]["transition_ticks"] <= 350]
+            if len(sounding) < 2 or any(frame["joystick_port2"] != 31 for frame in sounding):
+                raise RuntimeError("Scenic sound check needs neutral input across its middle interval")
+            mon.command("log off")
+            events = [event for event in stores(path)
+                      if sounding[0]["bus_cycles"] < event["bus_cycles"] <= sounding[-1]["bus_cycles"]]
+            summary = sid_summary(path, events, data[17])
+            for chip in ("left_d400", "right_d420"):
+                if not summary[chip]["voices"][2]["gate_on"]:
+                    raise RuntimeError(f"Scenic flight never sounded the reserved effects voice on {chip}")
+                if not any(voice["gate_on"] for voice in summary[chip]["voices"][:2]):
+                    raise RuntimeError(f"Scenic flight interrupted music gates on {chip}")
+            scenario["transition"]["sound"] = {
+                "from_tick": sounding[0]["game"]["transition_ticks"],
+                "through_tick": sounding[-1]["game"]["transition_ticks"],
+                "scope": "Core SID control-register traces; both effects voices attack while music continues.",
+                "sid": summary,
+            }
+            mon.command("log on")
         if not any(frame["stream_bytes"] for frame in scenario["frames"]):
             raise RuntimeError(f"No actual segment DMA observed for section {section}")
+        if not any(frame["model_stream_bytes"] for frame in scenario["frames"]):
+            raise RuntimeError(f"No model-bank DMA observed for section {section}")
         finish_capture(scenario, label)
 
     scenario = {"name": "visible-carrier", "note": "Monitor advances to boss approach and places the carrier at its normal settled depth."}
@@ -540,6 +593,17 @@ def streaming_checks(mon, syms, failures, elf, reu, dwarf_tool, output, result):
     if not frame["game"]["boss_started"] or frame["game"]["boss_z"] != 680:
         raise RuntimeError("Seeded carrier encounter did not activate at its settled depth")
     finish_capture(scenario, "carrier")
+
+    for section in range(4):
+        scenario = {"name": f"checkpoint-{section}-respawn", "expected_section": section,
+                    "note": "Seed the final respawn tick; normal simulation restores the section checkpoint."}
+        result["scenarios"].append(scenario)
+        seed(scenario, {"rail_ticks": section*3750+625, "mode": layout["modes"]["Respawning"],
+                        "respawn_ticks": 1, "shield": 0, "lives": 2, "score": 1234})
+        frame = wait_ready(scenario, layout["modes"]["Playing"], section, (section+1)&3)
+        if any(frame["game"][field] != value for field, value in {"shield": 100, "lives": 2, "score": 1234}.items()):
+            raise RuntimeError("Checkpoint respawn failed to restore health and preserve lives/score")
+        finish_capture(scenario, f"checkpoint-{section}")
 
     for mode_name in ("Victory", "GameOver"):
         scenario = {"name": f"restart-from-{mode_name.lower()}",
@@ -671,6 +735,7 @@ def attract_checks(mon, syms, failures, elf, reu, dwarf_tool, output, result):
                 or frame["test_input"] != 255):
             raise RuntimeError("Attract check changed a stack guard, dropped input/geometry, or bypassed physical input")
         section = min(frame["game"]["rail_ticks"] // 3750, 3)
+        frame["enemy_bank"] = enemy_bank_check(mon, syms, data, section)
         if (frame["game_mode"] != frame["game"]["mode"]
                 or frame.get("render_segment") != section
                 or section not in frame["cache_sections"]):

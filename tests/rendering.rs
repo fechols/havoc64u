@@ -1,6 +1,10 @@
 use havoc::render::{draw_bar, draw_text, pack_band, Renderer, HUD_INK};
 use havoc::{GeometrySink, Vec3, TWO_SIDED};
 
+#[allow(dead_code)]
+#[path = "../src/host.rs"]
+mod baked_assets;
+
 fn v(x: i16, y: i16, z: i16) -> Vec3 {
     Vec3 { x, y, z }
 }
@@ -222,7 +226,7 @@ fn hud_text_and_bars_clip_to_the_current_band() {
 #[test]
 fn cached_mesh_transforms_match_direct_reference_emissions() {
     use havoc::{
-        assets::{AssetBank, COMMON_SIZE},
+        assets::AssetBank,
         emit_mesh, math,
     };
     #[derive(Default)]
@@ -233,13 +237,11 @@ fn cached_mesh_transforms_match_direct_reference_emissions() {
         }
     }
     for vertex_count in [4u8, 40] {
-        let mut bytes = [0u8; COMMON_SIZE];
-        bytes[..4].copy_from_slice(b"SMA1");
-        bytes[4] = 8;
-        let face_offset = 80 + vertex_count as usize * 6;
+        let mut bytes = baked_assets::model_bank(0);
+        let face_offset = 104 + vertex_count as usize * 6;
         for id in 0..8 {
             let at = 16 + id * 8;
-            bytes[at..at + 2].copy_from_slice(&80u16.to_le_bytes());
+            bytes[at..at + 2].copy_from_slice(&104u16.to_le_bytes());
             bytes[at + 2] = vertex_count;
             bytes[at + 3] = 2;
             bytes[at + 4..at + 6].copy_from_slice(&(face_offset as u16).to_le_bytes());
@@ -247,7 +249,7 @@ fn cached_mesh_transforms_match_direct_reference_emissions() {
         for i in 0..vertex_count as usize {
             let point = [i as i16 * 3 - 20, i as i16 - 15, 12 - i as i16];
             for axis in 0..3 {
-                bytes[80 + i * 6 + axis * 2..82 + i * 6 + axis * 2]
+                bytes[104 + i * 6 + axis * 2..106 + i * 6 + axis * 2]
                     .copy_from_slice(&point[axis].to_le_bytes());
             }
         }

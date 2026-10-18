@@ -50,6 +50,11 @@ pub enum Effect {
     Roll,
     Bomb,
     Death,
+    Footstep,
+    BirdCall,
+    Transport,
+    TransportAway,
+    Meteor,
 }
 
 impl Effect {
@@ -58,8 +63,20 @@ impl Effect {
             Self::Death | Self::Bomb => 4,
             Self::Hit | Self::MissileLaunch => 3,
             Self::Pickup | Self::Roll => 2,
-            Self::Fire | Self::EnemyFire => 1,
+            Self::Footstep
+            | Self::BirdCall
+            | Self::Transport
+            | Self::TransportAway
+            | Self::Meteor => 1,
+            Self::Fire | Self::EnemyFire => 0,
         }
+    }
+
+    const fn is_scene(self) -> bool {
+        matches!(
+            self,
+            Self::Footstep | Self::BirdCall | Self::Transport | Self::TransportAway | Self::Meteor
+        )
     }
 }
 
@@ -216,6 +233,9 @@ impl AudioEngine {
     /// Queue an effect without affecting the music voices. Equal-priority
     /// effects replace older effects; higher-priority effects retain their voice.
     /// Repeated pending gunfire in the same stereo lane is coalesced.
+    // Keep both foreground callers inside their loaded SIM/SCENERY overlays;
+    // outlining this shared routine would consume scarce resident IRQ space.
+    #[inline(always)]
     pub fn queue(&mut self, event: AudioEvent) -> bool {
         if !self.enabled {
             return false;
@@ -245,6 +265,28 @@ impl AudioEngine {
         self.events[self.event_count as usize] = event;
         self.event_count += 1;
         true
+    }
+
+    /// Cancel only scenery cues, leaving player effects and music untouched.
+    /// Foreground SCENERY calls this with the interrupt masked. No SID access
+    /// occurs here: the next audio tick releases any active scenery voice.
+    #[cfg_attr(target_arch = "mos", link_section = ".phase.scenery")]
+    #[inline(never)]
+    pub fn cancel_scene_effects(&mut self) {
+        let mut retained = 0;
+        for index in 0..self.event_count as usize {
+            let event = self.events[index];
+            if !event.effect.is_scene() {
+                self.events[retained] = event;
+                retained += 1;
+            }
+        }
+        self.event_count = retained as u8;
+        for voice in &mut self.effects {
+            if voice.remaining != 0 && voice.effect.is_scene() {
+                voice.remaining = 1;
+            }
+        }
     }
 
     /// Initialize all mapped chips, clear effects, and request the cue opening.
@@ -442,12 +484,16 @@ impl AudioEngine {
                     // Enemy shots trade the noise crack for a higher, raspy body.
                     Effect::EnemyFire if fx.age == 1 => note_frequency(self.standard, 64),
                     // A falling noise clock makes the rocket roar recede.
-                    Effect::Fire | Effect::MissileLaunch | Effect::Death => {
+                    Effect::Fire | Effect::MissileLaunch | Effect::Death | Effect::Meteor => {
                         fx.frequency - (fx.frequency >> 4)
                     }
                     Effect::Bomb => fx.frequency - (fx.frequency >> 5),
-                    Effect::EnemyFire | Effect::Hit => fx.frequency - (fx.frequency >> 3),
+                    Effect::EnemyFire | Effect::Hit | Effect::Footstep => {
+                        fx.frequency - (fx.frequency >> 3)
+                    }
                     Effect::Pickup => note_frequency(self.standard, 72 + (fx.age / 3) * 4),
+                    Effect::BirdCall => note_frequency(self.standard, 84 - fx.age),
+                    Effect::Transport | Effect::TransportAway => fx.frequency,
                     Effect::Roll => {
                         let curve = if fx.age < 6 { fx.age } else { 12 - fx.age };
                         note_frequency(self.standard, 60 + curve * 3)
@@ -465,6 +511,10 @@ impl AudioEngine {
                     // Set the body pitch before switching to sawtooth; retain
                     // the gate so this is one shot, not a second attack.
                     self.write(bus, sid, 18, 0x21);
+                } else if fx.effect == Effect::Meteor && fx.age == 4 {
+                    // The falling whistle opens into a soft rushing tail,
+                    // retaining the same envelope and continuous pitch sweep.
+                    self.write(bus, sid, 18, 0x81);
                 }
             }
             self.effects[sid] = fx;
@@ -537,6 +587,12 @@ fn effect_instrument(effect: Effect) -> (u8, u8, u8, u8, u8) {
         Effect::Roll => (60, 0x40, 0x03, 0x82, 12),
         Effect::Bomb => (70, 0x80, 0x08, 0xd8, 24),
         Effect::Death => (66, 0x80, 0x09, 0xc9, 40),
+        // Quiet, short envelopes leave room for music and stop before arrival.
+        Effect::Footstep => (42, 0x80, 0x00, 0x51, 5),
+        Effect::BirdCall => (84, 0x10, 0x01, 0x42, 10),
+        Effect::Transport => (42, 0x40, 0x44, 0x52, 30),
+        Effect::TransportAway => (35, 0x40, 0x44, 0x52, 30),
+        Effect::Meteor => (84, 0x10, 0x14, 0x62, 21),
     }
 }
 
@@ -549,24 +605,40 @@ const NTSC_OCTAVE: [u16; 12] = [
     17167, 18188, 19270, 20415, 21629, 22916, 24278, 25722, 27251, 28872, 30589, 32407,
 ];
 
+// Expand the original rounded-octave calculation at compile time. This trades
+// spare constant bytes for smaller, faster resident IRQ code on the target.
+const fn expand_notes(octave: [u16; 12]) -> [u16; 72] {
+    let mut notes = [0; 72];
+    let mut relative = 0;
+    while relative < notes.len() {
+        let value = octave[relative % 12];
+        let shift = 5 - relative / 12;
+        notes[relative] = if shift == 0 {
+            value
+        } else {
+            (value + (1 << (shift - 1))) >> shift
+        };
+        relative += 1;
+    }
+    notes
+}
+
+static PAL_NOTES: [u16; 72] = expand_notes(PAL_OCTAVE);
+static NTSC_NOTES: [u16; 72] = expand_notes(NTSC_OCTAVE);
+
 /// Return a native-clock SID frequency for MIDI notes 24..=95; zero otherwise.
+#[inline(never)]
 pub fn note_frequency(standard: VideoStandard, note: u8) -> u16 {
-    if !(24..=95).contains(&note) {
+    let relative = note.wrapping_sub(24);
+    if relative >= 72 {
         return 0;
     }
-    let relative = note - 24;
-    let octave = relative / 12;
-    let semitone = (relative % 12) as usize;
-    let value = match standard {
-        VideoStandard::Pal => PAL_OCTAVE[semitone],
-        VideoStandard::Ntsc => NTSC_OCTAVE[semitone],
+    let notes = match standard {
+        VideoStandard::Pal => &PAL_NOTES,
+        VideoStandard::Ntsc => &NTSC_NOTES,
     };
-    let shift = 5 - octave;
-    if shift == 0 {
-        value
-    } else {
-        (value + (1 << (shift - 1))) >> shift
-    }
+    // The unsigned range check also rejects notes below 24 after wrapping.
+    unsafe { *notes.get_unchecked(relative as usize) }
 }
 
 #[inline(always)]

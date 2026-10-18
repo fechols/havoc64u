@@ -15,6 +15,7 @@ use havoc::{
     presentation::BombEffect,
     render::{self, Renderer},
     sky_cache::SkyCache,
+    transition::TransitionAudio,
 };
 
 #[link_section = ".renderer"]
@@ -55,6 +56,12 @@ pub static mut GAME_DISTANCE: u32 = 0;
 #[no_mangle]
 pub static mut STREAM_BYTES: u16 = 0;
 #[no_mangle]
+pub static mut MODEL_STREAM_BYTES: u16 = 0;
+#[no_mangle]
+pub static mut ENEMY_CODE_PROFILE: u8 = 0;
+#[no_mangle]
+pub static mut ENEMY_MODEL_PROFILE: u8 = 0xff;
+#[no_mangle]
 pub static mut RENDER_SEGMENT: u8 = 0;
 #[no_mangle]
 pub static mut INPUT_OVERFLOWS: u16 = 0;
@@ -87,6 +94,7 @@ static mut INPUT_HEAD: u8 = 0;
 static mut INPUT_TAIL: u8 = 0;
 static mut LAST_BITS: u8 = 0;
 static mut SEGMENT_CHECKSUMS: [u16; 4] = [0; 4];
+static mut MODEL_CHECKSUMS: [u16; 4] = [0; 4];
 extern "C" {
     fn irq_entry();
     fn nmi_entry();
@@ -247,15 +255,13 @@ unsafe fn dma(mut reu: u32, mut cpu: u16, mut count: u16) {
     }
 }
 #[inline(never)]
-unsafe fn load_phase(index: u8, size: u16) {
-    // The sixth overlay skips the paged soundtrack at REU $060000.
-    let page = if index == 5 { 7 } else { index + 1 };
+unsafe fn load_phase(page: u8, size: u16) {
     let mut offset = 0u16;
     while offset < size {
         let n = (size - offset).min(1024);
-        // Every caller uses one of six linker sizes (or a checked prefix),
+        // Every caller uses a linker size (or a checked prefix),
         // bounded by $4200; startup also validates each full package size.
-        // CPU $3000-$71FF never reaches I/O or wraps, and REU pages 1..5/7 plus
+        // CPU $3000-$71FF never reaches I/O or wraps, and REU pages 1..5/7..10 plus
         // this offset cannot cross a 512 KiB boundary or the 16 MiB image end.
         // Thus general dma() would emit exactly one identical transfer here.
         // Keep its register order and 1024-byte IRQ-latency limit, avoiding its
@@ -271,12 +277,20 @@ unsafe fn load_phase(index: u8, size: u16) {
         offset += n;
     }
 }
+#[inline(never)]
+unsafe fn load_sim(profile: u8) {
+    load_phase(
+        if profile == 0 { 2 } else { profile + 7 },
+        core::ptr::addr_of!(__phase_sim_size) as u16,
+    );
+    ENEMY_CODE_PROFILE = profile;
+}
 #[link_section = ".startup_checks"]
 #[inline(never)]
 unsafe fn check_code_package() {
     dma(0x100, 0x7600, 64);
     let directory = core::slice::from_raw_parts(0x7600 as *const u8, 64);
-    if &directory[..4] != b"OVL3"
+    if &directory[..4] != b"OVL4"
         || assets::checksum(&directory[..62]) != assets::u16_at(directory, 62)
     {
         fail(b"REU CODE DIRECTORY MISSING OR INVALID")
@@ -288,6 +302,9 @@ unsafe fn check_code_package() {
         core::ptr::addr_of!(__phase_pixels_size) as u16,
         core::ptr::addr_of!(__phase_audio_size) as u16,
         core::ptr::addr_of!(__phase_scenery_size) as u16,
+        core::ptr::addr_of!(__phase_sim_size) as u16,
+        core::ptr::addr_of!(__phase_sim_size) as u16,
+        core::ptr::addr_of!(__phase_sim_size) as u16,
     ];
     let resident = core::slice::from_raw_parts(
         0x0801 as *const u8,
@@ -307,14 +324,33 @@ unsafe fn check_code_package() {
     {
         fail(b"PRG AND REU DO NOT MATCH")
     }
-    for index in 0..6 {
+    for index in 0..9 {
         let size = sizes[index];
-        let size_offset = if index == 5 { 34 } else { 4 + index * 2 };
-        let hash_offset = if index == 5 { 36 } else { 14 + index * 2 };
+        let size_offset = if index >= 6 {
+            38 + (index - 6) * 4
+        } else if index == 5 {
+            34
+        } else {
+            4 + index * 2
+        };
+        let hash_offset = if index >= 6 {
+            size_offset + 2
+        } else if index == 5 {
+            36
+        } else {
+            14 + index * 2
+        };
         if size != assets::u16_at(directory, size_offset) || size == 0 || size > 0x4200 {
             fail(b"INVALID REU CODE SIZE")
         }
-        load_phase(index as u8, size);
+        load_phase(
+            if index >= 5 {
+                index as u8 + 2
+            } else {
+                index as u8 + 1
+            },
+            size,
+        );
         if assets::checksum(core::slice::from_raw_parts(
             0x3000 as *const u8,
             size as usize,
@@ -323,7 +359,7 @@ unsafe fn check_code_package() {
             fail(b"REU CODE CHECKSUM FAILED")
         }
     }
-    load_phase(0, sizes[0]);
+    load_phase(1, sizes[0]);
 }
 #[link_section = ".phase.boot"]
 #[inline(never)]
@@ -337,12 +373,59 @@ unsafe fn load_initial_assets() {
         SEGMENT_CHECKSUMS[i] = assets::u16_at(header, 20 + i * 2);
     }
     let common_check = assets::u16_at(header, 18);
+    // Validate every segment's structure before play. Later transfers check
+    // their complete runtime prefix against these validated package hashes.
+    for level in 0..4u8 {
+        dma(assets::SEGMENTS_OFFSET + level as u32 * 2048, 0x9500, 512);
+        let bytes = segment_data(0);
+        if assets::checksum(bytes) != SEGMENT_CHECKSUMS[level as usize]
+            || bytes[4] != level
+            || Segment::new(bytes).is_err()
+        {
+            fail(b"INVALID MISSION SEGMENT")
+        }
+    }
     dma(assets::COMMON_OFFSET, 0x8400, 3072);
     let common = core::slice::from_raw_parts(0x8400 as *const u8, 3072);
-    if assets::checksum(common) != common_check || AssetBank::new(common).is_err() {
+    if assets::checksum(common) != common_check || common[5] != 0 || AssetBank::new(common).is_err()
+    {
         fail(b"INVALID COMMON ASSET BANK")
     }
+    let common_models_check = assets::checksum(&common[..assets::MODEL_SIZE]);
     MUSIC_DIRECTORY_HASH = assets::checksum(&common[2048..2048 + BANK_HEADER_SIZE]);
+    dma(
+        assets::MODEL_DIRECTORY_OFFSET,
+        0x7600,
+        assets::MODEL_DIRECTORY_SIZE as u16,
+    );
+    let directory = core::slice::from_raw_parts(0x7600 as *const u8, assets::MODEL_DIRECTORY_SIZE);
+    if assets::validate_model_directory(directory).is_err() {
+        fail(b"INVALID MODEL DIRECTORY")
+    }
+    for level in 0..4 {
+        MODEL_CHECKSUMS[level] = assets::model_checksum(directory, level as u8);
+    }
+    if common_models_check != MODEL_CHECKSUMS[0] {
+        fail(b"INVALID COMMON ASSET BANK")
+    }
+    for level in (0..4u8).rev() {
+        copy_model_bank(level);
+        let bytes = core::slice::from_raw_parts(0x8400 as *const u8, assets::MODEL_SIZE);
+        if assets::checksum(bytes) != MODEL_CHECKSUMS[level as usize]
+            || AssetBank::new(bytes)
+                .map(|bank| bank.level() != level)
+                .unwrap_or(true)
+        {
+            fail(b"INVALID LEVEL MODEL BANK")
+        }
+    }
+    ENEMY_MODEL_PROFILE = 0;
+}
+#[inline(always)]
+unsafe fn copy_model_bank(level: u8) {
+    let source = assets::MODEL_BANKS_OFFSET + level as u32 * assets::MODEL_SIZE as u32;
+    dma(source, 0x8400, 1024);
+    dma(source + 1024, 0x8800, 1024);
 }
 unsafe fn segment_data(slot: u8) -> &'static [u8] {
     core::slice::from_raw_parts((0x9500 + slot as u16 * 512) as *const u8, 512)
@@ -351,9 +434,7 @@ unsafe fn segment_data(slot: u8) -> &'static [u8] {
 #[inline(never)]
 unsafe fn validate_segment(slot: u8, index: u8) {
     let b = segment_data(slot);
-    if assets::checksum(b) != SEGMENT_CHECKSUMS[index as usize]
-        || Segment::new(b).map(|s| s.index() != index).unwrap_or(true)
-    {
+    if assets::checksum(b) != SEGMENT_CHECKSUMS[index as usize] {
         fail(b"INVALID MISSION SEGMENT")
     }
 }
@@ -594,16 +675,13 @@ pub unsafe extern "C" fn benchmark_frame_begin() {
 pub unsafe extern "C" fn benchmark_frame_ready() {
     wr(core::ptr::addr_of_mut!(PROF_PHASE), 1);
 }
-// Test-only clock arithmetic stays resident rather than expanding the SIM
-// overlay; ordinary production scheduling still reads clock_ms directly.
+// The benchmark deadline is captured once by SIM and survives profile reentry.
+// Keep this test-only arithmetic out of the small resident code allocation.
 #[cfg(feature = "benchmarks")]
+#[link_section = ".phase.sim"]
 #[inline(never)]
 unsafe fn benchmark_now(sim_ms: u32, ticks: u8) -> u32 {
-    if ticks == 255 {
-        clock_ms()
-    } else {
-        sim_ms.wrapping_add(ticks as u32 * 20)
-    }
+    sim_ms.wrapping_add((ticks as u16 * 20) as u32)
 }
 #[inline(never)]
 unsafe fn publish(bank: u8, last: &mut u16) {
@@ -642,8 +720,24 @@ unsafe fn prepare_sky(section: u8) -> u8 {
 
 #[link_section = ".phase.scenery"]
 #[inline(never)]
-unsafe fn prepare_scenery(current: u8) -> u8 {
+unsafe fn prepare_scenery(current: u8, sounds: &mut TransitionAudio) -> u8 {
     let game = GAME.assume_init_ref();
+    let cues = sounds.update(game.transition_progress());
+    // I/O is banked out here. Only update RAM; the IRQ restores I/O before
+    // writing SID registers. No AudioEngine reference survives this mask.
+    disable_irq();
+    {
+        let audio = AUDIO.assume_init_mut();
+        if cues.cancel {
+            audio.cancel_scene_effects();
+        }
+        for lane in 0..2 {
+            if let Some(event) = cues.events[lane] {
+                audio.queue(event);
+            }
+        }
+    }
+    enable_irq();
     let renderer = RENDERER.assume_init_mut();
     let data = segment_data(current);
     renderer.begin(prepare_sky(data[4]));
@@ -767,8 +861,15 @@ unsafe fn initialize_audio(standard: VideoStandard) {
 }
 struct Runtime {
     sim_ms: u32,
+    // Foreground-only history; benchmark fixture restoration includes it.
+    transition_audio: TransitionAudio,
     loaded: [u8; 2],
     current: u8,
+    profile: u8,
+    #[cfg(feature = "benchmarks")]
+    benchmark_deadline: u32,
+    #[cfg(feature = "benchmarks")]
+    benchmark_pending: bool,
 }
 #[link_section = ".phase.sim"]
 #[inline(never)]
@@ -783,10 +884,28 @@ unsafe fn load_segment(slot: u8, index: u8) {
 }
 #[link_section = ".phase.sim"]
 #[inline(never)]
-unsafe fn simulate(runtime: &mut Runtime) -> Hud {
+unsafe fn simulate(runtime: &mut Runtime, now: u32) -> Option<Hud> {
     let game = GAME.assume_init_mut();
     let need = game.segment_index();
-    STREAM_BYTES = 0;
+    if need != ENEMY_CODE_PROFILE {
+        runtime.profile = need;
+        return None;
+    }
+    if ENEMY_MODEL_PROFILE != need {
+        copy_model_bank(need);
+        let bytes = core::slice::from_raw_parts(0x8400 as *const u8, assets::MODEL_SIZE);
+        if assets::checksum(bytes) != MODEL_CHECKSUMS[need as usize] {
+            fail(b"INVALID LEVEL MODEL BANK")
+        }
+        ENEMY_MODEL_PROFILE = need;
+        MODEL_STREAM_BYTES += assets::MODEL_SIZE as u16;
+    }
+    // This view ends before returning to the resident loader. No bank borrow
+    // survives a section change or the next model DMA.
+    let bank = AssetBank::from_validated(core::slice::from_raw_parts(
+        0x8400 as *const u8,
+        assets::MODEL_SIZE,
+    ));
     if runtime.loaded[0] == need {
         runtime.current = 0
     } else if runtime.loaded[1] == need {
@@ -813,11 +932,21 @@ unsafe fn simulate(runtime: &mut Runtime) -> Hud {
     #[cfg(not(feature = "benchmarks"))]
     let bench_ticks = 255u8;
     #[cfg(feature = "benchmarks")]
-    let now = benchmark_now(runtime.sim_ms, bench_ticks);
-    #[cfg(not(feature = "benchmarks"))]
-    let now = clock_ms();
+    let now = if bench_ticks != 255 {
+        if runtime.benchmark_pending {
+            runtime.benchmark_deadline = benchmark_now(runtime.sim_ms, bench_ticks);
+            runtime.benchmark_pending = false;
+        }
+        runtime.benchmark_deadline
+    } else {
+        now
+    };
     while now.wrapping_sub(runtime.sim_ms) >= 20 {
         let need = game.segment_index();
+        if need != ENEMY_CODE_PROFILE {
+            runtime.profile = need;
+            return None;
+        }
         if runtime.loaded[0] == need {
             runtime.current = 0
         } else if runtime.loaded[1] == need {
@@ -837,11 +966,18 @@ unsafe fn simulate(runtime: &mut Runtime) -> Hud {
                 ms: runtime.sim_ms,
             });
         }
-        game.tick(&Segment::from_validated(segment_data(runtime.current)));
+        game.tick(
+            &Segment::from_validated(segment_data(runtime.current)),
+            &bank,
+        );
     }
     // The last catch-up tick can cross a checkpoint or restart the mission.
     // Select that tick's resulting section before rendering this same frame.
     let need = game.segment_index();
+    if need != ENEMY_CODE_PROFILE {
+        runtime.profile = need;
+        return None;
+    }
     if runtime.loaded[0] == need {
         runtime.current = 0;
     } else if runtime.loaded[1] == need {
@@ -864,7 +1000,7 @@ unsafe fn simulate(runtime: &mut Runtime) -> Hud {
     let status = game.hud();
     GAME_MODE = status.mode as u8;
     GAME_DISTANCE = status.distance;
-    status
+    Some(status)
 }
 #[no_mangle]
 pub unsafe extern "C" fn main() -> i32 {
@@ -876,11 +1012,16 @@ pub unsafe extern "C" fn main() -> i32 {
     }
     check_code_package();
     boot_init();
-    let bank = AssetBank::from_validated(core::slice::from_raw_parts(0x8400 as *const u8, 2048));
     let mut runtime = Runtime {
         sim_ms: 0,
+        transition_audio: TransitionAudio::new(),
         loaded: [0xff; 2],
         current: 0,
+        profile: 0,
+        #[cfg(feature = "benchmarks")]
+        benchmark_deadline: 0,
+        #[cfg(feature = "benchmarks")]
+        benchmark_pending: true,
     };
     let mut last_present = 0;
     #[cfg(feature = "benchmarks")]
@@ -892,15 +1033,31 @@ pub unsafe extern "C" fn main() -> i32 {
         benchmark_frame_begin();
         #[cfg(not(feature = "benchmarks"))]
         wr(core::ptr::addr_of_mut!(PROF_PHASE), 1);
-        load_phase(1, core::ptr::addr_of!(__phase_sim_size) as u16);
-        wr(core::ptr::addr_of_mut!(PROF_PHASE), 5);
-        let status = simulate(&mut runtime);
+        STREAM_BYTES = 0;
+        MODEL_STREAM_BYTES = 0;
+        #[cfg(feature = "benchmarks")]
+        {
+            runtime.benchmark_pending = true;
+        }
+        load_sim(runtime.profile);
+        // Freeze one deadline for every same-frame reentry. A section-changing
+        // tick returns before using the incoming AI; reload and finish catch-up
+        // without adding simulation time or delaying the new level a frame.
+        let now = clock_ms();
+        let status = loop {
+            wr(core::ptr::addr_of_mut!(PROF_PHASE), 5);
+            if let Some(status) = simulate(&mut runtime, now) {
+                break status;
+            }
+            wr(core::ptr::addr_of_mut!(PROF_PHASE), 1);
+            load_sim(runtime.profile);
+        };
         disable_irq();
         let music_pending = AUDIO.assume_init_ref().page_request().is_some();
         enable_irq();
         if music_pending {
             wr(core::ptr::addr_of_mut!(PROF_PHASE), 8);
-            load_phase(4, core::ptr::addr_of!(__phase_audio_size) as u16);
+            load_phase(5, core::ptr::addr_of!(__phase_audio_size) as u16);
             wr(core::ptr::addr_of_mut!(PROF_PHASE), 9);
             service_audio();
         }
@@ -913,10 +1070,10 @@ pub unsafe extern "C" fn main() -> i32 {
         } else {
             core::ptr::addr_of!(__phase_scenery_base_size) as u16
         };
-        load_phase(5, scenery_size);
+        load_phase(7, scenery_size);
         wr(core::ptr::addr_of_mut!(PROF_PHASE), 11);
         io_off();
-        let scenery_count = prepare_scenery(runtime.current);
+        let scenery_count = prepare_scenery(runtime.current, &mut runtime.transition_audio);
         io_on();
         wr(core::ptr::addr_of_mut!(PROF_PHASE), 2);
         // Bridges keep the common player/projectile renderer and replace enemy
@@ -926,13 +1083,19 @@ pub unsafe extern "C" fn main() -> i32 {
         } else {
             core::ptr::addr_of!(__phase_geometry_size) as u16
         };
-        load_phase(2, geometry_size);
+        load_phase(3, geometry_size);
         wr(core::ptr::addr_of_mut!(PROF_PHASE), 6);
         io_off();
-        prepare_geometry(scenery_count, &bank);
+        {
+            let bank = AssetBank::from_validated(core::slice::from_raw_parts(
+                0x8400 as *const u8,
+                assets::MODEL_SIZE,
+            ));
+            prepare_geometry(scenery_count, &bank);
+        }
         io_on();
         geometry_complete();
-        load_phase(3, core::ptr::addr_of!(__phase_pixels_size) as u16);
+        load_phase(4, core::ptr::addr_of!(__phase_pixels_size) as u16);
         wr(core::ptr::addr_of_mut!(PROF_PHASE), 7);
         io_off();
         let back = draw_pixels(&status);

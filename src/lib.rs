@@ -1,20 +1,27 @@
 #![no_std]
 
+#[cfg(test)]
+extern crate self as havoc;
+#[cfg(test)]
+extern crate std;
+
 pub mod assets;
 pub mod audio;
-pub mod music;
-#[cfg(feature = "host-tools")]
-pub mod soundtrack;
 pub mod game;
 pub mod hud;
 pub mod math;
+pub mod music;
 pub mod presentation;
 pub mod projection;
 pub mod render;
 pub mod scenery;
 pub mod sky_cache;
+pub mod transition;
+#[cfg(feature = "host-tools")]
+pub mod soundtrack;
 
 #[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]
+#[repr(C)]
 pub struct Vec3 {
     pub x: i16,
     pub y: i16,
