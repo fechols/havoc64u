@@ -2,7 +2,8 @@
 //!
 //! A valid band contains only fixed backdrop geometry and no HUD. Each 4x8 cell
 //! contains at most three nonblack colors, even when the whole band uses more:
-//! clouds and horizons have separate color triples and do not share a cell.
+//! outdoor clouds and horizons use separate color triples, while the cave's
+//! overlapping roof and crystals share the same three nonblack colors.
 //! Together with global black, these fit the cell slots exactly. Packing zeros
 //! absent colors and assigns every present color once, even with duplicate
 //! colors in the previous palette. For identical pixels, equal screen bytes

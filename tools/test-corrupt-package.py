@@ -37,6 +37,7 @@ def main():
     parser.add_argument("--roms", type=Path, default=sibling/"target/tools/secondreality/vice/data")
     parser.add_argument("--llvm-nm", type=Path, default=Path(os.environ.get("LLVM_MOS", Path.home()/".local/llvm-mos"))/"bin/llvm-nm")
     parser.add_argument("--timeout", type=float, default=30)
+    parser.add_argument("--case", action="append", help="run only this named case; repeat to select several")
     args = parser.parse_args()
     package, output = args.package_dir.resolve(), args.out_dir.resolve()
     if output == package or package in output.parents:
@@ -50,7 +51,10 @@ def main():
     if len(original["reu"]) != 16*1024*1024:
         parser.error("input REU image must contain exactly 16 MiB")
     before = {extension: hashlib.sha256(data).hexdigest() for extension, data in original.items()}
-    format = vice.package_model_layout(original["reu"])
+    image = original["reu"]
+    if (image[:4] != b"SM64" or int.from_bytes(image[4:8], "little") != 0x534d0500
+            or image[16] != 12 or image[0x100:0x104] != b"OVL6"):
+        parser.error("input must be a twelve-stage campaign package with an OVL6 code directory")
     summary = {"passed": False, "scope": "Private corrupt REU copies in calibrated VICE; not physical hardware acceptance",
                "package": str(package), "original_sha256": before, "cases": []}
     native_command = vice.Monitor.command
@@ -68,39 +72,60 @@ def main():
     vice.Monitor.command = command
     cases = [
         ("directory-magic", 0x100, "REU CODE DIRECTORY MISSING OR INVALID"),
-        ("boot-code", 0x10010, "REU CODE CHECKSUM FAILED"),
-        ("audio-code", 0x50010, "REU CODE CHECKSUM FAILED"),
-        ("scenery-code", 0x70010, "REU CODE CHECKSUM FAILED"),
-        # These tails are omitted from some frame transfers, but boot must
-        # validate their complete executable bytes before any frame is drawn.
-        ("wildlife-tail", 0x70000 + int.from_bytes(original["reu"][0x122:0x124], "little") - 1,
-         "REU CODE CHECKSUM FAILED"),
-        ("enemy-drawing-tail", 0x30000 + int.from_bytes(original["reu"][0x108:0x10a], "little") - 1,
-         "REU CODE CHECKSUM FAILED"),
         ("old-code-directory", 0x103, "REU CODE DIRECTORY MISSING OR INVALID"),
         ("common-assets", 0x1010, "INVALID COMMON ASSET BANK"),
         ("resident-pair", 0x118, "PRG AND REU DO NOT MATCH"),
         ("directory-profile", 0x120, "PRG AND REU DO NOT MATCH"),
-        ("music-page", 0x60080+12+5*(10 if original["reu"][17] == 4 else 4), "INVALID MUSIC PAGE"),
         ("model-directory", 0x40, "INVALID MODEL DIRECTORY"),
-        ("model-hp-sentinel", 0xb0000 + 2*2048 + format["descriptors"], "INVALID LEVEL MODEL BANK"),
+        ("model-hp-sentinel", 0xb0000 + 2*2048 + 88, "INVALID LEVEL MODEL BANK"),
+        ("sim-helpers-second-chunk", 0x170000 + 1024, "REU CODE CHECKSUM FAILED"),
+        ("transport-directory-size", 0x14c, "INVALID REU CODE SIZE"),
+        ("sim-helpers-directory-size", 0x154, "INVALID REU CODE SIZE"),
     ]
-    if format["medal"]:
-        for name, page, size_at in (("victory-geometry", 0xc0000, 0x132),
-                                    ("terminal-simulation", 0xd0000, 0x136)):
-            size = int.from_bytes(original["reu"][size_at:size_at+2], "little")
-            if not 16 < size < 0x10000:
-                parser.error(f"invalid {name} overlay size")
-            cases.append((f"{name}-code", page + 16, "REU CODE CHECKSUM FAILED"))
-            cases.append((f"{name}-tail", page + size - 1, "REU CODE CHECKSUM FAILED"))
-    for level, page in enumerate((2, 8, 9, 10)):
-        cases.append((f"level-{level}-enemy-code", page*0x10000 + 16, "REU CODE CHECKSUM FAILED"))
-        # Include the last byte: startup checks the entire padded composite,
-        # even when a shorter enemy tail leaves zero padding at its end.
-        size_at = 0x106 if level == 0 else 0x126 + (level-1)*4
-        size = int.from_bytes(original["reu"][size_at:size_at+2], "little")
-        cases.append((f"level-{level}-enemy-tail", page*0x10000 + size-1, "REU CODE CHECKSUM FAILED"))
+    overlays = (
+        ("boot", 1, 4), ("lowlands", 2, 6), ("geometry", 3, 8),
+        ("pixels", 4, 10), ("audio", 5, 12), ("wildlife", 7, 34),
+        ("canyon", 8, 38), ("fortress", 9, 42), ("carrier", 10, 46),
+        ("victory", 12, 50), ("terminal", 13, 54),
+        ("warden", 18, 64), ("citadel", 19, 68), ("flagship", 20, 72),
+        ("transport", 21, 76), ("meteors", 22, 80),
+        ("sim-helpers", 23, 84),
+    )
+    for name, page, directory_offset in overlays:
+        size_at = 0x100 + directory_offset
+        size = int.from_bytes(image[size_at:size_at + 2], "little")
+        if not 16 < size <= 0x4200:
+            parser.error(f"invalid {name} overlay size")
+        cases.append((f"{name}-code", page * 0x10000 + 16, "REU CODE CHECKSUM FAILED"))
+        # Boot authenticates complete padded images, including inactive tails.
+        cases.append((f"{name}-tail", page * 0x10000 + size - 1, "REU CODE CHECKSUM FAILED"))
+    for level in range(12):
         cases.append((f"level-{level}-models", 0xb0000 + level*2048 + 200, "INVALID LEVEL MODEL BANK"))
+        cases.append((f"level-{level}-encounters", 0x2000 + level*2048 + 20, "INVALID MISSION SEGMENT"))
+    metadata = {
+        "enemy-profile": (8, 4), "music-cue": (9, 13), "bridge-profile": (10, 3),
+        "boss-kind": (11, 4), "theme": (12, 10), "next-theme": (13, 10),
+        "previous-theme": (14, 10), "reserved": (15, 1),
+    }
+    for field, (offset, _value) in metadata.items():
+        cases.append((f"metadata-{field}", 0x2800 + offset, "INVALID MISSION SEGMENT"))
+    music = image[0x100000:0x100080]
+    if music[:4] != b"SMU2" or music[6] != 13:
+        parser.error("input must contain all thirteen campaign cues")
+    page_size = int.from_bytes(music[12:14], "little")
+    for cue in range(13):
+        entry = 16 + cue * 8
+        start = int.from_bytes(music[entry:entry + 4], "little")
+        pages = music[entry + 4]
+        last_event = 0x100000 + start + (pages - 1) * page_size + 12 + music[5] * 5
+        cases.append((f"music-cue-{cue}", last_event, "INVALID MUSIC PAGE"))
+    cases.extend((("music-bank-bound", 0x100008, "INVALID MUSIC DIRECTORY"),
+                  ("music-offset-overflow", 0x100070, "INVALID MUSIC DIRECTORY")))
+    if args.case:
+        unknown = set(args.case) - {name for name, _, _ in cases}
+        if unknown:
+            parser.error(f"unknown corruption case(s): {sorted(unknown)}")
+        cases = [case for case in cases if case[0] in args.case]
     for name, offset, expected in cases:
         case_output = output/name
         private_package = case_output/"package"
@@ -109,21 +134,43 @@ def main():
             (private_package/f"havoc.{extension}").write_bytes(original[extension])
         damaged = bytearray(original["reu"])
         damaged[offset] ^= 1
+        if name.endswith("-directory-size"):
+            size = int.from_bytes(original["reu"][offset:offset+2], "little")
+            damaged[offset:offset+2] = (size - 1).to_bytes(2, "little")
+            # Authenticate the altered directory so startup must compare this
+            # composed image length with its independent startup size table.
+            damaged[0x17e:0x180] = checksum(damaged[0x100:0x17e]).to_bytes(2, "little")
         if name == "model-hp-sentinel":
             # HP 255 belongs to indestructible scenery, never an enemy. Repair
             # both checksums so only structural model validation can reject it.
             damaged[offset] = 255
             model_start = 0xb0000 + 2*2048
             damaged[0x50:0x52] = checksum(damaged[model_start:model_start+2048]).to_bytes(2, "little")
-            damaged[0x5e:0x60] = checksum(damaged[0x40:0x5e]).to_bytes(2, "little")
+            damaged[0x7e:0x80] = checksum(damaged[0x40:0x7e]).to_bytes(2, "little")
         if name == "old-code-directory":
-            damaged[0x100:0x104] = b"OVL4" if format["medal"] else b"OVL3"
+            damaged[0x100:0x104] = b"OVL5"
         if name == "directory-profile":
             damaged[offset] = 2 if original["reu"][17] == 4 else 4
         if name in ("resident-pair", "directory-profile", "old-code-directory"):
             # A valid directory with the wrong resident checksum must get the
             # distinct pairing error, rather than failing directory validation.
-            damaged[0x13e:0x140] = checksum(damaged[0x100:0x13e]).to_bytes(2, "little")
+            damaged[0x17e:0x180] = checksum(damaged[0x100:0x17e]).to_bytes(2, "little")
+        if name.startswith("metadata-"):
+            damaged[offset] = metadata[name.removeprefix("metadata-")][1]
+            # Valid hashes isolate the structural checks on each metadata byte.
+            damaged[22:24] = checksum(damaged[0x2800:0x2a00]).to_bytes(2, "little")
+            damaged[62:64] = checksum(damaged[:62]).to_bytes(2, "little")
+        if name in ("music-bank-bound", "music-offset-overflow"):
+            damaged[offset:offset + 4] = (0x20001 if name == "music-bank-bound" else 0xffffffff).to_bytes(4, "little")
+            # The score directory is mirrored in the common bank. Keep every
+            # enclosing checksum valid so only the 128 KiB/32-bit bounds fail.
+            score_header = damaged[0x100000:0x100080]
+            score_header[14:16] = b"\0\0"
+            score_header[14:16] = checksum(score_header).to_bytes(2, "little")
+            damaged[0x100000:0x100080] = score_header
+            damaged[0x1800:0x1880] = score_header
+            damaged[18:20] = checksum(damaged[0x1000:0x1c00]).to_bytes(2, "little")
+            damaged[62:64] = checksum(damaged[:62]).to_bytes(2, "little")
         damaged_hash = hashlib.sha256(damaged).hexdigest()
         (private_package/"havoc.reu").write_bytes(damaged)
         sys.argv = ["vice-smoke.py", "--video", "pal", "--frames", "1", "--timeout", str(args.timeout),

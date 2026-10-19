@@ -2,6 +2,225 @@
 use havoc::{assets::*, music, soundtrack};
 use std::{boxed::Box, format, fs, path::Path, println, vec, vec::Vec};
 
+/// All campaign choices are authored here and baked into independently checked
+/// model/encounter pages. None of this table enters the resident game image.
+struct StageDesign {
+    name: &'static str,
+    info: StageInfo,
+    ground: u8,
+    waves: &'static [Wave],
+    obstacle: u8,
+}
+// A separately placed formation: distance, types (zero ends the formation),
+// half-width, height, inter-ship delay, and the pickup-bearing ship (255 = none).
+type Wave = (u16, [u8; 3], i16, i16, u16, u8);
+const F: u8 = FIGHTER;
+const D: u8 = DIVER;
+const T: u8 = TURRET;
+const CAMPAIGN: [StageDesign; SEGMENT_COUNT as usize] = [
+    StageDesign {
+        name: "Lowland Approach",
+        info: STAGE_INFOS[0],
+        ground: 5,
+        waves: &[],
+        obstacle: ROCK,
+    },
+    StageDesign {
+        name: "Crystal Cave",
+        info: STAGE_INFOS[1],
+        ground: 11,
+        waves: &[
+            (1100, [F, F, 0], 65, 20, 0, 1),
+            (3400, [D, D, 0], 95, 40, 180, 255),
+            (5900, [F, F, F], 85, -20, 120, 1),
+            (8300, [D, F, 0], 110, 15, 220, 255),
+            (11100, [F, F, 0], 60, 45, 0, 0),
+            (14100, [D, D, 0], 85, -25, 200, 255),
+            (17200, [F, F, F], 90, 25, 100, 1),
+            (20500, [F, D, 0], 100, -15, 160, 255),
+            (23900, [D, D, 0], 75, 35, 100, 1),
+            (27300, [F, F, F], 80, 0, 140, 255),
+        ],
+        obstacle: ROCK,
+    },
+    StageDesign {
+        name: "Iron Canyon",
+        info: STAGE_INFOS[2],
+        ground: 9,
+        waves: &[
+            (1200, [F, F, 0], 110, 0, 160, 1),
+            (3900, [D, D, 0], 70, 0, 160, 255),
+            (6600, [F, F, 0], 110, 0, 160, 255),
+            (9300, [D, D, 0], 70, 0, 160, 255),
+            (12000, [F, F, 0], 110, 0, 160, 1),
+            (14700, [D, D, 0], 70, 0, 160, 255),
+            (17400, [F, F, 0], 110, 0, 160, 255),
+            (20100, [D, D, 0], 70, 0, 160, 255),
+            (22800, [F, F, 0], 110, 0, 160, 1),
+            (25500, [D, D, 0], 70, 0, 160, 255),
+        ],
+        obstacle: ROCK,
+    },
+    StageDesign {
+        name: "Canyon Gate",
+        info: STAGE_INFOS[3],
+        ground: 9,
+        waves: &[
+            (1600, [F, D, 0], 90, 20, 240, 0),
+            (4300, [D, F, 0], 75, -15, 200, 1),
+            (10800, [F, F, 0], 100, 35, 300, 255),
+            (16400, [D, D, 0], 85, 20, 200, 1),
+            (21600, [F, D, 0], 105, -10, 320, 255),
+            (26700, [D, F, 0], 90, 30, 250, 0),
+        ],
+        obstacle: 0,
+    },
+    StageDesign {
+        name: "Ashen Wastes",
+        info: STAGE_INFOS[4],
+        ground: 11,
+        waves: &[
+            (1000, [D, D, 0], 80, 50, 350, 1),
+            (3500, [F, D, F], 90, -20, 180, 255),
+            (6400, [D, D, 0], 110, 45, 160, 0),
+            (9100, [F, F, 0], 70, -10, 100, 255),
+            (12100, [D, D, D], 90, 35, 200, 1),
+            (15400, [F, D, 0], 100, 5, 280, 255),
+            (18300, [D, D, 0], 65, 50, 100, 1),
+            (21300, [F, F, F], 90, -15, 160, 255),
+            (24600, [D, F, 0], 110, 30, 300, 255),
+            (27500, [D, D, 0], 75, 45, 200, 0),
+        ],
+        obstacle: ROCK,
+    },
+    StageDesign {
+        name: "Foundry Belt",
+        info: STAGE_INFOS[5],
+        ground: 12,
+        waves: &[
+            (1200, [F, D, 0], 60, 30, 300, 1),
+            (4000, [D, F, 0], 90, -15, 260, 255),
+            (7000, [F, F, 0], 70, 20, 350, 0),
+            (9700, [D, D, 0], 105, 10, 180, 255),
+            (12700, [F, D, F], 85, 30, 180, 1),
+            (15800, [F, F, 0], 65, -10, 300, 255),
+            (18800, [D, F, 0], 95, 25, 180, 1),
+            (21900, [F, D, 0], 75, 0, 340, 255),
+            (25000, [D, D, 0], 105, 40, 180, 255),
+            (27800, [F, F, 0], 60, 15, 240, 0),
+        ],
+        obstacle: BUILDING,
+    },
+    StageDesign {
+        name: "Fortress Run",
+        info: STAGE_INFOS[6],
+        ground: 11,
+        waves: &[
+            (1200, [F, D, 0], 60, 30, 300, 1),
+            (3900, [D, D, 0], 70, 25, 160, 255),
+            (6600, [F, D, 0], 60, 30, 300, 255),
+            (9300, [D, D, 0], 70, -25, 160, 255),
+            (12000, [F, D, 0], 60, 30, 300, 1),
+            (14700, [D, D, 0], 70, 25, 160, 255),
+            (17400, [F, D, 0], 60, 30, 300, 255),
+            (20100, [D, D, 0], 70, -25, 160, 255),
+            (22800, [F, D, 0], 60, 30, 300, 1),
+            (25500, [D, D, 0], 70, 25, 160, 255),
+        ],
+        obstacle: BUILDING,
+    },
+    StageDesign {
+        name: "Citadel Core",
+        info: STAGE_INFOS[7],
+        ground: 11,
+        waves: &[
+            (1400, [F, D, 0], 65, 35, 320, 1),
+            (4500, [D, D, 0], 100, -10, 180, 0),
+            (11400, [F, F, 0], 85, 30, 350, 255),
+            (16900, [D, F, 0], 105, 15, 260, 1),
+            (22200, [F, D, 0], 75, -15, 320, 255),
+            (27200, [D, D, 0], 95, 35, 220, 0),
+        ],
+        obstacle: 0,
+    },
+    StageDesign {
+        name: "Storm Front",
+        info: STAGE_INFOS[8],
+        ground: 14,
+        waves: &[
+            (1000, [F, F, 0], 110, 35, 120, 1),
+            (3700, [D, D, 0], 80, -20, 240, 255),
+            (6500, [F, D, F], 95, 30, 180, 1),
+            (9300, [D, F, 0], 65, 0, 300, 255),
+            (12100, [F, F, 0], 115, 45, 100, 0),
+            (15300, [D, D, D], 85, -10, 220, 255),
+            (18400, [F, D, 0], 105, 25, 280, 1),
+            (21500, [F, F, 0], 75, 40, 160, 255),
+            (24700, [D, F, D], 100, 5, 200, 1),
+            (27900, [F, F, 0], 90, 30, 160, 255),
+        ],
+        obstacle: ROCK,
+    },
+    StageDesign {
+        name: "Meteor Reach",
+        info: STAGE_INFOS[9],
+        ground: 4,
+        waves: &[
+            (1300, [D, F, 0], 110, -15, 320, 0),
+            (4100, [F, F, F], 95, 35, 160, 1),
+            (7200, [D, D, 0], 75, 10, 260, 255),
+            (10200, [F, D, 0], 105, -20, 300, 1),
+            (13300, [F, F, 0], 60, 45, 100, 255),
+            (16200, [D, F, D], 100, 0, 180, 1),
+            (19400, [F, F, 0], 115, 30, 140, 255),
+            (22500, [D, D, 0], 80, -15, 250, 0),
+            (25300, [F, D, F], 95, 40, 180, 255),
+            (28200, [D, F, 0], 105, 10, 300, 1),
+        ],
+        obstacle: ROCK,
+    },
+    StageDesign {
+        name: "Carrier Coast",
+        info: STAGE_INFOS[10],
+        ground: 6,
+        waves: &[
+            (1200, [F, D, 0], 75, 25, 220, 1),
+            (4000, [F, F, F], 95, -10, 150, 255),
+            (6900, [D, D, 0], 100, 35, 180, 0),
+            (9800, [F, F, 0], 65, 10, 250, 255),
+            (12900, [F, D, F], 85, 30, 180, 1),
+            (16000, [D, F, 0], 110, -15, 300, 255),
+            (19200, [F, F, 0], 80, 45, 120, 1),
+            (22200, [D, D, 0], 105, 0, 220, 255),
+            (25200, [F, F, F], 90, 30, 160, 1),
+            (28200, [F, D, 0], 70, 10, 260, 255),
+        ],
+        obstacle: BUILDING,
+    },
+    StageDesign {
+        name: "Carrier Assault",
+        info: STAGE_INFOS[11],
+        ground: 6,
+        waves: &[
+            (1800, [F, D, 0], 75, 25, 0, 1),
+            (4700, [D, F, 0], 95, -15, 240, 0),
+            (10800, [F, F, 0], 105, 35, 220, 255),
+            (15000, [D, D, 0], 85, 10, 160, 1),
+            (19200, [F, D, 0], 110, -10, 240, 255),
+            (23500, [D, F, 0], 95, 30, 220, 0),
+            (27800, [F, D, 0], 80, 15, 180, 1),
+        ],
+        obstacle: 0,
+    },
+];
+
+pub fn stage_info(index: u8) -> StageInfo {
+    CAMPAIGN[index as usize].info
+}
+pub fn stage_name(index: u8) -> &'static str {
+    CAMPAIGN[index as usize].name
+}
+
 fn put16(b: &mut [u8], p: usize, n: u16) {
     b[p..p + 2].copy_from_slice(&n.to_le_bytes());
 }
@@ -25,23 +244,30 @@ pub fn model_bank(level: u8) -> [u8; MODEL_SIZE] {
     b[..4].copy_from_slice(b"SMA3");
     b[4] = MODEL_COUNT;
     b[5] = level;
-    b[6] = if level == 3 { 2 } else { 3 };
-    let hp = [[3, 2, 6], [2, 3, 4], [4, 2, 6], [3, 2, 6]][level as usize];
-    let speed = [[8, 12, 8], [10, 8, 8], [6, 8, 8], [8, 14, 8]][level as usize];
+    let info = stage_info(level);
+    let profile = info.enemy_profile;
+    b[6] = if info.boss_kind != 0 { 2 } else { 3 };
+    b[7] = info.boss_kind;
+    let hp = [[3, 2, 6], [2, 3, 4], [4, 2, 6], [3, 2, 6]][profile as usize];
+    let speed = [[8, 12, 8], [10, 8, 8], [6, 8, 8], [8, 14, 8]][profile as usize];
     // Keep the lowland gun and fortress bunker seated on their original bases.
     // The cliff battery and carrier-mounted turrets scale around their origins.
-    let ground_pivot_y = if matches!(level, 0 | 2) { -8 } else { 0 };
+    let ground_pivot_y = if info.boss_kind == 0 && profile != 1 {
+        -8
+    } else {
+        0
+    };
     for slot in 0..3 {
         let at = ENEMY_SPECS_OFFSET + slot * ENEMY_SPEC_SIZE;
         b[at] = hp[slot];
-        let center_y = if slot == 2 && level != 1 { 10 } else { 0 };
+        let center_y = if slot == 2 && profile != 1 { 10 } else { 0 };
         let pivot_y = if slot == 2 { ground_pivot_y } else { 0 };
         b[at + 1] = (pivot_y + (center_y - pivot_y) * ENEMY_SCALE) as u8;
         b[at + 2] = (19 * ENEMY_SCALE) as u8;
         b[at + 3] = (18 * ENEMY_SCALE) as u8;
         put16(&mut b, at + 4, if slot == 2 { 250 } else { 100 });
         b[at + 6] = speed[slot];
-        b[at + 7] = u8::from(slot == 1 && level != 2);
+        b[at + 7] = u8::from(slot == 1 && profile != 2);
     }
     let mut cursor = MODEL_DATA_OFFSET;
     let mut models: Vec<(Vec<[i16; 3]>, Vec<[u8; 4]>)> = vec![
@@ -231,9 +457,10 @@ pub fn model_bank(level: u8) -> [u8; MODEL_SIZE] {
             ],
         ),
     ];
-    for (slot, model) in section_enemy_models(level).into_iter().enumerate() {
+    for (slot, model) in section_enemy_models(profile).into_iter().enumerate() {
         models[slot + 1] = model;
     }
+    customize_stage_models(info, &mut models);
     let medal = medal_model(&models[PLAYER as usize]);
     models.push(medal);
     // Bake the larger combat meshes so the C64 retains identity transforms and
@@ -269,6 +496,135 @@ pub fn model_bank(level: u8) -> [u8; MODEL_SIZE] {
 }
 
 type Model = (Vec<[i16; 3]>, Vec<[u8; 4]>);
+
+fn customize_stage_models(info: StageInfo, models: &mut [Model]) {
+    match info.theme {
+        4 => {
+            // Crystal skimmer: a sharp diamond keel, long flat outriggers and
+            // glass-blue facets, using the patrol movement family.
+            models[FIGHTER as usize].0 = vec![
+                [0, 0, -42],
+                [-36, -4, 4],
+                [36, -4, 4],
+                [0, 18, 10],
+                [0, -12, 10],
+                [0, 0, 32],
+            ];
+            for (i, face) in models[FIGHTER as usize].1.iter_mut().enumerate() {
+                face[3] = [3, 1, 14, 6][i % 4];
+            }
+            // The cave's obstacles are translucent crystal spires. Their rock
+            // collision identity stays unchanged; only the checked mesh differs.
+            for vertex in &mut models[ROCK as usize].0 {
+                vertex[0] = vertex[0] * 3 / 4;
+                vertex[1] = vertex[1] * 3 / 2;
+                vertex[2] = vertex[2] * 3 / 4;
+            }
+            for (i, face) in models[ROCK as usize].1.iter_mut().enumerate() {
+                face[3] = [3, 1, 14, 6, 3, 14][i];
+            }
+        }
+        5 => {
+            // Volcanic diver: high swept fins and a narrow ember-colored nose.
+            models[DIVER as usize].0 = vec![
+                [0, -4, -43],
+                [-25, 6, 18],
+                [25, 6, 18],
+                [0, 31, 24],
+                [0, -13, 7],
+            ];
+            for (i, face) in models[DIVER as usize].1.iter_mut().enumerate() {
+                face[3] = [2, 8, 9, 2, 10, 8][i];
+            }
+            for vertex in &mut models[ROCK as usize].0 {
+                vertex[1] = vertex[1] * 3 / 2;
+            }
+            for (i, face) in models[ROCK as usize].1.iter_mut().enumerate() {
+                face[3] = [11, 8, 0, 8, 11, 0][i];
+            }
+        }
+        8 | 9 => {
+            // Storm interceptor: split swept lightning wings surrounding a
+            // needle fuselage; the carrier-guard steering family is retained.
+            models[FIGHTER as usize].0 = vec![
+                [-36, -3, -12],
+                [-9, 0, -38],
+                [9, 0, -38],
+                [36, -3, -12],
+                [-29, 8, 31],
+                [29, 8, 31],
+                [0, 16, 3],
+                [0, -10, 9],
+            ];
+            for (i, face) in models[FIGHTER as usize].1.iter_mut().enumerate() {
+                face[3] = if info.theme == 8 {
+                    [14, 3, 1, 6][i % 4]
+                } else {
+                    [4, 14, 10, 6][i % 4]
+                };
+            }
+        }
+        _ => {}
+    }
+    match info.boss_kind {
+        1 => {
+            // Gorge Warden: wide tracked base, low sloping armor and an ochre
+            // command cab. Side mounts stay at +/-65,15,-35 before scaling.
+            models[CARRIER as usize].0 = vec![
+                [-95, -24, -72],
+                [95, -24, -72],
+                [90, -24, 65],
+                [-90, -24, 65],
+                [-65, 15, -45],
+                [65, 15, -45],
+                [52, 15, 45],
+                [-52, 15, 45],
+                [0, 30, 18],
+                [0, -4, -82],
+            ];
+            for (i, face) in models[CARRIER as usize].1.iter_mut().enumerate() {
+                face[3] = [9, 8, 11, 12, 9, 8, 11, 12, 7, 8, 7, 8, 2, 10, 10, 11, 11][i];
+            }
+        }
+        2 => {
+            // Citadel Heart: squared reactor platform and a tall luminous core,
+            // retaining the same collision hardpoints as the other bosses.
+            models[CARRIER as usize].0 = vec![
+                [-88, -20, -68],
+                [88, -20, -68],
+                [88, -20, 68],
+                [-88, -20, 68],
+                [-65, 15, -45],
+                [65, 15, -45],
+                [45, 15, 50],
+                [-45, 15, 50],
+                [0, 58, 8],
+                [0, -2, -78],
+            ];
+            for (i, face) in models[CARRIER as usize].1.iter_mut().enumerate() {
+                face[3] = [
+                    11, 12, 11, 12, 11, 12, 11, 12, 3, 14, 3, 1, 4, 14, 14, 11, 11,
+                ][i];
+            }
+            // Two faceted reactor pylons replace the usual gun turrets.
+            models[TURRET as usize].0 = vec![
+                [-17, -8, -17],
+                [17, -8, -17],
+                [17, -8, 17],
+                [-17, -8, 17],
+                [-10, 24, -10],
+                [10, 24, -10],
+                [10, 24, 10],
+                [-10, 24, 10],
+                [0, 34, -17],
+            ];
+            for (i, face) in models[TURRET as usize].1.iter_mut().enumerate() {
+                face[3] = [11, 14, 11, 3, 11, 14, 11, 3, 1, 3, 14][i];
+            }
+        }
+        _ => {}
+    }
+}
 
 /// A closed twelve-sided coin with a raised relief of the player's Kestrel.
 /// Clockwise rings face the camera (-Z); reverse winding closes the back.
@@ -560,9 +916,9 @@ fn section_enemy_models(level: u8) -> Vec<Model> {
 
 pub fn model_directory() -> [u8; MODEL_DIRECTORY_SIZE] {
     let mut directory = [0; MODEL_DIRECTORY_SIZE];
-    directory[..4].copy_from_slice(b"MDL1");
+    directory[..4].copy_from_slice(b"MDL2");
     directory[4] = SEGMENT_COUNT;
-    directory[5] = 1;
+    directory[5] = 2;
     put16(&mut directory, 6, MODEL_SIZE as u16);
     put32(&mut directory, 8, MODEL_BANKS_OFFSET);
     for level in 0..SEGMENT_COUNT {
@@ -572,17 +928,29 @@ pub fn model_directory() -> [u8; MODEL_DIRECTORY_SIZE] {
             checksum(&model_bank(level)),
         );
     }
-    let sum = checksum(&directory[..30]);
-    put16(&mut directory, 30, sum);
+    let sum = checksum(&directory[..MODEL_DIRECTORY_CHECKSUM_OFFSET]);
+    put16(&mut directory, MODEL_DIRECTORY_CHECKSUM_OFFSET, sum);
     directory
 }
 
 pub fn segment_bank(index: u8) -> [u8; SEGMENT_SIZE] {
+    let design = &CAMPAIGN[index as usize];
+    let info = design.info;
     let mut b = [0; SEGMENT_SIZE];
-    b[..4].copy_from_slice(b"SMS1");
+    b[..4].copy_from_slice(b"SMS2");
     b[4] = index;
-    b[5] = index;
-    b[6] = [5, 9, 11, 6][index as usize];
+    b[5] = info.enemy_profile;
+    b[6] = design.ground;
+    b[8..16].copy_from_slice(&[
+        info.enemy_profile,
+        info.music_cue,
+        info.bridge_profile,
+        info.boss_kind,
+        info.theme,
+        info.next_theme,
+        info.previous_theme,
+        info.reserved,
+    ]);
     let mut events: Vec<Spawn> = Vec::new();
     if index == 0 {
         for wave in 0..10u16 {
@@ -606,70 +974,43 @@ pub fn segment_bank(index: u8) -> [u8; SEGMENT_SIZE] {
                 });
             }
         }
-    } else if index < 3 {
-        for wave in 0..10u16 {
-            let base = 1200 + wave * 2700;
-            for lane in 0..2i16 {
-                let side = if lane == 0 { -1 } else { 1 };
-                let fortress_pair = index == 2 && wave % 2 == 0;
+    } else {
+        for (wave, &(base, kinds, width, height, delay, reward)) in design.waves.iter().enumerate()
+        {
+            let count = kinds.iter().filter(|&&kind| kind != 0).count();
+            for (lane, &kind) in kinds[..count].iter().enumerate() {
+                let x = if count == 3 {
+                    (lane as i16 - 1) * width
+                } else if lane == 0 {
+                    -width
+                } else {
+                    width
+                };
                 events.push(Spawn {
-                    distance: base + lane as u16 * if fortress_pair { 300 } else { 160 },
-                    kind: if wave % 2 == 0 && (!fortress_pair || lane == 0) {
-                        FIGHTER
-                    } else {
-                        DIVER
-                    },
-                    x: side
-                        * if index == 1 && wave % 2 == 0 {
-                            110
-                        } else if fortress_pair {
-                            60
-                        } else {
-                            70
-                        },
-                    y: if fortress_pair {
-                        30
-                    } else if index == 2 {
-                        side * 25
-                    } else {
-                        0
-                    },
-                    flags: u8::from(wave % 4 == 0 && lane == 1),
+                    distance: base + lane as u16 * delay,
+                    kind,
+                    x,
+                    y: height,
+                    flags: u8::from(lane as u8 == reward),
                 });
             }
-            events.push(Spawn {
-                distance: base + if index == 1 { 800 } else { 1000 },
-                kind: TURRET,
-                x: if wave % 2 == 0 { -90 } else { 90 },
-                y: if index == 1 { 0 } else { -90 },
-                flags: 0,
-            });
-        }
-    } else {
-        for (wave, distance) in [3200, 6400, 12800, 19200, 25600].into_iter().enumerate() {
-            let side = if wave % 2 == 0 { -1 } else { 1 };
-            events.push(Spawn {
-                distance,
-                kind: FIGHTER,
-                x: side * 75,
-                y: 25,
-                flags: 0,
-            });
-            events.push(Spawn {
-                distance,
-                kind: DIVER,
-                x: -side * 75,
-                y: -15,
-                flags: u8::from(wave % 2 == 0),
-            });
+            if info.boss_kind == 0 && (info.enemy_profile != 0 || wave % 2 == 1) {
+                events.push(Spawn {
+                    distance: base + if info.enemy_profile == 1 { 800 } else { 1000 },
+                    kind: T,
+                    x: if wave % 2 == 0 { -90 } else { 90 },
+                    y: if info.enemy_profile == 1 { 0 } else { -90 },
+                    flags: 0,
+                });
+            }
         }
     }
-    if index < 3 {
+    if design.obstacle != 0 {
         for i in 0..6u16 {
             events.push(Spawn {
-                distance: 2200 + i * 4300,
-                kind: if index == 2 { BUILDING } else { ROCK },
-                x: if i % 2 == 0 { -70 } else { 70 },
+                distance: 2200 + i * 4300 + u16::from(index != 0) * index as u16 * 40,
+                kind: design.obstacle,
+                x: if (i + index as u16) % 2 == 0 { -70 } else { 70 },
                 y: -110,
                 flags: 0,
             });
@@ -709,7 +1050,7 @@ pub fn bake(out: &Path) -> Result<(), Box<dyn std::error::Error>> {
     reu[COMMON_OFFSET as usize..COMMON_OFFSET as usize + COMMON_SIZE].copy_from_slice(&common);
     let score = soundtrack::score_bank();
     reu[MUSIC_OFFSET as usize..MUSIC_OFFSET as usize + score.len()].copy_from_slice(&score);
-    for i in 0..4u8 {
+    for i in 0..SEGMENT_COUNT {
         let model = model_bank(i);
         let model_start = MODEL_BANKS_OFFSET as usize + i as usize * MODEL_SIZE;
         reu[model_start..model_start + MODEL_SIZE].copy_from_slice(&model);
@@ -718,12 +1059,12 @@ pub fn bake(out: &Path) -> Result<(), Box<dyn std::error::Error>> {
         reu[p..p + SEGMENT_SIZE].copy_from_slice(&segment);
         put16(
             &mut reu,
-            20 + i as usize * 2,
+            SEGMENT_CHECKSUM_OFFSET + i as usize * 2,
             checksum(&segment[..SEGMENT_CACHE_SIZE]),
         );
     }
-    let check = checksum(&reu[..30]);
-    put16(&mut reu, 30, check);
+    let check = checksum(&reu[..PACKAGE_CHECKSUM_OFFSET]);
+    put16(&mut reu, PACKAGE_CHECKSUM_OFFSET, check);
     check_package(&reu)?;
     fs::write(out.join("havoc.reu"), &reu)?;
     fs::write(
@@ -734,7 +1075,19 @@ pub fn bake(out: &Path) -> Result<(), Box<dyn std::error::Error>> {
             include_str!("../config/havoc.cfg")
         },
     )?;
-    fs::write(out.join("assets.txt"),format!("H.A.V.O.C. package {PACKAGE_ID:08X}\n16 MiB REU; common {COMMON_OFFSET:06X} (3072 bytes; 2048 resident model bytes); four checked 2048-byte level model banks at {MODEL_BANKS_OFFSET:06X}; model directory at {MODEL_DIRECTORY_OFFSET:06X}; four 2048-byte segments at {SEGMENTS_OFFSET:06X}, each with a checksummed 512-byte runtime prefix (up to 62 encounters)\nEleven original section-exclusive enemies: 3 lowland, 3 canyon, 3 fortress, 2 carrier escorts.\n{} SIDs: {} music voices + 2 effects voices. Seven original cues; {} bytes of paged score data at {MUSIC_OFFSET:06X}.\nOriginal models and music; no external ROMs or samples.\n", music::SID_COUNT, music::MUSIC_VOICES, score.len()))?;
+    let mut report = format!("H.A.V.O.C. package {PACKAGE_ID:08X}\n16 MiB REU; common {COMMON_OFFSET:06X} (3072 bytes; 2048 resident model bytes); twelve checked 2048-byte stage model banks at {MODEL_BANKS_OFFSET:06X}; 64-byte model directory at {MODEL_DIRECTORY_OFFSET:06X}; twelve 2048-byte segments at {SEGMENTS_OFFSET:06X}, each with a checksummed 512-byte runtime prefix (up to 62 encounters)\nTwelve 75-second stages, eleven 8-second crossings: 16:28 scheduled gameplay plus victory reveal. Three bosses: Gorge Warden, Citadel Heart, Carrier.\nFour enemy movement families with crystal skimmer, volcanic diver and storm interceptor meshes.\n{} SIDs: {} music voices + 2 effects voices. {} original cues; {} bytes of paged score data at {MUSIC_OFFSET:06X}.\nOriginal models and music; no external ROMs or samples.\n", music::SID_COUNT, music::MUSIC_VOICES, music::CUE_COUNT, score.len());
+    for (index, design) in CAMPAIGN.iter().enumerate() {
+        report.push_str(&format!(
+            "{:02}. {}: theme {}, enemy profile {}, boss {}, music {}\n",
+            index + 1,
+            design.name,
+            design.info.theme,
+            design.info.enemy_profile,
+            design.info.boss_kind,
+            design.info.music_cue
+        ));
+    }
+    fs::write(out.join("assets.txt"), report)?;
     println!(
         "Baked {} ({} bytes)",
         out.join("havoc.reu").display(),
@@ -766,7 +1119,7 @@ pub fn check_package(reu: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
             return Err("common and lowland model bank differ".into());
         }
     }
-    let music_bank = &reu[MUSIC_OFFSET as usize..MUSIC_OFFSET as usize + 0x10000];
+    let music_bank = &reu[MUSIC_OFFSET as usize..MUSIC_OFFSET as usize + MUSIC_CAPACITY as usize];
     if bank.audio()[..music::BANK_HEADER_SIZE] != music_bank[..music::BANK_HEADER_SIZE] {
         return Err("music directory does not match common assets".into());
     }
@@ -774,19 +1127,39 @@ pub fn check_package(reu: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
     if checksum(common) != u16_at(reu, 18) {
         return Err("common checksum".into());
     }
-    for i in 0..4 {
+    for i in 0..SEGMENT_COUNT as usize {
         let p = SEGMENTS_OFFSET as usize + i * SEGMENT_SIZE;
         let data = &reu[p..p + SEGMENT_SIZE];
         let s = Segment::new(data).map_err(|e| format!("segment {i}: {e:?}"))?;
-        if s.index() != i as u8 || checksum(&data[..SEGMENT_CACHE_SIZE]) != u16_at(reu, 20 + i * 2)
+        if s.index() != i as u8
+            || checksum(&data[..SEGMENT_CACHE_SIZE]) != u16_at(reu, SEGMENT_CHECKSUM_OFFSET + i * 2)
         {
             return Err("segment checksum/index".into());
+        }
+        let model = &reu[MODEL_BANKS_OFFSET as usize + i * MODEL_SIZE..];
+        if model[7] != s.stage_info().boss_kind {
+            return Err("stage/model boss identity mismatch".into());
+        }
+        if i > 0 && s.stage_info().previous_theme != CAMPAIGN[i - 1].info.theme
+            || i + 1 < SEGMENT_COUNT as usize
+                && s.stage_info().next_theme != CAMPAIGN[i + 1].info.theme
+        {
+            return Err("stage theme continuity".into());
         }
     }
     Ok(())
 }
 
 pub fn validate_soundtrack(bank: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
+    if bank.len() < music::BANK_HEADER_SIZE {
+        return Err("truncated music directory".into());
+    }
+    if bank[16 + music::CUE_COUNT * 8..music::BANK_HEADER_SIZE]
+        .iter()
+        .any(|&byte| byte != 0)
+    {
+        return Err("music directory reserved bytes".into());
+    }
     let mut end = music::BANK_HEADER_SIZE;
     for cue in 0..music::CUE_COUNT as u8 {
         let info = music::cue_info(bank, cue).map_err(|e| format!("music directory: {e:?}"))?;

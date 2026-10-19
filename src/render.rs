@@ -23,9 +23,10 @@ pub const NEAR: i16 = 32;
 pub const HUD_INK: u8 = 0x80;
 const TERRAIN_CLEAR_INK: u8 = 0x40;
 const POSITIVE_AREA: u8 = 4;
-// An indexed byte avoids a variable-width bit test on the 6502.
+// An indexed byte avoids a variable-width bit test on the 6502. The cave uses
+// global black plus three nonblack backdrop colors, which also fit each cell.
 const STATIC_SKY_COLORS: [bool; 16] = [
-    false, false, false, false, true, false, true, false, true, false, false, true, false, false,
+    true, false, false, false, true, false, true, false, true, false, false, true, false, false,
     false, false,
 ];
 
@@ -980,7 +981,58 @@ pub fn pack_band(
 #[inline(never)]
 #[cfg_attr(target_arch = "mos", link_section = ".phase.pixels")]
 pub fn draw_text(band: u8, pixels: &mut [u8; BAND_PIXELS], x: i16, y: i16, text: &[u8], color: u8) {
-    draw_text_scaled(band, pixels, x, y, text, color, 1);
+    let row = y.wrapping_sub(band as i16 * 8);
+    if band >= 25
+        || row as u16 > 3
+        || x < 0
+        || x > WIDTH as i16 - 3
+        || text.len() > (WIDTH + 1 - x as usize) / 4
+    {
+        draw_text_scaled(band, pixels, x, y, text, color, 1);
+        return;
+    }
+    // Most cockpit labels fit wholly within one band. Check their bounds once
+    // instead of repeating scaled-text clipping for every glyph pixel.
+    let ink = (color & 15) | HUD_INK;
+    let mut start = row as usize * WIDTH + x as usize;
+    for &character in text {
+        #[cfg(target_arch = "mos")]
+        {
+            extern "C" {
+                fn fast_glyph(destination: *mut u8, rows: *const u8, ink: u8);
+            }
+            // SAFETY: the band/text guards prove the complete 3x5 glyph fits;
+            // the kernel reads five font bytes and writes only its set pixels.
+            unsafe {
+                fast_glyph(
+                    pixels.as_mut_ptr().add(start),
+                    glyph(character).as_ptr(),
+                    ink,
+                )
+            };
+        }
+        #[cfg(not(target_arch = "mos"))]
+        {
+            let mut offset = start;
+            for &bits in glyph(character) {
+                // SAFETY: row is 0..=3, every glyph has five rows, and the text-width
+                // guard keeps all three columns of every glyph within 0..WIDTH.
+                unsafe {
+                    if bits & 4 != 0 {
+                        *pixels.get_unchecked_mut(offset) = ink;
+                    }
+                    if bits & 2 != 0 {
+                        *pixels.get_unchecked_mut(offset + 1) = ink;
+                    }
+                    if bits & 1 != 0 {
+                        *pixels.get_unchecked_mut(offset + 2) = ink;
+                    }
+                }
+                offset += WIDTH;
+            }
+        }
+        start += 4;
+    }
 }
 
 /// Integer scaling for title lettering; ordinary HUD text uses scale one.
@@ -1097,6 +1149,7 @@ pub(crate) fn fill_color(pixels: &mut [u8], color: u8) {
     pixels.fill(color);
 }
 
+// Glyph bytes are read only while PIXELS is loaded.
 static FONT: [[u8; 5]; 43] = [
     [2, 5, 7, 5, 5],
     [6, 5, 6, 5, 6],
@@ -1164,6 +1217,42 @@ fn glyph(c: u8) -> &'static [u8; 5] {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn compact_text_matches_scaled_reference_for_glyphs_clipping_and_bands() {
+        for band in [0, 1, 12, 23, 24, 25, 255] {
+            for row in -5..=8 {
+                let y = band as i16 * 8 + row;
+                for x in [-4, -1, 0, 1, 23, 48, 145, 154, 157, 158, 159, 160] {
+                    for character in 0..=255u8 {
+                        let text = [character; 3];
+                        let mut compact = [6; BAND_PIXELS];
+                        let mut reference = compact;
+                        draw_text(band, &mut compact, x, y, &text, character);
+                        draw_text_scaled(band, &mut reference, x, y, &text, character, 1);
+                        assert_eq!(
+                            compact, reference,
+                            "band {band}, x {x}, y {y}, glyph {character}"
+                        );
+                    }
+                }
+            }
+        }
+        for text in [
+            b"".as_slice(),
+            b"LOWLAND APPROACH",
+            &[b'W'; 40],
+            &[b'W'; 41],
+        ] {
+            for x in [0, 1, 2, 48, 157] {
+                let mut compact = [11; BAND_PIXELS];
+                let mut reference = compact;
+                draw_text(0, &mut compact, x, 2, text, 0xff);
+                draw_text_scaled(0, &mut reference, x, 2, text, 0xff, 1);
+                assert_eq!(compact, reference);
+            }
+        }
+    }
     fn clipped_scenery(sink: &mut impl GeometrySink, index: u8) {
         sink.triangle(
             Vec3 { x: 0, y: 12, z: 16 },
@@ -1309,7 +1398,10 @@ mod tests {
             for band in 0..25 {
                 renderer.render_band(band, &mut expected[band as usize]);
             }
-            assert_eq!(expected[12][4 * WIDTH + 80], foreground_color | TERRAIN_CLEAR_INK);
+            assert_eq!(
+                expected[12][4 * WIDTH + 80],
+                foreground_color | TERRAIN_CLEAR_INK
+            );
             assert!(expected.iter().flatten().any(|&pixel| pixel == 5));
             let mut pass = renderer.raster_pass().unwrap();
             let mut pixels = [0; BAND_PIXELS];

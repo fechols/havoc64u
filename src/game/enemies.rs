@@ -11,20 +11,9 @@ mod tests;
 #[path = "../host.rs"]
 pub(super) mod authored;
 
-#[cfg(target_arch = "mos")]
-extern "C" {
-    fn enemy_step(actor: *mut Actor, player: *const Vec3, slot: u8) -> u8;
-}
-
 #[inline(always)]
+#[cfg(test)]
 pub(super) fn step(level: u8, actor: &mut Actor, player: &Vec3, slot: u8) -> u8 {
-    #[cfg(target_arch = "mos")]
-    {
-        let _ = level;
-        // The platform installs the matching level tail before entering SIM.
-        unsafe { enemy_step(actor, player, slot) }
-    }
-    #[cfg(not(target_arch = "mos"))]
     unsafe {
         match level {
             0 => enemy_lowlands(actor, player, slot),
@@ -48,12 +37,16 @@ fn firing(a: &Actor, requested: u8) -> u8 {
 // uses the existing resident division routine instead of expanding constant
 // division at every axis. Evaluate each wave before loading its origin to avoid
 // keeping extra coordinates alive across the call on the target.
+#[inline(never)]
+#[cfg_attr(target_arch = "mos", link_section = ".phase.sim")]
+fn movement_wave(phase: u8, divisor: u8) -> i16 {
+    sin8(phase) / i16::from(divisor)
+}
 macro_rules! wave {
     ($name:ident, $section:literal) => {
-        #[inline(never)]
-        #[cfg_attr(target_arch = "mos", link_section = $section)]
+        #[inline(always)]
         fn $name(phase: u8, divisor: u8) -> i16 {
-            sin8(phase) / i16::from(divisor)
+            movement_wave(phase, divisor)
         }
     };
 }
@@ -63,9 +56,7 @@ wave!(fortress_wave, ".phase.enemy.fortress");
 wave!(carrier_wave, ".phase.enemy.carrier");
 
 /// Kite patrol, Needle diver and Tracked gun.
-#[no_mangle]
-#[inline(never)]
-#[cfg_attr(target_arch = "mos", link_section = ".phase.enemy.lowlands.entry")]
+#[inline(always)]
 pub(super) unsafe extern "C" fn enemy_lowlands(
     actor: *mut Actor,
     player: *const Vec3,
@@ -89,9 +80,7 @@ pub(super) unsafe extern "C" fn enemy_lowlands(
 }
 
 /// Razor skimmer, Gorge swooper and Cliff battery.
-#[no_mangle]
-#[inline(never)]
-#[cfg_attr(target_arch = "mos", link_section = ".phase.enemy.canyon.entry")]
+#[inline(always)]
 pub(super) unsafe extern "C" fn enemy_canyon(
     actor: *mut Actor,
     _player: *const Vec3,
@@ -118,9 +107,7 @@ pub(super) unsafe extern "C" fn enemy_canyon(
 }
 
 /// Iron gunship, Lance sentry and Citadel bunker.
-#[no_mangle]
-#[inline(never)]
-#[cfg_attr(target_arch = "mos", link_section = ".phase.enemy.fortress.entry")]
+#[inline(always)]
 pub(super) unsafe extern "C" fn enemy_fortress(
     actor: *mut Actor,
     _player: *const Vec3,
@@ -163,9 +150,7 @@ pub(super) unsafe extern "C" fn enemy_fortress(
 }
 
 /// Wing guard and Sting rammer. The carrier boss remains shared simulation.
-#[no_mangle]
-#[inline(never)]
-#[cfg_attr(target_arch = "mos", link_section = ".phase.enemy.carrier.entry")]
+#[inline(always)]
 pub(super) unsafe extern "C" fn enemy_carrier(
     actor: *mut Actor,
     player: *const Vec3,
@@ -179,6 +164,10 @@ pub(super) unsafe extern "C" fn enemy_carrier(
         a.pos.y = carrier_wave((a.age as u8).wrapping_mul(2).wrapping_add(64), 16) + a.origin_y;
         let phase = a.age as u8 & 127;
         u8::from(phase == 64 || phase == 72)
+    } else if a.kind == 3 {
+        a.pos.z -= 8;
+        let phase = a.age as u8 & 127;
+        u8::from(phase == 64 || phase == 72)
     } else {
         a.pos.z -= 14;
         if a.pos.z > 500 {
@@ -189,4 +178,119 @@ pub(super) unsafe extern "C" fn enemy_carrier(
         0
     };
     firing(a, fire)
+}
+
+/// One modulo supplies both the firing gate and alternating gun side. Keeping
+/// the divisor opaque avoids expanding constant division in every boss.
+/// Rates are the nonzero, bounded 25/40/45/50-tick attack intervals.
+#[inline(never)]
+#[cfg_attr(target_arch = "mos", link_section = ".phase.sim_aux")]
+pub(super) fn boss_pulse(ticks: u16, rate: u8) -> u8 {
+    let phase = ticks % (u16::from(rate) * 2);
+    if phase == 0 {
+        1
+    } else if phase == u16::from(rate) {
+        2
+    } else {
+        0
+    }
+}
+
+// Each native entry owns its actor loop, movement and optional act boss.
+// Outlining the two specialized callbacks bounds their register live ranges;
+// each still belongs to its own tail and cannot borrow another loaded image.
+macro_rules! encounter {
+    ($entry:ident, $section:literal, $body:literal, $enemy:ident, $boss:expr) => {
+        #[no_mangle]
+        #[inline(never)]
+        #[cfg_attr(target_arch = "mos", link_section = $section)]
+        pub unsafe extern "C" fn $entry(game: *mut (), bank: *const ()) {
+            let game = &mut *game.cast::<super::Game>();
+            let bank = &*bank.cast::<crate::assets::AssetBank<'_>>();
+            #[inline(never)]
+            #[cfg_attr(target_arch = "mos", link_section = $body)]
+            unsafe extern "C" fn motion(actor: *mut Actor, player: *const Vec3, slot: u8) -> u8 {
+                $enemy(actor, player, slot)
+            }
+            #[inline(never)]
+            #[cfg_attr(target_arch = "mos", link_section = $body)]
+            fn boss(game: &mut super::Game) {
+                game.update_boss_for($boss);
+            }
+            game.update_actors_with(bank, motion);
+            if $boss != 0 {
+                boss(game);
+            }
+        }
+    };
+}
+encounter!(
+    encounter_lowlands,
+    ".phase.enemy.lowlands.entry",
+    ".phase.enemy.lowlands",
+    enemy_lowlands,
+    0
+);
+encounter!(
+    encounter_canyon,
+    ".phase.enemy.canyon.entry",
+    ".phase.enemy.canyon",
+    enemy_canyon,
+    0
+);
+encounter!(
+    encounter_fortress,
+    ".phase.enemy.fortress.entry",
+    ".phase.enemy.fortress",
+    enemy_fortress,
+    0
+);
+encounter!(
+    encounter_carrier,
+    ".phase.enemy.carrier.entry",
+    ".phase.enemy.carrier",
+    enemy_carrier,
+    0
+);
+encounter!(
+    encounter_warden,
+    ".phase.enemy.warden.entry",
+    ".phase.enemy.warden",
+    enemy_canyon,
+    1
+);
+encounter!(
+    encounter_citadel,
+    ".phase.enemy.citadel.entry",
+    ".phase.enemy.citadel",
+    enemy_fortress,
+    2
+);
+encounter!(
+    encounter_flagship,
+    ".phase.enemy.flagship.entry",
+    ".phase.enemy.flagship",
+    enemy_carrier,
+    3
+);
+
+#[cfg(test)]
+mod pulse_tests {
+    use super::boss_pulse;
+
+    #[test]
+    fn boss_pulse_preserves_firing_and_side_for_every_wrapping_clock_value() {
+        for rate in [25u8, 40, 45, 50] {
+            for ticks in 0..=u16::MAX {
+                let expected = if ticks % u16::from(rate) != 0 {
+                    0
+                } else if (ticks / u16::from(rate)) & 1 == 0 {
+                    1
+                } else {
+                    2
+                };
+                assert_eq!(boss_pulse(ticks, rate), expected);
+            }
+        }
+    }
 }

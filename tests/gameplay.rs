@@ -1,4 +1,4 @@
-use havoc::assets::{Segment, SEGMENT_SIZE};
+use havoc::assets::{Segment, StageInfo, SEGMENT_COUNT, SEGMENT_SIZE};
 use havoc::audio::Effect;
 use havoc::game::{Game, InputSample, Mode, PresentationEvent, FIRE, LEFT, RIGHT};
 
@@ -9,7 +9,8 @@ mod baked_assets;
 
 fn test_bank(level: u8) -> havoc::assets::AssetBank<'static> {
     use havoc::assets::{AssetBank, MODEL_DATA_OFFSET, MODEL_SIZE};
-    static BANKS: std::sync::OnceLock<[[u8; MODEL_SIZE]; 4]> = std::sync::OnceLock::new();
+    static BANKS: std::sync::OnceLock<[[u8; MODEL_SIZE]; SEGMENT_COUNT as usize]> =
+        std::sync::OnceLock::new();
     let banks = BANKS.get_or_init(|| {
         core::array::from_fn(|level| {
             #[cfg(feature = "host-tools")]
@@ -22,7 +23,9 @@ fn test_bank(level: u8) -> havoc::assets::AssetBank<'static> {
                 data[..4].copy_from_slice(b"SMA3");
                 data[4] = havoc::assets::MODEL_COUNT;
                 data[5] = level as u8;
-                data[6] = if level == 3 { 2 } else { 3 };
+                let boss = fixture_stage(level as u8).boss_kind;
+                data[6] = if boss != 0 { 2 } else { 3 };
+                data[7] = boss;
                 for kind in 0..3 {
                     let at = havoc::assets::ENEMY_SPECS_OFFSET + kind * 8;
                     data[at..at + 8].copy_from_slice(&[3, 0, 19, 18, 100, 0, 8, 0]);
@@ -47,9 +50,44 @@ fn test_bank(level: u8) -> havoc::assets::AssetBank<'static> {
 
 fn segment_bytes() -> [u8; SEGMENT_SIZE] {
     let mut bytes = [0; SEGMENT_SIZE];
-    bytes[..4].copy_from_slice(b"SMS1");
+    bytes[..4].copy_from_slice(b"SMS2");
     bytes[6] = 5;
+    write_stage(&mut bytes, 0);
     bytes
+}
+fn fixture_stage(stage: u8) -> StageInfo {
+    let index = stage as usize;
+    let themes = [0, 4, 1, 1, 5, 6, 2, 7, 8, 9, 3, 3];
+    StageInfo {
+        enemy_profile: [0, 0, 1, 1, 0, 2, 2, 2, 3, 3, 3, 3][index],
+        music_cue: [1, 7, 2, 2, 8, 8, 3, 3, 9, 9, 4, 4][index],
+        bridge_profile: [0, 0, 1, 1, 2, 1, 1, 2, 2, 2, 2, 2][index],
+        boss_kind: match stage {
+            3 => 1,
+            7 => 2,
+            11 => 3,
+            _ => 0,
+        },
+        theme: themes[index],
+        previous_theme: themes[index.saturating_sub(1)],
+        next_theme: themes[(index + 1).min(11)],
+        reserved: 0,
+    }
+}
+fn write_stage(bytes: &mut [u8], stage: u8) {
+    let info = fixture_stage(stage);
+    bytes[4] = stage;
+    bytes[5] = info.enemy_profile;
+    bytes[8..16].copy_from_slice(&[
+        info.enemy_profile,
+        info.music_cue,
+        info.bridge_profile,
+        info.boss_kind,
+        info.theme,
+        info.next_theme,
+        info.previous_theme,
+        0,
+    ]);
 }
 fn input(game: &mut Game, bits: u8, ms: u32) {
     game.sample_input(InputSample {
@@ -74,15 +112,15 @@ fn effects(game: &mut Game) -> Vec<Effect> {
     result
 }
 
-fn empty_sections() -> [[u8; SEGMENT_SIZE]; 4] {
+fn empty_sections() -> [[u8; SEGMENT_SIZE]; SEGMENT_COUNT as usize] {
     core::array::from_fn(|index| {
         let mut bytes = segment_bytes();
-        bytes[4] = index as u8;
+        write_stage(&mut bytes, index as u8);
         bytes
     })
 }
 
-fn advance(game: &mut Game, sections: &[[u8; SEGMENT_SIZE]; 4], ticks: u16) {
+fn advance(game: &mut Game, sections: &[[u8; SEGMENT_SIZE]; SEGMENT_COUNT as usize], ticks: u16) {
     for _ in 0..ticks {
         let segment = Segment::new(&sections[game.segment_index() as usize]).unwrap();
         game.tick(&segment, &test_bank(game.segment_index()));
@@ -96,7 +134,7 @@ fn attract_waits_fifteen_seconds_then_previews_each_section_and_returns_to_title
     advance(&mut game, &sections, 749);
     assert_eq!(game.hud().mode, Mode::Title);
     advance(&mut game, &sections, 1);
-    for section in 0..4 {
+    for section in [0, 1, 6, 10] {
         assert_eq!(game.hud().mode, Mode::Attract);
         assert_eq!(game.hud().section, section);
         assert_eq!(game.hud().distance, section as u32 * 30_000);
@@ -142,8 +180,8 @@ fn every_attract_wake_input_is_consumed_and_a_fresh_fire_starts_a_clean_run() {
     for wake in [UP, DOWN, LEFT, RIGHT, FIRE] {
         let mut game = Game::new();
         advance(&mut game, &sections, 750 + 750 * 3 + 300);
-        assert_eq!(game.hud().section, 3);
-        assert_eq!(game.hud().boss_shield, 100);
+        assert_eq!(game.hud().section, 10);
+        assert_eq!(game.hud().boss_shield, 0);
         input(&mut game, wake, 66_000);
         advance(&mut game, &sections, 1);
         assert_eq!(game.hud().mode, Mode::Title);
@@ -211,11 +249,11 @@ fn attract_wake_overrides_a_section_cut_and_does_not_prime_a_rapid_fire_bomb() {
 
 #[cfg(feature = "host-tools")]
 #[test]
-fn attract_runs_live_encounters_and_the_carrier_without_sfx_or_resource_changes() {
+fn attract_runs_four_stage_encounters_without_sfx_or_resource_changes() {
     let sections = core::array::from_fn(|i| baked_assets::segment_bank(i as u8));
     let mut game = Game::new();
     advance(&mut game, &sections, 750);
-    for section in 0..4 {
+    for section in [0usize, 1, 6, 10] {
         let bank = test_bank(section as u8);
         for tick in 1..750 {
             advance(&mut game, &sections, 1);
@@ -229,9 +267,7 @@ fn attract_runs_live_encounters_and_the_carrier_without_sfx_or_resource_changes(
                 effects(&mut game).is_empty(),
                 "section {section}, tick {tick}"
             );
-            if section == 3 {
-                assert_eq!(status.boss_shield, if tick < 150 { 0 } else { 100 });
-            }
+            assert_eq!(status.boss_shield, 0);
             if tick % 50 == 0 {
                 let segment = Segment::new(&sections[section]).unwrap();
                 let mut renderer = havoc::render::Renderer::new();
@@ -474,7 +510,7 @@ fn deterministic_inputs_produce_identical_game_state() {
 #[cfg(feature = "host-tools")]
 #[test]
 fn original_asset_previews_fit_the_triangle_budget_in_every_section() {
-    for section in 0..4 {
+    for section in 0..SEGMENT_COUNT {
         let bank = test_bank(section);
         let bytes = baked_assets::segment_bank(section);
         let segment = Segment::new(&bytes).unwrap();
@@ -530,7 +566,7 @@ fn attract_renders_the_game_world_without_the_ship_exhaust_or_reticle() {
 #[test]
 fn scenic_terrain_keeps_the_centered_player_visible_through_every_band_phase() {
     use havoc::{render::Renderer, GeometrySink};
-    for section in 0..4 {
+    for section in 0..SEGMENT_COUNT {
         let bank = test_bank(section);
         let player_faces = bank.face_count(havoc::assets::PLAYER) as usize + 2;
         let bytes = baked_assets::segment_bank(section);
@@ -635,10 +671,10 @@ fn chase_camera_reveals_carrier_and_reticle_and_keeps_controlled_hull_on_screen(
         projection::project,
         Vec3,
     };
-    let bank = test_bank(3);
-    let carrier_bytes = baked_assets::segment_bank(3);
+    let bank = test_bank(11);
+    let carrier_bytes = baked_assets::segment_bank(11);
     let carrier_segment = Segment::new(&carrier_bytes).unwrap();
-    let carrier = Game::preview_at(3, 1200);
+    let carrier = Game::preview_at(11, 8000);
     let mut geometry = CapturedGeometry::default();
     carrier.render(&mut geometry, &bank, &carrier_segment);
     let ship_faces = bank.face_count(PLAYER) as usize;

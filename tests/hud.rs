@@ -1,9 +1,24 @@
 use havoc::{
     game::{Hud, Mode},
     hud,
-    render::{pack_band, HUD_INK},
+    render::{draw_text, pack_band, HUD_INK},
     victory::REVEAL_TICKS,
 };
+
+const LEVEL_NAMES: [&[u8]; 12] = [
+    b"LOWLAND APPROACH",
+    b"CRYSTAL CAVE",
+    b"IRON CANYON",
+    b"CANYON GATE",
+    b"ASHEN WASTES",
+    b"FOUNDRY BELT",
+    b"FORTRESS RUN",
+    b"CITADEL CORE",
+    b"STORM FRONT",
+    b"METEOR REACH",
+    b"CARRIER COAST",
+    b"CARRIER ASSAULT",
+];
 
 fn state(mode: Mode) -> Hud {
     Hud {
@@ -17,6 +32,7 @@ fn state(mode: Mode) -> Hud {
         section: 0,
         roll_ticks: 0,
         boss_shield: 0,
+        boss_kind: 0,
         victory_ticks: 0,
     }
 }
@@ -41,6 +57,91 @@ fn cockpit_leaves_playfield_untouched_and_displays_resource_levels() {
     assert_eq!(pixels[194 * 160 + 129], HUD_INK | 7);
     assert_eq!(pixels[194 * 160 + 136], HUD_INK | 7);
     assert_eq!(pixels[194 * 160 + 143], 11);
+}
+
+#[test]
+fn all_level_names_fit_between_score_and_lives_in_every_cockpit_mode() {
+    for mode in [
+        Mode::Playing,
+        Mode::Transition,
+        Mode::Respawning,
+        Mode::GameOver,
+    ] {
+        for (section, name) in LEVEL_NAMES.iter().enumerate() {
+            for (score, lives, digits, life) in [
+                (0, 0, b"000000", b'0'),
+                (999_999, 3, b"999999", b'3'),
+                (u32::MAX, u8::MAX, b"999999", b'9'),
+            ] {
+                let mut status = state(mode);
+                status.section = section as u8;
+                status.score = score;
+                status.lives = lives;
+                let mut pixels = [6; 1280];
+                hud::draw(0, &mut pixels, &status, 0);
+
+                // Compare each complete field independently: no name may
+                // overwrite a score digit or the unchanged lives display.
+                let name_x = (160 - (name.len() * 4 - 1)) / 2;
+                assert!(name_x >= 48 && name_x + name.len() * 4 - 1 <= 111);
+                let mut expected = [0; 1280];
+                draw_text(0, &mut expected, 1, 2, b"SCORE", 12);
+                draw_text(0, &mut expected, 23, 2, digits, 1);
+                draw_text(0, &mut expected, name_x as i16, 2, name, 1);
+                draw_text(0, &mut expected, 115, 2, b"LIVES", 12);
+                draw_text(0, &mut expected, 143, 2, &[life], 1);
+                assert_eq!(
+                    pixels, expected,
+                    "{mode:?}, section {section}, score {score}, lives {lives}"
+                );
+            }
+        }
+    }
+}
+
+#[cfg(feature = "host-tools")]
+#[test]
+fn crossing_keeps_the_outgoing_name_until_arrival_for_all_eleven_boundaries() {
+    use havoc::game::{Game, TRANSITION_TICKS};
+
+    for section in 0..11 {
+        for tick in [
+            0,
+            TRANSITION_TICKS / 2,
+            TRANSITION_TICKS - 1,
+            TRANSITION_TICKS,
+        ] {
+            let status = Game::preview_transition(section, tick).hud();
+            let expected_section = section + u8::from(tick == TRANSITION_TICKS);
+            assert_eq!(status.section, expected_section);
+            assert_eq!(
+                status.mode,
+                if tick == TRANSITION_TICKS {
+                    Mode::Playing
+                } else {
+                    Mode::Transition
+                }
+            );
+            let image = frame(&status, 0);
+            let mut expected = [0; 1280];
+            let name = LEVEL_NAMES[expected_section as usize];
+            draw_text(
+                0,
+                &mut expected,
+                ((160 - (name.len() * 4 - 1)) / 2) as i16,
+                2,
+                name,
+                1,
+            );
+            for row in 0..8 {
+                assert_eq!(
+                    &image[row * 160 + 48..row * 160 + 111],
+                    &expected[row * 160 + 48..row * 160 + 111],
+                    "section {section}, crossing tick {tick}"
+                );
+            }
+        }
+    }
 }
 
 #[test]
@@ -86,11 +187,45 @@ fn sector_banner_expires_and_boss_meter_uses_normalized_health() {
     status.distance = 800;
     let expired = frame(&status, 0);
     assert!(expired[29 * 160..51 * 160].iter().all(|&p| p == 6));
+    assert_eq!(&first[..1280], &expired[..1280]);
+    assert!(expired[..1280]
+        .chunks_exact(160)
+        .any(|row| row[48..111].contains(&(HUD_INK | 1))));
     status.boss_shield = 20;
     let boss = frame(&status, 0);
     assert_eq!(boss[14 * 160 + 70], HUD_INK | 10);
     assert_eq!(boss[14 * 160 + 79], HUD_INK | 10);
     assert_eq!(boss[14 * 160 + 80], 11);
+}
+
+#[test]
+fn all_twelve_sector_numbers_and_three_boss_labels_remain_distinct() {
+    let mut sectors = Vec::new();
+    for stage in 0..12 {
+        let mut status = state(Mode::Playing);
+        status.section = stage;
+        status.distance = stage as u32 * havoc::assets::SEGMENT_DISTANCE;
+        let image = frame(&status, 0);
+        let number = image[33 * 160..38 * 160].to_vec();
+        assert!(
+            !sectors.contains(&number),
+            "duplicate sector number {stage}"
+        );
+        sectors.push(number);
+    }
+    let mut labels = Vec::new();
+    for kind in 1..=3 {
+        let mut status = state(Mode::Playing);
+        status.boss_kind = kind;
+        status.boss_shield = 100;
+        let image = frame(&status, 0);
+        let label: Vec<_> = (13..18)
+            .flat_map(|y| image[y * 160 + 14..y * 160 + 66].iter().copied())
+            .collect();
+        assert!(!labels.contains(&label), "duplicate boss label {kind}");
+        assert_eq!(image[14 * 160 + 70], HUD_INK | 8);
+        labels.push(label);
+    }
 }
 
 #[test]
@@ -155,24 +290,69 @@ fn victory_results_leave_the_star_clear_and_show_score_and_restart() {
 #[test]
 fn attract_labels_identify_each_map_without_cockpit_or_boss_panels() {
     let mut images = Vec::new();
-    for section in 0..4 {
+    for section in 0..12 {
         let mut status = state(Mode::Attract);
         status.section = section;
         status.distance = section as u32 * 30_000;
         status.boss_shield = 100;
         let pixels = frame(&status, 0);
-        assert!(pixels[10 * 160..15 * 160].iter().any(|&p| p == HUD_INK | 1));
+        let mut expected = [6; 1280];
+        let name = LEVEL_NAMES[section as usize];
+        draw_text(
+            0,
+            &mut expected,
+            ((160 - (name.len() * 4 - 1)) / 2) as i16,
+            2,
+            name,
+            1,
+        );
+        assert_eq!(&pixels[..1280], &expected);
         assert!(pixels[189 * 160..194 * 160]
             .iter()
             .any(|&p| p == HUD_INK | 1));
         for y in 0..200 {
-            if !(10..15).contains(&y) && !(189..194).contains(&y) {
+            if !(2..7).contains(&y) && !(189..194).contains(&y) {
                 assert!(pixels[y * 160..(y + 1) * 160].iter().all(|&p| p == 6));
             }
         }
         assert_ne!(pixels, frame(&status, 16));
         assert!(!images.contains(&pixels), "section labels must be distinct");
         images.push(pixels);
+    }
+}
+
+#[test]
+fn every_level_top_strip_survives_native_packing_and_previous_cell_palettes() {
+    for mode in [Mode::Playing, Mode::Attract] {
+        for section in 0..12 {
+            let mut status = state(mode);
+            status.section = section;
+            status.score = u32::MAX;
+            status.lives = u8::MAX;
+            let mut pixels = [6; 1280];
+            hud::draw(0, &mut pixels, &status, 0);
+            for (old_screen, old_color) in [(0, 0), (0x12, 3), (0x8b, 2), (0xff, 15)] {
+                let mut bitmap = [0; 320];
+                let mut screen = [0; 40];
+                let mut color = [0; 40];
+                pack_band(
+                    &pixels,
+                    &[old_screen; 40],
+                    &[old_color; 40],
+                    &mut bitmap,
+                    &mut screen,
+                    &mut color,
+                );
+                for (i, &pixel) in pixels.iter().enumerate() {
+                    let x = i % 160;
+                    let y = i / 160;
+                    let cell = x / 4;
+                    let palette = [0, screen[cell] >> 4, screen[cell] & 15, color[cell]];
+                    let packed = palette[((bitmap[cell * 8 + y] >> (6 - x % 4 * 2)) & 3) as usize];
+                    assert_eq!(packed, pixel & 15, "{mode:?}, section {section}, pixel {x},{y}, old palette {old_screen:02x}/{old_color:02x}");
+                }
+            }
+        }
     }
 }
 

@@ -10,7 +10,7 @@ use std::collections::BTreeSet;
 #[test]
 fn suite_has_the_authored_forms_and_independent_clock_durations() {
     let suite = soundtrack::cues();
-    assert_eq!(suite.len(), 7);
+    assert_eq!(suite.len(), 13);
     let expected = [
         (32, 6, 3072),
         (32, 6, 3072),
@@ -19,6 +19,12 @@ fn suite_has_the_authored_forms_and_independent_clock_durations() {
         (48, 5, 3840),
         (24, 7, 2688),
         (16, 9, 2304),
+        (32, 6, 3072),
+        (32, 6, 3072),
+        (32, 6, 3072),
+        (32, 5, 2560),
+        (32, 5, 2560),
+        (32, 5, 2560),
     ];
     let mut names = BTreeSet::new();
     for (cue, (bars, ticks, duration)) in suite.iter().zip(expected) {
@@ -46,7 +52,18 @@ fn bank_round_trips_all_cues_and_only_strips_optional_orchestration() {
     let bank = soundtrack::score_bank();
     let suite = soundtrack::cues();
     assert_eq!(assets::u32_at(&bank, 8) as usize, bank.len());
-    assert!(bank[72..BANK_HEADER_SIZE].iter().all(|&x| x == 0));
+    assert!(bank[16 + music::CUE_COUNT * 8..BANK_HEADER_SIZE]
+        .iter()
+        .all(|&x| x == 0));
+    assert_eq!(
+        bank.len(),
+        if cfg!(feature = "four-sid") {
+            95_104
+        } else {
+            40_832
+        }
+    );
+    assert!(bank.len() <= music::BANK_CAPACITY as usize);
     let mut expected_offset = BANK_HEADER_SIZE;
     for (index, cue) in suite.iter().enumerate() {
         let info = music::cue_info(&bank[..BANK_HEADER_SIZE], index as u8).unwrap();
@@ -130,7 +147,10 @@ fn all_parts_have_valid_articulation_across_page_boundaries_and_loops() {
 
 #[test]
 fn developed_sections_are_not_whole_phrase_transpositions() {
-    for cue in soundtrack::cues().into_iter().take(6) {
+    for (index, cue) in soundtrack::cues().into_iter().enumerate() {
+        if index == havoc::audio::MusicState::Defeat as usize {
+            continue;
+        }
         let mut shapes = BTreeSet::new();
         let mut held_lead_rows = 0;
         for section in cue.bars.chunks_exact(8) {
@@ -160,6 +180,43 @@ fn developed_sections_are_not_whole_phrase_transpositions() {
         assert!(
             held_lead_rows >= 64,
             "{} needs room for its melody to sing",
+            cue.name
+        );
+    }
+}
+
+#[test]
+fn campaign_tracks_keep_a_complete_core_and_six_complementary_parts() {
+    for cue in soundtrack::cues().into_iter().skip(7) {
+        for voice in 0..VOICES {
+            assert!(
+                cue.bars
+                    .iter()
+                    .flat_map(|bar| &bar.rows)
+                    .any(|row| row[voice] > HOLD),
+                "{} voice{voice} never enters",
+                cue.name
+            );
+        }
+        assert!(
+            cue.bars.iter().all(|bar| bar.instruments[1][0] == 0x40),
+            "{} needs its pulse lead in both SID profiles",
+            cue.name
+        );
+        assert!(
+            cue.bars.iter().any(|bar| bar
+                .rows
+                .iter()
+                .enumerate()
+                .any(|(row, event)| row & 1 == 1 && event[0] > HOLD)),
+            "{} needs a syncopated core bass",
+            cue.name
+        );
+        assert!(
+            cue.bars
+                .iter()
+                .any(|bar| bar.rows.iter().all(|row| row[3] > HOLD)),
+            "{} needs its fast core arpeggio",
             cue.name
         );
     }
@@ -236,7 +293,7 @@ fn lost_wing_preserves_every_original_core_note_and_breath() {
         [40, 64, 55, 59],
         [0, 0, 0, 0],
     ];
-    let cue = soundtrack::cues().pop().unwrap();
+    let cue = soundtrack::cues().remove(havoc::audio::MusicState::Defeat as usize);
     assert_eq!(cue.duration_ticks(), 2304);
     let rows: Vec<_> = cue.bars.iter().flat_map(|bar| bar.rows.iter()).collect();
     for (notes, sounding) in original.iter().zip(rows.chunks_exact(4)) {
@@ -307,7 +364,19 @@ fn authored_suite_loops_exactly_with_five_fps_page_service_on_both_video_clocks(
         MusicState::Carrier,
         MusicState::Victory,
         MusicState::Defeat,
+        MusicState::CrystalCurrent,
+        MusicState::AshesAndSteel,
+        MusicState::TempestDrive,
+        MusicState::GorgeWarden,
+        MusicState::CitadelHeart,
+        MusicState::CarrierOverdrive,
     ];
+    for (index, state) in states.iter().enumerate() {
+        assert_eq!(MusicState::from_cue(index as u8), Some(*state));
+    }
+    for invalid in states.len()..=255 {
+        assert_eq!(MusicState::from_cue(invalid as u8), None);
+    }
     for standard in [VideoStandard::Pal, VideoStandard::Ntsc] {
         for (cue, state) in cues.iter().zip(states) {
             let info = music::cue_info(&bank[..BANK_HEADER_SIZE], state as u8).unwrap();

@@ -9,7 +9,7 @@ extern crate std;
 
 use self::std::{vec, vec::Vec};
 
-pub const CUE_COUNT: usize = 7;
+pub use crate::music::CUE_COUNT;
 pub const VOICES: usize = 10;
 pub const ROWS_PER_BAR: usize = 16;
 pub const HOLD: u8 = 1;
@@ -70,6 +70,10 @@ const FM: Chord = chord(29, [53, 56, 60]);
 const G7: Chord = chord(31, [55, 59, 65]);
 const DS: Chord = chord(38, [50, 53, 56]);
 const BF: Chord = chord(34, [46, 50, 53]);
+const BM: Chord = chord(35, [47, 50, 54]);
+const F: Chord = chord(29, [53, 57, 60]);
+const CS7: Chord = chord(37, [49, 53, 59]);
+const GS7: Chord = chord(32, [56, 60, 66]);
 
 #[derive(Clone, Copy)]
 enum Texture {
@@ -79,6 +83,12 @@ enum Texture {
     Fortress,
     Carrier,
     Homeward,
+    Crystal,
+    Forge,
+    Tempest,
+    Siege,
+    Reactor,
+    Overdrive,
 }
 
 // Per-voice waveform, pulse low/high, AD, SR. The lead is intentionally above
@@ -154,9 +164,19 @@ fn arrange(
     };
     let [root, third, fifth] = harmony.tones;
     let bass_fifth = if fifth >= 60 { fifth - 24 } else { fifth - 12 };
+    let electronic = matches!(
+        texture,
+        Texture::Crystal
+            | Texture::Forge
+            | Texture::Tempest
+            | Texture::Siege
+            | Texture::Reactor
+            | Texture::Overdrive
+    );
     let lyrical = matches!(texture, Texture::Flight | Texture::Homeward)
         || matches!(texture, Texture::Overture) && section == 2
-        || matches!(texture, Texture::Fortress) && section == 2;
+        || matches!(texture, Texture::Fortress) && section == 2
+        || electronic && section == 2;
     melody(&mut bar, lead, lyrical);
     bar.instruments[1] = match texture {
         Texture::Flight => [0x40, 0x00, 0x06, 0x25, 0x84],
@@ -164,6 +184,12 @@ fn arrange(
         Texture::Fortress if !lyrical => [0x40, 0x00, 0x05, 0x04, 0x83],
         Texture::Carrier => [0x40, 0x00, 0x03, 0x13, 0x83],
         Texture::Homeward => [0x20, 0x00, 0x08, 0x25, 0x84],
+        Texture::Crystal => [0x40, 0x80, 0x01, 0x03, 0x83],
+        Texture::Forge => [0x40, 0x00, 0x03, 0x02, 0x83],
+        Texture::Tempest => [0x40, 0x00, 0x05, 0x04, 0x84],
+        Texture::Siege => [0x40, 0x80, 0x02, 0x02, 0x83],
+        Texture::Reactor => [0x40, 0x80, 0x04, 0x03, 0x83],
+        Texture::Overdrive => [0x40, 0x80, 0x01, 0x02, 0x84],
         _ => INSTRUMENTS[1],
     };
 
@@ -176,6 +202,9 @@ fn arrange(
         let bass_rhythm = match texture {
             Texture::Canyon => [0, 3, 8, 11],
             Texture::Carrier => [0, 4, 6, 10],
+            Texture::Crystal | Texture::Tempest => [0, 3, 8, 11],
+            Texture::Forge | Texture::Siege => [0, 3, 7, 10],
+            Texture::Reactor | Texture::Overdrive => [0, 6, 9, 12],
             _ => [0, 4, 8, 12],
         };
         for (i, at) in bass_rhythm.into_iter().enumerate() {
@@ -216,6 +245,15 @@ fn arrange(
             note(&mut bar, 3, i * 2, pitch, 1);
         }
     }
+    if electronic && !lyrical {
+        // The added sixteenth-note answers give the new suite its brisk chip
+        // arpeggios while leaving the four original accompaniment voices intact.
+        for i in 0..8 {
+            let pitch = [third + 12, root + 24, fifth + 12][(i + section) % 3];
+            note(&mut bar, 3, i * 2 + 1, pitch, 1);
+        }
+        bar.instruments[3] = [0x40, 0x00, 0x01, 0x02, 0x22];
+    }
 
     // The optional ensemble grows over a phrase instead of being permanently
     // tutti. Its harmony is already supplied by the four compatible parts.
@@ -242,10 +280,12 @@ fn arrange(
     if !lyrical || section >= 3 {
         note(&mut bar, 8, 0, harmony.bass, 1);
         note(&mut bar, 8, 8, harmony.bass + 12, 1);
-        if matches!(
-            texture,
-            Texture::Canyon | Texture::Fortress | Texture::Carrier
-        ) {
+        if electronic
+            || matches!(
+                texture,
+                Texture::Canyon | Texture::Fortress | Texture::Carrier
+            )
+        {
             note(&mut bar, 9, 4, 76, 1);
             note(&mut bar, 9, 12, 71, 1);
         } else if bar_index % 8 == 0 {
@@ -653,6 +693,331 @@ fn victory() -> Cue {
     cue
 }
 
+fn crystal_current() -> Cue {
+    // D-major glassy hook, B-minor answer, spacious G-major middle eight,
+    // then a rewritten high-register return with its own descending cadence.
+    let harmony = [
+        [D, BM, G, A, D, G, EM, A],
+        [BM, FSM, G, D, EM, BM, G, A],
+        [G, A, D, BM, G, EM, A, A],
+        [D, G, BM, A, EM, G, A, D],
+    ];
+    let lead = [
+        [
+            [74, H, 78, 81, H, 78, 76, 74],
+            [71, H, 74, 78, H, 76, 74, 71],
+            [74, H, 79, H, 78, 76, 74, H],
+            [73, H, 76, 81, H, 79, 76, R],
+            [78, H, 81, H, 86, 81, 78, 74],
+            [79, H, 78, 74, 71, H, 74, 79],
+            [76, H, 79, 83, H, 81, 79, 76],
+            [76, 73, 69, H, 73, H, 76, R],
+        ],
+        [
+            [78, 74, 71, H, 74, H, 78, 81],
+            [81, H, 78, 73, 69, H, 73, 78],
+            [79, 78, 74, H, 71, H, 74, 78],
+            [78, H, 76, 74, 69, H, 66, R],
+            [67, H, 71, 74, 76, H, 79, 78],
+            [78, H, 74, 71, 66, H, 71, 74],
+            [79, H, 83, 81, 79, H, 78, 74],
+            [76, H, 73, 71, 69, H, H, R],
+        ],
+        [
+            [71, H, H, H, 74, H, 79, H],
+            [76, H, H, H, 73, H, 69, H],
+            [78, H, 76, 74, 69, H, H, H],
+            [74, H, 71, H, 66, H, H, R],
+            [67, H, 71, H, 74, H, 78, 79],
+            [83, H, H, H, 81, 79, 76, H],
+            [81, H, 79, 76, 73, H, 71, 69],
+            [73, H, H, H, 76, H, H, R],
+        ],
+        [
+            [86, H, 81, 78, 74, H, 78, 81],
+            [83, H, 79, 78, 74, H, 79, 83],
+            [86, 83, 81, H, 78, H, 74, 71],
+            [81, H, 76, 73, 69, H, 73, 76],
+            [79, 83, 86, H, 83, 79, 76, H],
+            [83, H, 79, 74, 71, H, 74, 79],
+            [81, 79, 76, H, 73, H, 69, 73],
+            [78, H, 74, H, 69, H, H, R],
+        ],
+    ];
+    composed("Crystal Current", 6, Texture::Crystal, &harmony, &lead)
+}
+
+fn ashes_and_steel() -> Cue {
+    // A-minor clipped hammer motif against offbeat bass; the middle eight
+    // opens into C major before the last phrase climbs out of the foundry.
+    let harmony = [
+        [AM, F, C, E, AM, G, F, E],
+        [AM, C, F, E, AM, F, D, E],
+        [C, G, F, AM, C, D, F, E],
+        [AM, F, C, G, F, D, E, AM],
+    ];
+    let lead = [
+        [
+            [69, H, 72, 69, 76, H, 72, R],
+            [69, H, 72, 69, 77, H, 76, 72],
+            [67, H, 72, 76, 79, H, 76, R],
+            [68, H, 71, 76, 80, H, 76, 71],
+            [81, H, 76, 72, 69, H, 72, R],
+            [79, H, 74, 71, 67, H, 71, 74],
+            [77, 76, 72, H, 69, H, 65, 69],
+            [68, H, 71, H, 76, H, H, R],
+        ],
+        [
+            [76, 72, 69, H, 64, H, 69, 72],
+            [76, 79, 84, H, 79, H, 76, 72],
+            [77, H, 81, 84, 81, 77, 72, H],
+            [80, H, 76, H, 71, 68, 64, R],
+            [69, H, 72, 76, 81, H, 79, 76],
+            [77, H, 76, 72, 69, H, 72, 77],
+            [78, 74, 69, H, 66, 69, 74, H],
+            [80, H, 78, 76, 71, H, 68, R],
+        ],
+        [
+            [76, H, H, H, 72, H, 67, H],
+            [71, H, H, H, 74, H, 79, H],
+            [77, H, 76, 72, 69, H, H, H],
+            [72, H, 69, H, 64, H, H, R],
+            [67, H, 72, H, 76, H, 79, H],
+            [81, H, 78, H, 74, H, 69, H],
+            [77, H, 72, 69, 65, H, 69, 72],
+            [71, H, H, H, 68, H, 64, R],
+        ],
+        [
+            [81, H, 84, 81, 88, H, 84, 81],
+            [84, H, 81, 77, 72, H, 77, 81],
+            [79, 84, 88, H, 84, H, 79, 76],
+            [86, H, 83, 79, 74, H, 79, 83],
+            [84, H, 81, 77, 76, 72, 69, H],
+            [78, H, 74, 69, 66, H, 69, 74],
+            [80, 76, 71, H, 68, H, 71, 76],
+            [81, H, 76, H, 72, H, 69, R],
+        ],
+    ];
+    composed("Ashes and Steel", 6, Texture::Forge, &harmony, &lead)
+}
+
+fn tempest_drive() -> Cue {
+    // F-sharp-minor launch-and-answer hook; the relative-major bridge rises
+    // over long notes before a descending, wind-buffeted final statement.
+    let harmony = [
+        [FSM, D, A, E, BM, FSM, D, CS7],
+        [FSM, A, BM, CS7, D, A, BM, CS7],
+        [A, E, D, FSM, BM, D, E, CS7],
+        [FSM, D, A, E, BM, D, CS7, FSM],
+    ];
+    let lead = [
+        [
+            [78, H, 81, 80, 78, H, 73, 76],
+            [78, H, 81, 86, 85, H, 81, 78],
+            [76, H, 81, 85, 83, H, 81, 76],
+            [80, H, 83, 88, 86, H, 83, R],
+            [78, H, 74, 71, 74, H, 78, 81],
+            [81, H, 78, 73, 69, H, 73, 78],
+            [86, 85, 81, H, 78, H, 74, 78],
+            [77, H, 80, H, 83, H, 80, R],
+        ],
+        [
+            [73, 78, 81, H, 85, 81, 78, H],
+            [73, 76, 81, H, 85, 83, 81, H],
+            [74, 78, 83, H, 86, 83, 78, 74],
+            [77, H, 80, 83, 85, H, 83, R],
+            [86, H, 81, 78, 74, H, 78, 81],
+            [85, H, 81, 76, 73, H, 76, 81],
+            [83, H, 78, 74, 71, H, 74, 78],
+            [80, H, 77, 73, 71, H, 73, R],
+        ],
+        [
+            [81, H, H, H, 85, H, 88, H],
+            [83, H, H, H, 80, H, 76, H],
+            [78, H, 81, H, 86, H, H, H],
+            [85, H, 81, 78, 73, H, H, R],
+            [74, H, 78, H, 83, H, 81, 78],
+            [81, H, H, H, 78, H, 74, H],
+            [80, H, 83, H, 88, H, 86, 83],
+            [85, H, 83, 80, 77, H, H, R],
+        ],
+        [
+            [90, H, 88, 85, 81, H, 78, 81],
+            [86, H, 85, 81, 78, H, 74, 78],
+            [88, 85, 81, H, 76, H, 73, 76],
+            [83, H, 80, 76, 71, H, 76, 80],
+            [86, H, 83, 78, 74, H, 71, 74],
+            [81, H, 78, 74, 69, H, 74, 78],
+            [83, 80, 77, H, 73, H, 71, 73],
+            [78, H, H, H, 73, H, 69, R],
+        ],
+    ];
+    composed("Tempest Drive", 6, Texture::Tempest, &harmony, &lead)
+}
+
+fn gorge_warden() -> Cue {
+    // C-minor cannon calls use deliberately uneven phrase lengths. A lighter
+    // E-flat-major response gives the core quartet room before the last salvo.
+    let harmony = [
+        [CM, AB, CM, G7, FM, CM, DS, G7],
+        [CM, EF, AB, G7, FM, BF, DS, G7],
+        [EF, BF, AB, CM, FM, EF, DS, G7],
+        [CM, AB, FM, G7, CM, DS, G7, CM],
+    ];
+    let lead = [
+        [
+            [60, H, 67, 72, H, 70, 67, R],
+            [68, H, 75, 80, H, 79, 75, 72],
+            [72, 67, 60, H, 63, 67, 72, H],
+            [71, H, 74, 79, H, 77, 74, R],
+            [65, H, 72, 77, H, 75, 72, 68],
+            [75, H, 72, 67, H, 63, 60, H],
+            [68, 65, 62, H, 65, H, 68, 74],
+            [71, H, 67, H, 62, H, H, R],
+        ],
+        [
+            [79, H, 75, H, 72, 70, 67, 63],
+            [75, H, 79, H, 82, 79, 75, 70],
+            [80, 79, 75, H, 72, H, 68, 72],
+            [79, 77, 74, H, 71, H, 67, R],
+            [77, H, 80, H, 84, 80, 77, 72],
+            [82, H, 77, 74, 70, H, 74, 77],
+            [80, H, 77, 74, 68, H, 65, 62],
+            [71, 74, 79, H, 83, H, 79, R],
+        ],
+        [
+            [79, H, H, H, 75, H, 70, H],
+            [74, H, H, H, 77, H, 82, H],
+            [80, H, 79, 75, 72, H, H, H],
+            [75, H, 72, H, 67, H, H, R],
+            [68, H, 72, H, 77, H, 80, H],
+            [82, H, 79, H, 75, H, 70, H],
+            [77, H, 74, 68, 65, H, 62, H],
+            [67, H, H, H, 71, H, 74, R],
+        ],
+        [
+            [84, H, 79, 75, H, 72, 67, H],
+            [80, H, 75, 72, H, 68, 63, R],
+            [77, 80, 84, H, 80, H, 77, 72],
+            [83, H, 79, 74, H, 71, 67, R],
+            [79, H, 75, 72, 70, 67, 63, H],
+            [74, H, 68, 65, 62, H, 65, 68],
+            [71, 74, 79, H, 77, 74, 71, 67],
+            [72, H, 67, H, 63, H, 60, R],
+        ],
+    ];
+    composed("Gorge Warden", 5, Texture::Siege, &harmony, &lead)
+}
+
+fn citadel_heart() -> Cue {
+    // C-sharp-minor mechanical heartbeat alternates short answers and long
+    // rising calls; the A-major bridge reveals a warmer line under the armor.
+    let harmony = [
+        [CSM, A, FSM, GS7, CSM, E, A, GS7],
+        [CSM, E, A, B, FSM, CSM, A, GS7],
+        [A, E, FSM, CSM, A, B, E, GS7],
+        [CSM, A, E, B, FSM, A, GS7, CSM],
+    ];
+    let lead = [
+        [
+            [73, H, 73, 76, H, 80, 78, 76],
+            [73, H, 73, 76, H, 81, 80, 76],
+            [73, H, 69, 66, H, 69, 73, 78],
+            [72, H, 75, 80, H, 78, 75, R],
+            [80, H, 76, 73, H, 68, 71, 73],
+            [76, H, 80, 83, H, 81, 80, 76],
+            [81, H, 76, 73, H, 69, 73, 76],
+            [78, 75, 72, H, 68, H, H, R],
+        ],
+        [
+            [85, 83, 80, H, 76, H, 73, 68],
+            [83, H, 80, 76, 71, H, 76, 80],
+            [81, 80, 76, H, 73, H, 69, 73],
+            [83, H, 78, 75, 71, H, 75, 78],
+            [81, H, 78, 73, 69, H, 73, 78],
+            [80, H, 76, 73, 68, 71, 73, 76],
+            [81, H, 85, 88, 85, H, 81, 76],
+            [84, H, 80, 75, 72, H, 75, R],
+        ],
+        [
+            [76, H, H, H, 81, H, 85, H],
+            [83, H, 80, H, 76, H, H, H],
+            [78, H, H, H, 81, H, 78, 73],
+            [76, H, 73, H, 68, H, H, R],
+            [69, H, 73, H, 76, H, 81, H],
+            [78, H, 83, H, 87, H, 85, 83],
+            [88, H, 83, 80, 76, H, 71, 76],
+            [75, H, H, H, 72, H, 68, R],
+        ],
+        [
+            [85, H, 85, 80, H, 76, 73, 76],
+            [88, H, 85, 81, H, 76, 73, 69],
+            [83, 80, 76, H, 71, H, 76, 80],
+            [87, H, 83, 78, 75, H, 78, 83],
+            [85, H, 81, 78, 73, H, 69, 73],
+            [81, 76, 73, H, 69, H, 73, 76],
+            [84, H, 80, 78, 75, H, 72, 68],
+            [73, H, 76, H, 80, H, 73, R],
+        ],
+    ];
+    composed("Citadel Heart", 5, Texture::Reactor, &harmony, &lead)
+}
+
+fn carrier_overdrive() -> Cue {
+    // E-minor pursuit trades with a C-minor threat, then resolves into the
+    // brighter G-major bridge. The finale combines new melodic answers rather
+    // than duplicating either the existing carrier cue or an earlier section.
+    let harmony = [
+        [EM, C, D, B7, EM, G, AM, B7],
+        [CM, AB, EF, G7, FM, CM, DS, G7],
+        [G, D, EM, C, AM, G, FSS, B7],
+        [EM, C, G, D, AM, EM, B7, EM],
+    ];
+    let lead = [
+        [
+            [76, 79, 78, H, 76, H, 71, 74],
+            [76, 79, 84, H, 83, H, 79, 76],
+            [78, 81, 86, H, 84, H, 81, 78],
+            [75, H, 78, 83, 81, H, 78, R],
+            [83, H, 79, 76, 74, 71, 67, H],
+            [79, H, 83, 86, 83, H, 79, 74],
+            [81, 79, 76, H, 72, H, 69, 72],
+            [75, H, 71, H, 66, H, 63, R],
+        ],
+        [
+            [72, H, 75, 79, H, 78, 75, 72],
+            [80, H, 79, 75, H, 72, 68, 72],
+            [82, H, 79, 75, 70, H, 75, 79],
+            [83, H, 79, 74, 71, H, 74, R],
+            [77, 80, 84, H, 80, 77, 72, H],
+            [79, H, 75, 72, 67, H, 70, 72],
+            [74, H, 77, 80, 77, H, 74, 68],
+            [71, 74, 79, H, 83, H, H, R],
+        ],
+        [
+            [79, H, H, H, 83, H, 86, H],
+            [81, H, H, H, 78, H, 74, H],
+            [76, H, 79, H, 83, H, H, H],
+            [84, H, 79, 76, 72, H, H, R],
+            [76, H, 72, H, 69, H, 67, 64],
+            [74, H, 79, H, 83, H, 81, 79],
+            [78, H, 74, 72, 69, H, 66, H],
+            [75, H, H, H, 71, H, 66, R],
+        ],
+        [
+            [88, 86, 83, H, 79, H, 76, 79],
+            [84, H, 88, 86, 84, H, 79, 76],
+            [86, 83, 79, H, 74, H, 71, 74],
+            [81, H, 78, 74, 69, H, 74, 78],
+            [84, 81, 76, H, 72, H, 69, 72],
+            [83, H, 79, 76, 71, H, 67, 71],
+            [78, 75, 71, H, 69, 66, 63, 66],
+            [76, H, 71, H, 67, H, 64, R],
+        ],
+    ];
+    composed("Carrier Overdrive", 5, Texture::Overdrive, &harmony, &lead)
+}
+
 // Every sounding four-voice tuple from the existing 46.08-second Lost Wing,
 // in its original order. Two 9-tick sixteenths sound, then two breathe, exactly
 // preserving each old 18-tick note row and its 18-tick rest. Two new bars are
@@ -766,7 +1131,7 @@ fn defeat() -> Cue {
     }
 }
 
-/// Original suite in the runtime cue order: title, four areas, victory, defeat.
+/// Stable runtime cue order: original seven, three worlds, three bosses.
 /// This always returns all ten authored parts, independently of build profile.
 pub fn cues() -> Vec<Cue> {
     vec![
@@ -777,6 +1142,12 @@ pub fn cues() -> Vec<Cue> {
         carrier(),
         victory(),
         defeat(),
+        crystal_current(),
+        ashes_and_steel(),
+        tempest_drive(),
+        gorge_warden(),
+        citadel_heart(),
+        carrier_overdrive(),
     ]
 }
 
@@ -823,7 +1194,10 @@ pub fn score_bank() -> Vec<u8> {
         bank[entry + 6..entry + 8].copy_from_slice(&checksum.to_le_bytes());
     }
     let length = bank.len() as u32;
-    assert!(length <= 0x10000, "the suite must fit its 64 KiB REU bank");
+    assert!(
+        length <= music::BANK_CAPACITY,
+        "the suite must fit its 128 KiB REU bank"
+    );
     bank[8..12].copy_from_slice(&length.to_le_bytes());
     let checksum = music::bank_header_checksum(&bank[..BANK_HEADER_SIZE]);
     bank[14..16].copy_from_slice(&checksum.to_le_bytes());

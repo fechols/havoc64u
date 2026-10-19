@@ -110,7 +110,7 @@ mod terrain_visibility {
         let mut minimum_y = i16::MAX;
         let mut maximum_x = i16::MIN;
         let mut minimum_x = i16::MAX;
-        for level in 0..4 {
+        for level in 0..12 {
             let models = enemies::authored::model_bank(level);
             let bank = AssetBank::new(&models).unwrap();
             assert_eq!(bank.vertex_count(assets::PLAYER), 8);
@@ -118,7 +118,7 @@ mod terrain_visibility {
             for (x, y) in POSITIONS {
                 for roll in 0..=255u8 {
                     let mut game = running();
-                    game.rail_ticks = level as u16 * SECTION_TICKS;
+                    set_rail(&mut game, level as u16 * SECTION_TICKS);
                     game.player.x = x;
                     game.player.y = y;
                     // The same byte consumed by the mesh rotation covers all
@@ -195,24 +195,24 @@ mod terrain_visibility {
 
     #[test]
     fn terrain_tags_cover_only_faces_outside_the_prism_across_world_rows_and_crossings() {
-        for level in 0..4 {
+        for level in 0..12 {
             let bytes = mission_segment(level);
             let segment = Segment::new(&bytes).unwrap();
             for phase in 0..1024 {
                 let mut game = running();
-                game.rail_ticks = level as u16 * SECTION_TICKS + phase;
+                set_rail(&mut game, level as u16 * SECTION_TICKS + phase);
                 game.player.y = if phase & 1 == 0 { -65 } else { 65 };
                 assert_eq!(check_terrain_tags(&game, &segment), 0);
             }
         }
-        for outgoing in 0..3 {
+        for outgoing in 0..11 {
             let bytes = mission_segment(outgoing);
             let segment = Segment::new(&bytes).unwrap();
             let mut wildlife_faces = 0;
             for elapsed in 0..TRANSITION_TICKS {
                 let mut game = running();
                 game.mode = Mode::Transition;
-                game.rail_ticks = (outgoing as u16 + 1) * SECTION_TICKS;
+                set_rail(&mut game, (outgoing as u16 + 1) * SECTION_TICKS);
                 game.transition_ticks = elapsed;
                 game.player.y = if elapsed & 1 == 0 { -65 } else { 65 };
                 wildlife_faces += check_terrain_tags(&game, &segment);
@@ -226,11 +226,11 @@ mod terrain_visibility {
 
     #[test]
     fn foreground_protection_includes_only_ship_and_authored_ground_targets() {
-        for level in 0..4 {
+        for level in 0..12 {
             let models = enemies::authored::model_bank(level);
             let bank = AssetBank::new(&models).unwrap();
             let mut game = running();
-            game.rail_ticks = level as u16 * SECTION_TICKS;
+            set_rail(&mut game, level as u16 * SECTION_TICKS);
             game.actors[0] = enemy(assets::BUILDING, 70, -110, 500);
             game.actors[1] = enemy(assets::TURRET, 90, -90, 700);
             game.actors[2] = enemy(assets::ROCK, -70, -110, 600);
@@ -273,7 +273,7 @@ mod terrain_visibility {
             assert!(capture.0[count..target_start]
                 .iter()
                 .all(|face| face.2 & (TERRAIN_CLEAR_GEOMETRY | EXTERIOR_TERRAIN) == 0));
-            let expected = if matches!(level, 0 | 2) {
+            let expected = if matches!(game.stage_info.enemy_profile, 0 | 2 | 3) {
                 TERRAIN_CLEAR_GEOMETRY
             } else {
                 0
@@ -315,7 +315,7 @@ mod terrain_visibility {
         let bytes = mission_segment(0);
         let segment = Segment::new(&bytes).unwrap();
         let mut game = running();
-        game.rail_ticks = 34;
+        set_rail(&mut game, 34);
         game.player.x = 100;
         game.player.y = -65;
         game.bank = -12;
@@ -368,7 +368,7 @@ mod terrain_visibility {
     fn fortress_clear(point: Vec3) -> bool {
         let y = i32::from(point.y);
         let x = i32::from(point.x);
-        y > -103 && 495 * (y + 105) > 64 * (x - 145) && 495 * (y + 105) > 64 * (-x - 145)
+        y > -103 && 495 * (y + 105) > 240 * (x - 145) && 495 * (y + 105) > 240 * (-x - 145)
     }
 
     fn assert_fortress_terrain_outside(game: &Game, segment: &Segment<'_>) {
@@ -380,10 +380,10 @@ mod terrain_visibility {
             let below = points.iter().all(|p| p.y <= -103);
             let right = points
                 .iter()
-                .all(|p| 495 * (i32::from(p.y) + 105) <= 64 * (i32::from(p.x) - 145));
+                .all(|p| 495 * (i32::from(p.y) + 105) <= 240 * (i32::from(p.x) - 145));
             let left = points
                 .iter()
-                .all(|p| 495 * (i32::from(p.y) + 105) <= 64 * (-i32::from(p.x) - 145));
+                .all(|p| 495 * (i32::from(p.y) + 105) <= 240 * (-i32::from(p.x) - 145));
             assert!(
                 below || left || right,
                 "terrain intersects the bunker clear region at scene {}: {points:?}",
@@ -394,7 +394,7 @@ mod terrain_visibility {
 
     #[test]
     fn authored_ground_models_proxies_and_motion_stay_above_their_terrain_envelopes() {
-        for level in [0, 2] {
+        for level in [0, 1, 4, 5, 6, 8, 9, 10] {
             let bank = test_bank(level);
             let bytes = mission_segment(level);
             let segment = Segment::new(&bytes).unwrap();
@@ -411,13 +411,21 @@ mod terrain_visibility {
                 assert_eq!(spawn.y, -90);
                 assert_eq!(spawn.x.abs(), if level == 0 { 95 } else { 90 });
                 let mut game = running();
-                game.rail_ticks = level as u16 * SECTION_TICKS + (spawn.distance + 7) / 8;
+                set_rail(
+                    &mut game,
+                    level as u16 * SECTION_TICKS + (spawn.distance + 7) / 8,
+                );
                 game.spawn_actor(spawn, 0, &bank);
                 assert_eq!(game.actors[0].kind, assets::TURRET);
                 // Real enemy motion changes only depth, including throughout
                 // its visible lifetime; no animated roll invalidates the bounds.
                 for _ in 0..215 {
-                    enemies::step(level, &mut game.actors[0], &game.player, 0);
+                    enemies::step(
+                        game.stage_info.enemy_profile,
+                        &mut game.actors[0],
+                        &game.player,
+                        0,
+                    );
                     game.actors[0].age += 1;
                     assert_eq!(
                         (game.actors[0].pos.x, game.actors[0].pos.y),
@@ -438,7 +446,7 @@ mod terrain_visibility {
                             point.y += game.scenery_camera_y();
                             lowest_y = lowest_y.min(point.y);
                             largest_x = largest_x.max(point.x.abs());
-                            if level == 0 {
+                            if game.stage_info.enemy_profile == 0 {
                                 assert!(point.x.abs() < 145 && point.y > -103);
                             } else {
                                 assert!(fortress_clear(point));
@@ -447,10 +455,18 @@ mod terrain_visibility {
                     }
                 }
             }
-            assert_eq!(spawns, if level == 0 { 5 } else { 10 });
-            assert_eq!(
-                (largest_x, lowest_y),
-                (if level == 0 { 135 } else { 158 }, -98)
+            assert!(
+                spawns >= 5,
+                "stage {level} must exercise authored ground encounters"
+            );
+            assert_eq!(lowest_y, -98);
+            assert!(
+                largest_x
+                    <= if assets::STAGE_INFOS[level as usize].enemy_profile == 0 {
+                        145
+                    } else {
+                        158
+                    }
             );
         }
         for y in [0, 24, 40, 56] {
@@ -459,49 +475,56 @@ mod terrain_visibility {
     }
 
     #[test]
-    fn actual_bunkers_spawn_after_canyon_blend_and_legacy_attract_uses_fortress_terrain() {
-        let bank = test_bank(2);
-        let bytes = mission_segment(2);
-        let segment = Segment::new(&bytes).unwrap();
-        let first = (0..segment.spawn_count())
-            .map(|i| segment.spawn(i))
-            .find(|spawn| spawn.kind == assets::TURRET)
-            .unwrap();
-        assert_eq!(first.distance, 2200);
-        for mode in [Mode::Playing, Mode::Attract] {
-            let mut game = running();
-            game.mode = mode;
-            game.rail_ticks = 2 * SECTION_TICKS;
-            game.shield = 255;
-            for elapsed in 1..=275 {
-                game.tick(&segment, &bank);
-                assert_eq!(game.mode, mode);
-                let present = game.actors.iter().any(|actor| actor.kind == assets::TURRET);
-                assert_eq!(present, elapsed == 275);
-            }
-            assert_eq!(
-                game.scenery_ticks(),
-                if mode == Mode::Playing { 8575 } else { 7775 }
+    fn actual_bunkers_spawn_after_incoming_blend_and_attract_uses_current_terrain() {
+        for stage in [5, 6] {
+            let bank = test_bank(stage);
+            let bytes = mission_segment(stage);
+            let segment = Segment::new(&bytes).unwrap();
+            let first = (0..segment.spawn_count())
+                .map(|i| segment.spawn(i))
+                .find(|spawn| spawn.kind == assets::TURRET)
+                .unwrap();
+            let first_tick = (first.distance + 7) / 8;
+            assert!(
+                first_tick >= 64,
+                "ground targets must follow the incoming terrain blend"
             );
-            if mode == Mode::Playing {
-                assert!(game.scenery_ticks() & !63 > 7900 + TRANSITION_TICKS);
+            for mode in [Mode::Playing, Mode::Attract] {
+                let mut game = running();
+                game.mode = mode;
+                set_rail(&mut game, stage as u16 * SECTION_TICKS);
+                game.shield = 255;
+                for elapsed in 1..=first_tick {
+                    game.tick(&segment, &bank);
+                    assert_eq!(game.mode, mode);
+                    let present = game.actors.iter().any(|actor| actor.kind == assets::TURRET);
+                    assert_eq!(present, elapsed == first_tick);
+                }
+                assert_eq!(
+                    game.scenery_ticks(),
+                    stage as u16 * SECTION_TICKS
+                        + first_tick
+                        + if mode == Mode::Playing {
+                            stage as u16 * TRANSITION_TICKS
+                        } else {
+                            0
+                        }
+                );
+                assert_fortress_terrain_outside(&game, &segment);
             }
-            assert_fortress_terrain_outside(&game, &segment);
-        }
-        // Check every actual sub-row phase from the first bunker through the
-        // end of Fortress. The last rows already include the Coastward blend.
-        for rail in (2 * SECTION_TICKS + 275)..(3 * SECTION_TICKS) {
-            let mut game = running();
-            game.rail_ticks = rail;
-            assert_fortress_terrain_outside(&game, &segment);
-        }
-        // Attract uses the authored section directly instead of gameplay's
-        // continuous bridge clock; every phase of its full height profile fits.
-        for phase in 0..1024 {
-            let mut game = running();
-            game.mode = Mode::Attract;
-            game.rail_ticks = 2 * SECTION_TICKS + phase;
-            assert_fortress_terrain_outside(&game, &segment);
+            for rail in
+                (stage as u16 * SECTION_TICKS + first_tick)..((stage as u16 + 1) * SECTION_TICKS)
+            {
+                let mut game = running();
+                set_rail(&mut game, rail);
+                assert_fortress_terrain_outside(&game, &segment);
+            }
+            for phase in 0..1024 {
+                let mut game = running();
+                game.mode = Mode::Attract;
+                set_rail(&mut game, stage as u16 * SECTION_TICKS + phase);
+                assert_fortress_terrain_outside(&game, &segment);
+            }
         }
     }
 
@@ -511,7 +534,7 @@ mod terrain_visibility {
         let bytes = mission_segment(0);
         let segment = Segment::new(&bytes).unwrap();
         let mut game = running();
-        game.rail_ticks = 34;
+        set_rail(&mut game, 34);
         game.actors[0] = enemy(assets::TURRET, 95, -90, 280);
         let target = combat_capture(&game, &bank, 174);
         let terrain = terrain_capture(&game, &segment);
@@ -528,7 +551,7 @@ mod terrain_visibility {
     #[test]
     fn terrain_preserves_ground_targets_at_all_scroll_phases_depths_and_chase_heights() {
         let mut cases_with_visible_pixels = 0;
-        for level in [0, 2] {
+        for level in [0, 1, 4, 5, 6] {
             let bank = test_bank(level);
             let bytes = mission_segment(level);
             let segment = Segment::new(&bytes).unwrap();
@@ -553,7 +576,7 @@ mod terrain_visibility {
                             for mode in [Mode::Playing, Mode::Attract] {
                                 let mut game = running();
                                 game.mode = mode;
-                                game.rail_ticks = level as u16 * SECTION_TICKS + 320 + phase;
+                                set_rail(&mut game, level as u16 * SECTION_TICKS + 320 + phase);
                                 game.player.y = player_y;
                                 game.actors[0] = enemy(assets::TURRET, side * x, -90, z);
                                 let target = combat_capture(&game, &bank, limit);
@@ -582,7 +605,7 @@ mod terrain_visibility {
 
     #[test]
     fn terrain_never_covers_the_ship_at_corners_scroll_phases_and_banked_or_rolled_poses() {
-        for level in 0..4 {
+        for level in 0..12 {
             let models = enemies::authored::model_bank(level);
             let bank = AssetBank::new(&models).unwrap();
             let bytes = mission_segment(level);
@@ -591,7 +614,7 @@ mod terrain_visibility {
                 for phase in 0..64 {
                     for pose in 0..7 {
                         let mut game = running();
-                        game.rail_ticks = level as u16 * SECTION_TICKS + phase;
+                        set_rail(&mut game, level as u16 * SECTION_TICKS + phase);
                         game.ticks = phase;
                         game.player.x = x;
                         game.player.y = y;
@@ -601,7 +624,7 @@ mod terrain_visibility {
                 }
             }
         }
-        for outgoing in 0..3 {
+        for outgoing in 0..11 {
             let models = enemies::authored::model_bank(outgoing);
             let bank = AssetBank::new(&models).unwrap();
             let bytes = mission_segment(outgoing);
@@ -611,7 +634,7 @@ mod terrain_visibility {
                     for pose in 0..7 {
                         let mut game = running();
                         game.mode = Mode::Transition;
-                        game.rail_ticks = (outgoing as u16 + 1) * SECTION_TICKS;
+                        set_rail(&mut game, (outgoing as u16 + 1) * SECTION_TICKS);
                         game.transition_ticks = elapsed;
                         game.ticks = elapsed;
                         game.player.x = x;

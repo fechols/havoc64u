@@ -28,8 +28,8 @@ pub fn draw(band: u8, pixels: &mut [u8; 1280], hud: &Hud, frame: u16) {
     }
     // The map tour keeps the entire world visible around two short labels.
     if hud.mode == Mode::Attract {
-        if band == 1 {
-            centered(band, pixels, 10, section_name(hud.section), 1);
+        if band == 0 {
+            centered(band, pixels, 2, section_name(hud.section), 1);
         }
         if band >= 23 {
             centered(band, pixels, 189, b"MOVE OR FIRE FOR MENU", blink(frame));
@@ -47,8 +47,8 @@ pub fn draw(band: u8, pixels: &mut [u8; 1280], hud: &Hud, frame: u16) {
         Mode::Title => title(band, pixels, frame),
         Mode::Playing => {
             if (1..=2).contains(&band) && hud.boss_shield != 0 {
-                panel(band, pixels, 35, 10, 90, 11, 12);
-                draw_text(band, pixels, 39, 13, b"CARRIER", 15);
+                panel(band, pixels, 10, 10, 116, 11, 12);
+                draw_text(band, pixels, 14, 13, boss_name(hud.boss_kind), 15);
                 draw_bar(
                     band,
                     pixels,
@@ -63,8 +63,14 @@ pub fn draw(band: u8, pixels: &mut [u8; 1280], hud: &Hud, frame: u16) {
             }
             if (3..=6).contains(&band) && sector_banner_visible(hud) {
                 panel(band, pixels, 24, 29, 112, 22, 12);
-                let mut sector = *b"SECTOR 1";
-                sector[7] = b'1' + hud.section.min(3);
+                let mut sector = *b"SECTOR 01";
+                let number = hud.section.min(11) + 1;
+                if number >= 10 {
+                    sector[7] = b'1';
+                    sector[8] = b'0' + number - 10;
+                } else {
+                    sector[8] = b'0' + number;
+                }
                 centered(band, pixels, 33, &sector, 3);
                 centered(band, pixels, 43, section_name(hud.section), 1);
             }
@@ -153,10 +159,11 @@ fn title(band: u8, pixels: &mut [u8; 1280], frame: u16) {
 fn cockpit(band: u8, pixels: &mut [u8; 1280], hud: &Hud, frame: u16) {
     if band == 0 {
         rect(band, pixels, 0, 0, 160, 8, 0);
-        draw_text(band, pixels, 3, 2, b"SCORE", 12);
+        draw_text(band, pixels, 1, 2, b"SCORE", 12);
         let mut score = [b'0'; 6];
         digits(hud.score, &mut score);
-        draw_text(band, pixels, 27, 2, &score, 1);
+        draw_text(band, pixels, 23, 2, &score, 1);
+        centered(band, pixels, 2, section_name(hud.section), 1);
         draw_text(band, pixels, 115, 2, b"LIVES", 12);
         draw_text(band, pixels, 143, 2, &[b'0' + hud.lives.min(9)], 1);
     }
@@ -222,9 +229,27 @@ fn cockpit(band: u8, pixels: &mut [u8; 1280], hud: &Hud, frame: u16) {
 fn section_name(section: u8) -> &'static [u8] {
     match section {
         0 => b"LOWLAND APPROACH",
-        1 => b"IRON CANYON",
-        2 => b"FORTRESS RUN",
+        1 => b"CRYSTAL CAVE",
+        2 => b"IRON CANYON",
+        3 => b"CANYON GATE",
+        4 => b"ASHEN WASTES",
+        5 => b"FOUNDRY BELT",
+        6 => b"FORTRESS RUN",
+        7 => b"CITADEL CORE",
+        8 => b"STORM FRONT",
+        9 => b"METEOR REACH",
+        10 => b"CARRIER COAST",
         _ => b"CARRIER ASSAULT",
+    }
+}
+
+#[inline(never)]
+#[cfg_attr(target_arch = "mos", link_section = ".phase.pixels")]
+fn boss_name(kind: u8) -> &'static [u8] {
+    match kind {
+        1 => b"GORGE WARDEN",
+        2 => b"CITADEL HEART",
+        _ => b"CARRIER",
     }
 }
 

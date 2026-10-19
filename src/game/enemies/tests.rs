@@ -272,7 +272,7 @@ fn pursuit_uses_late_age_but_commits_at_the_existing_depth_boundaries() {
 #[test]
 fn every_roster_retains_its_firing_schedule_and_depth_gate() {
     for level in 0..4 {
-        for kind in 1..=if level == 3 { 2 } else { 3 } {
+        for kind in 1..=3 {
             for slot in [0, 1, 11] {
                 let mut a = actor(kind, -70, 25, 1800);
                 let mut actual = Vec::new();
@@ -294,7 +294,7 @@ fn every_roster_retains_its_firing_schedule_and_depth_gate() {
                     (0, _, 11) => &[(73, 1), (138, 1)],
                     (1, 1, _) => &[(64, 1)],
                     (1, 2, _) => &[(64, 1), (128, 1)],
-                    (1, 3, _) | (3, 1, _) => &[(64, 1), (72, 1)],
+                    (1, 3, _) | (3, 1 | 3, _) => &[(64, 1), (72, 1)],
                     (2, 1, _) => &[(128, 1), (192, 1)],
                     (2, 2, _) => &[(120, 1), (128, 1)],
                     (2, 3, _) => &[(64, 2)],

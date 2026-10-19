@@ -422,3 +422,49 @@ fast_static_sky_bands:
     rts
 .Lsky_bits:
     .byte $fe,$fd,$fb,$f7,$ef,$df,$bf,$7f
+.section .phase.pixels.glyph,"ax",@progbits
+.globl fast_glyph
+.type fast_glyph,@function
+; Bounded 3x5 HUD glyph. C ABI: destination rc2/3, rows rc4/5, ink A.
+; Caller proves all five 160-byte-stride rows and three columns are writable.
+; Only caller-saved rc2/3, rc6/7 and A/X/Y are clobbered; no static scratch.
+fast_glyph:
+    sta __rc6
+    ldx #0
+.Lglyph_row:
+    txa
+    tay
+    lda (__rc4),y
+    sta __rc7
+    ldy #0
+    and #4
+    beq .Lglyph_middle
+    lda __rc6
+    sta (__rc2),y
+.Lglyph_middle:
+    iny
+    lda __rc7
+    and #2
+    beq .Lglyph_right
+    lda __rc6
+    sta (__rc2),y
+.Lglyph_right:
+    iny
+    lda __rc7
+    and #1
+    beq .Lglyph_next
+    lda __rc6
+    sta (__rc2),y
+.Lglyph_next:
+    clc
+    lda __rc2
+    adc #160
+    sta __rc2
+    bcc .Lglyph_advance
+    inc __rc3
+.Lglyph_advance:
+    inx
+    cpx #5
+    bne .Lglyph_row
+    rts
+.size fast_glyph, .-fast_glyph

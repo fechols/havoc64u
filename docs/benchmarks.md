@@ -32,25 +32,343 @@ The benchmark script never writes `dist/`. It requires the matching unstripped
 ELF, LLVM-MOS DWARF tools, emulator, and ROMs. Their default locations match the
 existing native smoke-test setup; `--vice`, `--roms`, and `--llvm-nm` override them.
 
+## Visual refresh final: 2026-10-18
+
+The Crystal Cave, orange Ashen Wastes and persistent level-name HUD pass the
+existing five-percent timing gate against the preserved campaign package
+`target/bench/campaign-fast11`. The final two-SID instrumented package is
+`target/bench/visual-refresh-fast3`. All **72 cases pass**, with three initial
+CIA timer phases per case: **216 candidate samples** across PAL and NTSC.
+
+The nine fixtures are Lowlands, Crystal with ordinary and full enemy pools,
+Ashen Wastes with ordinary and full enemy pools, and the midpoints of crossings
+0, 1, 3 and 4. Every fixture runs with zero and ten simulation ticks and both
+cold and retained palettes. Retained samples warm both VIC banks with the same
+post-simulation state. The gate requires each baseline/candidate median cycle
+ratio to be at least 0.95; no individual sample or publication wait is removed.
+
+| Measurement | PAL | NTSC |
+| --- | ---: | ---: |
+| Passing fixed cases | 36/36 | 36/36 |
+| Lowest baseline/candidate median ratio | 0.980393 | 0.998902 |
+| Baseline opening FPS | 6.179145 | 6.326317 |
+| Final opening FPS | 6.247815 | 6.492520 |
+| Maximum fixed-case audio lateness | 1.169 ms | 1.136 ms |
+
+The separate opening probe uses physical port-2 held FIRE, ordinary simulation
+scheduling and a 400-audio-tick deadline. FPS counts completed frames after the
+first second. It does not establish a campaign-wide average. Audio lateness
+remains below the 2 ms limit. Each measured ordinary frame transfers 58,140
+bytes; each crossing frame transfers 59,773 bytes. Every DMA command transfers
+at most 1,024 bytes. All checked frames retain intact stack guards, correct
+code/model banks, zero geometry drops, zero input overflows and zero music
+underruns. Input package hashes remain unchanged.
+
+These are timing comparisons of an intentional visual revision, so the final
+images are not required to match the old campaign images. Game-state hashes
+remain equal in every case; coordinate/depth changes are confined to the cave
+and its two adjacent crossings. Ashen Wastes changes colors while preserving
+geometry. The persistent HUD changes native display bytes in every play scene.
+
+The bounded native 3-by-5 glyph helper was checked separately against the first
+visual candidate: all 216 samples retain exact geometry, game state, clear
+color and native bitmap/screen/color hashes. The final package then preserves
+those hashes except for the intended cave-entry lighting change: at transition
+tick 200, the clear color becomes black when the backdrop switches to cave
+colors. This avoids introducing a fourth nonblack backdrop color while the
+roof closes, and removes the remaining PAL publication-window regression.
+Geometry and game-state hashes remain equal through that change as well.
+
+Recorded baseline reports are
+`target/visual-refresh-validation/baseline-{pal,ntsc}/report.json`; final reports
+are `target/visual-refresh-validation/candidate-fast3-{pal,ntsc}/report.json`.
+The case ratios, phase deltas and explicit image-comparison exceptions are in
+`target/visual-refresh-validation/timing-comparison-fast3.json`. The separate
+glyph equivalence comparison is `timing-comparison-fast2.json` in the same
+directory. These generated artifacts include package, emulator and driver
+hashes and are not committed.
+
+Rerun the final frozen package from the configured WSL SDK environment:
+
+```bash
+source scripts/env.sh
+for video in pal ntsc; do
+  python3 tools/bench-native.py \
+    --package-dir target/bench/visual-refresh-fast3 \
+    --out-dir "target/visual-refresh-validation/recheck-$video" --video "$video" \
+    --fixtures lowlands,enemies-crystal,enemies-crystal-full,enemies-ash,enemies-ash-full,bridge-0-200,bridge-1-200,bridge-3-200,bridge-4-200 \
+    --samples 3 --ticks 0,10 --palettes cold,retained \
+    --real-time-ticks 400 --skip-cache-checks
+done
+```
+
+Join baseline and candidate cases by fixture, simulation ticks and palette,
+then divide baseline `median_cycles` by candidate `median_cycles`. The normal
+`--compare` option also requires old native pixels to match, so it is not used
+for this visual revision. Cache replay is a separate check from this matrix.
+
+The final PAL cache replay passes **449 cached-versus-forced-miss pairs**
+(898 rendered frames), covering all twelve stages, all eleven crossings,
+camera movement, occlusion, HUD exclusions, title changes, and victory.
+Each pair retains identical projected geometry, decoded state, native display
+bytes, and clear color; the package hashes remain unchanged. Its report is
+`target/visual-refresh-validation/cache-pal/report.json`. Reproduce it with:
+
+```bash
+python3 tools/bench-native.py \
+  --package-dir target/bench/visual-refresh-fast3 \
+  --out-dir target/visual-refresh-validation/recheck-cache-pal --video pal \
+  --cache-checks-only
+```
+
+## Campaign expansion final: 2026-10-18
+
+The twelve-stage campaign passes the five-percent performance regression gate
+against the preserved four-stage enemy-motion package. The final instrumented
+two-SID package is `target/bench/campaign-fast11`; the baseline is
+`target/enemy-motion/bench-2sid`. All 32 fixed cases pass, with three initial CIA
+timer phases per case: 96 candidate samples across PAL and NTSC. Every compared
+case retains exact projected geometry and all 10,000 native bitmap, screen and
+color bytes. The package hashes remain unchanged throughout measurement.
+
+This is a comparison of corresponding scenes, not identical campaign state.
+Lowlands, Canyon and Fortress move from zero-based stage IDs 0, 1 and 2 to
+0, 2 and 6. The missile fixture uses the corresponding Canyon stage. The fixture
+driver keeps the actual stage metadata, model bank and simulation profile, and
+aligns the terrain's 1,024-tick shape/scroll period by adjusting the local scene
+clock. It freezes the encounter cursor and requests exactly zero or ten
+simulation ticks. Retained-palette samples first warm both VIC banks with the
+same post-simulation scene.
+
+Cross-campaign comparisons do not require equal `Game` hashes because stage
+identity, metadata and scene clocks differ. Repeated samples within each build
+must still produce identical decoded state. Geometry comparison preserves
+triangle order, coordinates, colors and depths; only renderer-private reserved
+bits `0x66` are masked (sky/orientation and terrain-visibility classification).
+Raw geometry hashes are also recorded. Requiring identical complete native
+pixels separately prevents this metadata mask from hiding a display change.
+
+The table gives median whole-frame milliseconds, **motion baseline -> campaign**.
+Each row contributes one PAL and one NTSC case.
+
+| Scene | Simulation ticks | Palette | PAL ms | NTSC ms |
+| --- | ---: | --- | ---: | ---: |
+| Lowlands | 0 | Cold | 160.182 -> 160.175 | 152.990 -> 152.349 |
+| Lowlands | 0 | Retained | 143.580 -> 142.906 | 150.991 -> 150.988 |
+| Lowlands | 10 | Cold | 160.181 -> 160.174 | 167.705 -> 167.692 |
+| Lowlands | 10 | Retained | 144.469 -> 144.183 | 150.992 -> 150.987 |
+| Canyon | 0 | Cold | 182.896 -> 181.970 | 184.422 -> 184.421 |
+| Canyon | 0 | Retained | 182.430 -> 181.494 | 184.423 -> 184.420 |
+| Canyon | 10 | Cold | 180.132 -> 180.125 | 184.421 -> 184.415 |
+| Canyon | 10 | Retained | 180.132 -> 180.126 | 184.423 -> 184.421 |
+| Fortress (`base`) | 0 | Cold | 180.133 -> 180.126 | 169.138 -> 168.324 |
+| Fortress (`base`) | 0 | Retained | 160.182 -> 160.174 | 150.993 -> 150.986 |
+| Fortress (`base`) | 10 | Cold | 180.129 -> 180.125 | 184.422 -> 184.420 |
+| Fortress (`base`) | 10 | Retained | 160.179 -> 160.174 | 153.097 -> 152.598 |
+| Missiles | 0 | Cold | 220.034 -> 220.024 | 217.853 -> 217.847 |
+| Missiles | 0 | Retained | 220.030 -> 220.026 | 217.853 -> 217.846 |
+| Missiles | 10 | Cold | 239.982 -> 239.975 | 234.564 -> 234.559 |
+| Missiles | 10 | Retained | 239.982 -> 239.975 | 234.564 -> 234.558 |
+
+The lowest baseline/campaign case ratios are 1.000018x PAL and 1.000005x NTSC;
+no measured case median regresses. Most whole-frame times are effectively
+unchanged because frame publication waits for a permitted raster window.
+Earlier candidates missed that window in three selected cases; the final
+candidate clears those waits without changing the comparison workload or gate.
+
+The separate 400-audio-tick opening probe uses physical port-2 held FIRE and
+ordinary simulation scheduling. Measuring completed frames after its first
+second gives **6.175800 -> 6.179146 FPS PAL** (+0.054%) and
+**6.281506 -> 6.326317 FPS NTSC** (+0.713%). These opening samples and the fixed
+matrix do not establish an average frame rate for the entire campaign.
+
+Maximum fixed-matrix audio-service lateness is 1.153 ms PAL and 1.139 ms NTSC,
+inside the existing 2 ms gate. Measured ordinary-frame DMA is 57,662 bytes for
+Lowlands, 57,649 for Fortress, and 57,476 for Canyon and Missiles. Every individual
+transfer stays at or below 1,024 bytes. Checked frames retain intact stack
+guards, correct code/model banks, zero geometry drops, zero input overflows and
+zero music underruns.
+
+The PAL cache replay additionally passes **449 cached-versus-forced-miss pairs**
+(898 rendered frames). It covers all twelve stages and ten themes, all eleven
+crossings, camera movement, occlusion, HUD exclusions, title changes and victory. Each pair
+has identical geometry, decoded state, native display bytes and clear color.
+Both VIC banks invalidate on theme changes; crossings and victory retain no
+stale cached sky. Maximum audio lateness in this replay is 1.047 ms and its
+largest DMA transfer is also 1,024 bytes.
+
+Reproduce the comparisons from the configured WSL SDK environment, preserving
+the recorded baseline package and reports:
+
+```bash
+source scripts/env.sh
+for video in pal ntsc; do
+  python3 tools/bench-native.py \
+    --package-dir target/bench/campaign-fast11 \
+    --out-dir "target/campaign-performance/recheck-$video" --video "$video" \
+    --samples 3 --fixtures lowlands,canyon,base,missiles \
+    --ticks 0,10 --palettes cold,retained --real-time-ticks 400 \
+    --skip-cache-checks \
+    --compare "target/campaign-performance/motion-baseline-$video/report.json"
+done
+python3 tools/bench-native.py \
+  --package-dir target/bench/campaign-fast11 \
+  --out-dir target/campaign-performance/recheck-pal-cache --video pal \
+  --cache-checks-only
+```
+
+The recorded matrix and cadence reports are
+`target/campaign-performance/fast11-{pal,ntsc}-full/report.json`; the cache report
+is `target/campaign-performance/fast11-pal-cache/report.json`. Baseline reports
+are `target/campaign-performance/motion-baseline-{pal,ntsc}/report.json`.
+Each includes package, driver and emulator hashes, fixtures, per-phase timing,
+DMA traces and captures. These generated artifacts are not committed. All
+numbers here come from calibrated VICE; physical C64 Ultimate acceptance remains
+separate.
+
+## Campaign compiler options: 2026-10-18
+
+These isolated builds use the same frozen `campaign-fast9` source, two SIDs and
+the `benchmarks` feature. The baseline uses `opt-level="z"`, Rust fat LTO and one
+codegen unit. Its resident headroom is 36 bytes and its largest composed SIM
+image is 16,348 bytes. These are experiment figures, not the final shipping
+memory snapshot. Build logs, exact flag invocations, hashes and section comparisons
+are in [the generated report](../target/lto-comparison/README.txt) and
+[comparison.json](../target/lto-comparison/comparison.json); those artifacts are
+not committed.
+
+| Change from baseline | Result on this source |
+| --- | --- |
+| Rust `lto="thin"` | Links; every allocated section has the same size. A few resident helpers reorder, changing call addresses. |
+| Rust `lto="off"` | Compiler fails in `core::u128::ilog10`: the MOS backend cannot legalize a 128-bit `G_UDIV`; no linked output. |
+| `opt-level="s"` | Link fails: PIXELS exceeds its 12,288-byte limit by 49 bytes. |
+| Two codegen units | Links; resident headroom rises to 101 bytes, largest SIM falls to 16,325 bytes. |
+| Four codegen units | Links; resident headroom rises to 94 bytes, largest SIM falls to 16,325 bytes. |
+| `s` globally, `z` for package `havoc` | Link fails: resident code/data exceed their region by 70 bytes. |
+| `-Zinline-mir=no` | Loaded sections and PRG are byte-identical to baseline. |
+| `-Zlocation-detail=none` | Loaded sections and PRG are byte-identical to baseline. |
+| LLVM inline and inline-hint thresholds set to zero in Rust and the final link | Links; all allocated section sizes remain unchanged. |
+| MIR/LLVM inlining disabled, inline attributes removed and `noinline` forced in both LLVM stages | Link fails: resident code/data exceed their region by 44,379 bytes; startup and other regions also overflow. |
+| Rust ThinLTO plus explicit LLD `--lto=thin` | Link fails because the input modules lack compatible unified-LTO metadata. |
+
+All successful variants pass the layout and overlay audits. Both codegen-unit
+variants also pass all 43 negative overlay fixtures. Size alone does not establish
+a runtime winner: code placement can change page-crossing costs and
+frame-publication timing even when section sizes match.
+
+The release profile now uses **two codegen units**, retaining `opt-level="z"`
+and fat LTO. The isolated CGU2 package was also measured before adoption:
+`target/bench/campaign-cgu2` passes all 16 PAL cases against the motion baseline,
+while two existing NTSC publication-window failures remain among its 16 cases.
+The demanding PAL Lowlands ten-tick retained-palette case improves from 157,805
+cycles with one codegen unit to 143,411 with two on the same frozen source.
+Its ordinary-play probe measures 6.159691 FPS PAL and 6.295775 FPS NTSC. Reports
+are `target/campaign-performance/cgu2-{pal,ntsc}-full/report.json`.
+The smaller resident/geometry footprint and this measured PAL improvement
+support the choice; the final source subsequently passes all 32 cases as
+documented above. The isolated compiler figures in the table remain unchanged
+and should not be substituted for the final production memory snapshot.
+
+Rust's LTO selection and the SDK's final link are separate controls. The local
+`mos-c64-none` target requires LTO; `mos-common.cfg` defaults to `-flto`, and the
+driver probe shows `-flto=full`. The isolated Rust ThinLTO library still contains
+LLVM bitcode. Changing Cargo's LTO setting alone therefore does not prove that
+the final MOS link uses a ThinLTO backend. The explicit linker experiment above
+tests that distinction and records its incompatibility with this toolchain.
+
+ELF file length is not loaded code size. Here the raw Thin ELF is 1,147,352 bytes;
+the packer's `llvm-objcopy --dump-section` normalizes its string tables and file
+layout to 1,146,376 bytes, matching the packaged fat ELF length. A disposable-copy
+check proves every allocated section stays byte-identical through extraction,
+and the PRG stays unchanged. Both PRGs are 38,913 bytes, although the fat and Thin
+PRGs differ because of the helper reorder. Compare sections and function sizes,
+then measure execution.
+
+To reproduce one option without changing source or release packages, freeze a
+baseline from the same source and use a fresh target directory for each case:
+
+```bash
+source scripts/env.sh
+case_target="$PWD/target/compiler-options/cgu2"
+(
+  cd target-c64
+  CARGO_TARGET_DIR="$case_target" \
+  CARGO_PROFILE_RELEASE_OPT_LEVEL=z \
+  CARGO_PROFILE_RELEASE_LTO=fat \
+  CARGO_PROFILE_RELEASE_CODEGEN_UNITS=2 \
+  cargo build --release --features benchmarks
+)
+elf=$(find "$case_target/mos-c64-none/release/deps" \
+  -name 'havoc_c64-*.elf' -print -quit)
+python3 tools/check-layout.py "$elf" \
+  "$case_target/mos-c64-none/release/havoc-c64"
+python3 tools/check-overlays.py "$elf"
+python3 tools/profile-size.py \
+  --baseline target/bench/campaign-fast9/havoc.elf \
+  --current "$elf" --out-dir target/compiler-options/cgu2-profile
+```
+
+Change the three `CARGO_PROFILE_RELEASE_*` values for the profile experiments.
+For the MIR or location experiment, pass its `RUSTFLAGS` value only to that
+isolated build. The threshold experiment uses this complete value:
+
+```text
+-Cllvm-args=-inline-threshold=0 -Cllvm-args=-inlinehint-threshold=0 -Clink-arg=-Wl,--mllvm=-inline-threshold=0 -Clink-arg=-Wl,--mllvm=-inlinehint-threshold=0
+```
+
+The `llvm-args` options reach Rust's LLVM optimizer; the `link-arg` options reach
+LLD's final LLVM optimizer. The older `-Cinline-threshold` is deprecated and has
+no effect in this compiler. The forced-no-inline case additionally uses
+`-Zinline-mir=no -Zinline-llvm=no`, with `-force-remove-attribute=alwaysinline`,
+`-force-remove-attribute=inlinehint`, and `-force-attribute=noinline` passed through
+both of those LLVM routes. Full invocations are preserved beside the report.
+
+Cargo optimization overrides apply to packages/crates, not `.rs` files or Rust
+modules. For example, with global `opt-level="s"`, this build command keeps the
+`havoc` library at `z` while the native executable package remains at `s`:
+
+```bash
+cargo --config 'profile.release.package.havoc.opt-level="z"' \
+  build --release --features benchmarks
+```
+
+Run it inside the same isolated `target-c64` build environment shown above.
+`#[inline]` and `#[inline(never)]` affect individual functions; `link_section`
+controls placement, not optimization level. A separate crate can give a module
+its own package optimization level, but LTO can still transform code across that
+boundary. Inspect the final ELF before treating a source-file split as a size
+improvement.
+
 ## Deterministic matrix
 
-The default matrix has eight combat/menu states: title, lowlands, canyon, base,
-carrier, missiles, full pools, and a section boundary with a deliberate
-segment-cache miss. Ten scenic states cover elapsed ticks 0, 200, and 399 of
-each bridge, plus tick 306 of the meteor shower when four streaks overlap.
-Ten-tick samples starting at tick 399 also exercise the handoff back
-to combat. Twelve enemy states add representative, saturated, and deliberately
-wrong-bank fixtures for each of the four rosters. Model bytes and enemy profiles
-are restored along with segment caches; the driver verifies all 2,048 model bytes
-after each measured frame. Fixed-tick checks detect skipped or duplicated work
-when SIM returns to resident code to change its enemy bank. Four victory states
-cover reveal entry, the midpoint of the fade, arrival, and the settled medal.
-Each runs with exactly zero or ten simulation ticks and either cold or retained
+For campaign packages, the default catalog contains 92 fixtures. Eight cover
+title, lowlands, canyon, base, carrier, missiles, full pools, and a section
+boundary with a deliberate segment-cache miss. Forty-two scenic fixtures cover
+elapsed ticks 0, 200 and 399 of all eleven crossings, plus tick 306 for crossings
+three through eleven; this also captures the four-meteor overlap where that
+decoration is used. Ten-tick samples starting at tick 399 exercise the handoff
+back to combat.
+
+Thirty-six enemy fixtures add representative, saturated and deliberately
+wrong-bank states for each of the twelve stages. Two additional fixtures cover
+the Gorge Warden and Citadel Heart; the Carrier is included in the combat/enemy
+fixtures. Four victory fixtures cover reveal entry, the midpoint of the fade,
+arrival and the settled medal. Legacy four-stage packages retain ten scenic and
+twelve enemy fixtures, with victory fixtures included when the format supports
+the medal. The final campaign comparison above deliberately selects four
+matching scenes from this larger catalog.
+
+Model bytes and enemy profiles are restored along with segment caches; the
+driver verifies all 2,048 model bytes after each measured frame. Fixed-tick
+checks detect skipped or duplicated work when SIM returns to resident code to
+change its enemy bank. Each fixture runs with exactly zero or ten simulation
+ticks and either cold or retained
 palette state. Cold palettes clear both screen buffers and the color shadow.
 Retained palettes render the identical post-simulation state twice before the
 measured frame, priming both VIC banks. Cold setup also invalidates the optional
-static-sky cache; retained setup preserves its two warmed banks. Each case has nine samples: three CIA
-timer phases, repeated three times. Live stereo music remains enabled throughout.
+static-sky cache; retained setup preserves its two warmed banks. By default each
+case has nine samples: three CIA timer phases, repeated three times. Live stereo
+music remains enabled throughout.
 
 Fixture field offsets and sizes come from the matching ELF's DWARF, including
 nested structures and arrays. The driver restores Game, Runtime, audio-engine,

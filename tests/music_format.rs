@@ -29,7 +29,7 @@ fn repaired_checksums_do_not_accept_invalid_page_fields() {
     let good = &bank[BANK_HEADER_SIZE..BANK_HEADER_SIZE + PAGE_SIZE];
     for (offset, value, expected) in [
         (0, b'X', ScoreError::Signature),
-        (4, 7, ScoreError::Bounds),
+        (4, music::CUE_COUNT as u8, ScoreError::Bounds),
         (5, 1, ScoreError::Bounds),
         (7, 2, ScoreError::Tempo),
         (8, 12, ScoreError::Profile),
@@ -95,4 +95,39 @@ fn package_validation_authenticates_the_entire_cue_including_its_last_page() {
         .unwrap_err()
         .to_string()
         .contains("checksum"));
+}
+
+#[test]
+fn cue_directory_preserves_high_reu_offsets_and_enforces_the_expanded_bank_bound() {
+    let mut bank = soundtrack::score_bank();
+    let last = (music::CUE_COUNT - 1) as u8;
+    let entry = 16 + last as usize * 8;
+    let pages = bank[entry + 4] as u32;
+    // Exercise the loader's 32-bit directory path in both profiles, even
+    // though only the four-SID production score crosses the 64 KiB boundary.
+    let high_offset = 0x10000u32;
+    let length = high_offset + pages * PAGE_SIZE as u32;
+    bank[entry..entry + 4].copy_from_slice(&high_offset.to_le_bytes());
+    bank[8..12].copy_from_slice(&length.to_le_bytes());
+    seal_directory(&mut bank);
+    let info = music::cue_info(&bank, last).unwrap();
+    assert_eq!(info.offset, high_offset);
+    assert_eq!(info.pages as u32, pages);
+
+    let excessive = music::BANK_CAPACITY + 1;
+    bank[8..12].copy_from_slice(&excessive.to_le_bytes());
+    seal_directory(&mut bank);
+    assert_eq!(
+        music::cue_info(&bank, last).unwrap_err(),
+        ScoreError::Bounds
+    );
+
+    bank[8..12].copy_from_slice(&music::BANK_CAPACITY.to_le_bytes());
+    let overflowing = u32::MAX - PAGE_SIZE as u32;
+    bank[entry..entry + 4].copy_from_slice(&overflowing.to_le_bytes());
+    seal_directory(&mut bank);
+    assert_eq!(
+        music::cue_info(&bank, last).unwrap_err(),
+        ScoreError::Bounds
+    );
 }

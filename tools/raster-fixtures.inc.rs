@@ -75,7 +75,7 @@ fn static_sky_reuse_requires_complete_background_and_excludes_all_occluder_bound
         add_background(&mut renderer, 14);
         assert_eq!(
             renderer.static_sky_bands(),
-            if matches!(clear, 6 | 8 | 11 | 4) { 0x01ff_ffff } else { 0 },
+            if matches!(clear, 0 | 4 | 6 | 8 | 11) { 0x01ff_ffff } else { 0 },
             "only authored section sky palettes permit reuse"
         );
     }

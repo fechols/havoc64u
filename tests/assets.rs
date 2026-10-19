@@ -11,11 +11,11 @@ fn put32(data: &mut [u8], at: usize, value: u32) {
     data[at..at + 4].copy_from_slice(&value.to_le_bytes());
 }
 fn seal_header(header: &mut [u8]) {
-    let sum = checksum(&header[..30]);
-    put16(header, 30, sum);
+    let sum = checksum(&header[..PACKAGE_CHECKSUM_OFFSET]);
+    put16(header, PACKAGE_CHECKSUM_OFFSET, sum);
 }
-fn header() -> [u8; 32] {
-    let mut bytes = [0u8; 32];
+fn header() -> [u8; PACKAGE_HEADER_SIZE] {
+    let mut bytes = [0u8; PACKAGE_HEADER_SIZE];
     bytes[..4].copy_from_slice(b"SM64");
     put32(&mut bytes, 4, PACKAGE_ID);
     put32(&mut bytes, 8, COMMON_OFFSET);
@@ -27,7 +27,7 @@ fn header() -> [u8; 32] {
 }
 fn package() -> Vec<u8> {
     let mut bytes = vec![0u8; REU_SIZE as usize];
-    bytes[..32].copy_from_slice(&header());
+    bytes[..PACKAGE_HEADER_SIZE].copy_from_slice(&header());
     let common = baked_assets::common_bank();
     let directory = baked_assets::model_directory();
     bytes[MODEL_DIRECTORY_OFFSET as usize..MODEL_DIRECTORY_OFFSET as usize + MODEL_DIRECTORY_SIZE]
@@ -46,7 +46,7 @@ fn package() -> Vec<u8> {
         bytes[offset..offset + SEGMENT_SIZE].copy_from_slice(&segment);
         put16(
             &mut bytes,
-            20 + index as usize * 2,
+            SEGMENT_CHECKSUM_OFFSET + index as usize * 2,
             checksum(&segment[..SEGMENT_CACHE_SIZE]),
         );
     }
@@ -58,7 +58,10 @@ fn package() -> Vec<u8> {
 fn header_rejects_wrong_size_signature_version_and_directory() {
     let good = header();
     assert_eq!(validate_header(&good), Ok(()));
-    assert_eq!(validate_header(&good[..31]), Err(AssetError::Size));
+    assert_eq!(
+        validate_header(&good[..PACKAGE_HEADER_SIZE - 1]),
+        Err(AssetError::Size)
+    );
     for (offset, value, expected) in [
         (0, b'X', AssetError::Magic),
         (4, 0xff, AssetError::Version),
@@ -127,10 +130,18 @@ fn malformed_segment_metadata_and_encounter_order_are_rejected() {
     ));
     for (offset, value) in [
         (0, b'X'),
-        (4, 4),
+        (4, SEGMENT_COUNT),
         (5, 4),
         (6, 16),
         (7, 201),
+        (8, 4),
+        (9, 13),
+        (10, 3),
+        (11, 4),
+        (12, 10),
+        (13, 10),
+        (14, 10),
+        (15, 1),
         (18, 0),
         (18, 4),
         (18, 8),
@@ -222,6 +233,7 @@ fn segment_prefix_contains_every_authored_encounter() {
         assert_eq!(cache.index(), full.index());
         assert_eq!(cache.terrain(), full.terrain());
         assert_eq!(cache.ground_color(), full.ground_color());
+        assert_eq!(cache.stage_info(), full.stage_info());
         assert_eq!(cache.spawn_count(), full.spawn_count());
         for record in 0..full.spawn_count() {
             let a = full.spawn(record);
@@ -243,9 +255,18 @@ fn both_segment_forms_enforce_the_62_record_cache_limit() {
         put16(&mut bytes, at, index as u16 * 100);
         bytes[at + 2] = FIGHTER;
     }
+    let last = 16 + (MAX_SEGMENT_SPAWNS as usize - 1) * 8;
+    bytes[last + 3] = 0xa5;
+    put16(&mut bytes, last + 4, i16::MIN as u16);
+    put16(&mut bytes, last + 6, i16::MAX as u16);
     assert!(Segment::new(&bytes).is_ok());
     let cache = Segment::new(&bytes[..SEGMENT_CACHE_SIZE]).unwrap();
-    assert_eq!(cache.spawn(MAX_SEGMENT_SPAWNS - 1).distance, 6100);
+    let spawn = cache.spawn(MAX_SEGMENT_SPAWNS - 1);
+    assert_eq!(
+        (spawn.distance, spawn.kind, spawn.flags),
+        (6100, FIGHTER, 0xa5)
+    );
+    assert_eq!((spawn.x, spawn.y), (i16::MIN, i16::MAX));
     assert_eq!(cache.spawn(MAX_SEGMENT_SPAWNS).kind, 0);
     for count in [MAX_SEGMENT_SPAWNS + 1, 200, 255] {
         bytes[7] = count;
@@ -282,12 +303,12 @@ fn trusted_views_match_prior_validation_of_the_same_immutable_bytes() {
 }
 
 #[test]
-fn version_40_checksums_only_the_segment_runtime_prefix() {
+fn version_50_checksums_only_the_segment_runtime_prefix() {
     let mut bytes = package();
     for index in 0..SEGMENT_COUNT as usize {
         let at = SEGMENTS_OFFSET as usize + index * SEGMENT_SIZE;
         assert_eq!(
-            u16_at(&bytes, 20 + index * 2),
+            u16_at(&bytes, SEGMENT_CHECKSUM_OFFSET + index * 2),
             checksum(&bytes[at..at + SEGMENT_CACHE_SIZE])
         );
     }
@@ -300,46 +321,46 @@ fn version_40_checksums_only_the_segment_runtime_prefix() {
 }
 
 #[test]
-fn level_model_banks_share_common_meshes_and_have_eleven_distinct_enemy_shapes() {
+fn stage_model_banks_keep_fourteen_distinct_enemy_shapes_and_shared_player_assets() {
     let common = baked_assets::common_bank();
     let first = AssetBank::new(&common).unwrap();
     let mut shapes = Vec::new();
     for level in 0..SEGMENT_COUNT {
         let bytes = baked_assets::model_bank(level);
         let bank = AssetBank::new(&bytes).unwrap();
+        let info = preview_stage_info(level);
+        let profile = info.enemy_profile;
         assert_eq!(bank.level(), level);
-        assert_eq!(bank.enemy_count(), if level == 3 { 2 } else { 3 });
+        assert_eq!(bank.enemy_count(), if info.boss_kind != 0 { 2 } else { 3 });
         for kind in 1..=bank.enemy_count() {
             assert!(bank.vertex_count(kind) <= 10);
             assert!(bank.face_count(kind) <= 12);
             let shape: Vec<_> = (0..bank.vertex_count(kind))
                 .map(|index| bank.vertex(kind, index))
                 .collect();
-            assert!(
-                !shapes.contains(&shape),
-                "reused enemy shape {level}/{kind}"
-            );
-            shapes.push(shape);
+            if !shapes.contains(&shape) {
+                shapes.push(shape);
+            }
             let spec = bank.enemy(kind);
             assert_eq!(spec.score, if kind == 3 { 250 } else { 100 });
             assert_eq!((spec.shot_radius, spec.ram_radius), (38, 36));
             assert_eq!(
                 spec.center_y,
-                if kind == TURRET && matches!(level, 0 | 2) {
-                    28
-                } else {
+                if kind != TURRET || profile == 1 {
                     0
+                } else {
+                    28
                 }
             );
             assert_eq!(
                 spec.hp,
-                [[3, 2, 6], [2, 3, 4], [4, 2, 6], [3, 2, 0]][level as usize][kind as usize - 1]
+                [[3, 2, 6], [2, 3, 4], [4, 2, 6], [3, 2, 6]][profile as usize][kind as usize - 1]
             );
         }
         for kind in [0, bank.enemy_count() + 1, 255] {
             assert_eq!(bank.enemy(kind), EnemySpec::default());
         }
-        for mesh in [PLAYER, CARRIER, CRYSTAL, BUILDING, ROCK, MEDAL] {
+        for mesh in [PLAYER, CRYSTAL, BUILDING, MEDAL] {
             assert_eq!(bank.vertex_count(mesh), first.vertex_count(mesh));
             assert_eq!(bank.face_count(mesh), first.face_count(mesh));
             for index in 0..bank.vertex_count(mesh) {
@@ -353,7 +374,9 @@ fn level_model_banks_share_common_meshes_and_have_eleven_distinct_enemy_shapes()
             assert_eq!(&bytes, &common[..MODEL_SIZE]);
         }
     }
-    assert_eq!(shapes.len(), 11);
+    // Eleven original enemies plus three new airborne silhouettes. The later
+    // carrier-profile ground gun reuses the original tracked-gun geometry.
+    assert_eq!(shapes.len(), 14);
 }
 
 #[test]
@@ -382,15 +405,15 @@ fn enlarged_enemy_meshes_keep_ground_bases_and_original_model_budgets() {
         (0, FIGHTER, (6, 8), [-54, -14, -60], [54, 20, 50]),
         (0, DIVER, (5, 6), [-36, -20, -64], [36, 36, 40]),
         (0, TURRET, (9, 11), [-40, -8, -56], [40, 44, 40]),
-        (1, FIGHTER, (8, 10), [-76, -14, -56], [76, 10, 52]),
-        (1, DIVER, (7, 8), [-68, -34, -70], [68, 68, 58]),
-        (1, TURRET, (9, 12), [-30, -56, -68], [30, 56, 28]),
-        (2, FIGHTER, (10, 12), [-64, -14, -76], [64, 22, 44]),
-        (2, DIVER, (6, 8), [-24, -16, -96], [24, 18, 68]),
-        (2, TURRET, (9, 11), [-68, -8, -78], [68, 38, 50]),
-        (3, FIGHTER, (8, 10), [-60, -20, -56], [60, 26, 50]),
-        (3, DIVER, (6, 8), [-34, -24, -84], [34, 54, 54]),
-        (3, TURRET, (9, 11), [-40, -16, -56], [40, 36, 40]),
+        (2, FIGHTER, (8, 10), [-76, -14, -56], [76, 10, 52]),
+        (2, DIVER, (7, 8), [-68, -34, -70], [68, 68, 58]),
+        (2, TURRET, (9, 12), [-30, -56, -68], [30, 56, 28]),
+        (6, FIGHTER, (10, 12), [-64, -14, -76], [64, 22, 44]),
+        (6, DIVER, (6, 8), [-24, -16, -96], [24, 18, 68]),
+        (6, TURRET, (9, 11), [-68, -8, -78], [68, 38, 50]),
+        (11, FIGHTER, (8, 10), [-60, -20, -56], [60, 26, 50]),
+        (11, DIVER, (6, 8), [-34, -24, -84], [34, 54, 54]),
+        (11, TURRET, (9, 11), [-40, -16, -56], [40, 36, 40]),
     ] {
         let bytes = baked_assets::model_bank(level);
         check(&AssetBank::new(&bytes).unwrap(), mesh, counts, min, max);
@@ -399,12 +422,19 @@ fn enlarged_enemy_meshes_keep_ground_bases_and_original_model_budgets() {
         let bytes = baked_assets::model_bank(level);
         assert_eq!(bytes.len(), 2048);
         let bank = AssetBank::new(&bytes).unwrap();
-        check(&bank, CARRIER, (10, 17), [-170, -32, -172], [170, 76, 160]);
+        let (min, max) = match level {
+            3 => ([-190, -48, -164], [190, 60, 130]),
+            7 => ([-176, -40, -156], [176, 116, 136]),
+            _ => ([-170, -32, -172], [170, 76, 160]),
+        };
+        check(&bank, CARRIER, (10, 17), min, max);
         // Player, pickups and scenery preserve their original dimensions.
         check(&bank, PLAYER, (8, 12), [-36, -7, -27], [36, 12, 36]);
         check(&bank, CRYSTAL, (6, 8), [-13, -20, -13], [13, 20, 13]);
         check(&bank, BUILDING, (8, 10), [-22, 0, -22], [22, 60, 22]);
-        check(&bank, ROCK, (6, 6), [-32, 0, -30], [35, 42, 30]);
+        if !matches!(level, 1 | 4) {
+            check(&bank, ROCK, (6, 6), [-32, 0, -30], [35, 42, 30]);
+        }
     }
 }
 
@@ -412,14 +442,17 @@ fn enlarged_enemy_meshes_keep_ground_bases_and_original_model_budgets() {
 fn model_directory_rejects_unsupported_layout_and_corrupt_checksums() {
     let good = baked_assets::model_directory();
     assert_eq!(validate_model_directory(&good), Ok(()));
-    assert_eq!(validate_model_directory(&good[..31]), Err(AssetError::Size));
+    assert_eq!(
+        validate_model_directory(&good[..MODEL_DIRECTORY_SIZE - 1]),
+        Err(AssetError::Size)
+    );
     for (offset, value, expected) in [
         (0, b'X', AssetError::Magic),
         (4, 3, AssetError::Bounds),
-        (5, 2, AssetError::Version),
+        (5, 1, AssetError::Version),
         (6, 1, AssetError::Bounds),
         (8, 1, AssetError::Bounds),
-        (20, 1, AssetError::Bounds),
+        (36, 1, AssetError::Bounds),
     ] {
         let mut bad = good;
         bad[offset] = value;
@@ -429,7 +462,7 @@ fn model_directory_rejects_unsupported_layout_and_corrupt_checksums() {
     let mut bad = good;
     bad[12] ^= 1;
     assert_eq!(validate_model_directory(&bad), Err(AssetError::Checksum));
-    assert_eq!(model_checksum(&good, 4), 0);
+    assert_eq!(model_checksum(&good, SEGMENT_COUNT), 0);
     assert_eq!(model_checksum(&good[..31], 0), 0);
     for level in 0..SEGMENT_COUNT {
         assert_eq!(
@@ -443,8 +476,9 @@ fn model_directory_rejects_unsupported_layout_and_corrupt_checksums() {
 fn model_identity_descriptors_and_vertex_ranges_are_checked() {
     let good = baked_assets::model_bank(0);
     for (offset, value) in [
-        (5, 4),
+        (5, SEGMENT_COUNT),
         (6, 2),
+        (7, 4),
         (ENEMY_SPECS_OFFSET, 0),
         (ENEMY_SPECS_OFFSET, 255),
         (ENEMY_SPECS_OFFSET + 2, 0),
@@ -491,8 +525,12 @@ fn every_level_model_is_authenticated_and_paired_with_its_identity() {
         let directory = MODEL_DIRECTORY_OFFSET as usize;
         let model_sum = checksum(&bad[start..start + MODEL_SIZE]);
         put16(&mut bad, directory + 12 + level * 2, model_sum);
-        let directory_sum = checksum(&bad[directory..directory + 30]);
-        put16(&mut bad, directory + 30, directory_sum);
+        let directory_sum = checksum(&bad[directory..directory + MODEL_DIRECTORY_CHECKSUM_OFFSET]);
+        put16(
+            &mut bad,
+            directory + MODEL_DIRECTORY_CHECKSUM_OFFSET,
+            directory_sum,
+        );
         assert!(
             baked_assets::check_package(&bad).is_err(),
             "wrong model identity {level}"
@@ -501,11 +539,24 @@ fn every_level_model_is_authenticated_and_paired_with_its_identity() {
 }
 
 #[test]
-fn authored_rosters_cover_their_local_types_and_keep_carrier_turrets_out_of_actor_slots() {
+fn authored_rosters_cover_their_local_types_and_keep_boss_turrets_out_of_actor_slots() {
+    let mut scripts = Vec::new();
     for level in 0..SEGMENT_COUNT {
         let bytes = baked_assets::segment_bank(level);
         let segment = Segment::new(&bytes).unwrap();
-        assert_eq!(segment.spawn_count(), [41, 36, 36, 10][level as usize]);
+        let info = segment.stage_info();
+        assert_eq!(info, preview_stage_info(level));
+        assert_eq!(core::mem::size_of::<StageInfo>(), 8);
+        assert!(segment.spawn_count() <= MAX_SEGMENT_SPAWNS);
+        if level == 0 {
+            assert_eq!(segment.spawn_count(), 41);
+        }
+        let script = bytes[16..16 + segment.spawn_count() as usize * 8].to_vec();
+        assert!(
+            !scripts.contains(&script),
+            "duplicated stage {level} script"
+        );
+        scripts.push(script);
         let mut counts = [0; 8];
         for record in 0..segment.spawn_count() {
             let spawn = segment.spawn(record);
@@ -513,10 +564,90 @@ fn authored_rosters_cover_their_local_types_and_keep_carrier_turrets_out_of_acto
             assert_eq!(spawn.flags & !1, 0);
         }
         assert!(counts[1] > 0 && counts[2] > 0);
-        assert_eq!(counts[3], [5, 10, 10, 0][level as usize]);
-        assert_eq!(counts[6] + counts[7], if level == 3 { 0 } else { 6 });
+        if info.boss_kind == 0 {
+            assert!(counts[3] > 0);
+        } else {
+            assert_eq!(counts[3], 0);
+        }
+        assert_eq!(
+            counts[6] + counts[7],
+            if info.boss_kind != 0 { 0 } else { 6 }
+        );
     }
     let mut bad = baked_assets::segment_bank(3);
     bad[18] = TURRET;
     assert!(matches!(Segment::new(&bad), Err(AssetError::Bounds)));
+}
+
+#[test]
+fn twelve_stage_profiles_cover_three_acts_and_contiguous_theme_crossings() {
+    assert_eq!(SEGMENT_COUNT, 12);
+    assert_eq!(SEGMENT_DISTANCE * SEGMENT_COUNT as u32, 360_000);
+    assert_eq!(StageInfo::FIRST, preview_stage_info(0));
+    assert_eq!(PACKAGE_HEADER_SIZE as u32, MODEL_DIRECTORY_OFFSET);
+    assert!(MODEL_DIRECTORY_OFFSET + MODEL_DIRECTORY_SIZE as u32 <= COMMON_OFFSET);
+    assert!(COMMON_OFFSET + COMMON_SIZE as u32 <= SEGMENTS_OFFSET);
+    assert_eq!(
+        SEGMENTS_OFFSET + SEGMENT_SIZE as u32 * SEGMENT_COUNT as u32,
+        0x8000
+    );
+    assert_eq!(
+        MODEL_BANKS_OFFSET + MODEL_SIZE as u32 * SEGMENT_COUNT as u32,
+        0xb6000
+    );
+    assert_eq!(MUSIC_OFFSET + MUSIC_CAPACITY as u32, 0x120000);
+    let mut bosses = Vec::new();
+    for stage in 0..SEGMENT_COUNT {
+        let bytes = baked_assets::segment_bank(stage);
+        let info = Segment::new(&bytes).unwrap().stage_info();
+        assert_eq!(info, baked_assets::stage_info(stage));
+        assert!(!baked_assets::stage_name(stage).is_empty());
+        assert_eq!(
+            info.simulation_profile(),
+            if info.boss_kind == 0 {
+                info.enemy_profile
+            } else {
+                3 + info.boss_kind
+            }
+        );
+        if info.boss_kind != 0 {
+            bosses.push((stage, info.boss_kind));
+        }
+        if stage != 0 {
+            assert_eq!(info.previous_theme, preview_stage_info(stage - 1).theme);
+        }
+        if stage + 1 < SEGMENT_COUNT {
+            assert_eq!(info.next_theme, preview_stage_info(stage + 1).theme);
+        }
+    }
+    assert_eq!(bosses, [(3, 1), (7, 2), (11, 3)]);
+}
+
+#[test]
+fn all_twelve_encounters_and_their_metadata_are_authenticated() {
+    let good = package();
+    for stage in 0..SEGMENT_COUNT as usize {
+        let start = SEGMENTS_OFFSET as usize + stage * SEGMENT_SIZE;
+        for offset in [8, 9, 10, 11, 12, 13, 14, 15, 16, SEGMENT_CACHE_SIZE - 1] {
+            let mut corrupt = good.clone();
+            corrupt[start + offset] ^= 1;
+            assert!(
+                baked_assets::check_package(&corrupt).is_err(),
+                "unauthenticated stage {stage} byte {offset}"
+            );
+        }
+    }
+}
+
+#[test]
+fn model_boss_identity_must_agree_with_the_checked_encounter_header() {
+    let mut bytes = package();
+    let start = MODEL_BANKS_OFFSET as usize + 3 * MODEL_SIZE;
+    bytes[start + 7] = 2; // Still a valid two-enemy bank, but the wrong boss.
+    let sum = checksum(&bytes[start..start + MODEL_SIZE]);
+    let directory = MODEL_DIRECTORY_OFFSET as usize;
+    put16(&mut bytes, directory + 12 + 3 * 2, sum);
+    let sum = checksum(&bytes[directory..directory + MODEL_DIRECTORY_CHECKSUM_OFFSET]);
+    put16(&mut bytes, directory + MODEL_DIRECTORY_CHECKSUM_OFFSET, sum);
+    assert!(baked_assets::check_package(&bytes).is_err());
 }

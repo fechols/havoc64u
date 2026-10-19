@@ -3,8 +3,31 @@ use havoc::game::{Hud, Mode};
 use havoc::render::pack_band;
 use havoc::sky_cache::SkyCache;
 
-const CLOUD_PALETTES: [[u8; 3]; 4] = [[6, 1, 15], [8, 7, 10], [11, 15, 12], [4, 10, 14]];
-const HORIZON_PALETTES: [[u8; 3]; 4] = [[6, 14, 12], [8, 9, 2], [11, 6, 12], [4, 6, 11]];
+const CLOUD_PALETTES: [[u8; 3]; 10] = [
+    [6, 1, 15],
+    [8, 7, 10],
+    [11, 15, 12],
+    [4, 10, 14],
+    [0, 3, 11],
+    [11, 8, 0],
+    [8, 15, 12],
+    [11, 15, 3],
+    [6, 1, 15],
+    [4, 15, 10],
+];
+const HORIZON_PALETTES: [[u8; 3]; 10] = [
+    [6, 14, 12],
+    [8, 9, 2],
+    [11, 6, 12],
+    [4, 6, 11],
+    [0, 11, 6],
+    [11, 8, 0],
+    [8, 9, 12],
+    [11, 12, 15],
+    [6, 11, 14],
+    [4, 10, 12],
+];
+const CAVE_PALETTE: [u8; 4] = [0, 6, 3, 11];
 
 fn hud() -> Hud {
     Hud {
@@ -18,6 +41,7 @@ fn hud() -> Hud {
         section: 0,
         roll_ticks: 0,
         boss_shield: 0,
+        boss_kind: 0,
         victory_ticks: 0,
     }
 }
@@ -57,7 +81,7 @@ fn hud_eligibility_covers_modes_boss_and_exact_sector_banner_boundaries() {
     assert_eq!(SkyCache::eligible_bands(1 << 5, &hud), 1 << 5);
     hud.boss_shield = 1;
     assert_eq!(SkyCache::eligible_bands(u32::MAX, &hud), clean & !6);
-    for section in 0..=3 {
+    for section in 0..12 {
         hud.section = section;
         for distance in [0, 799, 800, 801] {
             hud.distance = section as u32 * SEGMENT_DISTANCE + distance;
@@ -96,6 +120,11 @@ fn band_pattern(palette: &[u8], distribution: usize) -> [u8; 1280] {
 }
 
 fn background_pattern(theme: usize, distribution: usize) -> [u8; 1280] {
+    if theme == 4 {
+        // The black cave interior can put cyan crystals, blue walls, and gray
+        // facets in the same cell. Exercise that complete union as well.
+        return band_pattern(&CAVE_PALETTE, distribution);
+    }
     let mut pixels = band_pattern(&CLOUD_PALETTES[theme], distribution);
     let horizon = band_pattern(&HORIZON_PALETTES[theme], distribution);
     // Exercise more than three nonblack colors in one band while preserving
@@ -108,12 +137,99 @@ fn background_pattern(theme: usize, distribution: usize) -> [u8; 1280] {
 }
 
 #[test]
+fn crystal_cave_background_union_fits_three_nonblack_cell_slots() {
+    let mut actual: Vec<_> = CLOUD_PALETTES[4]
+        .into_iter()
+        .chain(HORIZON_PALETTES[4])
+        .collect();
+    actual.sort_unstable();
+    actual.dedup();
+    let mut expected = CAVE_PALETTE;
+    expected.sort_unstable();
+    assert_eq!(actual, expected);
+    assert_eq!(actual.iter().filter(|&&color| color != 0).count(), 3);
+}
+
+fn unpack_band(bitmap: &[u8; 320], screen: &[u8; 40], color: &[u8; 40]) -> [u8; 1280] {
+    let mut pixels = [0; 1280];
+    for cell in 0..40 {
+        let palette = [0, screen[cell] >> 4, screen[cell] & 15, color[cell] & 15];
+        for row in 0..8 {
+            for column in 0..4 {
+                let slot = (bitmap[cell * 8 + row] >> (6 - column * 2)) & 3;
+                pixels[row * 160 + cell * 4 + column] = palette[slot as usize];
+            }
+        }
+    }
+    pixels
+}
+
+#[test]
+fn ashen_scenery_preserves_isolated_red_shots_at_every_cell_position_and_old_palette() {
+    // Black is the global VIC-II color: orange and charcoal leave the third
+    // per-cell slot free for a red enemy or shot, even when it covers one pixel.
+    assert_eq!(CLOUD_PALETTES[5], [11, 8, 0]);
+    assert_eq!(HORIZON_PALETTES[5], [11, 8, 0]);
+    for shot in [2, 10] {
+        for distribution in 0..2 {
+            for position in 0..32 {
+                let mut pixels = background_pattern(5, distribution);
+                for cell in 0..40 {
+                    pixels[position / 4 * 160 + cell * 4 + position % 4] = shot;
+                }
+                // Include cold black palettes, retained scenery/shot colors,
+                // duplicates, and every unrelated preceding scene palette.
+                for base in (0..4096).step_by(40) {
+                    let mut previous_screen = [0; 40];
+                    let mut previous_color = [0; 40];
+                    for cell in 0..40 {
+                        let old = (base + cell).min(4095);
+                        previous_screen[cell] = (old >> 4) as u8;
+                        previous_color[cell] = (old & 15) as u8;
+                    }
+                    let (mut bitmap, mut screen, mut color) = ([0; 320], [0; 40], [0; 40]);
+                    pack_band(
+                        &pixels,
+                        &previous_screen,
+                        &previous_color,
+                        &mut bitmap,
+                        &mut screen,
+                        &mut color,
+                    );
+                    assert_eq!(
+                        unpack_band(&bitmap, &screen, &color),
+                        pixels,
+                        "shot {shot}, distribution {distribution}, position {position}, old base {base}"
+                    );
+                    let (mut retained_bitmap, mut retained_screen, mut retained_color) =
+                        ([0; 320], [0; 40], [0; 40]);
+                    pack_band(
+                        &pixels,
+                        &screen,
+                        &color,
+                        &mut retained_bitmap,
+                        &mut retained_screen,
+                        &mut retained_color,
+                    );
+                    assert_eq!(
+                        (retained_bitmap, retained_screen, retained_color),
+                        (bitmap, screen, color),
+                        "retained shot {shot}, distribution {distribution}, position {position}, old base {base}"
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
 fn screen_bytes_determine_all_packed_background_bytes_for_every_previous_palette() {
     // Every subset, with and without black, covers uniform/absent colors; all
     // 4096 previous palettes include duplicate slots and unrelated old colors.
     for (palette_index, [sky, top, shade]) in CLOUD_PALETTES
         .into_iter()
         .chain(HORIZON_PALETTES)
+        .chain([[6, 3, 11]])
         .enumerate()
     {
         for subset in 1..16 {
@@ -275,11 +391,12 @@ fn scene_resets_match_forced_repainting_through_all_themes_and_rapid_switches() 
     let mut forced = PackedBanks::new();
     let mut previous_scene = None;
     let mut scene_frames = 0;
-    let mut hits = [0; 4];
+    let mut hits = [0; 10];
     // Warm both banks in each scene, return to lowlands, then cut every frame.
-    let scenes = [
-        0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3, 0, 0, 0, 0, 1, 2, 3, 0, 3, 1, 0, 0, 0, 0,
-    ];
+    let scenes: Vec<_> = (0..10)
+        .flat_map(|theme| [theme; 4])
+        .chain([0, 0, 0, 0, 4, 6, 8, 9, 7, 2, 0, 0, 0, 0])
+        .collect();
     for (frame, scene) in scenes.into_iter().enumerate() {
         if previous_scene != Some(scene) {
             cache = SkyCache::new();

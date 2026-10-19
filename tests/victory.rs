@@ -19,7 +19,7 @@ impl GeometrySink for Capture {
 
 #[test]
 fn all_banks_include_a_closed_thick_coin_and_protruding_player_relief_within_budget() {
-    for level in 0..4 {
+    for level in 0..havoc::assets::SEGMENT_COUNT {
         let bytes = baked_assets::model_bank(level);
         assert_eq!(bytes.len(), MODEL_SIZE);
         let bank = AssetBank::new(&bytes).unwrap();

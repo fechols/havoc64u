@@ -16,7 +16,7 @@ havoc = { path = "..", default-features = false }
 [profile.release]
 opt-level = "z"
 lto = "fat"
-codegen-units = 1
+codegen-units = 2
 panic = "abort"
 overflow-checks = false
 debug = true

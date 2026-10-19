@@ -69,7 +69,7 @@ enum Snapshot {
 }
 
 fn snapshot(source: Snapshot, out: &Path) -> Result<(), Box<dyn std::error::Error>> {
-    let models: [_; 4] = core::array::from_fn(|i| host::model_bank(i as u8));
+    let models: [_; SEGMENT_COUNT as usize] = core::array::from_fn(|i| host::model_bank(i as u8));
     let hud_frame = match &source {
         Snapshot::Victory(elapsed_ticks) => *elapsed_ticks,
         _ => 0,
@@ -94,7 +94,8 @@ fn snapshot(source: Snapshot, out: &Path) -> Result<(), Box<dyn std::error::Erro
             game
         }
         Snapshot::Attract(elapsed_ms) => {
-            let banks: [_; 4] = core::array::from_fn(|i| host::segment_bank(i as u8));
+            let banks: [_; SEGMENT_COUNT as usize] =
+                core::array::from_fn(|i| host::segment_bank(i as u8));
             let mut game = Game::new();
             // Replay actual 20-ms steps, including title idle and repeat cycles.
             // Fractional steps have not occurred yet at the requested timestamp.
@@ -152,15 +153,15 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             let source = if transition {
                 let section = args
                     .get(3)
-                    .ok_or("transition needs outgoing section 0..2")?
+                    .ok_or("transition needs outgoing section 0..10")?
                     .parse::<u8>()?;
                 let elapsed_ms = args
                     .get(4)
                     .ok_or("transition needs elapsed milliseconds 0..8000")?
                     .parse::<u16>()?;
-                if section >= 3 || elapsed_ms > TRANSITION_TICKS * 20 {
+                if section >= SEGMENT_COUNT - 1 || elapsed_ms > TRANSITION_TICKS * 20 {
                     return Err(
-                        "transition section must be 0..2 and elapsed milliseconds 0..8000".into(),
+                        "transition section must be 0..10 and elapsed milliseconds 0..8000".into(),
                     );
                 }
                 Snapshot::Transition(section, elapsed_ms / 20)
@@ -180,9 +181,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     .filter(|s| s.as_str() != "title")
                     .map(|s| s.parse::<u8>())
                     .transpose()?;
-                if section.is_some_and(|s| s >= 4) {
+                if section.is_some_and(|s| s >= SEGMENT_COUNT) {
                     return Err(
-                        "section must be 0..3, title, attract, transition, or victory".into(),
+                        "section must be 0..11, title, attract, transition, or victory".into(),
                     );
                 }
                 let distance = args
@@ -213,7 +214,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             Ok(())
         }
         _ => {
-            println!("H.A.V.O.C. tools\n  bake [directory]\n  check game.reu\n  snapshot <title|0|1|2|3> [distance] [output-prefix]\n  snapshot attract <elapsed-ms> [output-prefix]\n  snapshot transition <0|1|2> <elapsed-ms:0..8000> [output-prefix]\n  snapshot victory <elapsed-ms> [output-prefix]\n  sizes");
+            println!("H.A.V.O.C. tools\n  bake [directory]\n  check game.reu\n  snapshot <title|0..11> [distance] [output-prefix]\n  snapshot attract <elapsed-ms> [output-prefix]\n  snapshot transition <0..10> <elapsed-ms:0..8000> [output-prefix]\n  snapshot victory <elapsed-ms> [output-prefix]\n  sizes");
             Ok(())
         }
     }

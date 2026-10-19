@@ -11,6 +11,7 @@ fn main() {
         "asm/division.S",
         "asm/sort.S",
         "asm/preparation.S",
+        "asm/game_math.S",
     ] {
         println!("cargo:rerun-if-changed={source}");
     }
@@ -25,7 +26,16 @@ fn main() {
         });
         format!("{sdk}/bin/mos-c64-clang")
     });
-    for source in ["platform", "pack", "memcpy", "raster", "division", "sort", "preparation"] {
+    for source in [
+        "platform",
+        "pack",
+        "memcpy",
+        "raster",
+        "division",
+        "sort",
+        "preparation",
+        "game_math",
+    ] {
         let object = output.join(format!("{source}.o"));
         let status = Command::new(&compiler)
             .args(["-c", "-o"])

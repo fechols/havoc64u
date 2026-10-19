@@ -166,7 +166,7 @@ def counters(mon, syms):
     result = {}
     for name, width in (("FRAME_SERIAL", 2), ("VIDEO_FRAMES", 2), ("AUDIO_TICKS", 2),
                         ("FRAME_TRIANGLES", 2), ("FRAME_DROPPED", 2), ("STREAM_BYTES", 2),
-                        ("INPUT_OVERFLOWS", 2), ("GAME_MODE", 1), ("GAME_DISTANCE", 4),
+                        ("INPUT_OVERFLOWS", 2), ("GAME_MODE", 1), ("GAME_DISTANCE", 4), ("GAME_STAGE", 1),
                         ("FRONT_BANK", 1), ("TEST_INPUT", 1), ("RENDER_SEGMENT", 1),
                         ("ENEMY_CODE_PROFILE", 1), ("ENEMY_MODEL_PROFILE", 1), ("MODEL_STREAM_BYTES", 2),
                         ("MUSIC_CUE", 1), ("MUSIC_ACTIVE_CUE", 1), ("MUSIC_PAGE", 1),
@@ -326,10 +326,23 @@ def dwarf_game_layout(elf, tool, syms, output, controls=False):
     required = {"rail_ticks": "u16", "boss_z": "i16", "mode": "havoc::game::Mode",
                 "boss_started": "bool", "boss_defeated": "bool", "score": "u32",
                 "shield": "u8", "lives": "u8", "bombs": "u8", "respawn_ticks": "u8",
-                "menu_ticks": "u16"}
+                "menu_ticks": "u16", "boss_left": "u8", "boss_right": "u8", "boss_core": "u8"}
     if "Transition" in modes:
         required.update(transition_ticks="u16", ticks="u16")
     sizes = {"u8": 1, "i8": 1, "u16": 2, "u32": 4, "i16": 2, "bool": 1, "havoc::game::Mode": 1}
+    if "stage_id" in fields:
+        required["stage_id"] = "u8"
+        descriptions["StageInfo"] = subprocess.check_output(
+            [str(tool), "--name=StageInfo", "--show-children", str(elf)], text=True)
+        (output / "dwarf-stageinfo.txt").write_text(descriptions["StageInfo"])
+        inner = dwarf_members(descriptions["StageInfo"], "StageInfo")
+        for member in ("enemy_profile", "music_cue", "bridge_profile", "boss_kind",
+                       "theme", "next_theme", "previous_theme", "reserved"):
+            if inner.get(member, {}).get("type") != "u8":
+                raise RuntimeError(f"Unsupported StageInfo::{member} DWARF type")
+            key = f"stage_info.{member}"
+            fields[key] = dict(inner[member], offset=fields["stage_info"]["offset"] + inner[member]["offset"])
+            required[key] = "u8"
     sample = None
     if controls:
         required.update(ticks="u16", roll_ticks="u8", roll_cooldown="u8", roll_direction="i8")
@@ -384,23 +397,45 @@ def fletcher16(data):
     return a | (b << 8)
 
 
-def active_section(rail_ticks, mode):
+def active_section(rail_ticks, mode, stage_id=None):
     """A bridge holds the incoming boundary while rendering its outgoing area."""
-    return min((rail_ticks - (mode == 6)) // 3750, 3)
+    return stage_id if stage_id is not None else min(max(rail_ticks - (mode == 6), 0) // 3750, 3)
 
 
 def package_model_layout(package):
     """Keep baseline benchmarks compatible while checking the current format."""
     version = int.from_bytes(package[4:8], "little")
-    formats = {0x534d0300: (b"SMA2", 80), 0x534d0400: (b"SMA3", 88)}
-    if package[:4] != b"SM64" or version not in formats or package[16] != 4 or package[17] not in (2, 4):
-        raise RuntimeError("Expected a four-roster version 3.0 or 4.0 package")
+    formats = {0x534d0300: (b"SMA2", 80), 0x534d0400: (b"SMA3", 88), 0x534d0500: (b"SMA3", 88)}
+    campaign = version == 0x534d0500
+    count = 12 if campaign else 4
+    if package[:4] != b"SM64" or version not in formats or package[16] != count or package[17] not in (2, 4):
+        raise RuntimeError("Expected a supported version 3.0, 4.0 or twelve-stage 5.0 package")
     magic, descriptors = formats[version]
     return {"version": version, "magic": magic, "descriptors": descriptors,
-            "medal": version == 0x534d0400}
+            "medal": version >= 0x534d0400, "campaign": campaign, "count": count,
+            "segment_magic": b"SMS2" if campaign else b"SMS1"}
 
 
-def enemy_bank_check(mon, syms, package, section):
+def stage_fixture(values, layout, package):
+    """Keep monitor-authored clock, stage identity and bank metadata together."""
+    values = dict(values)
+    if "stage_id" not in layout["fields"] or not ("rail_ticks" in values or "stage_id" in values):
+        return values
+    count = package[16]
+    stage = values.get("stage_id")
+    if stage is None:
+        stage = min(max(values["rail_ticks"] - (values.get("mode") == layout["modes"].get("Transition")), 0) // 3750, count - 1)
+    if not 0 <= stage < count:
+        raise RuntimeError(f"Invalid monitor stage fixture {stage}")
+    values["stage_id"] = stage
+    start = int.from_bytes(package[12:16], "little") + stage * 2048 + 8
+    for member, value in zip(("enemy_profile", "music_cue", "bridge_profile", "boss_kind",
+                              "theme", "next_theme", "previous_theme", "reserved"), package[start:start+8]):
+        values[f"stage_info.{member}"] = value
+    return values
+
+
+def enemy_bank_check(mon, syms, package, section, game=None):
     """Prove the selected executable and every resident model byte agree."""
     required = ("ENEMY_CODE_PROFILE", "ENEMY_MODEL_PROFILE", "MODEL_STREAM_BYTES")
     if any(name not in syms for name in required):
@@ -414,7 +449,14 @@ def enemy_bank_check(mon, syms, package, section):
     code = mon.integer(syms["ENEMY_CODE_PROFILE"], 1)
     models = mon.integer(syms["ENEMY_MODEL_PROFILE"], 1)
     mode = mon.integer(syms["GAME_MODE"], 1)
-    expected_code = 4 if format["medal"] and mode in (3, 4) else section
+    if format["campaign"]:
+        start = int.from_bytes(package[12:16], "little") + section * 2048
+        enemy, boss = package[start+8], package[start+11]
+        active_attract = mode == 5 and (game is None or (
+            game["menu_ticks"] < 749 and not game["menu_activity"] and not game["controls.bits"]))
+        expected_code = (3 + boss if boss else enemy) if mode == 1 or active_attract else 7
+    else:
+        expected_code = 4 if format["medal"] and mode in (3, 4) else section
     mon.command("bank cpu")
     if code != expected_code or models != section or cache != reference:
         raise RuntimeError(f"Stale enemy bank: expected code {expected_code}, model {section}; code {code}, models {models}, bytes match {cache == reference}")
@@ -432,10 +474,10 @@ def streaming_checks(mon, syms, failures, elf, reu, dwarf_tool, output, result):
     data = reu.read_bytes()
     format = package_model_layout(data)
     segment_base = int.from_bytes(data[12:16], "little")
-    references = [data[segment_base+i*2048:segment_base+i*2048+512] for i in range(4)]
-    checksums = [int.from_bytes(data[20+i*2:22+i*2], "little") for i in range(4)]
+    references = [data[segment_base+i*2048:segment_base+i*2048+512] for i in range(format["count"])]
+    checksums = [int.from_bytes(data[20+i*2:22+i*2], "little") for i in range(format["count"])]
     for index, reference in enumerate(references):
-        if len(reference) != 512 or reference[:4] != b"SMS1" or reference[4] != index or fletcher16(reference) != checksums[index]:
+        if len(reference) != 512 or reference[:4] != format["segment_magic"] or reference[4] != index or fletcher16(reference) != checksums[index]:
             raise RuntimeError(f"Invalid packaged segment {index} reference")
     for name in ("__stack_bottom", "__irq_stack_bottom"):
         if name not in syms:
@@ -447,6 +489,7 @@ def streaming_checks(mon, syms, failures, elf, reu, dwarf_tool, output, result):
         return int.from_bytes(raw, "little", signed=field["type"].startswith("i"))
 
     def seed(scenario, values):
+        values = stage_fixture(values, layout, data)
         mon.command("bank ram")
         patches = []
         for name, value in values.items():
@@ -468,12 +511,12 @@ def streaming_checks(mon, syms, failures, elf, reu, dwarf_tool, output, result):
         for slot, address in enumerate((0x9500, 0x9700)):
             cache = mon.read(address, 512)
             index = cache[4]
-            if cache[:4] != b"SMS1" or index >= 4:
-                raise RuntimeError(f"Invalid SMS1 header in cache slot {slot}")
+            if cache[:4] != format["segment_magic"] or index >= format["count"]:
+                raise RuntimeError(f"Invalid encounter header in cache slot {slot}")
             checksum = fletcher16(cache)
             if checksum != checksums[index] or cache != references[index]:
                 raise RuntimeError(f"Cache slot {slot}, segment {index} differs from the packaged 512-byte prefix")
-            views.append({"slot": slot, "address": address, "section": index, "magic": "SMS1",
+            views.append({"slot": slot, "address": address, "section": index, "magic": format["segment_magic"].decode(),
                           "checksum": checksum, "expected_checksum": checksums[index],
                           "all_512_bytes_match": True, "sha256": hashlib.sha256(cache).hexdigest()})
             if snapshot_name:
@@ -491,12 +534,14 @@ def streaming_checks(mon, syms, failures, elf, reu, dwarf_tool, output, result):
                     "player.x", "player.y", "player.z"]
         if "Transition" in layout["modes"]:
             observed += ["ticks", "transition_ticks"]
+        if "stage_id" in layout["fields"]:
+            observed += ["stage_id"]
         frame["game"] = {name: field_read(name) for name in observed}
         frame["stack_guards"] = {name: mon.integer(syms[name], 1) for name in ("__stack_bottom", "__irq_stack_bottom")}
         mon.command("bank cpu")
         frame["cache_views"] = caches()
         frame["enemy_bank"] = enemy_bank_check(mon, syms, data,
-            active_section(frame["game"]["rail_ticks"], frame["game_mode"]))
+            active_section(frame["game"]["rail_ticks"], frame["game_mode"], frame["game"].get("stage_id")))
         scenario.setdefault("frames", []).append(frame)
         if frame["frame_dropped"] or frame["input_overflows"] or any(value != 0xa5 for value in frame["stack_guards"].values()):
             raise RuntimeError("Seeded scenario dropped input/geometry or changed a stack guard")
@@ -504,7 +549,7 @@ def streaming_checks(mon, syms, failures, elf, reu, dwarf_tool, output, result):
             raise RuntimeError("Seeded scenario did not retain physical input or consistent exported game mode")
         if frame.get("music_underruns", 0):
             raise RuntimeError("Music underrun during section streaming")
-        if "render_segment" in frame and frame["render_segment"] != active_section(frame["game"]["rail_ticks"], frame["game_mode"]):
+        if "render_segment" in frame and frame["render_segment"] != active_section(frame["game"]["rail_ticks"], frame["game_mode"], frame["game"].get("stage_id")):
             raise RuntimeError("Geometry rendered a stale segment after a section transition or restart")
         if frame["game_mode"] == layout["modes"].get("Transition"):
             progress = frame["game"]["transition_ticks"]
@@ -520,7 +565,7 @@ def streaming_checks(mon, syms, failures, elf, reu, dwarf_tool, output, result):
     def wait_ready(scenario, mode, section, desired):
         for _ in range(160 if "Transition" in layout["modes"] else 4):
             frame = observe(scenario)
-            current = active_section(frame["game"]["rail_ticks"], frame["game_mode"])
+            current = active_section(frame["game"]["rail_ticks"], frame["game_mode"], frame["game"].get("stage_id"))
             indices = {view["section"] for view in frame["cache_views"]}
             if frame["game_mode"] == mode and current == section and indices == {section, desired}:
                 return frame
@@ -548,12 +593,20 @@ def streaming_checks(mon, syms, failures, elf, reu, dwarf_tool, output, result):
     mon.command("log on")
     mon.command("jpdb 1 $1f")
     result["initial_cache_views"] = caches("streaming-initial")
-    for section, label in ((1, "canyon"), (2, "base"), (3, "carrier-approach")):
+    labels = ("lowlands", "crystal-cave", "iron-canyon", "canyon-gate", "ashen-wastes",
+              "foundry-belt", "fortress-run", "citadel-core", "storm-front", "meteor-reach",
+              "carrier-coast", "carrier-assault") if format["campaign"] else ("lowlands", "canyon", "base", "carrier-approach")
+    for section in range(1, format["count"]):
+        label = labels[section]
+        following = (section + 1) % format["count"]
         scenario = {"name": f"section-{section}-boundary", "expected_section": section,
-                    "expected_prefetch": (section+1)&3}
+                    "expected_prefetch": following}
         result["scenarios"].append(scenario)
-        seed(scenario, {"rail_ticks": section*3750-1})
-        wait_ready(scenario, layout["modes"]["Playing"], section, (section+1)&3)
+        outgoing_boss = format["campaign"] and section in (4, 8)
+        seed(scenario, {"rail_ticks": section*3750-1, "mode": layout["modes"]["Playing"],
+                        "boss_started": int(outgoing_boss), "boss_defeated": int(outgoing_boss),
+                        "shield": 61, "lives": 2, "bombs": 0, "score": 1234})
+        wait_ready(scenario, layout["modes"]["Playing"], section, following)
         if "Transition" in layout["modes"]:
             bridge = [frame for frame in scenario["frames"] if frame["game_mode"] == layout["modes"]["Transition"]]
             if not bridge:
@@ -563,6 +616,11 @@ def streaming_checks(mon, syms, failures, elf, reu, dwarf_tool, output, result):
             # exactly 400 plus the resumed local combat ticks.
             epoch = (bridge[0]["game"]["ticks"] - bridge[0]["game"]["transition_ticks"]) & 0xffff
             initial_resources = {name: bridge[0]["game"][name] for name in ("shield", "lives", "bombs", "score")}
+            expected_resources = {"shield": 100 if outgoing_boss else 61,
+                                  "lives": 3 if outgoing_boss else 2,
+                                  "bombs": 2 if outgoing_boss else 0, "score": 1234}
+            if initial_resources != expected_resources:
+                raise RuntimeError(f"Stage crossing resource policy failed: {initial_resources}")
             for frame in bridge:
                 game = frame["game"]
                 if game["rail_ticks"] != section*3750 or ((game["ticks"]-epoch) & 0xffff) != game["transition_ticks"]:
@@ -601,21 +659,25 @@ def streaming_checks(mon, syms, failures, elf, reu, dwarf_tool, output, result):
             raise RuntimeError(f"No model-bank DMA observed for section {section}")
         finish_capture(scenario, label)
 
-    scenario = {"name": "visible-carrier", "note": "Monitor advances to boss approach and places the carrier at its normal settled depth."}
-    result["scenarios"].append(scenario)
-    seed(scenario, {"rail_ticks": 11400, "boss_z": 680})
-    frame = wait_ready(scenario, layout["modes"]["Playing"], 3, 0)
-    if not frame["game"]["boss_started"] or frame["game"]["boss_z"] != 680:
-        raise RuntimeError("Seeded carrier encounter did not activate at its settled depth")
-    finish_capture(scenario, "carrier")
+    final_stage = format["count"] - 1
+    for section, label in (((3, "gorge-warden"), (7, "citadel-heart"), (11, "carrier")) if format["campaign"] else ((3, "carrier"),)):
+        scenario = {"name": f"visible-{label}", "note": "Monitor advances to the boss entry and places it at the normal settled depth."}
+        result["scenarios"].append(scenario)
+        seed(scenario, {"rail_ticks": section*3750 + (1000 if format["campaign"] else 150),
+                        "mode": layout["modes"]["Playing"], "boss_z": 680,
+                        "boss_started": 0, "boss_defeated": 0, "boss_left": 20, "boss_right": 20, "boss_core": 60})
+        frame = wait_ready(scenario, layout["modes"]["Playing"], section, (section+1) % format["count"])
+        if not frame["game"]["boss_started"] or frame["game"]["boss_z"] != 680:
+            raise RuntimeError(f"Seeded {label} encounter did not activate at its settled depth")
+        finish_capture(scenario, label)
 
-    for section in range(4):
+    for section in range(format["count"]):
         scenario = {"name": f"checkpoint-{section}-respawn", "expected_section": section,
                     "note": "Seed the final respawn tick; normal simulation restores the section checkpoint."}
         result["scenarios"].append(scenario)
         seed(scenario, {"rail_ticks": section*3750+625, "mode": layout["modes"]["Respawning"],
                         "respawn_ticks": 1, "shield": 0, "lives": 2, "score": 1234})
-        frame = wait_ready(scenario, layout["modes"]["Playing"], section, (section+1)&3)
+        frame = wait_ready(scenario, layout["modes"]["Playing"], section, (section+1) % format["count"])
         if any(frame["game"][field] != value for field, value in {"shield": 100, "lives": 2, "score": 1234}.items()):
             raise RuntimeError("Checkpoint respawn failed to restore health and preserve lives/score")
         finish_capture(scenario, f"checkpoint-{section}")
@@ -627,7 +689,7 @@ def streaming_checks(mon, syms, failures, elf, reu, dwarf_tool, output, result):
         mon.command("jpdb 1 $1f")
         observe(scenario)
         observe(scenario)
-        seed(scenario, {"rail_ticks": 14999, "mode": layout["modes"]["Playing"],
+        seed(scenario, {"rail_ticks": format["count"]*3750-1, "mode": layout["modes"]["Playing"],
                         "boss_started": 1, "boss_defeated": 1,
                         "score": 24000, "shield": 76, "lives": 2, "bombs": 1})
         mon.command("jpdb 1 $0f")
@@ -711,13 +773,13 @@ def streaming_checks(mon, syms, failures, elf, reu, dwarf_tool, output, result):
         # Two complete frames drain the previous held-fire sample and its edges.
         observe(scenario)
         observe(scenario)
-        values = {"rail_ticks": 11400, "mode": layout["modes"][mode_name]}
+        values = {"rail_ticks": final_stage*3750+1000, "mode": layout["modes"][mode_name]}
         if mode_name == "Victory" and format["medal"]:
             values["menu_ticks"] = 400
         if mode_name == "GameOver":
             values.update(shield=0, lives=0)
         seed(scenario, values)
-        frame = wait_ready(scenario, layout["modes"][mode_name], 3, 0)
+        frame = wait_ready(scenario, layout["modes"][mode_name], final_stage, 0)
         if frame["joystick_port2"] != 31:
             raise RuntimeError("Results fixture did not observe a released physical joystick")
         scenario["results_capture"] = capture(mon, syms, output, f"results-{mode_name.lower()}")
@@ -744,16 +806,20 @@ def attract_checks(mon, syms, failures, elf, reu, dwarf_tool, output, result):
     game_size = syms["__game_state_end"] - layout["address"]
     observed = ("mode", "ticks", "rail_ticks", "menu_ticks", "menu_activity", "score",
                 "shield", "lives", "bombs", "boss_started", "boss_defeated", "controls.bits")
+    if "stage_id" in fields:
+        observed += ("stage_id",) + tuple(name for name in fields if name.startswith("stage_info."))
     result.update(passed=False, monitor_assisted=True, excluded_from_timing=True, layout=layout,
                   scope="One natural 15-second title, four 15-second maps, and another 15-second title, verified by counting native 20-ms Game::tick calls. Monitor writes establish a clean timer baseline and per-map dismissal fixtures; all dismiss/relaunch input uses joystick port 2.",
                   scenarios=[])
     data = reu.read_bytes()
+    format = package_model_layout(data)
+    tour = (0, 1, 6, 10) if format["campaign"] else (0, 1, 2, 3)
     segment_base = int.from_bytes(data[12:16], "little")
-    references = [data[segment_base+i*2048:segment_base+i*2048+512] for i in range(4)]
-    if any(len(part) != 512 or part[:4] != b"SMS1" or part[4] != i
+    references = [data[segment_base+i*2048:segment_base+i*2048+512] for i in range(format["count"])]
+    if any(len(part) != 512 or part[:4] != format["segment_magic"] or part[4] != i
            or fletcher16(part) != int.from_bytes(data[20+i*2:22+i*2], "little")
            for i, part in enumerate(references)):
-        raise RuntimeError("Attract checks require four valid packaged segment references")
+        raise RuntimeError("Attract checks require valid packaged encounter references")
 
     def reset_checkpoints():
         mon.command("delete")
@@ -800,6 +866,7 @@ def attract_checks(mon, syms, failures, elf, reu, dwarf_tool, output, result):
 
     def seed(scenario, values):
         previous = read_game()
+        values = stage_fixture(values, layout, data)
         mon.command("bank ram")
         for name, value in values.items():
             field = fields[name]
@@ -823,7 +890,7 @@ def attract_checks(mon, syms, failures, elf, reu, dwarf_tool, output, result):
         frame["cache_sections"] = []
         for address in (0x9500, 0x9700):
             cache = mon.read(address, 512)
-            if cache[4] >= 4 or cache != references[cache[4]]:
+            if cache[4] >= format["count"] or cache != references[cache[4]]:
                 raise RuntimeError("Attract section cache differs from packaged bytes")
             frame["cache_sections"].append(cache[4])
         mon.command("bank cpu")
@@ -834,8 +901,8 @@ def attract_checks(mon, syms, failures, elf, reu, dwarf_tool, output, result):
                 or any(value != 0xa5 for value in frame["stack_guards"].values())
                 or frame["test_input"] != 255):
             raise RuntimeError("Attract check changed a stack guard, dropped input/geometry, or bypassed physical input")
-        section = min(frame["game"]["rail_ticks"] // 3750, 3)
-        frame["enemy_bank"] = enemy_bank_check(mon, syms, data, section)
+        section = active_section(frame["game"]["rail_ticks"], frame["game_mode"], frame["game"].get("stage_id"))
+        frame["enemy_bank"] = enemy_bank_check(mon, syms, data, section, frame["game"])
         if (frame["game_mode"] != frame["game"]["mode"]
                 or frame.get("render_segment") != section
                 or section not in frame["cache_sections"]):
@@ -871,7 +938,8 @@ def attract_checks(mon, syms, failures, elf, reu, dwarf_tool, output, result):
     finish(setup)
 
     cycle = {"name": "natural-750-tick-tour-and-repeat", "captures": {},
-             "expected_order": ["Title", "Lowlands", "Canyon", "Base", "Carrier", "Title", "Lowlands"]}
+             "expected_order": (["Title", "Lowland Approach", "Crystal Cave", "Fortress Run", "Carrier Coast", "Title", "Lowland Approach"]
+                                if format["campaign"] else ["Title", "Lowlands", "Canyon", "Base", "Carrier", "Title", "Lowlands"])}
     result["scenarios"].append(cycle)
     mon.command(f"trace exec {tick_address:04x} if @cpu:${syms['PROF_PHASE']:04x} == $05")
     tracing = True
@@ -882,7 +950,7 @@ def attract_checks(mon, syms, failures, elf, reu, dwarf_tool, output, result):
         phase, remainder = divmod(elapsed, 750)
         if phase > 6:
             raise RuntimeError("Attract check skipped more than one complete presentation interval")
-        section = phase - 1 if 1 <= phase <= 4 else 0
+        section = tour[phase - 1] if 1 <= phase <= 4 else 0
         expected_mode = modes["Title"] if phase in (0, 5) else modes["Attract"]
         expected_rail = 0 if expected_mode == modes["Title"] else section * 3750 + remainder
         game = frame["game"]
@@ -902,7 +970,7 @@ def attract_checks(mon, syms, failures, elf, reu, dwarf_tool, output, result):
             break
     else:
         raise RuntimeError("Natural attract tour did not repeat within 1000 rendered frames")
-    if any(str(section) not in cycle["captures"] for section in range(4)):
+    if any(str(section) not in cycle["captures"] for section in tour):
         raise RuntimeError("Natural attract tour did not capture every map")
     finish(cycle)
     tracing = False
@@ -910,8 +978,8 @@ def attract_checks(mon, syms, failures, elf, reu, dwarf_tool, output, result):
 
     # Cover every direction and FIRE, including FIRE on the carrier map, while
     # keeping scene setup explicit and all activation/release edges physical.
-    for section, bits, label in ((0, 1, "up"), (1, 2, "down"), (2, 4, "left"),
-                                 (3, 8, "right"), (0, 16, "fire"), (3, 16, "fire")):
+    for section, bits, label in ((tour[0], 1, "up"), (tour[1], 2, "down"), (tour[2], 4, "left"),
+                                 (tour[3], 8, "right"), (tour[0], 16, "fire"), (tour[3], 16, "fire")):
         scenario = {"name": f"section-{section}-{label}-dismiss-and-relaunch"}
         result["scenarios"].append(scenario)
         mon.command("jpdb 1 $1f")
@@ -966,8 +1034,11 @@ def control_checks(mon, syms, failures, elf, dwarf_tool, output, result):
         frame = counters(mon, syms)
         mon.command("bank ram")
         frame["game"] = {}
-        for name in ("mode", "ticks", "rail_ticks", "player.x", "player.y", "player.z",
-                     "controls.bits", "roll_ticks", "roll_cooldown", "roll_direction"):
+        observed = ("mode", "ticks", "rail_ticks", "player.x", "player.y", "player.z",
+                    "controls.bits", "roll_ticks", "roll_cooldown", "roll_direction")
+        if "stage_id" in layout["fields"]:
+            observed += ("stage_id",)
+        for name in observed:
             field = layout["fields"][name]
             raw = mon.read(layout["address"] + field["offset"], field["size"])
             frame["game"][name] = int.from_bytes(raw, "little", signed=field["type"].startswith("i"))
@@ -979,7 +1050,7 @@ def control_checks(mon, syms, failures, elf, dwarf_tool, output, result):
             raise RuntimeError("Control check dropped input/geometry or changed a stack guard")
         if frame["test_input"] != 255 or frame["game"]["mode"] != layout["modes"]["Playing"]:
             raise RuntimeError("Control check lost physical-input mode or active gameplay")
-        if "render_segment" in frame and frame["render_segment"] != active_section(frame["game"]["rail_ticks"], frame["game_mode"]):
+        if "render_segment" in frame and frame["render_segment"] != active_section(frame["game"]["rail_ticks"], frame["game_mode"], frame["game"].get("stage_id")):
             raise RuntimeError("Control check rendered a stale segment")
         return frame
 
@@ -1576,18 +1647,23 @@ def music_checks(mon, syms, failures, elf, reu, dwarf_tool, output, result, sid_
         raise RuntimeError("Music fixtures require the DWARF Game::menu_ticks field")
     fields["menu_ticks"]["size"] = 2
     data = reu.read_bytes()
-    header = data[0x60000:0x60080]
-    if header[:4] != b"SMU2" or header[4] != sid_count or header[6] != 7:
-        raise RuntimeError("Music checks require a matching seven-cue SMU2 bank")
+    score_offset = 0x100000
+    header = data[score_offset:score_offset + 128]
+    if header[:4] != b"SMU2" or header[4] != sid_count or header[6] != 13:
+        raise RuntimeError("Music checks require a matching thirteen-cue SMU2 bank")
     page_size = int.from_bytes(header[12:14], "little")
-    names = ("title", "lowlands", "canyon", "fortress", "carrier", "victory", "defeat")
+    names = ("title", "lowlands", "canyon", "fortress", "carrier", "victory", "defeat",
+             "crystal-current", "ashes-and-steel", "tempest-drive",
+             "gorge-warden", "citadel-heart", "carrier-overdrive")
+    stages = {1: 0, 2: 2, 3: 6, 4: 10, 7: 1, 8: 4, 9: 8, 10: 3, 11: 7, 12: 11}
     chips = ("left_d400", "right_d420", "socket1_d440", "socket2_d460")[:sid_count]
     bus_hz = 985248 if video == "pal" else 1022727
     result.update(passed=False, monitor_assisted=True, excluded_from_timing=True,
-                  scope="All seven cues play one complete native loop plus a page while rendering continues. DWARF-derived game fixtures hold each area/results mode; lowlands uses physical held FIRE for both effects voices.",
+                  scope="All thirteen cues play one complete native loop plus a page while rendering continues. DWARF-derived respawn/results fixtures hold each cue; lowlands uses physical held FIRE during play for both effects voices. Later four-SID cues cross 64 KiB score offsets.",
                   sid_count=sid_count, scenarios=[], layout=layout)
 
     def patch(values):
+        values = stage_fixture(values, layout, data)
         mon.command("bank ram")
         for name, value in values.items():
             field = fields[name]
@@ -1631,13 +1707,16 @@ def music_checks(mon, syms, failures, elf, reu, dwarf_tool, output, result, sid_
         loop_ticks = pages * 16 * row_ticks
         if cue == 0:
             fixture = {"mode": modes["Title"], "rail_ticks": 0, "menu_ticks": 0}
-        elif cue < 5:
-            fixture = {"mode": modes["Playing"] if cue == 1 else modes["Attract"],
-                       "rail_ticks": (cue-1)*3750+100, "menu_ticks": 0, "shield": 100, "lives": 3,
-                       "player.x": 0}
-        else:
+        elif cue in (5, 6):
             fixture = {"mode": modes["Victory"] if cue == 5 else modes["GameOver"],
-                       "rail_ticks": 11400, "menu_ticks": 400 if cue == 5 else 0}
+                       "stage_id": 11, "rail_ticks": 45000, "menu_ticks": 400 if cue == 5 else 0,
+                       "boss_started": 1, "boss_defeated": 1}
+        else:
+            stage = stages[cue]
+            fixture = {"mode": modes["Playing"] if cue == 1 else modes["Respawning"],
+                       "stage_id": stage, "rail_ticks": stage*3750 + (1100 if cue >= 10 else 100),
+                       "menu_ticks": 0, "shield": 100, "lives": 3, "respawn_ticks": 255,
+                       "boss_started": int(cue >= 10), "boss_defeated": 0, "player.x": 0}
         scenario = {"name": name, "cue": cue, "pages": pages, "row_ticks": row_ticks,
                     "loop_ticks": loop_ticks, "loop_seconds": loop_ticks/50,
                     "fixture": fixture, "page_transitions": [], "observed_frames": 0}
@@ -1709,7 +1788,7 @@ def music_checks(mon, syms, failures, elf, reu, dwarf_tool, output, result, sid_
         for lane, (sid, voice) in enumerate(music_voices):
             # Only demand a gate where the composition actually has attacks.
             # Intentional rests and staggered entrances remain legitimate.
-            attacked = any(data[0x60000+offset+p*page_size+12+5*len(music_voices)+row*len(music_voices)+lane] > 1
+            attacked = any(data[score_offset+offset+p*page_size+12+5*len(music_voices)+row*len(music_voices)+lane] > 1
                            for p in range(pages) for row in range(16))
             if attacked and not scenario["sid"][chips[sid]]["voices"][voice]["gate_on"]:
                 raise RuntimeError(f"{name} never sounded composed music lane {lane}")
@@ -1747,7 +1826,7 @@ def main():
     parser.add_argument("--attract-checks", action="store_true",
                         help="after timing, count a natural title/map tour and verify physical-input dismissal and fresh-FIRE relaunch")
     parser.add_argument("--music-checks", action="store_true",
-                        help="after timing, play all seven full native cue loops with page, clock, effects and underrun checks")
+                        help="after timing, play all thirteen full native cue loops with page, clock, effects and underrun checks")
     parser.add_argument("--llvm-dwarfdump", type=Path,
                         help="DWARF reader for optional streaming/control/weapon checks; defaults beside --llvm-nm")
     parser.add_argument("--out-dir", type=Path)
@@ -1873,7 +1952,7 @@ def main():
             raise RuntimeError("Physical joystick port 2 was not sampled as held fire")
         if any(frame["frame_dropped"] or frame["input_overflows"] for frame in frames):
             raise RuntimeError("Geometry commands or input samples were dropped")
-        if any("render_segment" in frame and frame["render_segment"] != active_section(frame["game_distance"] // 8, frame["game_mode"])
+        if any("render_segment" in frame and frame["render_segment"] != active_section(frame["game_distance"] // 8, frame["game_mode"], frame.get("game_stage"))
                for frame in [report["title"]] + frames):
             raise RuntimeError("Rendered segment does not match the current game distance")
         # This companion's monitor I/O peek does not implement $D031 and

@@ -9,7 +9,8 @@ pub const PAGE_SIZE: usize = if cfg!(feature = "four-sid") { 224 } else { 96 };
 pub const INSTRUMENT_OFFSET: usize = 12;
 pub const EVENT_OFFSET: usize = INSTRUMENT_OFFSET + MUSIC_VOICES * 5;
 pub const BANK_HEADER_SIZE: usize = 128;
-pub const CUE_COUNT: usize = 7;
+pub const BANK_CAPACITY: u32 = 0x20000;
+pub const CUE_COUNT: usize = 13;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ScoreError {
@@ -98,7 +99,10 @@ pub fn cue_info(header: &[u8], cue: u8) -> Result<CueInfo, ScoreError> {
         .checked_add(info.pages as u32 * PAGE_SIZE as u32)
         .ok_or(ScoreError::Bounds)?;
     let length = u32_at(header, 8);
-    if info.pages == 0 || info.offset < BANK_HEADER_SIZE as u32 || end > length || length > 0x10000
+    if info.pages == 0
+        || info.offset < BANK_HEADER_SIZE as u32
+        || end > length
+        || length > BANK_CAPACITY
     {
         return Err(ScoreError::Bounds);
     }

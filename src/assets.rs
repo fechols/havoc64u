@@ -7,21 +7,26 @@ pub const SEGMENT_SIZE: usize = 2048;
 /// Only this prefix of a packaged segment is needed during gameplay.
 pub const SEGMENT_CACHE_SIZE: usize = 512;
 pub const MAX_SEGMENT_SPAWNS: u8 = 62;
-pub const SEGMENT_COUNT: u8 = 4;
+pub const SEGMENT_COUNT: u8 = 12;
 pub const SEGMENT_DISTANCE: u32 = 30_000;
 pub const REU_SIZE: u32 = 0x1000000;
 pub const COMMON_OFFSET: u32 = 0x1000;
 pub const SEGMENTS_OFFSET: u32 = 0x2000;
-pub const MUSIC_OFFSET: u32 = 0x060000;
+pub const MUSIC_OFFSET: u32 = 0x100000;
+pub const MUSIC_CAPACITY: u32 = crate::music::BANK_CAPACITY;
+pub const PACKAGE_HEADER_SIZE: usize = 64;
+pub const PACKAGE_CHECKSUM_OFFSET: usize = PACKAGE_HEADER_SIZE - 2;
+pub const SEGMENT_CHECKSUM_OFFSET: usize = 20;
 pub const MODEL_DIRECTORY_OFFSET: u32 = 0x40;
-pub const MODEL_DIRECTORY_SIZE: usize = 32;
+pub const MODEL_DIRECTORY_SIZE: usize = 64;
+pub const MODEL_DIRECTORY_CHECKSUM_OFFSET: usize = MODEL_DIRECTORY_SIZE - 2;
 pub const MODEL_BANKS_OFFSET: u32 = 0x0b0000;
 pub const MODEL_COUNT: u8 = 9;
 pub const ENEMY_SPECS_OFFSET: usize = 16 + MODEL_COUNT as usize * 8;
 pub const ENEMY_SPEC_SIZE: usize = 8;
 pub const MODEL_DATA_OFFSET: usize = ENEMY_SPECS_OFFSET + 3 * ENEMY_SPEC_SIZE;
-// Version 4 adds the victory medal to each checked section model bank.
-pub const PACKAGE_ID: u32 = 0x534D0400;
+// Version 5 adds twelve stage identities and explicit checked stage profiles.
+pub const PACKAGE_ID: u32 = 0x534D0500;
 pub const PLAYER: u8 = 0;
 pub const FIGHTER: u8 = 1;
 pub const DIVER: u8 = 2;
@@ -68,7 +73,7 @@ pub fn checksum(data: &[u8]) -> u16 {
     (b << 8) | a
 }
 pub fn validate_header(data: &[u8]) -> Result<(), AssetError> {
-    if data.len() < 32 {
+    if data.len() < PACKAGE_HEADER_SIZE {
         return Err(AssetError::Size);
     }
     if &data[..4] != b"SM64" {
@@ -81,10 +86,13 @@ pub fn validate_header(data: &[u8]) -> Result<(), AssetError> {
         || u32_at(data, 12) != SEGMENTS_OFFSET
         || data[16] != SEGMENT_COUNT
         || data[17] != crate::music::SID_COUNT as u8
+        || data[SEGMENT_CHECKSUM_OFFSET + SEGMENT_COUNT as usize * 2..PACKAGE_CHECKSUM_OFFSET]
+            .iter()
+            .any(|&byte| byte != 0)
     {
         return Err(AssetError::Bounds);
     }
-    if checksum(&data[..30]) != u16_at(data, 30) {
+    if checksum(&data[..PACKAGE_CHECKSUM_OFFSET]) != u16_at(data, PACKAGE_CHECKSUM_OFFSET) {
         return Err(AssetError::Checksum);
     }
     Ok(())
@@ -96,20 +104,24 @@ pub fn validate_model_directory(data: &[u8]) -> Result<(), AssetError> {
     if data.len() != MODEL_DIRECTORY_SIZE {
         return Err(AssetError::Size);
     }
-    if &data[..4] != b"MDL1" {
+    if &data[..4] != b"MDL2" {
         return Err(AssetError::Magic);
     }
-    if data[5] != 1 {
+    if data[5] != 2 {
         return Err(AssetError::Version);
     }
     if data[4] != SEGMENT_COUNT
         || u16_at(data, 6) as usize != MODEL_SIZE
         || u32_at(data, 8) != MODEL_BANKS_OFFSET
-        || data[20..30].iter().any(|&byte| byte != 0)
+        || data[12 + SEGMENT_COUNT as usize * 2..MODEL_DIRECTORY_CHECKSUM_OFFSET]
+            .iter()
+            .any(|&byte| byte != 0)
     {
         return Err(AssetError::Bounds);
     }
-    if checksum(&data[..30]) != u16_at(data, 30) {
+    if checksum(&data[..MODEL_DIRECTORY_CHECKSUM_OFFSET])
+        != u16_at(data, MODEL_DIRECTORY_CHECKSUM_OFFSET)
+    {
         return Err(AssetError::Checksum);
     }
     Ok(())
@@ -150,7 +162,7 @@ impl<'a> AssetBank<'a> {
         if data[4] != MODEL_COUNT {
             return Err(AssetError::Version);
         }
-        if data[5] >= SEGMENT_COUNT || data[6] != if data[5] == 3 { 2 } else { 3 } {
+        if data[5] >= SEGMENT_COUNT || data[7] > 3 || data[6] != if data[7] != 0 { 2 } else { 3 } {
             return Err(AssetError::Bounds);
         }
         let bank = Self { data };
@@ -332,6 +344,82 @@ pub struct Spawn {
     pub y: i16,
     pub flags: u8,
 }
+/// Active stage identity copied from the checked encounter header. The full
+/// campaign authoring table belongs to the host, never the resident C64 image.
+#[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]
+#[repr(C)]
+pub struct StageInfo {
+    pub enemy_profile: u8,
+    pub music_cue: u8,
+    pub bridge_profile: u8,
+    pub boss_kind: u8,
+    pub theme: u8,
+    pub next_theme: u8,
+    pub previous_theme: u8,
+    pub reserved: u8,
+}
+impl StageInfo {
+    pub const FIRST: Self = Self {
+        enemy_profile: 0,
+        music_cue: 1,
+        bridge_profile: 0,
+        boss_kind: 0,
+        theme: 0,
+        next_theme: 4,
+        previous_theme: 0,
+        reserved: 0,
+    };
+    #[inline(always)]
+    pub fn simulation_profile(self) -> u8 {
+        if self.boss_kind == 0 {
+            self.enemy_profile
+        } else {
+            3 + self.boss_kind
+        }
+    }
+}
+/// Host authoring/preview metadata, absent from native production binaries.
+#[cfg(any(test, feature = "host-tools"))]
+pub const STAGE_INFOS: [StageInfo; SEGMENT_COUNT as usize] = {
+    const fn info(
+        enemy_profile: u8,
+        music_cue: u8,
+        bridge_profile: u8,
+        boss_kind: u8,
+        theme: u8,
+        next_theme: u8,
+        previous_theme: u8,
+    ) -> StageInfo {
+        StageInfo {
+            enemy_profile,
+            music_cue,
+            bridge_profile,
+            boss_kind,
+            theme,
+            next_theme,
+            previous_theme,
+            reserved: 0,
+        }
+    }
+    [
+        StageInfo::FIRST,
+        info(0, 7, 0, 0, 4, 1, 0),
+        info(1, 2, 1, 0, 1, 1, 4),
+        info(1, 2, 1, 1, 1, 5, 1),
+        info(0, 8, 2, 0, 5, 6, 1),
+        info(2, 8, 1, 0, 6, 2, 5),
+        info(2, 3, 1, 0, 2, 7, 6),
+        info(2, 3, 2, 2, 7, 8, 2),
+        info(3, 9, 2, 0, 8, 9, 7),
+        info(3, 9, 2, 0, 9, 3, 8),
+        info(3, 4, 2, 0, 3, 3, 9),
+        info(3, 4, 2, 3, 3, 3, 3),
+    ]
+};
+#[cfg(any(test, feature = "host-tools"))]
+pub fn preview_stage_info(stage: u8) -> StageInfo {
+    STAGE_INFOS[stage.min(SEGMENT_COUNT - 1) as usize]
+}
 pub struct Segment<'a> {
     data: &'a [u8],
 }
@@ -342,14 +430,22 @@ impl<'a> Segment<'a> {
         if data.len() != SEGMENT_SIZE && data.len() != SEGMENT_CACHE_SIZE {
             return Err(AssetError::Size);
         }
-        if &data[..4] != b"SMS1" {
+        if &data[..4] != b"SMS2" {
             return Err(AssetError::Magic);
         }
-        if data[4] >= 4
+        if data[4] >= SEGMENT_COUNT
             || data[5] > 3
             || data[6] > 15
             || data[7] > MAX_SEGMENT_SPAWNS
             || data[7] as usize > (data.len() - 16) / 8
+            || data[8] > 3
+            || data[9] >= crate::music::CUE_COUNT as u8
+            || data[10] > 2
+            || data[11] > 3
+            || data[12] > 9
+            || data[13] > 9
+            || data[14] > 9
+            || data[15] != 0
         {
             return Err(AssetError::Bounds);
         }
@@ -361,7 +457,7 @@ impl<'a> Segment<'a> {
             if distance < prev
                 || distance as u32 >= SEGMENT_DISTANCE
                 || !matches!(kind, 1 | 2 | 3 | 5 | 6 | 7)
-                || (data[4] == 3 && kind == TURRET)
+                || (data[11] != 0 && kind == TURRET)
             {
                 return Err(AssetError::Bounds);
             }
@@ -391,6 +487,19 @@ impl<'a> Segment<'a> {
     pub fn ground_color(&self) -> u8 {
         self.data[6]
     }
+    #[inline(always)]
+    pub fn stage_info(&self) -> StageInfo {
+        StageInfo {
+            enemy_profile: self.data[8],
+            music_cue: self.data[9],
+            bridge_profile: self.data[10],
+            boss_kind: self.data[11],
+            theme: self.data[12],
+            next_theme: self.data[13],
+            previous_theme: self.data[14],
+            reserved: self.data[15],
+        }
+    }
     #[inline(never)]
     #[cfg_attr(target_arch = "mos", link_section = ".phase.sim")]
     pub fn spawn_count(&self) -> u8 {
@@ -403,12 +512,27 @@ impl<'a> Segment<'a> {
             return Spawn::default();
         }
         let p = 16 + i as usize * 8;
-        Spawn {
-            distance: u16_at(self.data, p),
-            kind: self.data[p + 2],
-            flags: self.data[p + 3],
-            x: u16_at(self.data, p + 4) as i16,
-            y: u16_at(self.data, p + 6) as i16,
+        // Validation bounds every complete eight-byte record, including the
+        // final record of a 512-byte cache. The guard above proves this index.
+        // Decode in place so native code need not spill the partially built
+        // Spawn around three general slice-reading calls.
+        unsafe {
+            Spawn {
+                distance: u16::from_le_bytes([
+                    *self.data.get_unchecked(p),
+                    *self.data.get_unchecked(p + 1),
+                ]),
+                kind: *self.data.get_unchecked(p + 2),
+                flags: *self.data.get_unchecked(p + 3),
+                x: i16::from_le_bytes([
+                    *self.data.get_unchecked(p + 4),
+                    *self.data.get_unchecked(p + 5),
+                ]),
+                y: i16::from_le_bytes([
+                    *self.data.get_unchecked(p + 6),
+                    *self.data.get_unchecked(p + 7),
+                ]),
+            }
         }
     }
 }

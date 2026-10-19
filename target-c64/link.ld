@@ -1,4 +1,4 @@
-/* C64 Ultimate PRG with selected REU code overlays and four SIM tails. The PRG
+/* C64 Ultimate PRG with selected REU code overlays and eight SIM tails. The PRG
  * initializes resident code, startup checks and high constants in one LOAD.
  * Overlay load addresses are REU package offsets, not C64 RAM addresses.
  */
@@ -14,6 +14,7 @@ MEMORY {
     ram (rwx) : ORIGIN = 0x0801, LENGTH = 0x27FF
     phase (rwx) : ORIGIN = 0x3000, LENGTH = 0x4200
     startup_checks (rx) : ORIGIN = 0x8C00, LENGTH = 0x0500
+    sim_aux (rx) : ORIGIN = 0x8C00, LENGTH = 0x0500
     constants (r) : ORIGIN = 0x7800, LENGTH = 0x0800
     tables (r) : ORIGIN = 0x9900, LENGTH = 0x0700
     /* Empty regions materialize zero-filled holes in the contiguous PRG. */
@@ -53,27 +54,39 @@ SECTIONS {
     } >phase
     /* Each composed SIM image has the same prefix and one opaque ABI entry.
      * Keep the bodies invisible to the caller's LTO optimization. */
-    enemy_step = __phase_sim_base_end;
+    encounter_step = __phase_sim_base_end;
     terminal_step = __phase_sim_base_end;
     .phase.terminal terminal_step : AT(0xD0000 + SIZEOF(.phase.sim)) {
         KEEP(*(.phase.terminal.entry))
         *(.phase.terminal .phase.terminal.*)
     } >phase
-    .phase.enemy.lowlands enemy_step : AT(0x20000 + SIZEOF(.phase.sim)) {
+    .phase.enemy.lowlands encounter_step : AT(0x20000 + SIZEOF(.phase.sim)) {
         KEEP(*(.phase.enemy.lowlands.entry))
         *(.phase.enemy.lowlands .phase.enemy.lowlands.*)
     } >phase
-    .phase.enemy.canyon enemy_step : AT(0x80000 + SIZEOF(.phase.sim)) {
+    .phase.enemy.canyon encounter_step : AT(0x80000 + SIZEOF(.phase.sim)) {
         KEEP(*(.phase.enemy.canyon.entry))
         *(.phase.enemy.canyon .phase.enemy.canyon.*)
     } >phase
-    .phase.enemy.fortress enemy_step : AT(0x90000 + SIZEOF(.phase.sim)) {
+    .phase.enemy.fortress encounter_step : AT(0x90000 + SIZEOF(.phase.sim)) {
         KEEP(*(.phase.enemy.fortress.entry))
         *(.phase.enemy.fortress .phase.enemy.fortress.*)
     } >phase
-    .phase.enemy.carrier enemy_step : AT(0xA0000 + SIZEOF(.phase.sim)) {
+    .phase.enemy.carrier encounter_step : AT(0xA0000 + SIZEOF(.phase.sim)) {
         KEEP(*(.phase.enemy.carrier.entry))
         *(.phase.enemy.carrier .phase.enemy.carrier.*)
+    } >phase
+    .phase.enemy.warden encounter_step : AT(0x120000 + SIZEOF(.phase.sim)) {
+        KEEP(*(.phase.enemy.warden.entry))
+        *(.phase.enemy.warden .phase.enemy.warden.*)
+    } >phase
+    .phase.enemy.citadel encounter_step : AT(0x130000 + SIZEOF(.phase.sim)) {
+        KEEP(*(.phase.enemy.citadel.entry))
+        *(.phase.enemy.citadel .phase.enemy.citadel.*)
+    } >phase
+    .phase.enemy.flagship encounter_step : AT(0x140000 + SIZEOF(.phase.sim)) {
+        KEEP(*(.phase.enemy.flagship.entry))
+        *(.phase.enemy.flagship .phase.enemy.flagship.*)
     } >phase
     .phase.geometry 0x3000 : AT(0x30000) {
         __phase_geometry_start = .;
@@ -98,25 +111,71 @@ SECTIONS {
         *(.phase.audio .phase.audio.*)
         __phase_audio_end = .;
     } >phase
-    /* $060000 remains the soundtrack; scenery has its own REU page. */
+    /* Scenery has its own REU pages; the score bank begins at $100000. */
     .phase.scenery 0x3000 : AT(0x70000) {
         __phase_scenery_start = .;
         *(.phase.scenery .phase.scenery.data)
         __phase_scenery_base_end = .;
-        /* Only Transition reaches wildlife. Ordinary frames omit this tail. */
-        *(.phase.scenery.wildlife .phase.scenery.wildlife.*)
-        __phase_scenery_end = .;
     } >phase
+    scenic_decoration = __phase_scenery_base_end;
+    .phase.scenery.wildlife scenic_decoration : AT(0x070000 + SIZEOF(.phase.scenery)) {
+        KEEP(*(.phase.scenery.wildlife.entry))
+        *(.phase.scenery.wildlife .phase.scenery.wildlife.*)
+    } >phase
+    .phase.scenery.transport scenic_decoration : AT(0x150000 + SIZEOF(.phase.scenery)) {
+        KEEP(*(.phase.scenery.transport.entry))
+        *(.phase.scenery.transport .phase.scenery.transport.*)
+    } >phase
+    .phase.scenery.meteors scenic_decoration : AT(0x160000 + SIZEOF(.phase.scenery)) {
+        KEEP(*(.phase.scenery.meteors.entry))
+        *(.phase.scenery.meteors .phase.scenery.meteors.*)
+    } >phase
+    /* Shared SIM helpers reuse the retired startup / renderer workspace.
+     * load_sim restores them before every SIM entry. No IRQ references. */
+    .phase.sim_aux 0x8C00 : AT(0x170000) {
+        __phase_sim_aux_start = .;
+        *(.phase.sim_aux .phase.sim_aux.*)
+        __phase_sim_aux_end = .;
+    } >sim_aux
     /* Called exactly once from main, before BOOT loads common assets over
      * this range. Never reachable from an interrupt or a later overlay. */
     .startup_checks : {
         __startup_checks_start = .;
         *(.startup_checks .startup_checks.*)
+        __code_sizes = .;
+        SHORT(__phase_boot_size)
+        SHORT(__phase_sim_size)
+        SHORT(__phase_geometry_size)
+        SHORT(__phase_pixels_size)
+        SHORT(__phase_audio_size)
+        SHORT(__phase_scenery_size)
+        SHORT(__phase_sim_size)
+        SHORT(__phase_sim_size)
+        SHORT(__phase_sim_size)
+        SHORT(__phase_victory_size)
+        SHORT(__phase_sim_size)
+        SHORT(__phase_sim_size)
+        SHORT(__phase_sim_size)
+        SHORT(__phase_sim_size)
+        SHORT(__phase_scenery_size)
+        SHORT(__phase_scenery_size)
+        SHORT(__phase_sim_aux_size)
         __startup_checks_end = .;
     } >startup_checks
 
     INCLUDE text.ld
     .tables : {
+        /* Runtime loads only the active SIM tail. Startup validates the full
+         * padded package image, including every byte omitted at runtime. */
+        __sim_load_sizes = .;
+        SHORT(SIZEOF(.phase.sim) + SIZEOF(.phase.enemy.lowlands))
+        SHORT(SIZEOF(.phase.sim) + SIZEOF(.phase.enemy.canyon))
+        SHORT(SIZEOF(.phase.sim) + SIZEOF(.phase.enemy.fortress))
+        SHORT(SIZEOF(.phase.sim) + SIZEOF(.phase.enemy.carrier))
+        SHORT(SIZEOF(.phase.sim) + SIZEOF(.phase.enemy.warden))
+        SHORT(SIZEOF(.phase.sim) + SIZEOF(.phase.enemy.citadel))
+        SHORT(SIZEOF(.phase.sim) + SIZEOF(.phase.enemy.flagship))
+        SHORT(SIZEOF(.phase.sim) + SIZEOF(.phase.terminal))
         *(.tables .tables.*)
         *(.rodata.*RECIPROCAL* .rodata.*COLOR_DISTANCE* .rodata.*SIN*)
     } >tables
@@ -168,7 +227,8 @@ __resident_end = MAX(LOADADDR(.data) + SIZEOF(.data), ADDR(.text) + SIZEOF(.text
 __phase_run = 0x3000;
 __phase_boot_size = SIZEOF(.phase.boot);
 __phase_sim_base_size = SIZEOF(.phase.sim);
-__phase_enemy_size = MAX(SIZEOF(.phase.terminal), MAX(MAX(SIZEOF(.phase.enemy.lowlands), SIZEOF(.phase.enemy.canyon)), MAX(SIZEOF(.phase.enemy.fortress), SIZEOF(.phase.enemy.carrier))));
+__phase_sim_aux_size = SIZEOF(.phase.sim_aux);
+__phase_enemy_size = MAX(MAX(MAX(MAX(MAX(MAX(MAX(SIZEOF(.phase.terminal), SIZEOF(.phase.enemy.lowlands)), SIZEOF(.phase.enemy.canyon)), SIZEOF(.phase.enemy.fortress)), SIZEOF(.phase.enemy.carrier)), SIZEOF(.phase.enemy.warden)), SIZEOF(.phase.enemy.citadel)), SIZEOF(.phase.enemy.flagship));
 __phase_sim_size = __phase_sim_base_size + __phase_enemy_size;
 __phase_sim_end = __phase_sim_start + __phase_sim_size;
 __phase_geometry_size = SIZEOF(.phase.geometry);
@@ -176,7 +236,8 @@ __phase_geometry_base_size = __phase_geometry_base_end - __phase_geometry_start;
 __phase_victory_size = __phase_geometry_base_size + SIZEOF(.phase.victory);
 __phase_pixels_size = SIZEOF(.phase.pixels);
 __phase_audio_size = SIZEOF(.phase.audio);
-__phase_scenery_size = SIZEOF(.phase.scenery);
+__phase_scenery_size = SIZEOF(.phase.scenery) + MAX(SIZEOF(.phase.scenery.wildlife), MAX(SIZEOF(.phase.scenery.transport), SIZEOF(.phase.scenery.meteors)));
+__phase_scenery_end = __phase_scenery_start + __phase_scenery_size;
 __phase_scenery_base_size = __phase_scenery_base_end - __phase_scenery_start;
 /* SCENERY stages 96 camera-space records in the command array's tail.
  * GEOMETRY copies each record out before projection reuses consumed bytes. */
@@ -217,7 +278,8 @@ ASSERT(SIZEOF(.rodata) + SIZEOF(.benchmark_resident) <= 0x0800, "benchmark check
 ASSERT(SIZEOF(.tables) <= 0x0700, "resident tables exceed $9900-$9FFF")
 ASSERT(SIZEOF(.phase.boot) <= 0x4200, "BOOT overlay exceeds $3000-$71FF")
 ASSERT(__phase_sim_size <= 0x4200, "composed SIM overlay exceeds $3000-$71FF")
-ASSERT(enemy_lowlands == enemy_step && enemy_canyon == enemy_step && enemy_fortress == enemy_step && enemy_carrier == enemy_step, "enemy ABI entries must start every SIM tail")
+ASSERT(__phase_sim_aux_size > 0 && __phase_sim_aux_size <= 0x0500, "SIM helpers exceed retired startup / renderer workspace")
+ASSERT(encounter_lowlands == encounter_step && encounter_canyon == encounter_step && encounter_fortress == encounter_step && encounter_carrier == encounter_step && encounter_warden == encounter_step && encounter_citadel == encounter_step && encounter_flagship == encounter_step, "encounter ABI entries must start every SIM tail")
 ASSERT(SIZEOF(.phase.enemy.lowlands) > 0 && SIZEOF(.phase.enemy.canyon) > 0 && SIZEOF(.phase.enemy.fortress) > 0 && SIZEOF(.phase.enemy.carrier) > 0, "all four enemy tails are required")
 ASSERT(SIZEOF(.phase.geometry) <= 0x4200, "GEOMETRY overlay exceeds $3000-$71FF")
 ASSERT(__phase_victory_size <= 0x4200, "victory GEOMETRY overlay exceeds $3000-$71FF")

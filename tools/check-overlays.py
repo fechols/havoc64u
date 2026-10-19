@@ -1,4 +1,4 @@
-"""Audit phase overlays and four alternative tails of a common SIM prefix.
+"""Audit phase overlays and composed SIM, SCENERY and GEOMETRY tails.
 
 Unlike a disassembly's numeric call addresses, ELF relocation symbols retain
 the destination section even when all six phases execute at $3000. This is a
@@ -173,8 +173,12 @@ ENTRIES = {
     ".phase.scenery": "havoc_c64::prepare_scenery",
 }
 ENEMY_ENTRIES = {
-    f".phase.enemy.{level}": f"enemy_{level}"
-    for level in ("lowlands", "canyon", "fortress", "carrier")
+    f".phase.enemy.{level}": f"encounter_{level}"
+    for level in ("lowlands", "canyon", "fortress", "carrier", "warden", "citadel", "flagship")
+}
+SCENERY_ENTRIES = {
+    f".phase.scenery.{profile}": f"scenic_{profile}"
+    for profile in ("wildlife", "transport", "meteors")
 }
 ALTERNATE_ENTRIES = {
     ".phase.terminal": "game_terminal",
@@ -182,6 +186,8 @@ ALTERNATE_ENTRIES = {
 }
 STARTUP_SECTION = ".startup_checks"
 STARTUP_ENTRY = "havoc_c64::check_code_package"
+SIM_AUX_SECTION = ".phase.sim_aux"
+SIM_SECTIONS = {".phase.sim", ".phase.terminal", *ENEMY_ENTRIES}
 
 
 def audit_startup(elf):
@@ -227,23 +233,42 @@ def audit(path):
     elf = Elf(path)
     audit_startup(elf)
     phases = {section.name: section for section in elf.sections if section.name.startswith(".phase.")}
-    require(set(phases) == set(ENTRIES) | set(ENEMY_ENTRIES) | set(ALTERNATE_ENTRIES),
-            "ELF must contain six common phases, four enemy tails, terminal SIM and victory GEOMETRY")
+    require(set(phases) == set(ENTRIES) | set(ENEMY_ENTRIES) | set(SCENERY_ENTRIES) | set(ALTERNATE_ENTRIES) | {SIM_AUX_SECTION},
+            "ELF must contain six common phases, seven encounter tails, three scenery tails, terminal SIM, victory GEOMETRY and SIM helpers")
     entry_functions = {}
-    for name, expected in {**ENTRIES, **ENEMY_ENTRIES, **ALTERNATE_ENTRIES}.items():
+    for name, expected in {**ENTRIES, **ENEMY_ENTRIES, **SCENERY_ENTRIES, **ALTERNATE_ENTRIES}.items():
         matches = [function for function in elf.functions[phases[name].index] if function.name == expected]
         require(len(matches) == 1, f"missing or ambiguous overlay entry {expected}")
         entry_functions[name] = matches[0]
     symbols = {symbol.name: symbol for symbol in elf.symbols if symbol.name}
-    require("enemy_step" in symbols and "__phase_sim_base_end" in symbols, "missing opaque enemy ABI boundary")
-    enemy_address = symbols["enemy_step"].address
+    auxiliary = phases[SIM_AUX_SECTION]
+    require(auxiliary.address == 0x8C00 and 0 < auxiliary.size <= 0x500,
+            "SIM helpers must fit the retired $8C00-$90FF workspace")
+    require(all(name in symbols for name in ("__phase_sim_aux_start", "__phase_sim_aux_end", "__phase_sim_aux_size")),
+            "missing SIM helper ownership boundaries")
+    require(symbols["__phase_sim_aux_start"].address == auxiliary.address
+            and symbols["__phase_sim_aux_end"].address == auxiliary.address + auxiliary.size
+            and symbols["__phase_sim_aux_size"].address == auxiliary.size,
+            "SIM helper section disagrees with its ownership boundaries")
+    require("encounter_step" in symbols and "__phase_sim_base_end" in symbols, "missing opaque encounter ABI boundary")
+    enemy_address = symbols["encounter_step"].address
     require(enemy_address == symbols["__phase_sim_base_end"].address
             == phases[".phase.sim"].address + phases[".phase.sim"].size,
-            "enemy ABI must begin immediately after the shared SIM prefix")
+            "encounter ABI must begin immediately after the shared SIM prefix")
     for name in ENEMY_ENTRIES:
         require(phases[name].address == enemy_address == entry_functions[name].address,
                 f"{name} must begin with its ABI entry")
         require(enemy_address + phases[name].size <= 0x7200, f"{name} exceeds the execution window")
+    require("scenic_decoration" in symbols and "__phase_scenery_base_end" in symbols,
+            "missing opaque scenery ABI boundary")
+    scenery_address = symbols["scenic_decoration"].address
+    require(scenery_address == symbols["__phase_scenery_base_end"].address
+            == phases[".phase.scenery"].address + phases[".phase.scenery"].size,
+            "scenery ABI must begin immediately after the shared SCENERY prefix")
+    for name in SCENERY_ENTRIES:
+        require(phases[name].address == scenery_address == entry_functions[name].address,
+                f"{name} must begin with its ABI entry")
+        require(scenery_address + phases[name].size <= 0x7200, f"{name} exceeds the execution window")
     for name, alias, boundary in (
         (".phase.terminal", "terminal_step", "__phase_sim_base_end"),
         (".phase.victory", "victory_geometry", "__phase_geometry_base_end"),
@@ -255,7 +280,6 @@ def audit(path):
                 f"{name} exceeds the execution window")
     partial_phases = []
     for name, caller_name, tail_name in (
-        ("scenery", "havoc::scenery::emit", "havoc::scenery::wildlife"),
         ("geometry", "havoc::game::Game::render_foreground", "havoc::game::Game::render_combat"),
     ):
         phase = phases[f".phase.{name}"]
@@ -287,8 +311,34 @@ def audit(path):
     errors = []
     partial_tail_calls = Counter()
     enemy_calls = 0
+    scenery_calls = 0
     alternate_calls = Counter()
     relocations = list(elf.relocations())
+    loader_refs = []
+    loader_calls = defaultdict(list)
+    for source, address, kind, symbol, addend in relocations:
+        if not source.executable:
+            continue
+        caller = elf.function_at(source.index, address)
+        if symbol.name == "__phase_sim_aux_size":
+            require(caller is not None and caller.name == "havoc_c64::load_sim"
+                    and source.name in (".text", ".benchmark_resident") and kind in (4, 5) and addend == 0,
+                    "SIM helper size may only be used by its resident reload function")
+            loader_refs.append(kind)
+        if caller is None or caller.name != "havoc_c64::load_sim" or symbol.section >= len(elf.sections):
+            continue
+        target = elf.sections[symbol.section]
+        callee = elf.function_at(target.index, symbol.address + addend) if target.executable else None
+        if callee and callee.name in ("havoc_c64::dma", "havoc_c64::load_phase"):
+            instruction = address - source.address - 1
+            require(kind == 3 and 0 <= instruction < source.size
+                    and elf.contents(source)[instruction] == 0x20,
+                    "SIM helper loader must use direct DMA and phase-load calls")
+            loader_calls[callee.name].append(address)
+    require(sorted(loader_refs) == [4, 5]
+            and len(loader_calls["havoc_c64::dma"]) == len(loader_calls["havoc_c64::load_phase"]) == 1
+            and loader_calls["havoc_c64::dma"][0] < loader_calls["havoc_c64::load_phase"][0],
+            "SIM helper loader must reload its complete helpers before loading each SIM profile")
     # LLVM places switch tables in resident .rodata and drops their local
     # symbol names. Recover their contiguous relocation runs, then require
     # every table targeting an overlay to be read by that same function.
@@ -330,17 +380,30 @@ def audit(path):
             graph[caller].add(entry_functions[tail_name])
             alternate_calls[symbol.name] += 1
             continue
-        if symbol.name == "enemy_step":
+        if symbol.name == "encounter_step":
             caller = elf.function_at(source.index, address) if source.executable else None
             instruction = address - source.address - 1
             require(source.name == ".phase.sim" and caller is not None
-                    and caller.name == "havoc::game::Game::update_actors"
+                    and caller.name == "havoc::game::Game::tick"
                     and addend == 0 and kind == 3 and 0 <= instruction < source.size
                     and elf.contents(source)[instruction] == 0x20,
-                    "opaque enemy ABI may only be called directly by SIM actor update")
+                    "opaque encounter ABI may only be called directly by SIM tick")
             for name in ENEMY_ENTRIES:
                 graph[caller].add(entry_functions[name])
             enemy_calls += 1
+            continue
+        if symbol.name == "scenic_decoration":
+            caller = elf.function_at(source.index, address) if source.executable else None
+            instruction = address - source.address - 1
+            require(source.name == ".phase.scenery" and caller is not None
+                    and caller.name == "havoc::scenery::decoration"
+                    and addend == 0 and kind == 3 and 0 <= instruction < source.size
+                    and (elf.contents(source)[instruction] == 0x20
+                         or elf.contents(source)[instruction] == 0x4C and address + 2 == caller.end),
+                    "opaque scenery ABI may only be called directly by SCENERY decoration")
+            for name in SCENERY_ENTRIES:
+                graph[caller].add(entry_functions[name])
+            scenery_calls += 1
             continue
         if symbol.section >= len(elf.sections):
             continue  # Absolute constants such as __phase_boot_size.
@@ -351,8 +414,8 @@ def audit(path):
         for phase, boundary, caller_name, tail in partial_phases:
             if (source.index == phase.index and target.index == phase.index
                     and address < boundary <= destination):
-                # Reviewed guards: scenery calls wildlife only in Transition;
-                # foreground calls combat only outside Transition. main selects
+                # Reviewed guard: foreground calls combat only outside
+                # Transition. main selects
                 # those same full/prefix loads using the unchanged simulation HUD.
                 instruction = address - source.address - 1
                 direct = (kind == 3 and 0 <= instruction < source.size
@@ -375,8 +438,20 @@ def audit(path):
             continue
         origin = caller.name if caller else f"{source.name}+${address - source.address:X}"
         if source.name in phases or source.name == STARTUP_SECTION:
-            if (source.name in ENEMY_ENTRIES or source.name == ".phase.terminal") and target.name == ".phase.sim":
+            if source.name in SIM_SECTIONS and target.name == SIM_AUX_SECTION:
+                # All SIM profiles reload these helpers before executing. The
+                # projection cache and pixel band may overwrite them afterward.
+                local_references[source.name] += 1
+            elif source.name == SIM_AUX_SECTION and target.name == ".phase.sim":
+                require(destination < enemy_address,
+                        "SIM helpers reference an alternative tail without an active-profile guarantee")
+                local_references[source.name] += 1
+            elif (source.name in ENEMY_ENTRIES or source.name == ".phase.terminal") and target.name == ".phase.sim":
                 # Only the active tail and this same immutable prefix coexist.
+                local_references[source.name] += 1
+            elif source.name in SCENERY_ENTRIES and target.name == ".phase.scenery":
+                require(destination < scenery_address,
+                        "scenery tail references outside its common prefix")
                 local_references[source.name] += 1
             elif source.name == ".phase.victory" and target.name == ".phase.geometry":
                 require(destination < symbols["__phase_geometry_base_end"].address,
@@ -390,8 +465,8 @@ def audit(path):
         if not source.executable:
             # Validated as an owned switch table below.
             continue
-        if target.name in ENEMY_ENTRIES or target.name in ALTERNATE_ENTRIES:
-            errors.append(f"unapproved direct enemy-tail reference: {origin} -> {target.name}")
+        if target.name in ENEMY_ENTRIES or target.name in SCENERY_ENTRIES or target.name in ALTERNATE_ENTRIES or target.name == SIM_AUX_SECTION:
+            errors.append(f"unapproved direct overlay-tail reference: {origin} -> {target.name}")
             continue
         expected = startup_entry if target.name == STARTUP_SECTION else entry_functions[target.name]
         # Require the exact JSR instruction and function entry, not merely an
@@ -410,10 +485,11 @@ def audit(path):
             if consumers != {target}:
                 names = sorted(consumer.name if consumer else "unknown/data" for consumer in consumers)
                 errors.append(f"overlay switch table {elf.sections[section].name}:${start:04X}-${end-1:04X} targets {target.name}, consumed by {names}")
-    for name in [".text", *ENTRIES, STARTUP_SECTION]:
+    for name in [".text", *ENTRIES, STARTUP_SECTION, SIM_AUX_SECTION]:
         require(sources[name] > 0, f"no retained relocations for {name}; link with --emit-relocs")
     require(not errors, "unsafe overlay references:\n  " + "\n  ".join(errors))
-    require(enemy_calls == 1, f"expected exactly one opaque SIM enemy call, got {enemy_calls}")
+    require(enemy_calls == 1, f"expected exactly one opaque SIM encounter call, got {enemy_calls}")
+    require(scenery_calls == 1, f"expected exactly one opaque SCENERY decoration call, got {scenery_calls}")
     require(alternate_calls == {"terminal_step": 1, "victory_geometry": 1},
             f"expected one call to each terminal/victory dispatcher, got {dict(alternate_calls)}")
     require(all(partial_tail_calls[phase.name] == 1 for phase, *_ in partial_phases),
@@ -440,7 +516,10 @@ def audit(path):
     for phase, boundary, _, tail in partial_phases:
         print(f"{phase.name} prefix: {boundary-phase.address} bytes; one reviewed mode-dependent call to {tail.name}")
     print("Resident entry calls: " + ", ".join(ENTRIES.values()))
-    print("Enemy ABI: one opaque SIM call; four entries at the shared prefix boundary")
+    print("Encounter ABI: one opaque SIM call; seven entries at the shared prefix boundary")
+    print("Scenery ABI: one opaque SCENERY call; three entries at the shared prefix boundary")
+    print("SIM helpers: $8C00-$90FF, callable only by SIM profiles; no IRQ or other-phase references")
+    print("SIM helper lifetime: one direct resident DMA before every load_sim profile transfer")
     print("Victory ABI: one terminal SIM and one medal GEOMETRY call; matching alternate tails")
     print(f"IRQ relocation graph: {len(reached)} functions, all resident")
     print("Startup: ROMs disabled before BSS; only BSS clear, data copy, main are called")
