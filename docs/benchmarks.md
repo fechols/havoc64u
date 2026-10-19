@@ -5,6 +5,42 @@ VICE build used by `tools/vice-smoke.py`. These are emulator measurements, not
 claims about physical C64 Ultimate frame rates. The package is read-only during
 measurement; its PRG, REU, and ELF hashes are recorded and checked afterward.
 
+## Recorded production validation: 2026-10-18
+
+The visual-refresh production builds pass 264 host tests per SID profile,
+with one existing fixture exporter ignored, plus 129 library and 14 gameplay
+tests without host tools. Both packages pass memory-layout, overlay-reference,
+and baked-asset checks. Final PAL/NTSC smoke checks repeat startup, exact title
+output, physical joystick controls, weapons, and runtime guards after the last
+text and cave-entry refinements. Reports are under
+`target/visual-refresh-validation/final-smoke-{2sid,4sid}-{pal,ntsc}/`;
+the initial visual candidate's full streaming and attract checks are under
+`smoke-{2sid,4sid}-{pal,ntsc}/` in the same directory. Focused visual and timing
+results are documented in [Visual refresh final](#visual-refresh-final-2026-10-18).
+
+Continuous native emulator campaigns also complete all twelve stages and
+three bosses: two-SID PAL in 5,630 rendered frames and four-SID NTSC in 5,808.
+Both finish with three lives and 64 shield. These runs use only physical
+joystick-port-2 input, with no writes to game state or clocks; input package
+hashes remain unchanged. Reports and captures are under
+`target/native-campaign/{final-2sid-pal,final-4sid-ntsc}/`.
+`tools/native-campaign.py` supplies the input-driven campaign scenario through
+the existing smoke-test session and accepts its package, video, and output
+options. This is distinct from the monitor-seeded checkpoint and boss checks,
+and does not establish physical C64 Ultimate performance.
+
+The final production packages pass all thirteen complete cue loops on both
+SID profiles and video standards: 52 checks covering 1,696 authored page
+visits, 356 music-lane checks, concurrent effects, and zero underruns.
+Reports are under `target/music-validation/final-{2sid,4sid}-{pal,ntsc}/`;
+unchanged package hashes are recorded in
+`target/music-validation/final-shipping-summary.json`. Six native emulator
+recordings per profile in `target/music-validation/previews-{2sid,4sid}/`
+have zero clipped samples and score banks identical to those final packages.
+These checks establish emulator playback for the recorded builds; physical
+SID listening and ARMSID mixer balance remain unverified. Generated reports
+and recordings are not committed.
+
 ## Build and compare
 
 Run these commands from the configured WSL SDK environment:

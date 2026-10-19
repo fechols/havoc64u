@@ -115,7 +115,7 @@ The Ultimate Audio mapping at `$DF20–$DFFF` is disabled, and both sampler chan
 
 The score runs at 50 Hz from CIA1 Timer A, independently of frame presentation. PAL and NTSC use different timer periods and SID frequency tables. Thirteen cues retain the existing seven arrangements and add six original 32-bar world/boss compositions. The four core parts are identical in both packages; only the optional six-part orchestration is stripped when baking the two-SID bank. *Lost Wing* preserves its original four instruments and all 64 sounding note tuples, including the spaces between them.
 
-Each score page contains one bar of sixteen sixteenth-note rows. Title, Lowland, and the three new world themes use six ticks per row; Canyon, Fortress, Carrier, and the three bosses use five; Victory uses seven; Defeat uses nine. At the fastest tempo a page lasts 1.6 seconds. The 424 pages and directory occupy 40,832 bytes for two SIDs or 95,104 bytes for four SIDs. The score allocation is `$100000–$11FFFF`, with 32-bit bank-relative offsets supporting pages beyond 64 KiB. Track names and durations are in the [soundtrack table](../README.md#original-soundtrack).
+Each score page contains one bar of sixteen sixteenth-note rows. Title, Lowland, and the three new world themes use six ticks per row; Canyon, Fortress, Carrier, and the three bosses use five; Victory uses seven; Defeat uses nine. At the fastest tempo a page lasts 1.6 seconds. The 424 pages and directory occupy 40,832 bytes for two SIDs or 95,104 bytes for four SIDs. The score allocation is `$100000–$11FFFF`, with 32-bit bank-relative offsets supporting pages beyond 64 KiB. Track names, arrangements, and row timing are defined in [src/soundtrack.rs](../src/soundtrack.rs).
 
 The resident engine holds the active page, SID register shadows, two effects states, and a small event queue. The foreground AUDIO overlay fills a separate next-page buffer and publishes it while interrupts are masked. The buffer is not modified until the player consumes it. The IRQ copies a ready page at the bar boundary and requests its successor; it performs no REU access. If the next page is late, playback waits before the boundary's release tick, preserving held music and continuing effects. `MUSIC_UNDERRUNS` counts each incident. Cue changes request page zero and insert a complete gate-low tick before the new cue starts.
 
@@ -131,9 +131,71 @@ Header and page checksums treat their own two-byte fields as zero. Whole-cue che
 
 ## Build and verification
 
-The target build uses Linux/WSL, the `mos` Rust toolchain, the `mos-c64-none` target, and LLVM-MOS SDK v22.5.0. `scripts/env.sh` exposes the installed compiler and target descriptions. `scripts/build.sh` tests and packages both profiles, producing matching `havoc.prg`, `havoc.reu`, and `havoc.cfg` files in `dist/` and `dist/4sid/`. The four-SID native build uses its own `target-c64/target-4sid` directory. `MOS_CLANG`, `LLVM_MOS`, and `RUST_TARGET_PATH` can point to another compatible installation.
+Host tools require Rust and Cargo. The target build additionally requires Linux/WSL, Python 3, LLVM-MOS SDK **v22.5.0**, and a Rust-MOS toolchain with the `mos-c64-none` target and Rust sources. This workspace was built with `rustc 1.87.0-dev` registered as the `mos` rustup toolchain; `target-c64/rust-toolchain.toml` selects that alias. `scripts/env.sh` defaults to `$HOME/.local/llvm-mos` and `$HOME/.local/rust-mos-targets`. Override `LLVM_MOS`, `MOS_CLANG`, and `RUST_TARGET_PATH` for another compatible installation.
+
+From PowerShell, using the configured Ubuntu-24.04 WSL toolchain:
+
+```powershell
+./scripts/build-windows.ps1
+```
+
+Or from Linux/WSL:
+
+```sh
+bash scripts/build.sh
+```
+
+The complete build tests both profiles, bakes assets, links the C64 programs, audits memory and overlays, and produces matching `havoc.prg`, `havoc.reu`, and `havoc.cfg` files in `dist/` and `dist/4sid/`. The four-SID native build uses its own `target-c64/target-4sid` directory. Generated packages are ignored by Git; cloning the repository does not supply `dist/`.
 
 For a single profile after changing assets, bake with `cargo +stable run --release -- bake dist` or `cargo +stable run --release --features four-sid -- bake dist/4sid`, then run `bash scripts/build-target.sh 2sid` or `bash scripts/build-target.sh 4sid` respectively. The bake step alone does not produce executable overlays. On Windows, `scripts/build-windows.ps1` runs the complete two-profile build through WSL; its optional output directory receives the standard package and a `4sid` subfolder.
+
+Host inspection commands:
+
+```sh
+cargo test --all-targets
+cargo test --all-targets --features four-sid
+cargo run --release -- sizes
+cargo run --release --features four-sid -- sizes
+cargo run --release -- snapshot title 0 target/previews/title
+cargo run --release -- snapshot 2 5000 target/previews/canyon
+cargo run --release -- snapshot attract 35000 target/previews/attract-crystal
+cargo run --release -- snapshot transition 0 4000 target/previews/lowlands-crystal
+python3 tools/previews.py
+```
+
+The host binary is an asset and inspection tool, not a desktop game. Snapshots produce an aspect-correct PPM and the exact 10,000 bitmap/screen/color bytes; the preview converter needs only Python's standard library. `snapshot attract` replays elapsed milliseconds from a fresh title screen, so `35000` shows five seconds into Crystal Cave. `snapshot transition <0..10> <elapsed-ms> [output-prefix]` selects an outgoing stage and a time from `0` to `8000`, rounded down to a 20 ms tick; `8000` shows the incoming checkpoint. Transition snapshots do not replay preceding combat.
+
+Optional native kernel checks use the LLVM-MOS 6502 simulator:
+
+```sh
+source scripts/env.sh
+python3 tools/test-pack-kernel.py
+python3 tools/test-raster-kernel.py
+python3 tools/test-raster-prep.py
+python3 tools/test-preparation-abi.py
+python3 tools/test-sort-kernel.py
+python3 tools/test-memcpy-kernel.py
+python3 tools/test-game-math-kernel.py
+python3 tools/test-glyph-kernel.py
+python3 tools/benchmark-division.py
+```
+
+Emulator checks use the calibrated sibling `doomc64u/target/audit-fast/x64sc-64x` companion and its ROMs; override these with `--vice` and `--roms`. An unmodified companion can map the turbo setting to 48x, invalidating a 64x timing comparison.
+
+```sh
+cargo +stable run --release -- snapshot title 0 target/previews/title
+python3 tools/vice-smoke.py --video pal --title-reference target/previews/title.bin
+python3 tools/vice-smoke.py --video ntsc --title-reference target/previews/title.bin
+python3 tools/vice-smoke.py --video pal --control-checks --weapon-checks --streaming-checks
+python3 tools/vice-smoke.py --video pal --attract-checks
+python3 tools/vice-smoke.py --video pal --music-checks
+python3 tools/vice-smoke.py --video pal --package-dir dist/4sid --music-checks
+python3 tools/test-corrupt-package.py
+python3 tools/test-overlay-audit.py dist/havoc.elf
+python3 tools/test-overlay-audit.py dist/4sid/havoc.elf
+```
+
+The smoke test records package/emulator hashes, exact native title bytes, physical joystick-port-2 input, audio activity, frame progress, and runtime guards under `target/vice`. Control and weapon checks exercise steering, roll dodges, homing missiles, hit flashes, and bomb display-register effects; streaming checks seed stage boundaries, checkpoints, and restart scenarios. Attract checks follow the complete idle tour and exercise dismissal with each input. These monitor-assisted cases are separate from a continuous campaign and physical-machine acceptance. Use distinct `--out-dir` paths when retaining multiple runs.
 
 `target-c64/build.rs` assembles the native hardware and rendering helpers, disables additional LTO zero-page register allocation, selects the custom linker script, and emits a memory map. Six primary phase sections share an execution address; seven encounter tails and the terminal tail share the SIM prefix's end address, while combat and medal drawing share the GEOMETRY prefix's end address. Explicit linker assertions and the project's post-link checks replace the general linker overlap check. ELF symbols and relocations are preserved for emulator debugging, package extraction, and `tools/check-overlays.py`. That checker rejects cross-phase references, permits only named phase entry calls and reviewed opaque dispatches into the enemy, terminal, and rendering tails, validates ownership of compiler switch tables and the lifetime of startup checks, and checks that the IRQ's relocation graph stays resident. Runtime-computed pointers and timing still require execution tests.
 
@@ -161,10 +223,24 @@ The other native kernels preserve host reference behavior: `sort.S` implements s
 
 `tools/music-previews.py` records the native player through VICE's SID audio output. The six new compositions are available as stereo 44.1 kHz WAVs in `target/music-validation/previews-2sid/` and `target/music-validation/previews-4sid/`: *Crystal Current*, *Ashes and Steel*, *Tempest Drive*, *Gorge Warden*, *Citadel Heart*, and *Carrier Overdrive*. Each recording contains one complete loop, 61.44 seconds for the world themes or 51.20 seconds for the boss themes. Both `recordings.json` manifests report zero clipped samples; physical SID listening and mixer balance remain unverified.
 
-Useful host checks are `cargo test --all-targets`, `cargo test --all-targets --features four-sid`, `cargo run -- sizes`, and `cargo run -- snapshot title`. To inspect a bridge, use `cargo run -- snapshot transition 0 4000 target/previews/bridge`; the outgoing stage is `0..10`, and elapsed milliseconds are `0..8000`, including the arrival frame. The soundtrack tests check cue lengths, distinct melodic sections, loop/page articulation, both serialization profiles, and the exact *Lost Wing* transcription. A passing host test or valid linker map does not establish a frame-rate result on the machine. Hardware acceptance must check PAL and NTSC presentation timing, all thirteen cues and page boundaries, simultaneous music and effects, REU transfers during play, stack guards, and full-mission restart/checkpoint behavior. Four-SID acceptance also needs the physical ARMSID pair and its final mixer balance.
+The soundtrack tests check cue lengths, distinct melodic sections, loop/page articulation, both serialization profiles, and the exact *Lost Wing* transcription. A passing host test or valid linker map does not establish a frame-rate result on the machine. Hardware acceptance must check PAL and NTSC presentation timing, all thirteen cues and page boundaries, simultaneous music and effects, REU transfers during play, stack guards, and full-mission restart/checkpoint behavior. Four-SID acceptance also needs the physical ARMSID pair and its final mixer balance.
 
 The bootstrap structure was informed by the neighboring `doomc64u` repository. `secondreality/src/output/cfg.rs` provided a local example of the Ultimate mixer and SID-address configuration keys. H.A.V.O.C. uses its own synthesis player and does not adopt Second Reality's digital-audio modes.
 
+
+## Reproduce the README showcase
+
+Build the four-SID package first, then run the capture and encoding steps from Linux/WSL:
+
+```sh
+python3 tools/capture-showcase.py \
+  --package-dir dist/4sid --video pal --out-dir target/readme-showcase
+python3 tools/encode-showcase.py target/readme-showcase/manifest.json
+```
+
+Capture uses the compiled C64 program in the calibrated emulator and records its SID music and gameplay effects. The showcase presents selected scenes rather than a continuous campaign or a physical-machine recording. Keep the footage at its recorded game speed: duplicated video frames must not be presented as a higher game rendering rate. The four-SID recording represents emulated SID synthesis, not a recording of the physical ARMSIDs or their final hardware mixer balance.
+
+The encoder writes `target/readme-showcase/havoc-showcase.mp4` by default. It requires FFmpeg and FFprobe; use `--ffmpeg <path>` and `--ffprobe <path>` to select their executables. Native Linux and Windows executables are supported, with WSL path conversion for Windows tools. Preserve the capture manifest and source recordings with the generated video so its package, scene selection, timing, and audio can be checked before publishing. Generated capture artifacts stay under `target/`; only the selected README images belong in `docs/media/`.
 
 ## Terrain visibility coverage
 
