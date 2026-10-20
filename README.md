@@ -69,6 +69,8 @@ Leave the title idle for fifteen seconds to watch the automatic scenery previews
 
 ## Current status
 
-The campaign has completed emulator playthroughs, but **physical C64 Ultimate testing is still outstanding**. Rendering is currently slow, around six frames per second in measured emulator opening scenes; performance varies by scene. Music and sound effects continue independently of the picture.
+**The game has been tested on real C64 Ultimate hardware and plays through successfully from start to finish.**
+
+The campaign has also completed emulator playthroughs. Rendering is currently slow, around six frames per second in measured emulator opening scenes; performance varies by scene. Music and sound effects continue independently of the picture.
 
 For sound setup, troubleshooting, or building from source, see the [hardware and build guide](docs/hardware.md). Developers can also read the [performance measurements](docs/benchmarks.md). Found a problem? [Open an issue](https://github.com/fechols/havoc64u/issues) with your hardware, sound profile, and what happened.
