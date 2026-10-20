@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Capture a spoiler-free, four-SID native README showcase in calibrated VICE.
+"""Capture a spoiler-free native README showcase in calibrated VICE.
 
 Run under the configured WSL SDK. Scenes are independently monitor-seeded;
 after preparation only physical port-2 joystick input changes. Native bitmap
@@ -41,6 +41,7 @@ def module(name, filename):
 
 vice = module("showcase_vice", "vice-smoke.py")
 bench = module("showcase_layouts", "bench-native.py")
+campaign = module("showcase_pilot", "native-campaign.py")
 
 # Local positions are simulation ticks, eight world units each. Each stage is
 # 3750 ticks; carrier footage begins during its active encounter, well before
@@ -53,6 +54,13 @@ SCENES = (
     dict(name="storm-front", label="Storm Front", stage=8, local=525, seconds=10),
     dict(name="crossing", label="Meteor crossing", stage=9, local=3650, seconds=8),
     dict(name="carrier-combat", label="Carrier Assault", stage=11, local=1050, seconds=18),
+    dict(name="orbital-ascent", label="Orbital ascent", stage=11, local=3650, seconds=8, crossing=True),
+    dict(name="asteroid-belt", label="Asteroid Belt", stage=12, local=625, seconds=10),
+    dict(name="shattered-moon", label="Shattered Moon", stage=13, local=725, seconds=10),
+    dict(name="ship-graveyard", label="Ship Graveyard", stage=14, local=625, seconds=10),
+    dict(name="orbital-shipyard", label="Orbital Shipyard", stage=15, local=725, seconds=10),
+    dict(name="space-carrier", label="Space Carrier", stage=16, local=2550, seconds=12),
+    dict(name="jump-gate", label="Jump Gate", stage=17, local=2550, seconds=12),
     dict(name="title-outro", label="H.A.V.O.C.", stage=None, local=0, seconds=8),
     dict(name="iron-canyon", label="Iron Canyon", stage=2, local=625, seconds=6, gallery=True),
 )
@@ -143,7 +151,7 @@ class Capture:
         self.game_address = vice.resident_symbol(syms, "GAME")[1]
         self.game_size = layouts.size("Game")
         self.report = dict(schema=1, name=scene["name"], label=scene["label"], passed=False,
-                           video=args.video, sid_count=4, sid_model="8580", bus_hz=self.hz,
+                           video=args.video, sid_count=package[17], sid_model="8580", bus_hz=self.hz,
                            scope="Native emulator; independently seeded scene; physical joystick only after preparation",
                            included_in_video=not scene.get("gallery", False),
                            trim_start_seconds=PREROLL, duration_seconds=args.duration or scene["seconds"],
@@ -161,7 +169,8 @@ class Capture:
                    "-soundoutput", "2", "-soundrate", "44100", "-soundfragsize", "0", "-soundwarpmode", "1",
                    "-jamaction", "5", "-autostartprgmode", "1", "-reu", "-reusize", "16384",
                    "-reuimage", str(self.args.package_dir / "havoc.reu"), "+reuimagerw",
-                   "-sidmodel", "1", "-sidextra", "3", "-sid2address", "0xd420", "-sid3address", "0xd440", "-sid4address", "0xd460",
+                   "-sidmodel", "1", "-sidextra", str(self.package[17] - 1),
+                   "-sid2address", "0xd420", "-sid3address", "0xd440", "-sid4address", "0xd460",
                    "-joydev1", "0", "-joydev2", "0", "-controlport1device", "iosim", "-controlport2device", "iosim",
                    "-remotemonitor", "-remotemonitoraddress", f"127.0.0.1:{port}",
                    "-initbreak", "0x080d", "-moncommands", str(startup), "-autostart", str(self.args.package_dir / "havoc.prg")]
@@ -192,7 +201,7 @@ class Capture:
         self.mon.command("bank ram")
         raw = self.mon.read(self.game_address, self.game_size)
         self.mon.command("bank cpu")
-        return self.layouts.decode("Game", raw)
+        return vice.logical_game_state(self.layouts.decode("Game", raw))
 
     def patch(self, values):
         if "audio_start_cycle" in self.report:
@@ -218,28 +227,18 @@ class Capture:
             self.last_bits = bits
 
     def pilot(self, state, frame):
-        if self.scene["stage"] is None or self.scene["name"] == "crossing" or state["mode"] != 1:
+        if (self.scene["stage"] is None or self.scene["name"] == "crossing"
+                or self.scene.get("crossing") or state["mode"] != 1):
             return 0
-        target_x = target_y = 0
-        if state["boss_started"] and not state["boss_defeated"]:
-            # Show the opening fight without deliberately finishing its core.
-            target_x = -100 if state["boss_left"] else 100
-            target_y = 30
-        else:
-            candidates = [actor for actor in state["actors"] if actor["kind"] and actor["hp"] != 255
-                          and 300 < actor["pos"]["z"] < 2400]
-            if candidates:
-                actor = min(candidates, key=lambda candidate: candidate["pos"]["z"])
-                entry = 0xb0000 + state["stage_id"] * 2048 + 88 + (actor["kind"] - 1) * 8
-                center = int.from_bytes(self.package[entry+1:entry+2], "little", signed=True)
-                target_x, target_y = actor["pos"]["x"], actor["pos"]["y"] + center
+        # Show the opening fight without deliberately finishing its core.
+        (target_x, target_y), avoiding = campaign.pilot_target(state, self.package, finish_boss=False)
         dx, dy = target_x - state["player"]["x"], target_y - state["player"]["y"]
         bits = 16 | (8 if dx > 5 else 4 if dx < -5 else 0) | (1 if dy > 5 else 2 if dy < -5 else 0)
         # Lateral double taps exercise the native dodge; FIRE stays held to
         # avoid both bomb gestures and a synthetic repeated-fire soundtrack.
-        if frame % 12 in (0, 2):
+        if not avoiding and frame % 12 in (0, 2):
             bits &= ~12
-        elif frame % 12 in (1, 3):
+        elif not avoiding and frame % 12 in (1, 3):
             bits = (bits & ~8) | 4
         return bits
 
@@ -257,12 +256,15 @@ class Capture:
         stage, local = self.scene["stage"], self.scene["local"]
         # Fresh boot supplies empty actor/shot pools. Native encounter spawning
         # advances normally from this checkpoint; no actors are fabricated.
-        setup = dict(mode=1, stage_id=stage, rail_ticks=stage*3750+local,
+        setup = dict(mode=1, stage_id=stage, stage_ticks=local,
                      spawn_segment=stage, spawn_cursor=0, menu_ticks=0, ticks=local,
                      boss_started=0, boss_defeated=0, boss_z=1800,
                      boss_left=20, boss_right=20, boss_core=60)
-        if self.scene["name"] == "crossing":
-            setup["rail_ticks"] -= 100  # Leave room for cache/gesture warmup.
+        crossing = self.scene["name"] == "crossing" or self.scene.get("crossing")
+        if crossing:
+            setup["stage_ticks"] -= 100  # Leave room for cache/gesture warmup.
+        if self.scene["name"] == "orbital-ascent":
+            setup.update(boss_started=1, boss_defeated=1, boss_left=0, boss_right=0, boss_core=0)
         self.patch(setup)
         before = self.mon.registers()["bus_cycles"]
         for _ in range(80):
@@ -274,9 +276,9 @@ class Capture:
                 break
         else:
             raise RuntimeError("Native stage/model warmup did not settle")
-        if self.scene["name"] == "crossing":
+        if crossing:
             # The two-second audio preroll leads naturally into the crossing.
-            self.patch(dict(rail_ticks=(stage+1)*3750-100, stage_id=stage))
+            self.patch(dict(stage_ticks=3650, stage_id=stage))
 
     def capture_frame(self, index, state):
         counters = vice.counters(self.mon, self.syms)
@@ -284,7 +286,7 @@ class Capture:
             raise RuntimeError(f"Capture lost native data: {counters}")
         if counters["test_input"] != 255:
             raise RuntimeError("Capture unexpectedly uses synthetic benchmark input")
-        if state["mode"] in (3, 4) or state["boss_defeated"]:
+        if state["mode"] in (3, 4) or (state["boss_defeated"] and self.scene["name"] != "orbital-ascent"):
             raise RuntimeError("Spoiler-free capture reached a result or boss defeat")
         if self.mon.integer(self.syms["BOMB_EFFECT"], 1):
             raise RuntimeError("Bomb raster effect cannot be represented by native bitmap capture")
@@ -319,7 +321,8 @@ class Capture:
         elapsed = (counters["bus_cycles"] - self.report["audio_start_cycle"]) / self.hz
         item = dict(path=path.relative_to(self.output).as_posix(), bus_cycles=counters["bus_cycles"],
                     seconds=elapsed, stage=state["stage_id"], mode=state["mode"],
-                    rail_ticks=state["rail_ticks"], frame_serial=counters["frame_serial"],
+                    stage_ticks=state.get("stage_ticks"), rail_ticks=state["rail_ticks"],
+                    frame_serial=counters["frame_serial"],
                     music_cue=counters["music_cue"], music_page=counters["music_page"],
                     shield=state["shield"], lives=state["lives"], score=state["score"],
                     boss_left=state["boss_left"], boss_right=state["boss_right"], boss_core=state["boss_core"],
@@ -335,7 +338,7 @@ class Capture:
             trace_path = self.output / "sid-gates.log"
             trace_path.unlink(missing_ok=True)
             self.mon.command(f'logname "{trace_path.as_posix()}"')
-            for chip in range(4):
+            for chip in range(self.package[17]):
                 for register in (4, 11, 18):
                     self.mon.command(f"trace store {0xd400 + chip*32 + register:04x} if @cpu:$01 == $35")
             self.mon.command("log on")
@@ -383,8 +386,9 @@ class Capture:
             first_cycle = self.report["audio_start_cycle"] + round(PREROLL * self.hz)
             last_cycle = self.report["audio_start_cycle"] + round(endpoint * self.hz)
             events = [event for event in vice.stores(trace_path) if first_cycle <= event["bus_cycles"] < last_cycle]
-            activity = vice.sid_summary(trace_path.name, events, 4)
-            if any(not activity[name]["gate_on"] for name in ("left_d400", "right_d420", "socket1_d440", "socket2_d460")):
+            activity = vice.sid_summary(trace_path.name, events, self.package[17])
+            chip_names = ("left_d400", "right_d420", "socket1_d440", "socket2_d460")[:self.package[17]]
+            if any(not activity[name]["gate_on"] for name in chip_names):
                 raise RuntimeError("A SID chip had no active voice gates during retained footage")
             self.report["sid_activity"] = activity
             if chosen is None:
@@ -434,8 +438,9 @@ def main():
         if not path.exists():
             raise RuntimeError(f"Required path missing: {path}")
     package = (args.package_dir / "havoc.reu").read_bytes()
-    if len(package) != 16 * 1024 * 1024 or package[16:18] != bytes((12, 4)):
-        raise RuntimeError("README showcase requires the twelve-stage four-SID package")
+    package_layout = vice.package_model_layout(package)
+    if len(package) != 16 * 1024 * 1024 or package_layout["count"] != 18 or package[17] not in (2, 4):
+        raise RuntimeError("README showcase requires an eighteen-stage two- or four-SID package")
     args.out_dir.mkdir(parents=True, exist_ok=True)
     syms = vice.symbols(elf, args.llvm_nm)
     for name in ("BOMB_EFFECT", "MUSIC_UNDERRUNS", "GAME_STAGE", "RENDER_SEGMENT"):
@@ -449,8 +454,8 @@ def main():
     layout = vice.dwarf_game_layout(elf, dwarf, syms, args.out_dir)
     layouts = bench.Layouts(elf, dwarf, args.out_dir)
     hashes = {name: sha256(args.package_dir / name) for name in ("havoc.prg", "havoc.reu", "havoc.elf")}
-    report = dict(schema=1, passed=False, video=args.video, sid_count=4, sid_model="8580", bus_hz=BUS_HZ[args.video],
-                  scope="Selected native-emulator scenes at real emulated pacing; simultaneous four-SID stereo mix",
+    report = dict(schema=1, passed=False, video=args.video, sid_count=package[17], sid_model="8580", bus_hz=BUS_HZ[args.video],
+                  scope="Selected native-emulator scenes at real emulated pacing; simultaneous native SID stereo mix",
                   package=str(args.package_dir), package_sha256=hashes, vice_sha256=sha256(args.vice), scenes=[])
     try:
         for scene in SCENES:

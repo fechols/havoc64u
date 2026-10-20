@@ -25,10 +25,10 @@ def main():
     reu = bytearray(reu_path.read_bytes())
     assert len(reu) == 16*1024*1024
     directory = bytearray(128)
-    directory[:4] = b'OVL6'
+    directory[:4] = b'OVL7'
     allocations = [(0, 0x180, 'directories'), (0x1000, 0x1c00, 'common assets'),
-                   (0x2000, 0x8000, 'encounters'), (0xb0000, 0xb6000, 'models'),
-                   (0x100000, 0x120000, 'music')]
+                   (0x2000, 0xb000, 'encounters'), (0xb0000, 0xb9000, 'models'),
+                   (0x200000, 0x240000, 'music')]
     def put(at, value): directory[at:at+2] = value.to_bytes(2, 'little')
     def extract(name):
         output = elf.parent / f'phase-{name}.bin'
@@ -76,7 +76,10 @@ def main():
     package('victory', victory, 0xC0000, 50, 52)
     scenery_prefix = extract('scenery')
     assert len(scenery_prefix) == symbols['__phase_scenery_base_size']
-    for name, page, at in (('wildlife', 7, 34), ('transport', 0x15, 76), ('meteors', 0x16, 80)):
+    for name, page, at in (('wildlife', 7, 34), ('transport', 0x15, 76), ('meteors', 0x16, 80),
+                           ('ascent', 0x18, 88), ('asteroid', 0x19, 92), ('moon', 0x1a, 96),
+                           ('graveyard', 0x1b, 100), ('shipyard', 0x1c, 104),
+                           ('carrier', 0x1d, 108), ('gate', 0x1e, 112)):
         code = (scenery_prefix + extract(f'scenery.{name}')).ljust(symbols['__phase_scenery_size'], b'\0')
         assert len(code) == symbols['__phase_scenery_size']
         package(f'scenery-{name}', code, page * 0x10000, at, at+2)

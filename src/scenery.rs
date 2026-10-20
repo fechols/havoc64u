@@ -3,6 +3,7 @@
 use crate::assets::{Segment, StageInfo};
 use crate::game::STATIC_SKY;
 use crate::{GeometrySink, Vec3, EXTERIOR_TERRAIN, TWO_SIDED};
+mod space;
 
 /// Native scenery always writes the renderer's bounded staging buffer. Keeping
 /// that type concrete also keeps the opaque tail ABI to two thin references.
@@ -20,6 +21,20 @@ pub(crate) static SKY_COLORS: [u8; 10] = [6, 8, 11, 4, 0, 11, 8, 11, 6, 4];
 #[inline(never)]
 #[cfg_attr(target_arch = "mos", link_section = ".phase.scenery")]
 pub fn sky_color(theme: u8, transition: Option<(u8, u16)>) -> u8 {
+    if theme >= 10 {
+        return 0;
+    }
+    if let Some((next, elapsed)) = transition {
+        if next >= 10 {
+            return if elapsed < 80 {
+                SKY_COLORS[theme as usize]
+            } else if elapsed < 180 {
+                6
+            } else {
+                0
+            };
+        }
+    }
     let from = SKY_COLORS[theme as usize];
     if let Some((next_theme, elapsed)) = transition {
         let to = SKY_COLORS[next_theme as usize];
@@ -80,11 +95,13 @@ fn weight(elapsed: u16) -> i16 {
 }
 
 #[inline(never)]
+#[cfg_attr(target_arch = "mos", link_section = ".phase.scenery")]
 fn blend(a: i16, b: i16, amount: i16) -> i16 {
     a + crate::math::mul_q8(b - a, amount)
 }
 
 #[inline(never)]
+#[cfg_attr(target_arch = "mos", link_section = ".phase.scenery")]
 pub(crate) fn terrain_palette(style: u8) -> u16 {
     TERRAIN_PALETTES[style as usize]
 }
@@ -102,6 +119,7 @@ static GROUND_SHADES: [u8; 10] = [13, 11, 11, 14, 4, 8, 11, 15, 14, 10];
 static PROFILE: [u8; 16] = [0, 1, 3, 2, 1, 0, 2, 4, 3, 1, 0, 1, 2, 4, 2, 1];
 #[cfg_attr(target_arch = "mos", link_section = ".tables.scenery_data")]
 static HEIGHT_BASE: [i16; 10] = [-105, 96, -105, -105, -70, -80, -60, -40, -90, -100];
+#[cfg_attr(target_arch = "mos", link_section = ".phase.scenery.data")]
 static HEIGHT_RISE: [u8; 50] = [
     0, 32, 64, 96, 128, // lowland
     0, 16, 32, 48, 64, // canyon
@@ -139,7 +157,7 @@ fn row_at(row: u16, start: u16, info: &StageInfo, legacy: bool) -> Row {
             from = info.previous_theme;
             to = info.theme;
             amount = weight(tick.saturating_sub(start - 400));
-        } else if start < 11 * 4150 && tick >= start + 3750 {
+        } else if info.next_theme < 10 && tick >= start + 3750 {
             to = info.next_theme;
             amount = weight(tick - start - 3750);
         }
@@ -297,7 +315,7 @@ fn emit_side(
 /// Emit camera-space triangles. Legacy mode preserves title and attract terrain.
 /// Gameplay samples every terrain edge from its absolute world row, including
 /// incoming land ahead of a bridge and the terrain left behind its far end.
-#[inline(never)]
+#[inline(always)]
 #[cfg_attr(target_arch = "mos", link_section = ".phase.scenery")]
 pub fn emit(
     sink: &mut SceneSink<'_>,
@@ -308,16 +326,61 @@ pub fn emit(
     camera_y: i16,
     legacy: bool,
 ) {
+    let context = Decoration {
+        scene_ticks,
+        elapsed: transition.map_or(400, |(_, tick)| tick),
+        camera_y,
+        stage: section,
+        info: segment.stage_info(),
+        ground_color: segment.ground_color(),
+        legacy,
+    };
+    if context.info.theme >= 10 || (transition.is_some() && context.info.bridge_profile == 3) {
+        decoration(sink, &context);
+        return;
+    }
+    land(sink, &context, 0);
+    if transition.is_some() {
+        decoration(sink, &context);
+    }
+}
+
+/// Move the clock by complete terrain periods. Heights repeat every sixteen
+/// rows and alternating floor shades every two, so this preserves old pixels.
+#[inline(never)]
+#[cfg_attr(target_arch = "mos", link_section = ".phase.scenery")]
+fn stage_origin(section: u8, legacy: bool) -> u16 {
+    if section == 0 {
+        0
+    } else {
+        1024 + (section as u16 * if legacy { 678 } else { 54 } & 1023)
+    }
+}
+
+#[inline(never)]
+#[cfg_attr(target_arch = "mos", link_section = ".phase.scenery")]
+fn land(sink: &mut SceneSink<'_>, context: &Decoration, drop: i16) {
+    let Decoration {
+        scene_ticks: local,
+        elapsed,
+        camera_y,
+        stage: section,
+        info,
+        ground_color,
+        legacy,
+    } = *context;
+    let stage_start = stage_origin(section, legacy);
+    let scene_ticks = stage_start + local;
+    let camera_y = camera_y + drop;
+    let transition = elapsed < 400 && info.next_theme < 10;
     let row = scene_ticks >> 6;
     let offset = ((scene_ticks & 63) * 8) as i16;
-    let info = segment.stage_info();
-    let stage_start = section as u16 * 4150;
     let mut first = row_at(row, stage_start, &info, legacy);
     for band in 0..4i16 {
         let world_row = row + band as u16;
         let last = row_at(world_row + 1, stage_start, &info, legacy);
         let color = if legacy {
-            segment.ground_color()
+            ground_color
         } else {
             GROUND_COLORS[first.style as usize]
         };
@@ -353,7 +416,7 @@ pub fn emit(
     }
     for face in 0..14 {
         let (mut points, mut color) = backdrop_face(info.theme, face);
-        if let Some((_, elapsed)) = transition {
+        if transition {
             let (destination, next_color) = backdrop_face(info.next_theme, face);
             let amount = weight(elapsed);
             for corner in 0..3 {
@@ -365,24 +428,17 @@ pub fn emit(
                 color = next_color;
             }
         }
+        if drop != 0 {
+            for point in &mut points {
+                point.y -= drop;
+            }
+        }
         sink.triangle(
             points[0],
             points[1],
             points[2],
             color,
-            TWO_SIDED | if transition.is_none() { STATIC_SKY } else { 0 },
-        );
-    }
-    if let Some((_, elapsed)) = transition {
-        decoration(
-            sink,
-            &Decoration {
-                scene_ticks,
-                elapsed,
-                camera_y,
-                stage: section,
-                info,
-            },
+            TWO_SIDED | if elapsed >= 400 { STATIC_SKY } else { 0 },
         );
     }
 }
@@ -548,6 +604,8 @@ pub struct Decoration {
     camera_y: i16,
     stage: u8,
     info: StageInfo,
+    ground_color: u8,
+    legacy: bool,
 }
 
 #[inline(never)]
@@ -561,10 +619,29 @@ fn decoration(sink: &mut SceneSink<'_>, context: &Decoration) {
         scenic_decoration(sink, context);
     }
     #[cfg(not(target_arch = "mos"))]
-    match context.info.bridge_profile {
-        0 => scenic_wildlife(sink, context),
-        1 => scenic_transport(sink, context),
-        _ => scenic_meteors(sink, context),
+    {
+        if context.info.theme >= 10 {
+            let theme = if context.elapsed >= 200 && context.elapsed < 400 {
+                context.info.next_theme
+            } else {
+                context.info.theme
+            };
+            match theme {
+                10 => space::scenic_asteroid(sink, context),
+                11 => space::scenic_moon(sink, context),
+                12 => space::scenic_graveyard(sink, context),
+                13 => space::scenic_shipyard(sink, context),
+                14 => space::scenic_carrier(sink, context),
+                _ => space::scenic_gate(sink, context),
+            }
+        } else {
+            match context.info.bridge_profile {
+                0 => scenic_wildlife(sink, context),
+                1 => scenic_transport(sink, context),
+                2 => scenic_meteors(sink, context),
+                _ => space::scenic_ascent(sink, context),
+            }
+        }
     }
 }
 
@@ -640,6 +717,7 @@ fn wildlife(sink: &mut SceneSink<'_>, context: &Decoration) {
         camera_y,
         stage,
         info,
+        ..
     } = *context;
     // This crossing is fixed in the world: the camera closes eight units/tick.
     // It enters and leaves beyond the viewport, so no visible actor pops at a cut.
@@ -647,8 +725,8 @@ fn wildlife(sink: &mut SceneSink<'_>, context: &Decoration) {
     let x = -3200 + elapsed as i16 * 16;
     if z > 180 {
         let row = row_at(
-            (scene_ticks + (z as u16 / 8)) >> 6,
-            stage as u16 * 4150,
+            (stage_origin(stage, false) + scene_ticks + (z as u16 / 8)) >> 6,
+            stage_origin(stage, false),
             &info,
             false,
         );
@@ -1031,11 +1109,13 @@ mod tests {
 
     fn context(stage: u8, elapsed: u16, camera_y: i16) -> Decoration {
         Decoration {
-            scene_ticks: BRIDGES[stage as usize] + elapsed,
+            scene_ticks: 3750 + elapsed,
             elapsed,
             camera_y,
             stage,
             info: STAGE_INFOS[stage as usize],
+            ground_color: GROUND_COLORS[STAGE_INFOS[stage as usize].theme as usize],
+            legacy: false,
         }
     }
 
@@ -1049,7 +1129,7 @@ mod tests {
 
     #[test]
     fn sign_selected_sides_match_original_coordinates_across_every_stage_and_seam() {
-        for (stage, info) in STAGE_INFOS.iter().enumerate() {
+        for (stage, info) in STAGE_INFOS[..12].iter().enumerate() {
             let start = stage as u16 * 4150;
             for row in start.saturating_sub(400) / 64..=(start + 4350) / 64 {
                 for legacy in [false, true] {
@@ -1130,7 +1210,7 @@ mod tests {
         emit(
             &mut result,
             &segment,
-            ticks,
+            ticks - section as u16 * 4150,
             section,
             transition,
             camera,
@@ -1467,5 +1547,164 @@ mod tests {
                 assert!(capture.0.iter().all(|face| face.1 < 16));
             }
         }
+    }
+
+    #[test]
+    fn rebased_clocks_preserve_terrestrial_rows_shades_and_scroll() {
+        for section in 0..12u8 {
+            let info = STAGE_INFOS[section as usize];
+            for legacy in [false, true] {
+                let old_start = section as u16 * if legacy { 3750 } else { 4150 };
+                let new_start = stage_origin(section, legacy);
+                for local in 0..4150 {
+                    let old = old_start + local;
+                    let new = new_start + local;
+                    assert_eq!(old & 1023, new & 1023);
+                    assert_eq!(old & 63, new & 63);
+                    for ahead in 0..5 {
+                        assert_eq!(
+                            row_at((old >> 6) + ahead, old_start, &info, legacy),
+                            row_at((new >> 6) + ahead, new_start, &info, legacy),
+                            "stage {section}, tick {local}, legacy {legacy}",
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    fn orbital_capture(section: u8, local: u16, elapsed: Option<u16>, camera: i16) -> Capture {
+        let mut result = Capture::default();
+        let context = Decoration {
+            scene_ticks: local,
+            elapsed: elapsed.unwrap_or(400),
+            camera_y: camera,
+            stage: section,
+            info: STAGE_INFOS[section as usize],
+            ground_color: 0,
+            legacy: false,
+        };
+        super::decoration(&mut result, &context);
+        result
+    }
+
+    fn pixels(capture: &Capture) -> Vec<u8> {
+        let mut renderer = crate::render::Renderer::new();
+        renderer.begin(0);
+        for &(p, color, flags) in &capture.0 {
+            renderer.triangle(p[0], p[1], p[2], color, flags);
+        }
+        renderer.finish();
+        assert_eq!(renderer.dropped, 0);
+        let mut result = Vec::new();
+        let mut band = [0; 1280];
+        for row in 0..25 {
+            renderer.render_band(row, &mut band);
+            result.extend_from_slice(&band);
+        }
+        result
+    }
+
+    #[test]
+    fn orbital_scenes_are_distinct_black_space_with_bounded_geometry() {
+        let mut samples = Vec::new();
+        for section in 12..18u8 {
+            assert_eq!(sky_color(STAGE_INFOS[section as usize].theme, None), 0);
+            for tick in 0..256 {
+                for camera in [24, 40, 56] {
+                    let scene = orbital_capture(section, tick, None, camera);
+                    assert!(scene.0.len() <= 54, "stage {section}, tick {tick}");
+                    assert!(scene
+                        .0
+                        .iter()
+                        .all(|f| f.1 < 16 && f.2 & EXTERIOR_TERRAIN == 0));
+                    let mut renderer = crate::render::Renderer::new();
+                    renderer.begin(0);
+                    for &(p, color, flags) in &scene.0 {
+                        renderer.triangle(p[0], p[1], p[2], color, flags);
+                    }
+                    assert_eq!(renderer.dropped, 0);
+                    assert!(renderer.triangle_count <= 80);
+                }
+            }
+            let image = pixels(&orbital_capture(section, 100, None, 40));
+            assert!(
+                !samples.contains(&image),
+                "orbital stage {section} duplicates an earlier scene"
+            );
+            assert!(image.iter().filter(|&&p| p == 0).count() > 8000);
+            samples.push(image);
+        }
+    }
+
+    #[test]
+    fn orbital_midpoint_tail_swap_has_exactly_the_same_visible_starfield() {
+        for section in 12..17u8 {
+            for camera in [24, 40, 56] {
+                let before = pixels(&orbital_capture(section, 3949, Some(199), camera));
+                let after = pixels(&orbital_capture(section, 3950, Some(200), camera));
+                assert_eq!(before, after, "crossing after stage {section}");
+            }
+            // The final tick and incoming checkpoint advance their world phase
+            // by one tick; no additional local clock is reset at the handoff.
+            let a = orbital_capture(section, 4149, Some(399), 40);
+            let b = orbital_capture(section + 1, 65535, None, 40);
+            assert_eq!(
+                a.0.iter().map(|f| (f.0, f.1)).collect::<Vec<_>>(),
+                b.0.iter().map(|f| (f.0, f.1)).collect::<Vec<_>>(),
+            );
+        }
+    }
+
+    #[test]
+    fn ascent_recedes_from_coast_into_matching_asteroid_backdrop() {
+        let outgoing = capture(11 * 4150 + 3750, 11, None, 40);
+        let entry = orbital_capture(11, 3750, Some(0), 40);
+        assert_eq!(
+            outgoing.0.iter().map(|f| (f.0, f.1)).collect::<Vec<_>>(),
+            entry.0.iter().map(|f| (f.0, f.1)).collect::<Vec<_>>(),
+        );
+        for tick in 0..400 {
+            for camera in [24, 40, 56] {
+                let scene = orbital_capture(11, 3750 + tick, Some(tick), camera);
+                assert!(scene.0.len() <= 80, "ascent tick {tick}");
+                assert!(scene.0.iter().all(|f| f.2 & STATIC_SKY == 0));
+                let mut renderer = crate::render::Renderer::new();
+                renderer.begin(sky_color(3, Some((10, tick))));
+                for &(p, color, flags) in &scene.0 {
+                    renderer.triangle(p[0], p[1], p[2], color, flags);
+                }
+                assert_eq!(renderer.dropped, 0);
+                assert!(renderer.triangle_count <= 96, "ascent tick {tick}");
+            }
+        }
+        assert_eq!(sky_color(3, Some((10, 0))), SKY_COLORS[3]);
+        assert_eq!(sky_color(3, Some((10, 180))), 0);
+        assert_eq!(
+            pixels(&orbital_capture(11, 3999, Some(249), 40)),
+            pixels(&orbital_capture(11, 4000, Some(250), 40)),
+        );
+        assert!(pixels(&orbital_capture(11, 4050, Some(300), 40)).contains(&14));
+        assert_eq!(
+            pixels(&orbital_capture(11, 4149, Some(399), 40)),
+            pixels(&orbital_capture(12, 65535, None, 40)),
+        );
+        // At terrain retirement every surviving vertex has passed below the
+        // visible viewport, so removing its raw records cannot pop a silhouette.
+        let mut land = Capture::default();
+        let context = Decoration {
+            scene_ticks: 3999,
+            elapsed: 249,
+            camera_y: 24,
+            stage: 11,
+            info: STAGE_INFOS[11],
+            ground_color: 6,
+            legacy: false,
+        };
+        super::land(&mut land, &context, 249 * 24);
+        assert!(land.0.iter().all(|f| f
+            .0
+            .iter()
+            .all(|&p| p.z < 32 || crate::projection::project(p).1 >= 200)));
     }
 }

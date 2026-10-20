@@ -178,7 +178,8 @@ ENEMY_ENTRIES = {
 }
 SCENERY_ENTRIES = {
     f".phase.scenery.{profile}": f"scenic_{profile}"
-    for profile in ("wildlife", "transport", "meteors")
+    for profile in ("wildlife", "transport", "meteors", "ascent", "asteroid", "moon",
+                    "graveyard", "shipyard", "carrier", "gate")
 }
 ALTERNATE_ENTRIES = {
     ".phase.terminal": "game_terminal",
@@ -234,7 +235,7 @@ def audit(path):
     audit_startup(elf)
     phases = {section.name: section for section in elf.sections if section.name.startswith(".phase.")}
     require(set(phases) == set(ENTRIES) | set(ENEMY_ENTRIES) | set(SCENERY_ENTRIES) | set(ALTERNATE_ENTRIES) | {SIM_AUX_SECTION},
-            "ELF must contain six common phases, seven encounter tails, three scenery tails, terminal SIM, victory GEOMETRY and SIM helpers")
+            "ELF must contain six common phases, seven encounter tails, ten scenery tails, terminal SIM, victory GEOMETRY and SIM helpers")
     entry_functions = {}
     for name, expected in {**ENTRIES, **ENEMY_ENTRIES, **SCENERY_ENTRIES, **ALTERNATE_ENTRIES}.items():
         matches = [function for function in elf.functions[phases[name].index] if function.name == expected]
@@ -265,6 +266,17 @@ def audit(path):
     require(scenery_address == symbols["__phase_scenery_base_end"].address
             == phases[".phase.scenery"].address + phases[".phase.scenery"].size,
             "scenery ABI must begin immediately after the shared SCENERY prefix")
+    require(all(name in symbols for name in ("__phase_scenery_terrain_end", "__phase_scenery_terrain_size")),
+            "missing terrestrial SCENERY transfer boundary")
+    scenery_phase = phases[".phase.scenery"]
+    terrain_end = symbols["__phase_scenery_terrain_end"].address
+    require(scenery_phase.address < terrain_end < scenery_address
+            and symbols["__phase_scenery_terrain_size"].address == terrain_end - scenery_phase.address,
+            "invalid terrestrial SCENERY transfer boundary")
+    require(entry_functions[".phase.scenery"].end <= terrain_end
+            and all(function.end <= terrain_end or function.address >= terrain_end
+                    for function in elf.functions[scenery_phase.index]),
+            "terrestrial SCENERY transfer boundary splits a function")
     for name in SCENERY_ENTRIES:
         require(phases[name].address == scenery_address == entry_functions[name].address,
                 f"{name} must begin with its ABI entry")
@@ -279,11 +291,11 @@ def audit(path):
         require(phases[name].address + phases[name].size <= 0x7200,
                 f"{name} exceeds the execution window")
     partial_phases = []
-    for name, caller_name, tail_name in (
-        ("geometry", "havoc::game::Game::render_foreground", "havoc::game::Game::render_combat"),
+    for name, boundary_name, caller_name, tail_name in (
+        ("geometry", "__phase_geometry_base_end", "havoc::game::Game::render_foreground", "havoc::game::Game::render_combat"),
+        ("audio", "__phase_audio_runtime_end", "havoc_c64::service_audio", "havoc_c64::validate_music_bank"),
     ):
         phase = phases[f".phase.{name}"]
-        boundary_name = f"__phase_{name}_base_end"
         require(boundary_name in symbols, f"missing common {name} prefix boundary")
         boundary = symbols[boundary_name].address
         require(phase.address < boundary < phase.address + phase.size,
@@ -292,7 +304,7 @@ def audit(path):
                 f"{name} entry must be entirely within the common prefix")
         tail = [function for function in elf.functions[phase.index] if function.name == tail_name]
         require(len(tail) == 1 and tail[0].address >= boundary,
-                f"{tail_name} must be the mode-dependent {name} tail entry")
+                f"{tail_name} must be the guarded {name} tail entry")
         partial_phases.append((phase, boundary, caller_name, tail[0]))
     startup_sections = [section for section in elf.sections if section.name == STARTUP_SECTION]
     require(len(startup_sections) == 1, "missing or ambiguous startup-check section")
@@ -313,6 +325,7 @@ def audit(path):
     enemy_calls = 0
     scenery_calls = 0
     alternate_calls = Counter()
+    earth_tail_destinations = []
     relocations = list(elf.relocations())
     loader_refs = []
     loader_calls = defaultdict(list)
@@ -366,6 +379,14 @@ def audit(path):
         if not source.flags & 2:  # Ignore debug metadata; it is not loaded.
             continue
         sources[source.name] += 1
+        if symbol.name == "__phase_scenery_base_end":
+            caller = elf.function_at(source.index, address) if source.executable else None
+            require(source.name == ".phase.scenery" and caller is not None
+                    and caller.name == "havoc_c64::prepare_scenery"
+                    and kind in (4, 5) and addend == 0,
+                    "terrestrial scenery tail destination may only be formed by its reviewed DMA loader")
+            earth_tail_destinations.append(kind)
+            continue
         if symbol.name in ("terminal_step", "victory_geometry"):
             phase, caller_name, tail_name = {
                 "terminal_step": (".phase.sim", "havoc::game::Game::tick", ".phase.terminal"),
@@ -411,12 +432,18 @@ def audit(path):
         destination = symbol.address + addend
         caller = elf.function_at(source.index, address) if source.executable else None
         callee = elf.function_at(target.index, destination) if target.executable else None
+        earth_tail = source.name in (".phase.scenery.wildlife", ".phase.scenery.transport",
+                                     ".phase.scenery.meteors")
+        if (target.index == scenery_phase.index and destination >= terrain_end
+                and (source.index == scenery_phase.index and address < terrain_end or earth_tail)):
+            origin = caller.name if caller else f"{source.name}:${address:04X}"
+            errors.append(f"terrestrial SCENERY prefix references unloaded space helpers: {origin} -> ${destination:04X}")
         for phase, boundary, caller_name, tail in partial_phases:
             if (source.index == phase.index and target.index == phase.index
                     and address < boundary <= destination):
-                # Reviewed guard: foreground calls combat only outside
-                # Transition. main selects
-                # those same full/prefix loads using the unchanged simulation HUD.
+                # Reviewed guards: foreground calls combat only outside
+                # Transition; AUDIO calls validation only before MUSIC_VALIDATED.
+                # main chooses full/prefix loads from those same stable states.
                 instruction = address - source.address - 1
                 direct = (kind == 3 and 0 <= instruction < source.size
                           and elf.contents(source)[instruction] in (0x20, 0x4C))
@@ -490,10 +517,12 @@ def audit(path):
     require(not errors, "unsafe overlay references:\n  " + "\n  ".join(errors))
     require(enemy_calls == 1, f"expected exactly one opaque SIM encounter call, got {enemy_calls}")
     require(scenery_calls == 1, f"expected exactly one opaque SCENERY decoration call, got {scenery_calls}")
+    require(sorted(earth_tail_destinations) == [4, 5],
+            "terrestrial scenery DMA must form exactly one complete opaque tail destination")
     require(alternate_calls == {"terminal_step": 1, "victory_geometry": 1},
             f"expected one call to each terminal/victory dispatcher, got {dict(alternate_calls)}")
     require(all(partial_tail_calls[phase.name] == 1 for phase, *_ in partial_phases),
-            f"expected one guarded call to each mode-dependent tail, got {dict(partial_tail_calls)}")
+            f"expected one guarded call to each optional tail, got {dict(partial_tail_calls)}")
     require(all(entry_references[name] == 1 for name in ENTRIES), f"expected one main JSR to each overlay entry, got {dict(entry_references)}")
     require(entry_references[STARTUP_SECTION] == 1, "startup checker must have exactly one direct main call")
     require(entry_addresses[STARTUP_SECTION][0] < entry_addresses[".phase.boot"][0],
@@ -514,10 +543,11 @@ def audit(path):
         pending.extend(graph[function])
     print(f"Overlay audit: {sum(local_references.values())} phase-local references, {phase_tables} owned switch tables; zero cross-phase references")
     for phase, boundary, _, tail in partial_phases:
-        print(f"{phase.name} prefix: {boundary-phase.address} bytes; one reviewed mode-dependent call to {tail.name}")
+        print(f"{phase.name} prefix: {boundary-phase.address} bytes; one reviewed guarded call to {tail.name}")
     print("Resident entry calls: " + ", ".join(ENTRIES.values()))
     print("Encounter ABI: one opaque SIM call; seven entries at the shared prefix boundary")
-    print("Scenery ABI: one opaque SCENERY call; three entries at the shared prefix boundary")
+    print("Scenery ABI: one opaque SCENERY call; ten entries at the shared prefix boundary")
+    print(f"Terrestrial SCENERY: {terrain_end-scenery_phase.address} bytes; zero references to unloaded space helpers")
     print("SIM helpers: $8C00-$90FF, callable only by SIM profiles; no IRQ or other-phase references")
     print("SIM helper lifetime: one direct resident DMA before every load_sim profile transfer")
     print("Victory ABI: one terminal SIM and one medal GEOMETRY call; matching alternate tails")

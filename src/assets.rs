@@ -7,12 +7,12 @@ pub const SEGMENT_SIZE: usize = 2048;
 /// Only this prefix of a packaged segment is needed during gameplay.
 pub const SEGMENT_CACHE_SIZE: usize = 512;
 pub const MAX_SEGMENT_SPAWNS: u8 = 62;
-pub const SEGMENT_COUNT: u8 = 12;
+pub const SEGMENT_COUNT: u8 = 18;
 pub const SEGMENT_DISTANCE: u32 = 30_000;
 pub const REU_SIZE: u32 = 0x1000000;
 pub const COMMON_OFFSET: u32 = 0x1000;
 pub const SEGMENTS_OFFSET: u32 = 0x2000;
-pub const MUSIC_OFFSET: u32 = 0x100000;
+pub const MUSIC_OFFSET: u32 = 0x200000;
 pub const MUSIC_CAPACITY: u32 = crate::music::BANK_CAPACITY;
 pub const PACKAGE_HEADER_SIZE: usize = 64;
 pub const PACKAGE_CHECKSUM_OFFSET: usize = PACKAGE_HEADER_SIZE - 2;
@@ -25,8 +25,8 @@ pub const MODEL_COUNT: u8 = 9;
 pub const ENEMY_SPECS_OFFSET: usize = 16 + MODEL_COUNT as usize * 8;
 pub const ENEMY_SPEC_SIZE: usize = 8;
 pub const MODEL_DATA_OFFSET: usize = ENEMY_SPECS_OFFSET + 3 * ENEMY_SPEC_SIZE;
-// Version 5 adds twelve stage identities and explicit checked stage profiles.
-pub const PACKAGE_ID: u32 = 0x534D0500;
+// Version 6 extends the checked campaign through orbital combat and the jump gate.
+pub const PACKAGE_ID: u32 = 0x534D0600;
 pub const PLAYER: u8 = 0;
 pub const FIGHTER: u8 = 1;
 pub const DIVER: u8 = 2;
@@ -36,6 +36,8 @@ pub const CRYSTAL: u8 = 5;
 pub const BUILDING: u8 = 6;
 pub const ROCK: u8 = 7;
 pub const MEDAL: u8 = 8;
+/// A ROCK encounter is a small shootable fragment instead of a solid obstacle.
+pub const SMALL_DEBRIS: u8 = 2;
 /// Uniform enemy enlargement, baked into meshes and collision descriptors.
 pub const ENEMY_SCALE: i16 = 2;
 
@@ -162,7 +164,7 @@ impl<'a> AssetBank<'a> {
         if data[4] != MODEL_COUNT {
             return Err(AssetError::Version);
         }
-        if data[5] >= SEGMENT_COUNT || data[7] > 3 || data[6] != if data[7] != 0 { 2 } else { 3 } {
+        if data[5] >= SEGMENT_COUNT || data[7] > 5 || data[6] != if data[7] != 0 { 2 } else { 3 } {
             return Err(AssetError::Bounds);
         }
         let bank = Self { data };
@@ -371,10 +373,11 @@ impl StageInfo {
     };
     #[inline(always)]
     pub fn simulation_profile(self) -> u8 {
-        if self.boss_kind == 0 {
-            self.enemy_profile
-        } else {
-            3 + self.boss_kind
+        match self.boss_kind {
+            0 => self.enemy_profile,
+            4 => 6,
+            5 => 5,
+            kind => 3 + kind,
         }
     }
 }
@@ -413,7 +416,13 @@ pub const STAGE_INFOS: [StageInfo; SEGMENT_COUNT as usize] = {
         info(3, 9, 2, 0, 8, 9, 7),
         info(3, 9, 2, 0, 9, 3, 8),
         info(3, 4, 2, 0, 3, 3, 9),
-        info(3, 4, 2, 3, 3, 3, 3),
+        info(3, 4, 3, 3, 3, 10, 3),
+        info(0, 13, 4, 0, 10, 11, 3),
+        info(1, 14, 4, 0, 11, 12, 10),
+        info(3, 15, 4, 0, 12, 13, 11),
+        info(2, 16, 4, 0, 13, 14, 12),
+        info(3, 17, 4, 4, 14, 15, 13),
+        info(2, 18, 4, 5, 15, 15, 14),
     ]
 };
 #[cfg(any(test, feature = "host-tools"))]
@@ -440,11 +449,11 @@ impl<'a> Segment<'a> {
             || data[7] as usize > (data.len() - 16) / 8
             || data[8] > 3
             || data[9] >= crate::music::CUE_COUNT as u8
-            || data[10] > 2
-            || data[11] > 3
-            || data[12] > 9
-            || data[13] > 9
-            || data[14] > 9
+            || data[10] > 4
+            || data[11] > 5
+            || data[12] > 15
+            || data[13] > 15
+            || data[14] > 15
             || data[15] != 0
         {
             return Err(AssetError::Bounds);
@@ -454,10 +463,13 @@ impl<'a> Segment<'a> {
             let at = 16 + i as usize * 8;
             let distance = u16_at(data, at);
             let kind = data[at + 2];
+            let flags = data[at + 3];
             if distance < prev
                 || distance as u32 >= SEGMENT_DISTANCE
                 || !matches!(kind, 1 | 2 | 3 | 5 | 6 | 7)
                 || (data[11] != 0 && kind == TURRET)
+                || flags & !3 != 0
+                || (flags & SMALL_DEBRIS != 0 && (kind != ROCK || data[12] < 10))
             {
                 return Err(AssetError::Bounds);
             }

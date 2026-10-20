@@ -57,20 +57,22 @@ fn segment_bytes() -> [u8; SEGMENT_SIZE] {
 }
 fn fixture_stage(stage: u8) -> StageInfo {
     let index = stage as usize;
-    let themes = [0, 4, 1, 1, 5, 6, 2, 7, 8, 9, 3, 3];
+    let themes = [0, 4, 1, 1, 5, 6, 2, 7, 8, 9, 3, 3, 10, 11, 12, 13, 14, 15];
     StageInfo {
-        enemy_profile: [0, 0, 1, 1, 0, 2, 2, 2, 3, 3, 3, 3][index],
-        music_cue: [1, 7, 2, 2, 8, 8, 3, 3, 9, 9, 4, 4][index],
-        bridge_profile: [0, 0, 1, 1, 2, 1, 1, 2, 2, 2, 2, 2][index],
+        enemy_profile: [0, 0, 1, 1, 0, 2, 2, 2, 3, 3, 3, 3, 0, 1, 3, 2, 3, 2][index],
+        music_cue: [1, 7, 2, 2, 8, 8, 3, 3, 9, 9, 4, 4, 13, 14, 15, 16, 17, 18][index],
+        bridge_profile: [0, 0, 1, 1, 2, 1, 1, 2, 2, 2, 2, 3, 4, 4, 4, 4, 4, 4][index],
         boss_kind: match stage {
             3 => 1,
             7 => 2,
             11 => 3,
+            16 => 4,
+            17 => 5,
             _ => 0,
         },
         theme: themes[index],
         previous_theme: themes[index.saturating_sub(1)],
-        next_theme: themes[(index + 1).min(11)],
+        next_theme: themes[(index + 1).min(17)],
         reserved: 0,
     }
 }
@@ -134,7 +136,7 @@ fn attract_waits_fifteen_seconds_then_previews_each_section_and_returns_to_title
     advance(&mut game, &sections, 749);
     assert_eq!(game.hud().mode, Mode::Title);
     advance(&mut game, &sections, 1);
-    for section in [0, 1, 6, 10] {
+    for section in [0, 1, 6, 10, 12, 14, 16] {
         assert_eq!(game.hud().mode, Mode::Attract);
         assert_eq!(game.hud().section, section);
         assert_eq!(game.hud().distance, section as u32 * 30_000);

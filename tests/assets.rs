@@ -135,12 +135,12 @@ fn malformed_segment_metadata_and_encounter_order_are_rejected() {
         (6, 16),
         (7, 201),
         (8, 4),
-        (9, 13),
-        (10, 3),
-        (11, 4),
-        (12, 10),
-        (13, 10),
-        (14, 10),
+        (9, havoc::music::CUE_COUNT as u8),
+        (10, 5),
+        (11, 6),
+        (12, 16),
+        (13, 16),
+        (14, 16),
         (15, 1),
         (18, 0),
         (18, 4),
@@ -256,7 +256,7 @@ fn both_segment_forms_enforce_the_62_record_cache_limit() {
         bytes[at + 2] = FIGHTER;
     }
     let last = 16 + (MAX_SEGMENT_SPAWNS as usize - 1) * 8;
-    bytes[last + 3] = 0xa5;
+    bytes[last + 3] = 1;
     put16(&mut bytes, last + 4, i16::MIN as u16);
     put16(&mut bytes, last + 6, i16::MAX as u16);
     assert!(Segment::new(&bytes).is_ok());
@@ -264,7 +264,7 @@ fn both_segment_forms_enforce_the_62_record_cache_limit() {
     let spawn = cache.spawn(MAX_SEGMENT_SPAWNS - 1);
     assert_eq!(
         (spawn.distance, spawn.kind, spawn.flags),
-        (6100, FIGHTER, 0xa5)
+        (6100, FIGHTER, 1)
     );
     assert_eq!((spawn.x, spawn.y), (i16::MIN, i16::MAX));
     assert_eq!(cache.spawn(MAX_SEGMENT_SPAWNS).kind, 0);
@@ -303,7 +303,7 @@ fn trusted_views_match_prior_validation_of_the_same_immutable_bytes() {
 }
 
 #[test]
-fn version_50_checksums_only_the_segment_runtime_prefix() {
+fn version_60_checksums_only_the_segment_runtime_prefix() {
     let mut bytes = package();
     for index in 0..SEGMENT_COUNT as usize {
         let at = SEGMENTS_OFFSET as usize + index * SEGMENT_SIZE;
@@ -321,7 +321,7 @@ fn version_50_checksums_only_the_segment_runtime_prefix() {
 }
 
 #[test]
-fn stage_model_banks_keep_fourteen_distinct_enemy_shapes_and_shared_player_assets() {
+fn stage_model_banks_keep_twenty_six_distinct_enemy_shapes_and_shared_player_assets() {
     let common = baked_assets::common_bank();
     let first = AssetBank::new(&common).unwrap();
     let mut shapes = Vec::new();
@@ -374,9 +374,9 @@ fn stage_model_banks_keep_fourteen_distinct_enemy_shapes_and_shared_player_asset
             assert_eq!(&bytes, &common[..MODEL_SIZE]);
         }
     }
-    // Eleven original enemies plus three new airborne silhouettes. The later
-    // carrier-profile ground gun reuses the original tracked-gun geometry.
-    assert_eq!(shapes.len(), 14);
+    // Fourteen terrestrial silhouettes plus two newly authored aircraft per
+    // orbital mission. Ground guns retain their original silhouettes.
+    assert_eq!(shapes.len(), 26);
 }
 
 #[test]
@@ -418,7 +418,7 @@ fn enlarged_enemy_meshes_keep_ground_bases_and_original_model_budgets() {
         let bytes = baked_assets::model_bank(level);
         check(&AssetBank::new(&bytes).unwrap(), mesh, counts, min, max);
     }
-    for level in 0..SEGMENT_COUNT {
+    for level in 0..12 {
         let bytes = baked_assets::model_bank(level);
         assert_eq!(bytes.len(), 2048);
         let bank = AssetBank::new(&bytes).unwrap();
@@ -452,7 +452,7 @@ fn model_directory_rejects_unsupported_layout_and_corrupt_checksums() {
         (5, 1, AssetError::Version),
         (6, 1, AssetError::Bounds),
         (8, 1, AssetError::Bounds),
-        (36, 1, AssetError::Bounds),
+        (12 + SEGMENT_COUNT as usize * 2, 1, AssetError::Bounds),
     ] {
         let mut bad = good;
         bad[offset] = value;
@@ -478,7 +478,7 @@ fn model_identity_descriptors_and_vertex_ranges_are_checked() {
     for (offset, value) in [
         (5, SEGMENT_COUNT),
         (6, 2),
-        (7, 4),
+        (7, 6),
         (ENEMY_SPECS_OFFSET, 0),
         (ENEMY_SPECS_OFFSET, 255),
         (ENEMY_SPECS_OFFSET + 2, 0),
@@ -561,17 +561,31 @@ fn authored_rosters_cover_their_local_types_and_keep_boss_turrets_out_of_actor_s
         for record in 0..segment.spawn_count() {
             let spawn = segment.spawn(record);
             counts[spawn.kind as usize] += 1;
-            assert_eq!(spawn.flags & !1, 0);
+            assert_eq!(spawn.flags & !3, 0);
+            if spawn.flags & SMALL_DEBRIS != 0 {
+                assert_eq!(spawn.kind, ROCK);
+                assert!(level >= 12);
+            }
         }
         assert!(counts[1] > 0 && counts[2] > 0);
-        if info.boss_kind == 0 {
+        if info.boss_kind == 0 && level < 12 {
             assert!(counts[3] > 0);
         } else {
             assert_eq!(counts[3], 0);
         }
         assert_eq!(
             counts[6] + counts[7],
-            if info.boss_kind != 0 { 0 } else { 6 }
+            if level >= 12 {
+                if info.boss_kind != 0 {
+                    6
+                } else {
+                    9
+                }
+            } else if info.boss_kind != 0 {
+                0
+            } else {
+                6
+            }
         );
     }
     let mut bad = baked_assets::segment_bank(3);
@@ -580,22 +594,22 @@ fn authored_rosters_cover_their_local_types_and_keep_boss_turrets_out_of_actor_s
 }
 
 #[test]
-fn twelve_stage_profiles_cover_three_acts_and_contiguous_theme_crossings() {
-    assert_eq!(SEGMENT_COUNT, 12);
-    assert_eq!(SEGMENT_DISTANCE * SEGMENT_COUNT as u32, 360_000);
+fn eighteen_stage_profiles_cover_terrestrial_and_orbital_campaign_with_contiguous_crossings() {
+    assert_eq!(SEGMENT_COUNT, 18);
+    assert_eq!(SEGMENT_DISTANCE * SEGMENT_COUNT as u32, 540_000);
     assert_eq!(StageInfo::FIRST, preview_stage_info(0));
     assert_eq!(PACKAGE_HEADER_SIZE as u32, MODEL_DIRECTORY_OFFSET);
     assert!(MODEL_DIRECTORY_OFFSET + MODEL_DIRECTORY_SIZE as u32 <= COMMON_OFFSET);
     assert!(COMMON_OFFSET + COMMON_SIZE as u32 <= SEGMENTS_OFFSET);
     assert_eq!(
         SEGMENTS_OFFSET + SEGMENT_SIZE as u32 * SEGMENT_COUNT as u32,
-        0x8000
+        0xb000
     );
     assert_eq!(
         MODEL_BANKS_OFFSET + MODEL_SIZE as u32 * SEGMENT_COUNT as u32,
-        0xb6000
+        0xb9000
     );
-    assert_eq!(MUSIC_OFFSET + MUSIC_CAPACITY as u32, 0x120000);
+    assert_eq!(MUSIC_OFFSET + MUSIC_CAPACITY as u32, 0x240000);
     let mut bosses = Vec::new();
     for stage in 0..SEGMENT_COUNT {
         let bytes = baked_assets::segment_bank(stage);
@@ -604,10 +618,11 @@ fn twelve_stage_profiles_cover_three_acts_and_contiguous_theme_crossings() {
         assert!(!baked_assets::stage_name(stage).is_empty());
         assert_eq!(
             info.simulation_profile(),
-            if info.boss_kind == 0 {
-                info.enemy_profile
-            } else {
-                3 + info.boss_kind
+            match info.boss_kind {
+                0 => info.enemy_profile,
+                4 => 6,
+                5 => 5,
+                kind => 3 + kind,
             }
         );
         if info.boss_kind != 0 {
@@ -620,11 +635,11 @@ fn twelve_stage_profiles_cover_three_acts_and_contiguous_theme_crossings() {
             assert_eq!(info.next_theme, preview_stage_info(stage + 1).theme);
         }
     }
-    assert_eq!(bosses, [(3, 1), (7, 2), (11, 3)]);
+    assert_eq!(bosses, [(3, 1), (7, 2), (11, 3), (16, 4), (17, 5)]);
 }
 
 #[test]
-fn all_twelve_encounters_and_their_metadata_are_authenticated() {
+fn all_eighteen_encounters_and_their_metadata_are_authenticated() {
     let good = package();
     for stage in 0..SEGMENT_COUNT as usize {
         let start = SEGMENTS_OFFSET as usize + stage * SEGMENT_SIZE;
@@ -650,4 +665,70 @@ fn model_boss_identity_must_agree_with_the_checked_encounter_header() {
     let sum = checksum(&bytes[directory..directory + MODEL_DIRECTORY_CHECKSUM_OFFSET]);
     put16(&mut bytes, directory + MODEL_DIRECTORY_CHECKSUM_OFFSET, sum);
     assert!(baked_assets::check_package(&bytes).is_err());
+}
+
+#[test]
+fn orbital_hazards_are_mixed_in_three_dimensions_and_stop_before_the_final_bosses() {
+    for level in 12..SEGMENT_COUNT {
+        let bytes = baked_assets::segment_bank(level);
+        let segment = Segment::new(&bytes).unwrap();
+        let hazards: Vec<_> = (0..segment.spawn_count())
+            .map(|i| segment.spawn(i))
+            .filter(|spawn| spawn.kind == ROCK)
+            .collect();
+        assert!(hazards.iter().any(|s| s.flags == SMALL_DEBRIS));
+        assert!(hazards.iter().any(|s| s.flags == 0));
+        assert!(hazards.iter().any(|s| s.y < 0));
+        assert!(hazards.iter().any(|s| s.y > 60));
+        assert!(hazards.iter().any(|s| s.x < 0));
+        assert!(hazards.iter().any(|s| s.x > 0));
+        assert!((0..segment.spawn_count()).all(|i| segment.spawn(i).kind != TURRET));
+        if level >= 16 {
+            assert!((0..segment.spawn_count()).all(|i| segment.spawn(i).distance < 20_000));
+        }
+    }
+    for (level, kind, flags) in [
+        (0, ROCK, SMALL_DEBRIS),
+        (12, FIGHTER, SMALL_DEBRIS),
+        (12, ROCK, 4),
+    ] {
+        let mut bytes = baked_assets::segment_bank(level);
+        bytes[18] = kind;
+        bytes[19] = flags;
+        assert!(matches!(Segment::new(&bytes), Err(AssetError::Bounds)));
+    }
+}
+
+#[test]
+fn orbital_meshes_fit_the_unchanged_cache_and_keep_tumbling_obstacles_centered() {
+    for level in 12..SEGMENT_COUNT {
+        let bytes = baked_assets::model_bank(level);
+        let bank = AssetBank::new(&bytes).unwrap();
+        let extent = |kind, axis: fn(havoc::Vec3) -> i16| {
+            let values: Vec<_> = (0..bank.vertex_count(kind))
+                .map(|i| axis(bank.vertex(kind, i)))
+                .collect();
+            (*values.iter().min().unwrap(), *values.iter().max().unwrap())
+        };
+        let (low, high) = extent(ROCK, |v| v.y);
+        assert_eq!(low, -high);
+        let used =
+            u16_at(&bytes, 20 + MEDAL as usize * 8) as usize + bank.face_count(MEDAL) as usize * 4;
+        assert!(used <= MODEL_SIZE);
+        if level == 16 {
+            let (front, rear) = extent(CARRIER, |v| v.z);
+            assert!(
+                rear - front >= 800,
+                "the orbital carrier must read as a capital ship"
+            );
+        }
+        if level == 17 {
+            let (bottom, top) = extent(CARRIER, |v| v.y);
+            assert!(
+                top - bottom >= 400,
+                "the gate must span the flight corridor"
+            );
+            assert_eq!(bank.vertex_count(CARRIER), 32);
+        }
+    }
 }

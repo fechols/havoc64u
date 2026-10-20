@@ -52,9 +52,12 @@ def main():
         parser.error("input REU image must contain exactly 16 MiB")
     before = {extension: hashlib.sha256(data).hexdigest() for extension, data in original.items()}
     image = original["reu"]
-    if (image[:4] != b"SM64" or int.from_bytes(image[4:8], "little") != 0x534d0500
-            or image[16] != 12 or image[0x100:0x104] != b"OVL6"):
-        parser.error("input must be a twelve-stage campaign package with an OVL6 code directory")
+    package_format = vice.package_model_layout(image)
+    space = package_format["space"]
+    if (not package_format["campaign"]
+            or image[0x100:0x104] != (b"OVL7" if space else b"OVL6")):
+        parser.error("input must be a matched v5/OVL6 or v6/OVL7 campaign package")
+    score_offset, header_size, cue_count = (0x200000, 256, 21) if space else (0x100000, 128, 13)
     summary = {"passed": False, "scope": "Private corrupt REU copies in calibrated VICE; not physical hardware acceptance",
                "package": str(package), "original_sha256": before, "cases": []}
     native_command = vice.Monitor.command
@@ -91,6 +94,10 @@ def main():
         ("transport", 21, 76), ("meteors", 22, 80),
         ("sim-helpers", 23, 84),
     )
+    if space:
+        overlays += (("ascent", 24, 88), ("asteroid", 25, 92), ("moon", 26, 96),
+                     ("graveyard", 27, 100), ("shipyard", 28, 104),
+                     ("space-carrier", 29, 108), ("gate", 30, 112))
     for name, page, directory_offset in overlays:
         size_at = 0x100 + directory_offset
         size = int.from_bytes(image[size_at:size_at + 2], "little")
@@ -99,28 +106,29 @@ def main():
         cases.append((f"{name}-code", page * 0x10000 + 16, "REU CODE CHECKSUM FAILED"))
         # Boot authenticates complete padded images, including inactive tails.
         cases.append((f"{name}-tail", page * 0x10000 + size - 1, "REU CODE CHECKSUM FAILED"))
-    for level in range(12):
+    for level in range(package_format["count"]):
         cases.append((f"level-{level}-models", 0xb0000 + level*2048 + 200, "INVALID LEVEL MODEL BANK"))
         cases.append((f"level-{level}-encounters", 0x2000 + level*2048 + 20, "INVALID MISSION SEGMENT"))
     metadata = {
-        "enemy-profile": (8, 4), "music-cue": (9, 13), "bridge-profile": (10, 3),
-        "boss-kind": (11, 4), "theme": (12, 10), "next-theme": (13, 10),
-        "previous-theme": (14, 10), "reserved": (15, 1),
+        "enemy-profile": (8, 4), "music-cue": (9, cue_count),
+        "bridge-profile": (10, 5 if space else 3), "boss-kind": (11, 6 if space else 4),
+        "theme": (12, 16 if space else 10), "next-theme": (13, 16 if space else 10),
+        "previous-theme": (14, 16 if space else 10), "reserved": (15, 1),
     }
     for field, (offset, _value) in metadata.items():
         cases.append((f"metadata-{field}", 0x2800 + offset, "INVALID MISSION SEGMENT"))
-    music = image[0x100000:0x100080]
-    if music[:4] != b"SMU2" or music[6] != 13:
-        parser.error("input must contain all thirteen campaign cues")
+    music = image[score_offset:score_offset + header_size]
+    if music[:4] != (b"SMU3" if space else b"SMU2") or music[6] != cue_count:
+        parser.error("input must contain every matching campaign cue")
     page_size = int.from_bytes(music[12:14], "little")
-    for cue in range(13):
+    for cue in range(cue_count):
         entry = 16 + cue * 8
         start = int.from_bytes(music[entry:entry + 4], "little")
         pages = music[entry + 4]
-        last_event = 0x100000 + start + (pages - 1) * page_size + 12 + music[5] * 5
+        last_event = score_offset + start + (pages - 1) * page_size + 12 + music[5] * 5
         cases.append((f"music-cue-{cue}", last_event, "INVALID MUSIC PAGE"))
-    cases.extend((("music-bank-bound", 0x100008, "INVALID MUSIC DIRECTORY"),
-                  ("music-offset-overflow", 0x100070, "INVALID MUSIC DIRECTORY")))
+    cases.extend((("music-bank-bound", score_offset + 8, "INVALID MUSIC DIRECTORY"),
+                  ("music-offset-overflow", score_offset + 16 + (cue_count - 1)*8, "INVALID MUSIC DIRECTORY")))
     if args.case:
         unknown = set(args.case) - {name for name, _, _ in cases}
         if unknown:
@@ -148,7 +156,7 @@ def main():
             damaged[0x50:0x52] = checksum(damaged[model_start:model_start+2048]).to_bytes(2, "little")
             damaged[0x7e:0x80] = checksum(damaged[0x40:0x7e]).to_bytes(2, "little")
         if name == "old-code-directory":
-            damaged[0x100:0x104] = b"OVL5"
+            damaged[0x100:0x104] = b"OVL6" if space else b"OVL5"
         if name == "directory-profile":
             damaged[offset] = 2 if original["reu"][17] == 4 else 4
         if name in ("resident-pair", "directory-profile", "old-code-directory"):
@@ -161,14 +169,15 @@ def main():
             damaged[22:24] = checksum(damaged[0x2800:0x2a00]).to_bytes(2, "little")
             damaged[62:64] = checksum(damaged[:62]).to_bytes(2, "little")
         if name in ("music-bank-bound", "music-offset-overflow"):
-            damaged[offset:offset + 4] = (0x20001 if name == "music-bank-bound" else 0xffffffff).to_bytes(4, "little")
+            capacity = 0x40000 if space else 0x20000
+            damaged[offset:offset + 4] = (capacity + 1 if name == "music-bank-bound" else 0xffffffff).to_bytes(4, "little")
             # The score directory is mirrored in the common bank. Keep every
-            # enclosing checksum valid so only the 128 KiB/32-bit bounds fail.
-            score_header = damaged[0x100000:0x100080]
+            # enclosing checksum valid so only the capacity/32-bit bounds fail.
+            score_header = damaged[score_offset:score_offset + header_size]
             score_header[14:16] = b"\0\0"
             score_header[14:16] = checksum(score_header).to_bytes(2, "little")
-            damaged[0x100000:0x100080] = score_header
-            damaged[0x1800:0x1880] = score_header
+            damaged[score_offset:score_offset + header_size] = score_header
+            damaged[0x1800:0x1800 + header_size] = score_header
             damaged[18:20] = checksum(damaged[0x1000:0x1c00]).to_bytes(2, "little")
             damaged[62:64] = checksum(damaged[:62]).to_bytes(2, "little")
         damaged_hash = hashlib.sha256(damaged).hexdigest()

@@ -212,6 +212,174 @@ const CAMPAIGN: [StageDesign; SEGMENT_COUNT as usize] = [
         ],
         obstacle: 0,
     },
+    StageDesign {
+        name: "Asteroid Belt",
+        info: STAGE_INFOS[12],
+        ground: 0,
+        waves: &[
+            (1100, [F, F, 0], 90, 60, 180, 1),
+            (3800, [D, F, 0], 105, -35, 240, 255),
+            (6700, [F, F, F], 80, 85, 120, 1),
+            (9600, [D, D, 0], 110, -50, 300, 0),
+            (12600, [F, D, 0], 65, 30, 220, 255),
+            (15500, [F, F, F], 100, -25, 160, 1),
+            (18500, [D, F, 0], 115, 70, 240, 255),
+            (21500, [F, D, 0], 75, -40, 180, 0),
+            (24600, [D, D, 0], 95, 45, 220, 1),
+            (27600, [F, F, F], 85, 0, 140, 255),
+        ],
+        obstacle: 0,
+    },
+    StageDesign {
+        name: "Shattered Moon",
+        info: STAGE_INFOS[13],
+        ground: 0,
+        waves: &[
+            (1300, [D, F, 0], 105, 75, 300, 0),
+            (4200, [F, F, F], 75, -45, 160, 1),
+            (7100, [D, D, 0], 115, 30, 200, 255),
+            (10000, [F, D, 0], 65, 90, 280, 1),
+            (12900, [F, F, 0], 100, -55, 120, 255),
+            (15900, [D, F, D], 85, 55, 180, 0),
+            (19000, [F, D, 0], 110, -20, 260, 255),
+            (22000, [D, D, 0], 70, 80, 200, 1),
+            (25000, [F, F, F], 95, -35, 160, 255),
+            (28000, [D, F, 0], 80, 20, 240, 0),
+        ],
+        obstacle: 0,
+    },
+    StageDesign {
+        name: "Ship Graveyard",
+        info: STAGE_INFOS[14],
+        ground: 0,
+        waves: &[
+            (1000, [F, D, 0], 80, -25, 220, 1),
+            (3900, [D, D, 0], 110, 65, 180, 255),
+            (6900, [F, F, F], 90, 10, 140, 0),
+            (9900, [D, F, 0], 65, -55, 300, 1),
+            (13000, [F, D, F], 100, 80, 160, 255),
+            (16000, [D, D, 0], 75, -15, 220, 0),
+            (19000, [F, F, 0], 115, 40, 180, 1),
+            (22000, [D, F, 0], 95, -45, 260, 255),
+            (25100, [F, D, F], 80, 70, 140, 1),
+            (28200, [D, D, 0], 105, 0, 220, 255),
+        ],
+        obstacle: 0,
+    },
+    StageDesign {
+        name: "Orbital Shipyard",
+        info: STAGE_INFOS[15],
+        ground: 0,
+        waves: &[
+            (1200, [F, F, 0], 65, 70, 220, 1),
+            (4100, [D, F, D], 95, -40, 160, 255),
+            (7000, [F, D, 0], 110, 20, 280, 0),
+            (10000, [D, D, 0], 75, 85, 200, 1),
+            (13000, [F, F, F], 85, -50, 120, 255),
+            (16000, [D, F, 0], 105, 45, 260, 0),
+            (19000, [F, F, 0], 70, -15, 180, 255),
+            (22000, [F, D, F], 100, 75, 160, 1),
+            (25000, [D, D, 0], 115, -35, 220, 255),
+            (28000, [F, D, 0], 80, 30, 240, 0),
+        ],
+        obstacle: 0,
+    },
+    StageDesign {
+        name: "Space Carrier",
+        info: STAGE_INFOS[16],
+        ground: 0,
+        waves: &[
+            (1100, [F, F, F], 90, 60, 140, 1),
+            (3800, [D, F, 0], 110, -35, 220, 0),
+            (6500, [F, D, F], 75, 85, 160, 255),
+            (9300, [D, D, 0], 100, -45, 200, 1),
+            (12100, [F, F, 0], 65, 20, 180, 0),
+            (14900, [D, F, D], 95, 70, 160, 255),
+            (17700, [F, D, 0], 110, -20, 220, 1),
+        ],
+        obstacle: 0,
+    },
+    StageDesign {
+        name: "Jump Gate",
+        info: STAGE_INFOS[17],
+        ground: 0,
+        waves: &[
+            (1400, [D, F, 0], 105, -40, 240, 0),
+            (4100, [F, F, F], 80, 75, 140, 1),
+            (6900, [D, D, 0], 110, 15, 200, 255),
+            (9700, [F, D, F], 90, -55, 160, 1),
+            (12500, [D, F, 0], 65, 90, 220, 0),
+            (15300, [F, F, F], 100, -25, 140, 255),
+            (18100, [D, D, 0], 75, 45, 180, 1),
+        ],
+        obstacle: 0,
+    },
+];
+
+// Explicit flight-volume obstacles: distance, x, y, destructible debris.
+// Large obstacles and small debris alternate independently of enemy waves;
+// none uses the terrestrial ground-turret authoring shortcut.
+const SPACE_HAZARDS: [&[(u16, i16, i16, bool)]; 6] = [
+    &[
+        (2400, -70, 75, false),
+        (5200, 80, -45, true),
+        (8200, 15, 35, true),
+        (11200, 95, 85, false),
+        (14300, -100, -35, true),
+        (17400, 65, 5, false),
+        (20500, -45, 95, true),
+        (23600, -100, -50, false),
+        (26700, 55, 55, true),
+    ],
+    &[
+        (2700, 95, 60, true),
+        (5600, -75, -50, false),
+        (8600, 40, 90, false),
+        (11600, -100, 20, true),
+        (14700, 85, -35, false),
+        (17800, -35, 70, true),
+        (20800, 100, 0, false),
+        (23900, -90, 95, true),
+        (27000, 15, -55, true),
+    ],
+    &[
+        (2500, -95, -40, false),
+        (5500, 70, 80, true),
+        (8500, -25, 40, false),
+        (11500, 105, -25, true),
+        (14500, -80, 95, false),
+        (17500, 50, 0, true),
+        (20600, 100, 65, true),
+        (23700, -65, -55, false),
+        (26800, 20, 75, true),
+    ],
+    &[
+        (2600, 90, 85, false),
+        (5600, -95, -30, true),
+        (8600, 35, 45, true),
+        (11600, -65, 80, false),
+        (14600, 110, -50, true),
+        (17600, -100, 15, false),
+        (20600, 70, 95, true),
+        (23600, -30, -40, false),
+        (26600, 100, 30, true),
+    ],
+    &[
+        (2400, -95, 80, false),
+        (5200, 75, -45, true),
+        (8000, -30, 25, true),
+        (10800, 100, 70, false),
+        (13600, -90, -35, true),
+        (16400, 60, 85, false),
+    ],
+    &[
+        (2700, 100, -35, true),
+        (5500, -80, 75, false),
+        (8300, 30, 10, true),
+        (11100, -100, -50, false),
+        (13900, 85, 90, true),
+        (16700, -45, 40, false),
+    ],
 ];
 
 pub fn stage_info(index: u8) -> StageInfo {
@@ -564,6 +732,7 @@ fn customize_stage_models(info: StageInfo, models: &mut [Model]) {
                 };
             }
         }
+        10..=15 => customize_space_models(info.theme, models),
         _ => {}
     }
     match info.boss_kind {
@@ -622,8 +791,303 @@ fn customize_stage_models(info: StageInfo, models: &mut [Model]) {
                 face[3] = [11, 14, 11, 3, 11, 14, 11, 3, 1, 3, 14][i];
             }
         }
+        4 => {
+            // Dreadnought: a long armored flight deck, paired engine nacelles
+            // and raised bridge. Existing +/-65,15,-35 hardpoints sit on deck.
+            let mut carrier = (Vec::new(), Vec::new());
+            model_box(
+                &mut carrier,
+                [-105, -25, -220],
+                [105, 15, 170],
+                [11, 12, 15],
+            );
+            model_box(&mut carrier, [-28, 15, 15], [28, 60, 105], [6, 14, 3]);
+            model_box(&mut carrier, [-165, -15, -95], [-105, 25, 205], [11, 12, 8]);
+            model_box(&mut carrier, [105, -15, -95], [165, 25, 205], [11, 12, 8]);
+            models[CARRIER as usize] = carrier;
+            for (i, face) in models[TURRET as usize].1.iter_mut().enumerate() {
+                face[3] = [11, 15, 6, 14][i % 4];
+            }
+        }
+        5 => {
+            // Gate Guardian: a closed, deep octagonal ring with an actual open
+            // aperture. Side reactors and the vulnerable core retain their
+            // established world-space collision coordinates.
+            let outer = [
+                [-140, -55],
+                [-70, -110],
+                [70, -110],
+                [140, -55],
+                [140, 55],
+                [70, 110],
+                [-70, 110],
+                [-140, 55],
+            ];
+            let inner = [
+                [-55, -25],
+                [-28, -50],
+                [28, -50],
+                [55, -25],
+                [55, 25],
+                [28, 50],
+                [-28, 50],
+                [-55, 25],
+            ];
+            let mut gate = (Vec::new(), Vec::new());
+            for z in [-35, 35] {
+                for ring in [outer, inner] {
+                    gate.0.extend(ring.map(|[x, y]| [x, y, z]));
+                }
+            }
+            for i in 0..8u8 {
+                let next = (i + 1) & 7;
+                for (a, b, c, d, color) in [
+                    (i, next, next + 8, i + 8, [14, 3, 6, 1][i as usize % 4]),
+                    (i + 16, i + 24, next + 24, next + 16, 11),
+                    (i, i + 16, next + 16, next, 12),
+                    (i + 8, next + 8, next + 24, i + 24, 4),
+                ] {
+                    gate.1.push([a, b, c, color]);
+                    gate.1.push([a, c, d, color]);
+                }
+            }
+            models[CARRIER as usize] = gate;
+            for (i, face) in models[TURRET as usize].1.iter_mut().enumerate() {
+                face[3] = [4, 14, 3, 1][i % 4];
+            }
+        }
         _ => {}
     }
+}
+
+fn model_box(model: &mut Model, min: [i16; 3], max: [i16; 3], colors: [u8; 3]) {
+    let base = model.0.len() as u8;
+    let [x0, y0, z0] = min;
+    let [x1, y1, z1] = max;
+    model.0.extend([
+        [x0, y0, z0],
+        [x1, y0, z0],
+        [x1, y0, z1],
+        [x0, y0, z1],
+        [x0, y1, z0],
+        [x1, y1, z0],
+        [x1, y1, z1],
+        [x0, y1, z1],
+    ]);
+    for (i, face) in [
+        [0, 4, 1],
+        [1, 4, 5],
+        [1, 5, 2],
+        [2, 5, 6],
+        [2, 6, 3],
+        [3, 6, 7],
+        [3, 7, 0],
+        [0, 7, 4],
+        [4, 7, 6],
+        [4, 6, 5],
+        [0, 1, 2],
+        [0, 2, 3],
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        model.1.push([
+            base + face[0],
+            base + face[1],
+            base + face[2],
+            colors[i % 3],
+        ]);
+    }
+}
+
+fn flight_mesh(vertices: [[i16; 3]; 6], colors: [u8; 4]) -> Model {
+    let faces = [
+        [0, 1, 3],
+        [0, 3, 2],
+        [0, 4, 1],
+        [0, 2, 4],
+        [1, 5, 3],
+        [3, 5, 2],
+        [1, 4, 5],
+        [2, 5, 4],
+    ];
+    (
+        vertices.to_vec(),
+        faces
+            .into_iter()
+            .enumerate()
+            .map(|(i, face)| [face[0], face[1], face[2], colors[i % 4]])
+            .collect(),
+    )
+}
+
+fn customize_space_models(theme: u8, models: &mut [Model]) {
+    // Different silhouettes, not palette swaps: fork-wing interceptors, lunar
+    // blades, salvaged drones, yard tenders, deck guards and gate sentinels.
+    let fighters = [
+        [
+            [0, 0, -46],
+            [-40, -4, 14],
+            [40, -4, 14],
+            [0, 11, 8],
+            [0, -10, 20],
+            [0, 0, 32],
+        ],
+        [
+            [0, 4, -32],
+            [-18, 0, -16],
+            [18, 0, -16],
+            [0, 35, 24],
+            [0, -26, 24],
+            [0, 0, 42],
+        ],
+        [
+            [-8, 0, -40],
+            [-42, 8, 20],
+            [27, -5, 32],
+            [4, 24, -4],
+            [-5, -16, 6],
+            [0, 0, 20],
+        ],
+        [
+            [0, 0, -22],
+            [-34, -8, -12],
+            [34, -8, -12],
+            [0, 22, 16],
+            [0, -14, 16],
+            [0, 0, 44],
+        ],
+        [
+            [0, -3, -52],
+            [-44, 2, 28],
+            [44, 2, 28],
+            [0, 18, 5],
+            [0, -13, 5],
+            [0, 4, 38],
+        ],
+        [
+            [0, 0, -40],
+            [-30, 12, 0],
+            [30, 12, 0],
+            [0, 30, 18],
+            [0, -30, 18],
+            [0, 0, 40],
+        ],
+    ];
+    let divers = [
+        [
+            [0, 0, -42],
+            [-25, -9, 22],
+            [25, -9, 22],
+            [0, 24, 7],
+            [0, -16, 7],
+            [0, 0, 31],
+        ],
+        [
+            [0, -5, -50],
+            [-36, 3, 10],
+            [36, 3, 10],
+            [0, 15, 30],
+            [0, -15, 30],
+            [0, 0, 38],
+        ],
+        [
+            [0, 8, -25],
+            [-24, -8, 18],
+            [34, 0, 10],
+            [-8, 28, 5],
+            [8, -20, 5],
+            [0, 0, 36],
+        ],
+        [
+            [0, 0, -38],
+            [-16, 10, 26],
+            [16, 10, 26],
+            [0, 32, 10],
+            [0, -24, 10],
+            [0, 0, 46],
+        ],
+        [
+            [0, 0, -48],
+            [-28, -3, 26],
+            [28, -3, 26],
+            [0, 20, -8],
+            [0, -20, -8],
+            [0, 0, 30],
+        ],
+        [
+            [0, 0, -46],
+            [-38, 0, 8],
+            [38, 0, 8],
+            [0, 26, 8],
+            [0, -26, 8],
+            [0, 0, 34],
+        ],
+    ];
+    let palettes = [
+        [8, 15, 9, 12],
+        [15, 14, 11, 1],
+        [9, 12, 8, 11],
+        [7, 15, 8, 12],
+        [6, 14, 15, 3],
+        [4, 3, 14, 1],
+    ];
+    let index = theme as usize - 10;
+    models[FIGHTER as usize] = flight_mesh(fighters[index], palettes[index]);
+    models[DIVER as usize] = flight_mesh(divers[index], palettes[(index + 2) % 6]);
+    // Center every orbital obstacle around its origin: the runtime tumbles
+    // these and scales only the flagged small fragments around that center.
+    let rocks = [
+        [
+            [0, 0, -35],
+            [-38, -5, 0],
+            [31, 5, 0],
+            [0, 37, 0],
+            [0, -37, 0],
+            [0, 0, 35],
+        ],
+        [
+            [0, 0, -27],
+            [-34, 0, 0],
+            [34, 0, 0],
+            [0, 46, 4],
+            [0, -46, -4],
+            [0, 0, 27],
+        ],
+        [
+            [-8, 0, -43],
+            [-45, 0, -12],
+            [45, 0, 12],
+            [0, 19, 5],
+            [0, -19, -5],
+            [8, 0, 43],
+        ],
+        [
+            [0, 0, -38],
+            [-28, 0, 0],
+            [28, 0, 0],
+            [0, 29, 0],
+            [0, -29, 0],
+            [0, 0, 38],
+        ],
+        [
+            [0, 0, -45],
+            [-35, 0, -10],
+            [35, 0, 10],
+            [0, 22, 0],
+            [0, -22, 0],
+            [0, 0, 45],
+        ],
+        [
+            [0, 0, -32],
+            [-40, 0, 0],
+            [40, 0, 0],
+            [0, 40, 0],
+            [0, -40, 0],
+            [0, 0, 32],
+        ],
+    ];
+    models[ROCK as usize] = flight_mesh(rocks[index], palettes[index]);
 }
 
 /// A closed twelve-sided coin with a raised relief of the player's Kestrel.
@@ -994,7 +1458,7 @@ pub fn segment_bank(index: u8) -> [u8; SEGMENT_SIZE] {
                     flags: u8::from(lane as u8 == reward),
                 });
             }
-            if info.boss_kind == 0 && (info.enemy_profile != 0 || wave % 2 == 1) {
+            if index < 12 && info.boss_kind == 0 && (info.enemy_profile != 0 || wave % 2 == 1) {
                 events.push(Spawn {
                     distance: base + if info.enemy_profile == 1 { 800 } else { 1000 },
                     kind: T,
@@ -1013,6 +1477,17 @@ pub fn segment_bank(index: u8) -> [u8; SEGMENT_SIZE] {
                 x: if (i + index as u16) % 2 == 0 { -70 } else { 70 },
                 y: -110,
                 flags: 0,
+            });
+        }
+    }
+    if index >= 12 {
+        for &(distance, x, y, destructible) in SPACE_HAZARDS[index as usize - 12] {
+            events.push(Spawn {
+                distance,
+                kind: ROCK,
+                x,
+                y,
+                flags: if destructible { SMALL_DEBRIS } else { 0 },
             });
         }
     }
@@ -1075,7 +1550,7 @@ pub fn bake(out: &Path) -> Result<(), Box<dyn std::error::Error>> {
             include_str!("../config/havoc.cfg")
         },
     )?;
-    let mut report = format!("H.A.V.O.C. package {PACKAGE_ID:08X}\n16 MiB REU; common {COMMON_OFFSET:06X} (3072 bytes; 2048 resident model bytes); twelve checked 2048-byte stage model banks at {MODEL_BANKS_OFFSET:06X}; 64-byte model directory at {MODEL_DIRECTORY_OFFSET:06X}; twelve 2048-byte segments at {SEGMENTS_OFFSET:06X}, each with a checksummed 512-byte runtime prefix (up to 62 encounters)\nTwelve 75-second stages, eleven 8-second crossings: 16:28 scheduled gameplay plus victory reveal. Three bosses: Gorge Warden, Citadel Heart, Carrier.\nFour enemy movement families with crystal skimmer, volcanic diver and storm interceptor meshes.\n{} SIDs: {} music voices + 2 effects voices. {} original cues; {} bytes of paged score data at {MUSIC_OFFSET:06X}.\nOriginal models and music; no external ROMs or samples.\n", music::SID_COUNT, music::MUSIC_VOICES, music::CUE_COUNT, score.len());
+    let mut report = format!("H.A.V.O.C. package {PACKAGE_ID:08X}\n16 MiB REU; common {COMMON_OFFSET:06X} (3072 bytes; 2048 resident model bytes); eighteen checked 2048-byte stage model banks at {MODEL_BANKS_OFFSET:06X}; 64-byte model directory at {MODEL_DIRECTORY_OFFSET:06X}; eighteen 2048-byte segments at {SEGMENTS_OFFSET:06X}, each with a checksummed 512-byte runtime prefix (up to 62 encounters)\nEighteen 75-second stages, seventeen 8-second crossings: 24:46 scheduled gameplay plus victory reveal. Five bosses: Gorge Warden, Citadel Heart, Carrier, Dreadnought, Gate Guardian.\nFour enemy movement families with distinct terrestrial and orbital meshes; authored three-dimensional debris fields and an orbital ascent.\n{} SIDs: {} music voices + 2 effects voices. {} original cues; {} bytes of paged score data at {MUSIC_OFFSET:06X}.\nOriginal models and music; no external ROMs or samples.\n", music::SID_COUNT, music::MUSIC_VOICES, music::CUE_COUNT, score.len());
     for (index, design) in CAMPAIGN.iter().enumerate() {
         report.push_str(&format!(
             "{:02}. {}: theme {}, enemy profile {}, boss {}, music {}\n",

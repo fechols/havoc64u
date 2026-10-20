@@ -1,6 +1,7 @@
-"""Reject incorrect startup image sizes and runtime SIM transfer lengths."""
+"""Reject incorrect transfer lengths and IRQ-unsafe music-directory placement."""
 from pathlib import Path
 import runpy
+import struct
 import subprocess
 import sys
 import tempfile
@@ -10,13 +11,14 @@ def main():
     source = Path(sys.argv[1] if len(sys.argv) > 1 else "dist/havoc.elf")
     prg = Path(sys.argv[2]) if len(sys.argv) > 2 else source.with_suffix(".prg")
     checker = Path(__file__).with_name("check-layout.py")
-    elf = runpy.run_path(str(checker.with_name("check-overlays.py")))["Elf"](source)
+    overlay = runpy.run_path(str(checker.with_name("check-overlays.py")))
+    elf = overlay["Elf"](source)
     original = prg.read_bytes()
     tables = (("__sim_load_sizes", 8, "SIM load table disagrees", "SIM profile"),
-              ("__code_sizes", 17, "Code size table disagrees", "OVL6 image"))
+              ("__code_sizes", 24, "Code size table disagrees", "OVL7 image"))
 
-    def check(path):
-        return subprocess.run([sys.executable, str(checker), str(source), str(path)],
+    def check(path, image=source):
+        return subprocess.run([sys.executable, str(checker), str(image), str(path)],
                               capture_output=True, text=True)
 
     baseline = check(prg)
@@ -39,6 +41,25 @@ def main():
                     assert expected in result.stderr, result.stdout + result.stderr
                     cases += 1
                     print(f"Rejected {label} {profile} length {length + delta}")
+        directory_entry = next(
+            table.offset + index * table.entry_size
+            for table in elf.sections if table.kind == 2
+            for index, symbol in enumerate(elf.symbol_tables[table.index])
+            if overlay["readable_name"](symbol.name) == "havoc_c64::MUSIC_DIRECTORY")
+        compiler_frames = next(section for section in elf.sections if section.name == ".noinit")
+        damaged_elf = Path(directory) / "damaged.elf"
+        for label, offset, form, value, expected in (
+            ("music-directory-IRQ-save", 14, "<H", compiler_frames.index, "music directory must not enter IRQ-saved"),
+            ("music-directory-size", 8, "<I", 167, "music directory must hold all 21"),
+        ):
+            data = bytearray(elf.data)
+            struct.pack_into(form, data, directory_entry + offset, value)
+            damaged_elf.write_bytes(data)
+            result = check(prg, damaged_elf)
+            assert result.returncode != 0, f"accepted {label}"
+            assert expected in result.stderr, result.stdout + result.stderr
+            cases += 1
+            print(f"Rejected {label}")
     assert prg.read_bytes() == original, "input PRG changed"
     assert source.read_bytes() == elf.data, "input ELF changed"
     print(f"Layout audit negative fixtures: {cases} passed; original package unchanged")

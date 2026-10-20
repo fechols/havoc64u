@@ -502,13 +502,7 @@ mod terrain_visibility {
                 }
                 assert_eq!(
                     game.scenery_ticks(),
-                    stage as u16 * SECTION_TICKS
-                        + first_tick
-                        + if mode == Mode::Playing {
-                            stage as u16 * TRANSITION_TICKS
-                        } else {
-                            0
-                        }
+                    first_tick
                 );
                 assert_fortress_terrain_outside(&game, &segment);
             }
@@ -600,7 +594,7 @@ mod terrain_visibility {
 
     fn assert_visible(game: &Game, bank: &AssetBank<'_>, segment: &Segment<'_>, pose: u8) {
         let (pixels, covered) = compare_ship(game, bank, segment, false);
-        assert_eq!(covered, 0, "rail {}, bridge {}, position {:?}, pose {pose}: terrain covered {covered}/{pixels} hull pixels", game.rail_ticks, game.transition_ticks, game.player);
+        assert_eq!(covered, 0, "rail {}, bridge {}, position {:?}, pose {pose}: terrain covered {covered}/{pixels} hull pixels", game.stage_ticks, game.transition_ticks, game.player);
     }
 
     #[test]

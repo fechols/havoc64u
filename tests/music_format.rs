@@ -98,14 +98,34 @@ fn package_validation_authenticates_the_entire_cue_including_its_last_page() {
 }
 
 #[test]
+fn expanded_directory_authenticates_cues_beyond_the_old_header_and_rejects_smu2() {
+    let good = soundtrack::score_bank();
+    assert_eq!(BANK_HEADER_SIZE, 256);
+    assert_eq!(&good[..4], b"SMU3");
+    for cue in 14..music::CUE_COUNT as u8 {
+        assert!(music::cue_info(&good, cue).is_ok());
+    }
+    let mut bad = good.clone();
+    bad[16 + 20 * 8 + 4] ^= 1;
+    assert_eq!(music::cue_info(&bad, 20).unwrap_err(), ScoreError::Checksum);
+    let mut obsolete = good;
+    obsolete[..4].copy_from_slice(b"SMU2");
+    seal_directory(&mut obsolete);
+    assert_eq!(
+        music::cue_info(&obsolete, 0).unwrap_err(),
+        ScoreError::Signature
+    );
+}
+
+#[test]
 fn cue_directory_preserves_high_reu_offsets_and_enforces_the_expanded_bank_bound() {
     let mut bank = soundtrack::score_bank();
     let last = (music::CUE_COUNT - 1) as u8;
     let entry = 16 + last as usize * 8;
     let pages = bank[entry + 4] as u32;
     // Exercise the loader's 32-bit directory path in both profiles, even
-    // though only the four-SID production score crosses the 64 KiB boundary.
-    let high_offset = 0x10000u32;
+    // though only the four-SID production score crosses the 128 KiB boundary.
+    let high_offset = 0x20000u32;
     let length = high_offset + pages * PAGE_SIZE as u32;
     bank[entry..entry + 4].copy_from_slice(&high_offset.to_le_bytes());
     bank[8..12].copy_from_slice(&length.to_le_bytes());

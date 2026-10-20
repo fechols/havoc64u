@@ -33,8 +33,24 @@ def main():
     terminal = next(entry for entry in entries if entry[4].name == "terminal_step")
     victory = next(entry for entry in entries if entry[4].name == "victory_geometry")
     geometry = next(entry for entry in entries if entry[1].name == ".phase.geometry" and entry[3] == 3)
+    audio_validation = next(entry for entry in entries
+                            if entry[1].name == ".phase.audio" and entry[3] == 3
+                            and entry[4].section < len(elf.sections)
+                            and (callee := elf.function_at(entry[4].section, entry[4].address
+                                 + struct.unpack_from("<i", elf.data, entry[0] + 8)[0]))
+                            and callee.name == "havoc_c64::validate_music_bank")
+    audio_parser = next(symbol.name for symbol in elf.symbols
+                        if checker["readable_name"](symbol.name) == "havoc::music::cue_info")
     lowlands = next(entry for entry in entries if entry[1].name == ".phase.enemy.lowlands" and entry[3] == 3)
     wildlife = next(entry for entry in entries if entry[1].name == ".phase.scenery.wildlife" and entry[3] == 3)
+    terrain_end = next(symbol.address for symbol in elf.symbols if symbol.name == "__phase_scenery_terrain_end")
+    terrain_call = next(entry for entry in entries
+                        if entry[1].name == ".phase.scenery" and entry[2] < terrain_end
+                        and entry[3] == 3 and entry[4].section == entry[1].index
+                        and entry[4].address < terrain_end)
+    space_helper = next(symbol.name for symbol in elf.symbols
+                        if symbol.section == terrain_call[1].index and symbol.kind == 2
+                        and symbol.address >= terrain_end)
     pointer = next(entry for entry in entries
                    if not entry[1].executable and entry[1].flags & 2 and entry[3] in (3, 4, 5)
                    and entry[4].section < len(elf.sections)
@@ -66,10 +82,11 @@ def main():
         data[owner.offset + address - owner.address - 1] = 0x4c
 
     def nonzero_addend(data, entry):
-        struct.pack_into("<i", data, entry[0] + 8, 1)
+        addend = struct.unpack_from("<i", data, entry[0] + 8)[0]
+        struct.pack_into("<i", data, entry[0] + 8, addend + 1)
 
-    def scenic_load(data):
-        _position, owner, address, _kind, _symbol, _table = scenic
+    def scenic_load(data, entry=scenic):
+        _position, owner, address, _kind, _symbol, _table = entry
         data[owner.offset + address - owner.address - 1] = 0xad
 
     cases = [
@@ -88,6 +105,11 @@ def main():
         ("escaped-scenic-pointer", lambda data: replace_target(data, pointer, "scenic_decoration"), None),
         ("encounter-calls-scenic", lambda data: replace_target(data, lowlands, "scenic_wildlife"), "unsafe overlay references"),
         ("scenic-calls-encounter", lambda data: replace_target(data, wildlife, "encounter_lowlands"), "unsafe overlay references"),
+        ("terrain-calls-unloaded-space-helper", lambda data: replace_target(data, terrain_call, space_helper), "terrestrial SCENERY prefix references unloaded space helpers"),
+        ("earth-tail-calls-unloaded-space-helper", lambda data: replace_target(data, wildlife, space_helper), "terrestrial SCENERY prefix references unloaded space helpers"),
+        ("audio-runtime-calls-startup-parser", lambda data: replace_target(data, audio_validation, audio_parser), "prefix references unloaded tail"),
+        ("audio-validation-interior-entry", lambda data: nonzero_addend(data, audio_validation), "prefix references unloaded tail"),
+        ("audio-validation-address-load", lambda data: scenic_load(data, audio_validation), "prefix references unloaded tail"),
         ("geometry-calls-terminal", lambda data: replace_target(data, geometry, "terminal_step"), "opaque terminal_step ABI"),
         ("sim-calls-victory", lambda data: replace_target(data, opaque, "victory_geometry"), "opaque victory_geometry ABI"),
         ("direct-terminal-tail", lambda data: replace_target(data, terminal, "game_terminal"), "unsafe overlay references"),

@@ -23,7 +23,7 @@ import wave
 
 
 ROOT = Path(__file__).resolve().parents[1]
-SCORE_OFFSET = 0x100000
+SCORE_OFFSET = 0x200000
 CUES = {
     7: ("crystal-current", 1, False),
     8: ("ashes-and-steel", 4, False),
@@ -31,6 +31,14 @@ CUES = {
     10: ("gorge-warden", 3, True),
     11: ("citadel-heart", 7, True),
     12: ("carrier-overdrive", 11, True),
+    13: ("slingshot-through-the-belt", 12, False),
+    14: ("silver-fractures", 13, False),
+    15: ("echoes-of-lost-fleets", 14, False),
+    16: ("rivets-in-orbit", 15, False),
+    17: ("shadow-of-the-dreadnought", 16, False),
+    18: ("beyond-the-blue-threshold", 17, False),
+    19: ("atmosphere-to-starlight", 11, False),
+    20: ("the-last-sentinel", 17, True),
 }
 
 
@@ -85,9 +93,9 @@ def main():
     package = args.package_dir.resolve()
     elf, reu, prg = (package / f"havoc.{suffix}" for suffix in ("elf", "reu", "prg"))
     data = reu.read_bytes()
-    header = data[SCORE_OFFSET:SCORE_OFFSET + 128]
-    if header[:4] != b"SMU2" or header[6] != 13 or header[4] not in (2, 4):
-        raise RuntimeError("Expected the thirteen-cue campaign SMU2 bank")
+    header = data[SCORE_OFFSET:SCORE_OFFSET + 256]
+    if header[:4] != b"SMU3" or header[6] != 21 or header[4] not in (2, 4):
+        raise RuntimeError("Expected the twenty-one-cue campaign SMU3 bank")
     sid_count = header[4]
     output = (args.out_dir or ROOT / "target/music-previews" / f"{sid_count}sid").resolve()
     output.mkdir(parents=True, exist_ok=True)
@@ -173,9 +181,12 @@ def main():
             for cue in args.cues:
                 name, stage, boss = CUES[cue]
                 fixture = {"mode": layout["modes"]["Respawning"], "stage_id": stage,
-                           "rail_ticks": stage * 3750 + 1100, "respawn_ticks": 255,
+                           "stage_ticks": 2600 if boss else 1100, "respawn_ticks": 255,
                            "shield": 100, "lives": 3, "invulnerability": 255,
                            "boss_started": int(boss), "boss_defeated": 0, "menu_ticks": 0}
+                if cue == 19:
+                    fixture.update(mode=layout["modes"]["Transition"],
+                                   stage_ticks=3750, transition_ticks=1)
                 for _ in range(12):
                     patch(fixture)
                     first = observe()

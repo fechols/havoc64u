@@ -10,7 +10,7 @@ use std::collections::BTreeSet;
 #[test]
 fn suite_has_the_authored_forms_and_independent_clock_durations() {
     let suite = soundtrack::cues();
-    assert_eq!(suite.len(), 13);
+    assert_eq!(suite.len(), 21);
     let expected = [
         (32, 6, 3072),
         (32, 6, 3072),
@@ -24,6 +24,14 @@ fn suite_has_the_authored_forms_and_independent_clock_durations() {
         (32, 6, 3072),
         (32, 5, 2560),
         (32, 5, 2560),
+        (32, 5, 2560),
+        (32, 5, 2560),
+        (32, 6, 3072),
+        (32, 7, 3584),
+        (32, 5, 2560),
+        (32, 5, 2560),
+        (32, 6, 3072),
+        (5, 5, 400),
         (32, 5, 2560),
     ];
     let mut names = BTreeSet::new();
@@ -58,9 +66,9 @@ fn bank_round_trips_all_cues_and_only_strips_optional_orchestration() {
     assert_eq!(
         bank.len(),
         if cfg!(feature = "four-sid") {
-            95_104
+            146_528
         } else {
-            40_832
+            62_944
         }
     );
     assert!(bank.len() <= music::BANK_CAPACITY as usize);
@@ -97,6 +105,72 @@ fn bank_round_trips_all_cues_and_only_strips_optional_orchestration() {
         expected_offset = end;
     }
     assert_eq!(expected_offset, bank.len(), "no unowned score bytes");
+}
+
+#[test]
+fn original_thirteen_cue_payloads_keep_their_published_checksums() {
+    // Taken from the pre-expansion SMU2 packages. Moving the directory and
+    // appending space music must not rewrite a note, instrument, or page link.
+    let expected = if cfg!(feature = "four-sid") {
+        [
+            48391, 10627, 28627, 64536, 43533, 26356, 25190, 43185, 10057, 28300, 53802, 3033,
+            31639,
+        ]
+    } else {
+        [
+            26075, 12282, 43603, 4708, 36127, 22337, 46112, 55830, 44142, 1474, 6341, 11423, 50158,
+        ]
+    };
+    let bank = soundtrack::score_bank();
+    for (cue, checksum) in expected.into_iter().enumerate() {
+        assert_eq!(
+            music::cue_info(&bank, cue as u8).unwrap().checksum,
+            checksum
+        );
+    }
+}
+
+#[test]
+fn space_suite_has_distinct_hooks_and_core_percussion_with_a_breathing_middle_eight() {
+    use havoc::audio::MusicState;
+    let suite = soundtrack::cues();
+    let mut hooks = BTreeSet::new();
+    for cue in &suite[MusicState::AsteroidBelt as usize..] {
+        let hook: Vec<_> = cue.bars[..4]
+            .iter()
+            .flat_map(|bar| bar.rows.iter().map(|row| row[1]))
+            .collect();
+        assert!(hooks.insert(hook), "{} reuses another space hook", cue.name);
+        assert!(
+            cue.bars.iter().all(|bar| bar.instruments[2][0] == 0x80),
+            "{} loses its core percussion in the two-SID profile",
+            cue.name
+        );
+        assert!(
+            cue.bars
+                .iter()
+                .all(|bar| bar.rows[4][2] > HOLD && bar.rows[12][2] > HOLD),
+            "{} needs audible snare backbeats",
+            cue.name
+        );
+        if cue.bars.len() == 32 {
+            let attacks = |section: usize| {
+                cue.bars[section * 8..section * 8 + 8]
+                    .iter()
+                    .flat_map(|bar| &bar.rows)
+                    .filter(|row| row[2] > HOLD)
+                    .count()
+            };
+            assert!(
+                attacks(2) < attacks(0),
+                "{} middle eight does not breathe",
+                cue.name
+            );
+        }
+    }
+    let ascent = &suite[MusicState::Ascent as usize];
+    assert_eq!(ascent.duration_ticks(), 8 * 50);
+    assert!(ascent.bars[4].rows[0][1] > ascent.bars[0].rows[0][1]);
 }
 
 #[test]
@@ -148,7 +222,9 @@ fn all_parts_have_valid_articulation_across_page_boundaries_and_loops() {
 #[test]
 fn developed_sections_are_not_whole_phrase_transpositions() {
     for (index, cue) in soundtrack::cues().into_iter().enumerate() {
-        if index == havoc::audio::MusicState::Defeat as usize {
+        if index == havoc::audio::MusicState::Defeat as usize
+            || index == havoc::audio::MusicState::Ascent as usize
+        {
             continue;
         }
         let mut shapes = BTreeSet::new();
@@ -370,7 +446,16 @@ fn authored_suite_loops_exactly_with_five_fps_page_service_on_both_video_clocks(
         MusicState::GorgeWarden,
         MusicState::CitadelHeart,
         MusicState::CarrierOverdrive,
+        MusicState::AsteroidBelt,
+        MusicState::ShatteredMoon,
+        MusicState::ShipGraveyard,
+        MusicState::OrbitalShipyard,
+        MusicState::SpaceCarrier,
+        MusicState::JumpGate,
+        MusicState::Ascent,
+        MusicState::GateGuardian,
     ];
+    assert_eq!(states.len(), music::CUE_COUNT);
     for (index, state) in states.iter().enumerate() {
         assert_eq!(MusicState::from_cue(index as u8), Some(*state));
     }

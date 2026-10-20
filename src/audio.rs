@@ -44,26 +44,26 @@ pub enum MusicState {
     GorgeWarden = 10,
     CitadelHeart = 11,
     CarrierOverdrive = 12,
+    AsteroidBelt = 13,
+    ShatteredMoon = 14,
+    ShipGraveyard = 15,
+    OrbitalShipyard = 16,
+    SpaceCarrier = 17,
+    JumpGate = 18,
+    Ascent = 19,
+    GateGuardian = 20,
 }
 
 impl MusicState {
     /// Decode authored stage metadata without accepting an invalid enum value.
     pub const fn from_cue(cue: u8) -> Option<Self> {
-        match cue {
-            0 => Some(Self::Title),
-            1 => Some(Self::Lowlands),
-            2 => Some(Self::Canyon),
-            3 => Some(Self::Fortress),
-            4 => Some(Self::Carrier),
-            5 => Some(Self::Victory),
-            6 => Some(Self::Defeat),
-            7 => Some(Self::CrystalCurrent),
-            8 => Some(Self::AshesAndSteel),
-            9 => Some(Self::TempestDrive),
-            10 => Some(Self::GorgeWarden),
-            11 => Some(Self::CitadelHeart),
-            12 => Some(Self::CarrierOverdrive),
-            _ => None,
+        if cue <= Self::GateGuardian as u8 {
+            // SAFETY: repr(u8) has every consecutive discriminant 0..=20.
+            // Keep this bound tied to the final variant; decoding all 256
+            // possible bytes is covered by the authored-suite playback test.
+            Some(unsafe { core::mem::transmute::<u8, Self>(cue) })
+        } else {
+            None
         }
     }
 }

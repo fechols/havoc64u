@@ -9,7 +9,7 @@ pub const DOWN: u8 = 2;
 pub const LEFT: u8 = 4;
 pub const RIGHT: u8 = 8;
 pub const FIRE: u8 = 16;
-pub const MISSION_DISTANCE: u32 = 360_000;
+pub const MISSION_DISTANCE: u32 = assets::SEGMENT_DISTANCE * assets::SEGMENT_COUNT as u32;
 /// Added scenic flight time between combat sections, at 50 simulation ticks/s.
 pub const TRANSITION_TICKS: u16 = 400;
 /// Fixed camera-space backdrop geometry; nearer scene geometry still occludes it.
@@ -28,8 +28,9 @@ const SHIELD_MAGNET_RANGE: i16 = 64;
 const SHIELD_MAGNET_DEPTH: i16 = 240;
 const SHIELD_MAGNET_SPEED: i16 = 2;
 pub const SECTION_TICKS: u16 = 3750;
-pub const MISSION_TICKS: u16 = SECTION_TICKS * 12;
+pub const MISSION_TICKS: u32 = SECTION_TICKS as u32 * assets::SEGMENT_COUNT as u32;
 const BOSS_START_TICKS: u16 = 1000;
+const SPACE_BOSS_START_TICKS: u16 = 2500;
 const ATTRACT_TICKS: u16 = 750;
 const ACTORS: usize = 12;
 const SHOTS: usize = 24;
@@ -114,6 +115,11 @@ pub(crate) struct Actor {
     approach_speed: u8,
 }
 impl Actor {
+    #[inline(always)]
+    fn small_debris(&self) -> bool {
+        // Checked encounter pages permit this bit only on orbital ROCKs.
+        self.flags & assets::SMALL_DEBRIS != 0
+    }
     const EMPTY: Self = Self {
         pos: Vec3 { x: 0, y: 0, z: 0 },
         origin_x: 0,
@@ -294,9 +300,9 @@ pub struct Game {
     mode: Mode,
     presentation_event: PresentationEvent,
     player: Vec3,
-    // One rail tick is eight world units. This keeps all simulation distance
-    // arithmetic in 16 bits while representing the complete 360000-unit route.
-    rail_ticks: u16,
+    // One tick is eight world units within this checkpoint. Campaign duration
+    // may exceed 65535 ticks without widening the hot simulation arithmetic.
+    stage_ticks: u16,
     stage_id: u8,
     stage_info: StageInfo,
     transition_ticks: u16,
@@ -350,7 +356,7 @@ impl Game {
                 y: 0,
                 z: PLAYER_Z,
             },
-            rail_ticks: 0,
+            stage_ticks: 0,
             stage_id: 0,
             stage_info: StageInfo::FIRST,
             transition_ticks: 0,
@@ -392,7 +398,7 @@ impl Game {
         }
     }
     #[inline(never)]
-    #[cfg_attr(target_arch = "mos", link_section = ".phase.sim")]
+    #[cfg_attr(target_arch = "mos", link_section = ".phase.sim_aux")]
     pub fn sample_input(&mut self, input: InputSample) {
         if matches!(self.mode, Mode::Title | Mode::Attract)
             && (input.bits | input.pressed) & (UP | DOWN | LEFT | RIGHT | FIRE) != 0
@@ -411,10 +417,10 @@ impl Game {
         game.reset_run();
         game.stage_id = section.min(assets::SEGMENT_COUNT - 1);
         game.stage_info = assets::preview_stage_info(game.stage_id);
-        game.rail_ticks = game.stage_id as u16 * SECTION_TICKS + local_distance.min(29_999) / 8;
+        game.stage_ticks = local_distance.min(29_999) / 8;
         game.spawn_segment = game.segment_index();
         game.invulnerability = 0;
-        if game.stage_info.boss_kind != 0 && local_distance / 8 >= BOSS_START_TICKS {
+        if game.stage_info.boss_kind != 0 && local_distance / 8 >= game.boss_start_ticks() {
             game.boss_started = true;
             game.boss_z = 680;
         }
@@ -425,12 +431,13 @@ impl Game {
     pub fn preview_transition(section: u8, elapsed_ticks: u16) -> Self {
         let section = section.min(assets::SEGMENT_COUNT - 2);
         let mut game = Self::new();
-        game.reset_scene(Mode::Transition, (section as u16 + 1) * SECTION_TICKS);
+        game.reset_scene(Mode::Transition, section, SECTION_TICKS);
         game.stage_id = section;
         game.stage_info = assets::preview_stage_info(section);
         if elapsed_ticks >= TRANSITION_TICKS {
             game.mode = Mode::Playing;
             game.stage_id += 1;
+            game.stage_ticks = 0;
             game.stage_info = assets::preview_stage_info(game.stage_id);
             game.spawn_segment = game.segment_index();
         } else {
@@ -442,7 +449,7 @@ impl Game {
     #[cfg(feature = "host-tools")]
     pub fn preview_victory(elapsed_ticks: u16) -> Self {
         let mut game = Self::new();
-        game.reset_scene(Mode::Victory, MISSION_TICKS);
+        game.reset_scene(Mode::Victory, assets::SEGMENT_COUNT - 1, SECTION_TICKS);
         game.stage_id = assets::SEGMENT_COUNT - 1;
         game.stage_info = assets::preview_stage_info(game.stage_id);
         game.menu_ticks = elapsed_ticks.min(crate::victory::REVEAL_TICKS);
@@ -516,16 +523,12 @@ impl Game {
             None
         }
     }
-    /// Continuous world position including completed bridges. The attract tour
-    /// retains its original route and timing.
+    /// Local scenery clock. The scenery overlay supplies the repeating world
+    /// phase, avoiding an overflowing absolute campaign clock.
     #[inline(never)]
     #[cfg_attr(target_arch = "mos", link_section = ".phase.scenery")]
     pub fn scenery_ticks(&self) -> u16 {
-        if matches!(self.mode, Mode::Title | Mode::Attract) {
-            self.rail_ticks
-        } else {
-            self.rail_ticks + self.segment_index() as u16 * TRANSITION_TICKS + self.transition_ticks
-        }
+        self.stage_ticks + self.transition_ticks
     }
     #[inline(never)]
     #[cfg_attr(target_arch = "mos", link_section = ".phase.scenery")]
@@ -556,7 +559,7 @@ impl Game {
             lives: self.lives,
             charge: self.controls.charge(),
             score: self.score,
-            distance: self.rail_ticks as u32 * 8,
+            distance: self.stage_id as u32 * assets::SEGMENT_DISTANCE + self.stage_ticks as u32 * 8,
             section: self.segment_index(),
             roll_ticks: self.roll_ticks,
             boss_shield: if self.boss_started {
@@ -569,13 +572,21 @@ impl Game {
         }
     }
     #[inline(never)]
+    #[cfg_attr(target_arch = "mos", link_section = ".phase.sim")]
     pub fn music_state(&self) -> MusicState {
         match self.mode {
             Mode::Title => MusicState::Title,
             Mode::Victory => MusicState::Victory,
             Mode::GameOver => MusicState::Defeat,
+            Mode::Transition if self.stage_info.bridge_profile == 3 => {
+                MusicState::from_cue(19).unwrap()
+            }
             _ => MusicState::from_cue(if self.boss_started {
-                9 + self.stage_info.boss_kind
+                match self.stage_info.boss_kind {
+                    4 => 12,
+                    5 => 20,
+                    kind => 9 + kind,
+                }
             } else {
                 self.stage_info.music_cue
             })
@@ -631,19 +642,19 @@ impl Game {
     }
     #[inline(always)]
     fn reset_run(&mut self) {
-        self.reset_scene(Mode::Playing, 0);
+        self.reset_scene(Mode::Playing, 0, 0);
         self.invulnerability = 50;
     }
     #[inline(never)]
     #[cfg_attr(target_arch = "mos", link_section = ".phase.terminal")]
-    fn reset_scene(&mut self, mode: Mode, rail_ticks: u16) {
+    fn reset_scene(&mut self, mode: Mode, stage_id: u8, stage_ticks: u16) {
         let bits = self.controls.bits;
         let now = self.controls.now;
         self.reset_in_place();
         self.presentation_event = PresentationEvent::Reset;
         self.mode = mode;
-        self.rail_ticks = rail_ticks;
-        self.stage_id = (rail_ticks / SECTION_TICKS).min((assets::SEGMENT_COUNT - 1) as u16) as u8;
+        self.stage_ticks = stage_ticks;
+        self.stage_id = stage_id;
         #[cfg(any(test, feature = "host-tools"))]
         {
             self.stage_info = assets::preview_stage_info(self.stage_id);
@@ -704,15 +715,15 @@ impl Game {
             return;
         }
         if self.mode == Mode::Playing {
-            let boundary = (self.stage_id as u16 + 1) * SECTION_TICKS;
-            let next = (self.rail_ticks + 1).min(boundary);
+            let boundary = SECTION_TICKS;
+            let next = (self.stage_ticks + 1).min(boundary);
             if next == boundary
                 && self.stage_id + 1 < assets::SEGMENT_COUNT
                 && (self.stage_info.boss_kind == 0 || self.boss_defeated)
             {
                 // Retire outgoing hazards before handling this tick's live
                 // controls. Player projectiles and gestures remain intact.
-                self.rail_ticks = next;
+                self.stage_ticks = next;
                 self.mode = Mode::Transition;
                 self.transition_ticks = 0;
                 if self.stage_info.boss_kind != 0 {
@@ -740,14 +751,14 @@ impl Game {
             self.update_player_controls(bank);
         }
         self.controls.clear_pending();
-        self.rail_ticks = (self.rail_ticks + 1).min((self.stage_id as u16 + 1) * SECTION_TICKS);
+        self.stage_ticks = (self.stage_ticks + 1).min(SECTION_TICKS);
         let section = self.segment_index();
         if self.spawn_segment != section {
             self.spawn_segment = section;
             self.spawn_cursor = 0;
         }
         if segment.index() == section && bank.level() == section {
-            let local = (self.rail_ticks - section as u16 * SECTION_TICKS) * 8;
+            let local = self.stage_ticks * 8;
             while self.spawn_cursor < segment.spawn_count() {
                 let spawn = segment.spawn(self.spawn_cursor);
                 if spawn.distance > local {
@@ -774,7 +785,11 @@ impl Game {
         self.update_shots(bank);
         self.update_pickups();
         self.update_explosions();
-        if self.mode == Mode::Playing && self.rail_ticks >= MISSION_TICKS && self.boss_defeated {
+        if self.mode == Mode::Playing
+            && self.stage_id == assets::SEGMENT_COUNT - 1
+            && self.stage_ticks == SECTION_TICKS
+            && self.boss_defeated
+        {
             self.mode = Mode::Victory;
             self.menu_ticks = 0;
             self.shots = [Shot::EMPTY; SHOTS];
@@ -793,7 +808,7 @@ impl Game {
                 } else {
                     self.menu_ticks += 1;
                     if self.menu_ticks == ATTRACT_TICKS {
-                        self.reset_scene(Mode::Attract, 0);
+                        self.reset_scene(Mode::Attract, 0, 0);
                     }
                 }
                 self.menu_activity = false;
@@ -804,7 +819,7 @@ impl Game {
                 if self.menu_activity || self.controls.bits != 0 {
                     // Consume the wake-up gesture. A held button remains held
                     // on the title, so only a fresh fire edge starts a run.
-                    self.reset_scene(Mode::Title, 0);
+                    self.reset_scene(Mode::Title, 0, 0);
                     return;
                 }
                 self.menu_ticks += 1;
@@ -813,16 +828,19 @@ impl Game {
                         0 => 1,
                         1 => 6,
                         6 => 10,
-                        _ => 12,
+                        10 => 12,
+                        12 => 14,
+                        14 => 16,
+                        _ => assets::SEGMENT_COUNT,
                     };
                     if next < assets::SEGMENT_COUNT {
-                        self.reset_scene(Mode::Attract, next as u16 * SECTION_TICKS);
+                        self.reset_scene(Mode::Attract, next, 0);
                     } else {
-                        self.reset_scene(Mode::Title, 0);
+                        self.reset_scene(Mode::Title, 0, 0);
                     }
                     return;
                 }
-                self.rail_ticks += 1;
+                self.stage_ticks += 1;
             }
             Mode::Victory | Mode::GameOver => {
                 self.tick_terminal();
@@ -846,6 +864,7 @@ impl Game {
                     self.transition_ticks = 0;
                     self.mode = Mode::Playing;
                     self.stage_id += 1;
+                    self.stage_ticks = 0;
                     #[cfg(any(test, feature = "host-tools"))]
                     {
                         self.stage_info = assets::preview_stage_info(self.stage_id);
@@ -1044,7 +1063,13 @@ impl Game {
         if !obstacle && spec.hp == 0 {
             return;
         }
-        let hp = if obstacle { 255 } else { spec.hp };
+        let hp = if spawn.flags & assets::SMALL_DEBRIS != 0 {
+            2
+        } else if obstacle {
+            255
+        } else {
+            spec.hp
+        };
         if let Some(slot) = self.actors.iter_mut().find(|a| a.kind == 0) {
             *slot = Actor {
                 pos: Vec3 {
@@ -1096,13 +1121,22 @@ impl Game {
             if attack != 0 {
                 self.enemy_attack(actor_center_sim(&a, bank), attack);
             }
-            let radius = if obstacle {
+            let radius = if a.small_debris() {
+                18
+            } else if obstacle {
                 36
             } else {
                 bank.enemy(a.kind).ram_radius as i16
             };
             if self.mode == Mode::Playing
-                && (a.pos.z - PLAYER_Z).abs() < if obstacle { 32 } else { ENEMY_RAM_DEPTH }
+                && (a.pos.z - PLAYER_Z).abs()
+                    < if a.small_debris() {
+                        16
+                    } else if obstacle {
+                        32
+                    } else {
+                        ENEMY_RAM_DEPTH
+                    }
                 && close_xy(actor_center_sim(&a, bank), self.player, radius)
             {
                 a.kind = 0;
@@ -1116,14 +1150,23 @@ impl Game {
     }
     #[cfg(not(target_arch = "mos"))]
     fn update_boss(&mut self) {
-        self.update_boss_for(self.stage_info.boss_kind);
+        self.update_boss_for(match self.stage_info.boss_kind {
+            4 => 3,
+            5 => 2,
+            kind => kind,
+        });
+    }
+    #[inline(always)]
+    fn boss_start_ticks(&self) -> u16 {
+        if self.stage_info.boss_kind >= 4 {
+            SPACE_BOSS_START_TICKS
+        } else {
+            BOSS_START_TICKS
+        }
     }
     #[inline(always)]
     fn update_boss_for(&mut self, kind: u8) {
-        if kind == 0
-            || self.rail_ticks - self.stage_id as u16 * SECTION_TICKS < BOSS_START_TICKS
-            || self.boss_defeated
-        {
+        if kind == 0 || self.stage_ticks < self.boss_start_ticks() || self.boss_defeated {
             return;
         }
         self.boss_started = true;
@@ -1208,7 +1251,9 @@ impl Game {
                     if target.kind == 0 {
                         continue;
                     }
-                    let radius = if matches!(target.kind, assets::ROCK | assets::BUILDING) {
+                    let radius = if target.small_debris() {
+                        18
+                    } else if matches!(target.kind, assets::ROCK | assets::BUILDING) {
                         35
                     } else {
                         bank.enemy(target.kind).shot_radius as i16
@@ -1298,7 +1343,7 @@ impl Game {
             let (target, closing) = if i < ACTORS {
                 let actor = self.actors[i];
                 let spec = bank.enemy(actor.kind);
-                if actor.hp == 0 || spec.hp == 0 {
+                if actor.hp == 0 || (spec.hp == 0 && !actor.small_debris()) {
                     continue;
                 }
                 // Reacquisition scans every actor for every live missile.
@@ -1306,7 +1351,12 @@ impl Game {
                 // transform spills its target/order state on the 6502.
                 (
                     Vec3 {
-                        y: actor.pos.y + spec.center_y as i16,
+                        y: actor.pos.y
+                            + if actor.small_debris() {
+                                10
+                            } else {
+                                spec.center_y as i16
+                            },
                         ..actor.pos
                     },
                     32 + actor.approach_speed as i16,
@@ -1362,6 +1412,12 @@ impl Game {
     fn kill_actor(&mut self, index: usize, bank: &AssetBank<'_>) {
         let a = self.actors[index];
         self.actors[index].kind = 0;
+        if a.small_debris() {
+            self.score += 25;
+            self.explode(a.pos, 7);
+            self.sound(Effect::Death, a.pos.x);
+            return;
+        }
         self.score += bank.enemy(a.kind).score as u32;
         self.kills = self.kills.wrapping_add(1);
         // Keep the five-kill cadence independent of the wrapping total and
@@ -1461,7 +1517,7 @@ impl Game {
     #[cfg_attr(target_arch = "mos", link_section = ".phase.terminal")]
     fn respawn(&mut self) {
         self.presentation_event = PresentationEvent::Reset;
-        self.rail_ticks = self.segment_index() as u16 * SECTION_TICKS;
+        self.stage_ticks = 0;
         self.transition_ticks = 0;
         self.spawn_segment = self.segment_index();
         self.spawn_cursor = 0;
@@ -1663,7 +1719,7 @@ impl Game {
                 assets::PLAYER,
                 self.player,
                 0,
-                0,
+                self.ascent_pitch(),
                 appearance as u8,
                 256,
             );
@@ -1847,6 +1903,7 @@ impl Game {
                 // low shoulders. Its first spawn follows the Canyon bridge.
                 // Wall batteries, boss turrets and obstacles keep normal order.
                 sink.extra_flags = if a.kind == assets::TURRET
+                    && self.stage_info.theme < 10
                     && matches!(self.stage_info.enemy_profile, 0 | 2 | 3)
                 {
                     TERRAIN_CLEAR_GEOMETRY
@@ -1864,6 +1921,8 @@ impl Game {
                             22 * assets::ENEMY_SCALE
                         } else if a.kind <= bank.enemy_count() {
                             18 * assets::ENEMY_SCALE
+                        } else if a.small_debris() {
+                            9
                         } else {
                             18
                         },
@@ -1875,7 +1934,17 @@ impl Game {
                     } else {
                         0
                     };
-                    emit_mesh(sink, bank, a.kind, a.pos, 0, 0, roll, 256);
+                    // Rotate space rocks around their scaled center, preserving
+                    // collision alignment while keeping terrestrial meshes still.
+                    let space_rock = self.stage_info.theme >= 10 && a.kind == assets::ROCK;
+                    let scale = if a.small_debris() { 128 } else { 256 };
+                    let pitch = if space_rock { (a.age as u8) >> 1 } else { 0 };
+                    let position = if space_rock {
+                        actor_center(*a, bank)
+                    } else {
+                        a.pos
+                    };
+                    emit_mesh(sink, bank, a.kind, position, 0, pitch, roll, scale);
                 }
                 sink.extra_flags = 0;
             }
@@ -1916,12 +1985,28 @@ impl Game {
                 || (self.hit_flash_ticks > 5 && self.hit_flash_ticks <= 15));
         roll as u16 | ((white as u16) << 8)
     }
+    #[inline(never)]
+    #[cfg_attr(target_arch = "mos", link_section = ".phase.geometry")]
+    fn ascent_pitch(&self) -> u8 {
+        if self.mode != Mode::Transition || self.stage_info.bridge_profile != 3 {
+            return 0;
+        }
+        let tick = self.transition_ticks;
+        let amount = if tick < 100 {
+            tick / 5
+        } else if tick < 300 {
+            20
+        } else {
+            (400 - tick) / 5
+        };
+        (0u8).wrapping_sub(amount as u8)
+    }
     #[cfg(test)]
     fn terrain(&self, sink: &mut impl GeometrySink, segment: &Segment<'_>) {
         crate::scenery::emit(
             sink,
             segment,
-            self.rail_ticks,
+            self.stage_ticks,
             self.segment_index(),
             None,
             0,
@@ -1963,9 +2048,10 @@ impl<S: GeometrySink> GeometrySink for SceneBudget<'_, S> {
         }
     }
 }
-// Keep this small, shared transform resident so MOS does not duplicate its
-// saturating arithmetic and value marshaling three times in the geometry phase.
+// Only foreground GEOMETRY uses this transform. Keep one outlined copy in its
+// overlay so the expanded campaign leaves resident interrupt code room.
 #[inline(never)]
+#[cfg_attr(target_arch = "mos", link_section = ".phase.geometry")]
 fn camera_point(p: Vec3, camera_y: i16) -> Vec3 {
     Vec3 {
         y: p.y.saturating_sub(camera_y),
@@ -1984,15 +2070,21 @@ fn chase_camera_y(mode: Mode, player_y: i16) -> i16 {
 fn actor_center_sim(actor: &Actor, bank: &AssetBank<'_>) -> Vec3 {
     Vec3 {
         x: actor.pos.x,
-        y: actor_center_y(actor.kind, actor.pos.y, bank),
+        y: actor_center_y(actor.kind, actor.pos.y, actor.flags, bank),
         z: actor.pos.z,
     }
 }
 #[inline(never)]
 #[cfg_attr(target_arch = "mos", link_section = ".phase.sim_aux")]
-fn actor_center_y(kind: u8, y: i16, bank: &AssetBank<'_>) -> i16 {
+fn actor_center_y(kind: u8, y: i16, flags: u8, bank: &AssetBank<'_>) -> i16 {
     y + match kind {
-        assets::ROCK => 20,
+        assets::ROCK => {
+            if flags & assets::SMALL_DEBRIS != 0 {
+                10
+            } else {
+                20
+            }
+        }
         assets::BUILDING => 30,
         _ => bank.enemy(kind).center_y as i16,
     }
@@ -2004,7 +2096,13 @@ fn actor_center(actor: Actor, bank: &AssetBank<'_>) -> Vec3 {
         z: actor.pos.z,
         y: actor.pos.y
             + match actor.kind {
-                assets::ROCK => 20,
+                assets::ROCK => {
+                    if actor.small_debris() {
+                        10
+                    } else {
+                        20
+                    }
+                }
                 assets::BUILDING => 30,
                 _ => bank.enemy(actor.kind).center_y as i16,
             },

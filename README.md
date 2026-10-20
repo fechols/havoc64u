@@ -4,15 +4,15 @@
 
 Your ship is an unreasonable amount of firepower with a cockpit attached!
 
-Fly an original polygon rail shooter for the **64 MHz C64 Ultimate**. Skim green hills, squeeze through crystal caves, dodge canyon batteries, and take the fight to an enemy carrier. Everything is drawn in the C64's sixteen colors, backed by an original stereo SID soundtrack.
+Fly an original polygon rail shooter for the **64 MHz C64 Ultimate**. Skim green hills, squeeze through crystal caves, defeat an enemy carrier, then climb into orbit. Cross asteroid fields, a shattered moon, abandoned fleets and orbital shipyards before confronting a dreadnought and the Jump Gate. Everything is drawn in the C64's sixteen colors, backed by an original stereo SID soundtrack.
 
 ## See it in action
 
-**Sound on!** Unmute the player to hear the four-SID arrangement and the game's own weapon, engine, and impact effects. Footage comes from the compiled C64 game running in an emulator.
+**Sound on!** Unmute the player to hear the four-SID arrangement and the game's own weapon, engine, and impact effects. This clip shows the earlier terrestrial campaign running in the compiled C64 game in an emulator; the orbital screenshots below come from the expanded native build.
 
 https://github.com/user-attachments/assets/7493efc7-68c3-4a6f-b649-75e3ac2fc472
 
-Twelve stages take you through three acts, with three bosses standing between you and the end of the mission. A clean run takes roughly seventeen minutes; retries and stubborn bosses add time. Between battles, brief scenic flights give you room to breathe while the landscape and music carry you onward.
+The current source campaign has eighteen stages and five bosses, with 24:46 of scheduled flight before retries or extended boss fights. The original twelve stages lead into six orbital missions, each with its own enemy silhouettes and scenery. The orbital score adds eight original, Jeroen Tel-inspired SID tracks. Steering and weapons stay the same in space: shoot the small fragments, steer around solid wreckage, and attack the bosses' side units before their cores. Brief scenic crossings include the climb out of the atmosphere.
 
 | Lowland Approach | Crystal Cave |
 | --- | --- |
@@ -21,6 +21,12 @@ Twelve stages take you through three acts, with three bosses standing between yo
 | ![Combat between the ridges of Iron Canyon](docs/media/iron-canyon.png) | ![Industrial scenery in Foundry Belt](docs/media/foundry.png) |
 | **Storm Front** | **Carrier Assault** |
 | ![Flight beneath the dark sky of Storm Front](docs/media/storm-front.png) | ![Approaching the enemy carrier in Carrier Assault](docs/media/carrier.png) |
+| **Asteroid Belt** | **Shattered Moon** |
+| ![Dodging solid rocks and firing at small fragments in Asteroid Belt](docs/media/asteroid-belt.png) | ![Flying among lunar fragments beneath the Shattered Moon](docs/media/shattered-moon.png) |
+| **Ship Graveyard** | **Orbital Shipyard** |
+| ![Dogfighting between abandoned hulls in Ship Graveyard](docs/media/ship-graveyard.png) | ![Flying through the gantries of Orbital Shipyard](docs/media/orbital-shipyard.png) |
+| **Space Carrier** | **Jump Gate** |
+| ![Attacking the Dreadnought's broad deck and side units](docs/media/space-carrier.png) | ![Fighting the Gate Guardian around its open aperture](docs/media/jump-gate.png) |
 
 ## Download and launch
 
@@ -29,7 +35,7 @@ This is a **development preview**. Choose the package that matches your sound ha
 - **[Download the standard two-SID package](https://github.com/fechols/havoc64u/releases/download/v0.1.0-preview.1/havoc-preview-2sid.zip)** — uses the Ultimate's two built-in UltiSIDs. No physical SID chips are required.
 - **[Download the enhanced four-SID package](https://github.com/fechols/havoc64u/releases/download/v0.1.0-preview.1/havoc-preview-4sid.zip)** — adds two physical ARMSIDs for a fuller musical arrangement. Set both ARMSIDs to **8580 behavior** separately.
 
-Both versions include the complete campaign, music, and sound effects. There is no in-game sound-profile switch.
+The linked release is the earlier twelve-stage preview; build the current source for the eighteen-stage orbital campaign. Both sound profiles use the same missions and effects. There is no in-game sound-profile switch.
 
 You need a **C64 Ultimate running at 64 MHz**, its **16 MiB REU**, and a joystick connected to **port 2**. The supplied configuration sets the speed, REU, and SID routing. This release requires the Ultimate's capabilities; a stock C64 cannot run it.
 
@@ -59,11 +65,11 @@ Your ship flies forward automatically. You steer around enemies, incoming shots,
 
 Watch the weapon meter: when it reads **HOMING MISSILE**, your next shot will seek an enemy ahead. Partial charges produce stronger straight shots.
 
-- **Roll through enemy fire.** Rolls deflect hostile shots, and you can keep steering and firing. Scenery can still hurt you.
+- **Roll through enemy fire.** Rolls deflect hostile shots, and you can keep steering and firing. Solid scenery can still hurt you; small orbital fragments can be destroyed.
 - **Use your bombs.** Every five enemy kills restore one, up to a maximum of three. Shield and bomb pickups help keep you flying.
 - **Aim for the boss's side units first.** Destroy both to expose its core. You must defeat the boss before its stage can end.
 - **Make each life count.** You start with three. Losing one returns you to the current stage's checkpoint with your score intact; losing all three ends the run.
-- **Catch your breath between stages.** Scenic crossings are safe, but bombs still consume inventory. Clearing either of the first two acts also replenishes supplies.
+- **Catch your breath between stages.** Scenic crossings are safe, but bombs still consume inventory. Clearing a boss stage replenishes supplies for the next flight.
 
 Leave the title idle for fifteen seconds to watch the automatic scenery previews and hear the music. Move or press fire to return to the title, then release and press fire again to start. After a run, release any held fire button before restarting, too.
 
@@ -71,6 +77,6 @@ Leave the title idle for fifteen seconds to watch the automatic scenery previews
 
 **The game has been tested on real C64 Ultimate hardware and plays through successfully from start to finish.**
 
-The campaign has also completed emulator playthroughs. Rendering is currently slow, around six frames per second in measured emulator opening scenes; performance varies by scene. Music and sound effects continue independently of the picture.
+An eighteen-stage orbital build also completed continuous emulator playthroughs with two SIDs on PAL and four SIDs on NTSC, including all five bosses and the final victory reveal. The four-SID run also exercised a natural death and checkpoint respawn. These emulator playthroughs preceded the latest loading optimizations; the [hardware guide](docs/hardware.md#build-and-verification) records their exact build provenance. Earlier emulator opening scenes measured around six frames per second; those measurements are not results for the new orbital scenes. Music and sound effects continue independently of the picture.
 
 For sound setup, troubleshooting, or building from source, see the [hardware and build guide](docs/hardware.md). Developers can also read the [performance measurements](docs/benchmarks.md). Found a problem? [Open an issue](https://github.com/fechols/havoc64u/issues) with your hardware, sound profile, and what happened.

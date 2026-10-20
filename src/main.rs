@@ -153,7 +153,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             let source = if transition {
                 let section = args
                     .get(3)
-                    .ok_or("transition needs outgoing section 0..10")?
+                    .ok_or("transition needs outgoing section 0..16")?
                     .parse::<u8>()?;
                 let elapsed_ms = args
                     .get(4)
@@ -161,7 +161,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     .parse::<u16>()?;
                 if section >= SEGMENT_COUNT - 1 || elapsed_ms > TRANSITION_TICKS * 20 {
                     return Err(
-                        "transition section must be 0..10 and elapsed milliseconds 0..8000".into(),
+                        "transition section must be 0..16 and elapsed milliseconds 0..8000".into(),
                     );
                 }
                 Snapshot::Transition(section, elapsed_ms / 20)
@@ -183,7 +183,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     .transpose()?;
                 if section.is_some_and(|s| s >= SEGMENT_COUNT) {
                     return Err(
-                        "section must be 0..11, title, attract, transition, or victory".into(),
+                        "section must be 0..17, title, attract, transition, or victory".into(),
                     );
                 }
                 let distance = args
@@ -214,7 +214,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             Ok(())
         }
         _ => {
-            println!("H.A.V.O.C. tools\n  bake [directory]\n  check game.reu\n  snapshot <title|0..11> [distance] [output-prefix]\n  snapshot attract <elapsed-ms> [output-prefix]\n  snapshot transition <0..10> <elapsed-ms:0..8000> [output-prefix]\n  snapshot victory <elapsed-ms> [output-prefix]\n  sizes");
+            println!("H.A.V.O.C. tools\n  bake [directory]\n  check game.reu\n  snapshot <title|0..17> [distance] [output-prefix]\n  snapshot attract <elapsed-ms> [output-prefix]\n  snapshot transition <0..16> <elapsed-ms:0..8000> [output-prefix]\n  snapshot victory <elapsed-ms> [output-prefix]\n  sizes");
             Ok(())
         }
     }

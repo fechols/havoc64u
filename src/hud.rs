@@ -1,7 +1,7 @@
 //! Screen-space cockpit and mission screens. All ink participates in the same
 //! VIC-II palette packing as geometry; no sprites, textures, or allocations.
 
-use crate::assets::SEGMENT_DISTANCE;
+use crate::assets::{SEGMENT_COUNT, SEGMENT_DISTANCE};
 use crate::game::{Hud, Mode};
 use crate::render::{draw_bar, draw_text, draw_text_scaled, fill_color, HUD_INK};
 use crate::victory::REVEAL_TICKS;
@@ -64,7 +64,7 @@ pub fn draw(band: u8, pixels: &mut [u8; 1280], hud: &Hud, frame: u16) {
             if (3..=6).contains(&band) && sector_banner_visible(hud) {
                 panel(band, pixels, 24, 29, 112, 22, 12);
                 let mut sector = *b"SECTOR 01";
-                let number = hud.section.min(11) + 1;
+                let number = hud.section.min(SEGMENT_COUNT - 1) + 1;
                 if number >= 10 {
                     sector[7] = b'1';
                     sector[8] = b'0' + number - 10;
@@ -227,29 +227,41 @@ fn cockpit(band: u8, pixels: &mut [u8; 1280], hud: &Hud, frame: u16) {
 #[inline(never)]
 #[cfg_attr(target_arch = "mos", link_section = ".phase.pixels")]
 fn section_name(section: u8) -> &'static [u8] {
-    match section {
-        0 => b"LOWLAND APPROACH",
-        1 => b"CRYSTAL CAVE",
-        2 => b"IRON CANYON",
-        3 => b"CANYON GATE",
-        4 => b"ASHEN WASTES",
-        5 => b"FOUNDRY BELT",
-        6 => b"FORTRESS RUN",
-        7 => b"CITADEL CORE",
-        8 => b"STORM FRONT",
-        9 => b"METEOR REACH",
-        10 => b"CARRIER COAST",
-        _ => b"CARRIER ASSAULT",
+    let index = section.min(SEGMENT_COUNT - 1) as usize;
+    // The bounded index selects two monotonically increasing authored offsets.
+    // The final offset is exactly the packed label array's length.
+    unsafe {
+        let start = *SECTOR_OFFSETS.get_unchecked(index) as usize;
+        let end = *SECTOR_OFFSETS.get_unchecked(index + 1) as usize;
+        core::slice::from_raw_parts(SECTOR_NAMES.as_ptr().add(start), end - start)
     }
 }
+
+// Byte offsets avoid eighteen native four-byte slice descriptors. The tiny
+// offset table travels with PIXELS, while strings use checked constant RAM.
+#[cfg_attr(target_arch = "mos", link_section = ".rodata.hud_names")]
+static SECTOR_NAMES: [u8; 228] = *b"LOWLAND APPROACHCRYSTAL CAVEIRON CANYONCANYON GATE\
+ASHEN WASTESFOUNDRY BELTFORTRESS RUNCITADEL CORESTORM FRONTMETEOR REACH\
+CARRIER COASTCARRIER ASSAULTASTEROID BELTSHATTERED MOONSHIP GRAVEYARD\
+ORBITAL SHIPYARDSPACE CARRIERJUMP GATE";
+#[cfg_attr(target_arch = "mos", link_section = ".phase.pixels.hud_data")]
+static SECTOR_OFFSETS: [u8; SEGMENT_COUNT as usize + 1] = [
+    0, 16, 28, 39, 50, 62, 74, 86, 98, 109, 121, 134, 149, 162, 176, 190, 206, 219, 228,
+];
+#[cfg_attr(target_arch = "mos", link_section = ".rodata.hud_names")]
+static BOSS_NAMES: [u8; 56] = *b"GORGE WARDENCITADEL HEARTCARRIERDREADNOUGHTGATE GUARDIAN";
+#[cfg_attr(target_arch = "mos", link_section = ".phase.pixels.hud_data")]
+static BOSS_OFFSETS: [u8; 6] = [0, 12, 25, 32, 43, 56];
 
 #[inline(never)]
 #[cfg_attr(target_arch = "mos", link_section = ".phase.pixels")]
 fn boss_name(kind: u8) -> &'static [u8] {
-    match kind {
-        1 => b"GORGE WARDEN",
-        2 => b"CITADEL HEART",
-        _ => b"CARRIER",
+    let index = if kind >= 1 && kind <= 5 { kind - 1 } else { 2 } as usize;
+    // As above, every accepted index and both offset endpoints are bounded.
+    unsafe {
+        let start = *BOSS_OFFSETS.get_unchecked(index) as usize;
+        let end = *BOSS_OFFSETS.get_unchecked(index + 1) as usize;
+        core::slice::from_raw_parts(BOSS_NAMES.as_ptr().add(start), end - start)
     }
 }
 

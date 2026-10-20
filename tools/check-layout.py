@@ -1,5 +1,5 @@
 """Reject allocated sections outside the fixed C64 ownership map."""
-import os, pathlib, re, subprocess, sys
+import os, pathlib, re, runpy, subprocess, sys
 elf, prg = map(pathlib.Path, sys.argv[1:3])
 nm = pathlib.Path(os.environ.get('LLVM_MOS', str(pathlib.Path.home()/'.local/llvm-mos')))/'bin/llvm-nm'
 readelf = nm.with_name('llvm-readelf')
@@ -10,6 +10,17 @@ for line in subprocess.check_output([str(nm),'-n',str(elf)],text=True).splitline
     if len(fields)==3:
         try: symbols[fields[2]]=int(fields[0],16)
         except ValueError: pass
+overlay_audit = runpy.run_path(str(pathlib.Path(__file__).with_name('check-overlays.py')))
+metadata = overlay_audit['Elf'](elf)
+directories = [symbol for symbol in metadata.symbols
+               if overlay_audit['readable_name'](symbol.name) == 'havoc_c64::MUSIC_DIRECTORY']
+assert len(directories) == 1, 'missing or ambiguous resident music directory'
+music_directory = directories[0]
+assert music_directory.size == 21 * 8, 'music directory must hold all 21 validated descriptors'
+assert metadata.sections[music_directory.section].name == '.bss', 'music directory must not enter IRQ-saved .noinit'
+compiler_frames = next(section for section in metadata.sections if section.name == '.noinit')
+assert music_directory.address + music_directory.size <= compiler_frames.address, 'music directory overlaps compiler static frames'
+assert symbols['__irq_static_save_size'] == compiler_frames.size, 'IRQ save extent disagrees with compiler static frames'
 data=prg.read_bytes()
 assert int.from_bytes(data[:2],'little')==0x0801,'PRG must load at0801'
 assert len(data)-2+0x0801==0xa000,'PRG must initialize through9FFF'
@@ -35,8 +46,12 @@ assert (symbols['__raster_heads_start'],symbols['__raster_heads_end'])==(0xd000,
 assert (symbols['__scenery_records_start'],symbols['__scenery_records_end'])==(0xd880,0xe000)
 assert 0 < symbols['__phase_scenery_base_size'] < symbols['__phase_scenery_size'] <= 0x4200
 assert symbols['__phase_scenery_base_end'] == 0x3000 + symbols['__phase_scenery_base_size']
+assert 0 < symbols['__phase_scenery_terrain_size'] < symbols['__phase_scenery_base_size']
+assert symbols['__phase_scenery_terrain_end'] == 0x3000 + symbols['__phase_scenery_terrain_size']
 assert 0 < symbols['__phase_geometry_base_size'] < symbols['__phase_geometry_size'] <= 0x4200
 assert symbols['__phase_geometry_base_end'] == 0x3000 + symbols['__phase_geometry_base_size']
+assert 0 < symbols['__phase_audio_runtime_size'] < symbols['__phase_audio_size'] <= 0x4200
+assert symbols['__phase_audio_runtime_end'] == 0x3000 + symbols['__phase_audio_runtime_size']
 assert symbols['encounter_step'] == symbols['__phase_sim_base_end'] == 0x3000 + symbols['__phase_sim_base_size']
 assert 0 < symbols['__phase_sim_base_size'] < symbols['__phase_sim_size'] <= 0x4200
 assert symbols['__phase_sim_size'] == symbols['__phase_sim_base_size'] + symbols['__phase_enemy_size']
@@ -48,7 +63,8 @@ enemy_sections = {f'.phase.enemy.{level}' for level in enemy_profiles}
 for level in enemy_profiles:
     assert symbols[f'encounter_{level}'] == symbols['encounter_step'], f'{level} ABI entry is not first'
 assert symbols['scenic_decoration'] == symbols['__phase_scenery_base_end']
-scenery_profiles = ('wildlife', 'transport', 'meteors')
+scenery_profiles = ('wildlife', 'transport', 'meteors', 'ascent', 'asteroid', 'moon',
+                    'graveyard', 'shipyard', 'carrier', 'gate')
 scenery_sections = {f'.phase.scenery.{profile}' for profile in scenery_profiles}
 for profile in scenery_profiles:
     assert symbols[f'scenic_{profile}'] == symbols['scenic_decoration'], f'{profile} ABI entry is not first'
@@ -103,23 +119,24 @@ expected_load_sizes = tuple(phase_sizes['.phase.sim'] + phase_sizes[name]
                             for name in [*(f'.phase.enemy.{level}' for level in enemy_profiles), '.phase.terminal'])
 assert sim_load_sizes == expected_load_sizes, f'SIM load table disagrees with profile images: {sim_load_sizes} != {expected_load_sizes}'
 code_table = symbols['__code_sizes']
-assert any(name == '.startup_checks' and start <= code_table and code_table + 34 <= end
+assert any(name == '.startup_checks' and start <= code_table and code_table + 48 <= end
            for name,start,end in used), 'Code size table must remain in startup checks'
 code_offset = code_table - 0x0801 + 2
 code_sizes = tuple(int.from_bytes(data[code_offset+i:code_offset+i+2], 'little')
-                   for i in range(0,34,2))
-# This order is the startup OVL6 walk: five original phases, wildlife,
+                   for i in range(0,48,2))
+# This order is the startup OVL7 walk: five original phases, wildlife,
 # three ordinary SIM profiles, victory, terminal, three bosses, two scenic
-# tails, then the separately addressed SIM helpers.
+# tails, then the separately addressed SIM helpers, ascent and six space tails.
 code_profiles = ('boot', 'sim', 'geometry', 'pixels', 'audio', 'scenery',
                  'sim', 'sim', 'sim', 'victory', 'sim', 'sim', 'sim', 'sim',
-                 'scenery', 'scenery', 'sim_aux')
+                 'scenery', 'scenery', 'sim_aux', *(['scenery'] * 7))
 expected_code_sizes = tuple(symbols[f'__phase_{profile}_size'] for profile in code_profiles)
 assert code_sizes == expected_code_sizes, f'Code size table disagrees with overlay images: {code_sizes} != {expected_code_sizes}'
 assert phase_sizes['.phase.scenery'] == symbols['__phase_scenery_base_size']
 assert symbols['__phase_scenery_size'] == symbols['__phase_scenery_base_size'] + max(phase_sizes[name] for name in scenery_sections)
 print(f'PRG {len(data):,} bytes; resident headroom {0x3000-symbols["__resident_end"]} bytes')
 print(f'Music profile: {4 if four_sid else 2} SIDs; extra score page {224 if four_sid else 0} bytes')
+print(f'Validated music directory: ${music_directory.address:04X}-${music_directory.address+music_directory.size-1:04X}, {music_directory.size} BSS bytes outside IRQ-saved compiler frames')
 print('Startup checks8C00-90FF: retired before BOOT asset loading and rendering')
 print('VIC A: screen8000 bitmapA000-BF3F; VIC B: screenC000 bitmapE000-FF3F')
 print('Models8400-8BFF; band8C00-90FF; color9100-94FF; segments9500-98FF')
@@ -127,11 +144,12 @@ print('Overlay3000-71FF; main stackC400-C7FF; IRQ stack7200-75FF')
 print('PIXELS code3000-5FFF; edge headsD000-DFFF tails6000-6BFF masks6C00-6F1F')
 print('GEOMETRY code3000-71FF; projection/sort cache8C00-8E7F shares PIXELS band')
 print('SCENERY code3000-71FF; raw recordsD880-DFFF share GEOMETRY commands')
-print(f'SCENERY ordinary prefix {symbols["__phase_scenery_base_size"]} bytes; largest decoration tail {symbols["__phase_scenery_size"]-symbols["__phase_scenery_base_size"]} bytes; three padded images')
+print(f'SCENERY terrestrial prefix {symbols["__phase_scenery_terrain_size"]} bytes; complete prefix {symbols["__phase_scenery_base_size"]} bytes; largest decoration tail {symbols["__phase_scenery_size"]-symbols["__phase_scenery_base_size"]} bytes; ten padded images')
 print(f'GEOMETRY transition prefix {symbols["__phase_geometry_base_size"]} bytes; combat tail {symbols["__phase_geometry_size"]-symbols["__phase_geometry_base_size"]} bytes')
+print(f'AUDIO runtime prefix {symbols["__phase_audio_runtime_size"]} bytes; startup-only validation tail {symbols["__phase_audio_size"]-symbols["__phase_audio_runtime_size"]} bytes; startup verifies the full image')
 print(f'SIM common prefix {symbols["__phase_sim_base_size"]} bytes; largest simulation tail {symbols["__phase_enemy_size"]} bytes; eight padded images {symbols["__phase_sim_size"]} bytes each')
 print('SIM runtime transfer sizes by profile0..7: ' + ', '.join(map(str, sim_load_sizes)))
-print('OVL6 startup code sizes by directory order: ' + ', '.join(map(str, code_sizes)))
+print('OVL7 startup code sizes by directory order: ' + ', '.join(map(str, code_sizes)))
 print(f'SIM helper code8C00-90FF: {symbols["__phase_sim_aux_size"]} bytes; reloaded before every SIM profile, shares retired startup/cache/band workspace')
 print(f'Victory GEOMETRY composed image {symbols["__phase_victory_size"]} bytes')
 

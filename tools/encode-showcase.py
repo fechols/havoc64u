@@ -84,8 +84,8 @@ def main():
     ffprobe = executable(args.ffprobe, "ffprobe")
     manifest_path = args.manifest.resolve()
     manifest = json.loads(manifest_path.read_text())
-    if manifest["schema"] != 1 or manifest["sid_count"] != 4:
-        raise ValueError("Expected a four-SID capture manifest, schema 1")
+    if manifest["schema"] != 1 or manifest["sid_count"] not in (2, 4):
+        raise ValueError("Expected a two- or four-SID capture manifest, schema 1")
     if not manifest.get("passed") or not manifest.get("package_files_unchanged"):
         raise ValueError("Capture is incomplete or its package-integrity check failed")
     output = (args.output or manifest_path.parent / "havoc-showcase.mp4").resolve()
@@ -158,7 +158,7 @@ def main():
     # raises quiet emulator output modestly, and leaves encoding headroom.
     gain_db = min(6.0, 20 * math.log10(.70 / (source_peak / 32768)))
     audio_options = ["-af", f"volume={gain_db:.6f}dB", "-c:a", "aac", "-b:a", "192k", "-ar", "44100", "-ac", "2", "-t", str(duration),
-                     "-movflags", "+faststart", "-metadata", "title=H.A.V.O.C. — four-SID gameplay showcase"]
+                     "-movflags", "+faststart", "-metadata", f"title=H.A.V.O.C. — {manifest['sid_count']}-SID gameplay showcase"]
     run(base + ["-c:v", "copy"] + audio_options + [external_path(output, ffmpeg)], intermediate / "mux.log")
     if output.stat().st_size >= 9_800_000:
         bitrate = int(9_400_000 * 8 / duration - 192_000 - 30_000)

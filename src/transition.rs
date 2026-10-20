@@ -23,7 +23,7 @@ const fn cue(at: u16, effect: Effect, pan: i8) -> Cue {
 // Each scene's slice is sorted by onset, so later entries replace older cues
 // on the same lane without a queue or a second clock in the interrupt.
 #[cfg_attr(target_arch = "mos", link_section = ".phase.scenery.data")]
-static CUES: [Cue; 26] = [
+static CUES: [Cue; 34] = [
     cue(117, Effect::BirdCall, -100),
     cue(130, Effect::Footstep, -100),
     cue(156, Effect::Footstep, -100),
@@ -50,6 +50,14 @@ static CUES: [Cue; 26] = [
     cue(METEOR_STARTS[5] + 8, Effect::Meteor, 100),
     cue(METEOR_STARTS[6] + 8, Effect::Meteor, -100),
     cue(METEOR_STARTS[7] + 8, Effect::Meteor, 100),
+    cue(36, Effect::Transport, -100),
+    cue(88, Effect::Transport, 100),
+    cue(154, Effect::TransportAway, -100),
+    cue(258, Effect::TransportAway, 100),
+    cue(70, Effect::TransportAway, -100),
+    cue(125, Effect::TransportAway, 100),
+    cue(255, Effect::Transport, -100),
+    cue(310, Effect::Transport, 100),
 ];
 
 /// Owned by the foreground, never borrowed by the audio interrupt.
@@ -81,7 +89,7 @@ impl TransitionAudio {
             events: [None; 2],
         };
         let (scene, elapsed) = match progress {
-            Some((scene, elapsed)) if scene < 3 && elapsed < 400 => (scene, elapsed),
+            Some((scene, elapsed)) if scene < 5 && elapsed < 400 => (scene, elapsed),
             _ => {
                 output.cancel = self.scene != 255;
                 self.scene = 255;
@@ -100,7 +108,9 @@ impl TransitionAudio {
         let (start, end) = match scene {
             0 => (0, 9),
             1 => (9, 18),
-            _ => (18, 26),
+            2 => (18, 26),
+            3 => (26, 30),
+            _ => (30, 34),
         };
         for index in start..end {
             let cue = CUES[index];
@@ -194,5 +204,32 @@ mod tests {
             }
         }
         assert_eq!(count, 8);
+    }
+
+    #[test]
+    fn ascent_and_orbital_crossings_reach_both_sides_without_stale_bursts() {
+        for scene in [3, 4] {
+            let mut clock = TransitionAudio::new();
+            let mut lanes = [0; 2];
+            for elapsed in (0..400).step_by(11) {
+                for (lane, cue) in clock
+                    .update(Some((scene, elapsed)))
+                    .events
+                    .iter()
+                    .enumerate()
+                {
+                    if let Some(event) = cue {
+                        assert!(matches!(
+                            event.effect,
+                            Effect::Transport | Effect::TransportAway
+                        ));
+                        lanes[lane] += 1;
+                    }
+                }
+            }
+            assert_eq!(lanes, [2, 2]);
+            assert!(clock.update(None).cancel);
+            assert_eq!(clock.update(Some((scene, 399))).events, [None; 2]);
+        }
     }
 }

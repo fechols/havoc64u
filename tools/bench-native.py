@@ -104,9 +104,11 @@ class Layouts:
 
 STAGE_FIELDS = ("enemy_profile", "music_cue", "bridge_profile", "boss_kind",
                 "theme", "next_theme", "previous_theme", "reserved")
-SKY_COLORS = (6, 8, 11, 4, 0, 11, 8, 11, 6, 4)
+SKY_COLORS = (6, 8, 11, 4, 0, 11, 8, 11, 6, 4, 0, 0, 0, 0, 0, 0)
 STAGE_LABELS = ("lowlands", "crystal", "canyon", "gorge", "ash", "foundry",
-                "fortress", "citadel", "storm", "meteor", "coast", "carrier")
+                "fortress", "citadel", "storm", "meteor", "coast", "carrier",
+                "asteroid-belt", "shattered-moon", "ship-graveyard", "orbital-shipyard",
+                "space-carrier", "jump-gate")
 
 
 def stage_metadata(package, stage):
@@ -114,8 +116,8 @@ def stage_metadata(package, stage):
     return dict(zip(STAGE_FIELDS, package[start:start+8]))
 
 
-def fixtures(include_victory=True, campaign=False):
-    count = 12 if campaign else 4
+def fixtures(include_victory=True, campaign=False, space=False):
+    count = 18 if space else 12 if campaign else 4
     matching = (0, 2, 6, 11) if campaign else (0, 1, 2, 3)
     result = []
     for name, rail in (("title", 0), ("lowlands", 625), ("canyon", 4375),
@@ -172,6 +174,8 @@ def fixtures(include_victory=True, campaign=False):
         # Four final meteor streaks overlap at tick 306, before the oldest
         # expires at tick 310; midpoint alone misses this geometry peak.
         progress_ticks = (0, 200, 306, 399) if section >= 2 else (0, 200, 399)
+        if space and section == 11:
+            progress_ticks = (0, 100, 175, 200, 306, 350, 399)
         for progress in progress_ticks:
             patch = dict(result[1]["patch"], mode=6, rail_ticks=(section+1)*3750,
                          transition_ticks=progress, spawn_segment=section)
@@ -179,7 +183,7 @@ def fixtures(include_victory=True, campaign=False):
                            "section": section, "cache_miss": False, "input_bits": 16})
     # Exercise the real per-level enemies, including simultaneous escorts and
     # carrier weak points. Warm and cold model-bank fixtures are distinct.
-    labels = STAGE_LABELS if campaign else ("lowlands", "canyon", "fortress", "carrier")
+    labels = STAGE_LABELS[:count] if campaign else ("lowlands", "canyon", "fortress", "carrier")
     for section, label in enumerate(labels):
         for saturated in (False, True):
             patch = dict(result[1]["patch"], rail_ticks=section*3750+625,
@@ -200,11 +204,28 @@ def fixtures(include_victory=True, campaign=False):
             if not saturated:
                 result.append(dict(fixture, name=f"enemies-{label}-cold", enemy_cache_miss=True))
     if campaign:
-        for section, label in ((3, "gorge-warden"), (7, "citadel-heart")):
-            patch = dict(result[1]["patch"], rail_ticks=section*3750+1200,
+        bosses = [(3, "gorge-warden"), (7, "citadel-heart")]
+        if space:
+            bosses += [(16, "dreadnought"), (17, "gate-guardian")]
+        for section, label in bosses:
+            patch = dict(result[1]["patch"], rail_ticks=section*3750+(2600 if section >= 16 else 1200),
                          spawn_segment=section, boss_started=1, boss_z=680,
                          boss_left=20, boss_right=20, boss_core=60)
             result.append({"name": f"boss-{label}", "patch": patch,
+                           "section": section, "cache_miss": False, "input_bits": 0})
+    if space:
+        for section in (12, 14, 15, 16):
+            patch = dict(result[1]["patch"], rail_ticks=section*3750+625, spawn_segment=section)
+            for index in range(12):
+                small = index % 2 == 0
+                for field, value in {"kind": 7, "flags": 2 if small else 0,
+                                     "hp": 2 if small else 255,
+                                     "approach_speed": 8,
+                                     "pos.x": (index % 4)*70-105,
+                                     "pos.y": (index // 4)*60-60,
+                                     "pos.z": 500+(index % 3)*220}.items():
+                    patch[f"actors[{index}].{field}"] = value
+            result.append({"name": f"hazards-{STAGE_LABELS[section]}", "patch": patch,
                            "section": section, "cache_miss": False, "input_bits": 0})
     if include_victory:
         for name, elapsed in (("start", 0), ("midfade", 50), ("arrival", 400), ("hold", 600)):
@@ -222,10 +243,10 @@ def fixtures(include_victory=True, campaign=False):
     return result
 
 
-def cache_sequence(include_victory=True, campaign=False):
+def cache_sequence(include_victory=True, campaign=False, space=False):
     """Entry/exit histories that can leave stale pixels in either VIC bank."""
-    count = 12 if campaign else 4
-    all_fixtures = fixtures(include_victory, campaign)
+    count = 18 if space else 12 if campaign else 4
+    all_fixtures = fixtures(include_victory, campaign, space)
     base = next(fixture for fixture in all_fixtures if fixture["name"] == "lowlands")
 
     def variant(name, patch, **metadata):
@@ -378,7 +399,7 @@ def main():
     package_image = (package/"havoc.reu").read_bytes()
     package_format = vice.package_model_layout(package_image)
     sid_count = package_image[17]
-    chosen = [fixture for fixture in fixtures(package_format["medal"], package_format["campaign"])
+    chosen = [fixture for fixture in fixtures(package_format["medal"], package_format["campaign"], package_format["space"])
               if args.fixtures == "all" or fixture["name"] in args.fixtures.split(",")]
     ticks_values = list(map(int, args.ticks.split(",")))
     palettes = args.palettes.split(",")
@@ -508,7 +529,8 @@ def main():
                 raise RuntimeError("Baseline video/protocol differs")
             if baseline.get("sid_count", 2) != sid_count:
                 raise RuntimeError("Baseline SID profile differs")
-            cross_campaign = baseline.get("campaign", False) != report["campaign"]
+            cross_campaign = (baseline.get("campaign", False) != report["campaign"]
+                              or baseline.get("stage_count", 4) != report["stage_count"])
             if not cross_campaign and baseline.get("fixture_sha256") != report["fixture_sha256"]:
                 raise RuntimeError("Baseline fixture identity differs")
             report["comparison"] = {"cross_campaign": cross_campaign,
@@ -527,6 +549,7 @@ def main():
                 values.update((f"stage_info.{field}", value) for field, value in info.items())
             else:
                 info = {"enemy_profile": fixture["section"], "boss_kind": 0}
+            values = vice.clock_fixture(values, layouts.load("Game")["fields"], package_format["count"])
             for field, value in values.items():
                 layouts.patch(game, "Game", field, value)
             # Speeds are initialized exactly as spawning would do, including
@@ -546,7 +569,7 @@ def main():
             if "profile" in layouts.load("Runtime")["fields"]:
                 profile = (fixture["section"] + int(fixture.get("enemy_cache_miss", False))) % package_format["count"]
                 if package_format["campaign"]:
-                    code_profile = (3 + info["boss_kind"] if info["boss_kind"] else info["enemy_profile"]) if fixture["patch"]["mode"] in (1, 5) else 7
+                    code_profile = vice.boss_sim_profile(info["enemy_profile"], info["boss_kind"]) if fixture["patch"]["mode"] in (1, 5) else 7
                     if fixture.get("enemy_cache_miss"):
                         code_profile = (code_profile + 1) % 8
                 else:
@@ -656,7 +679,7 @@ def main():
                                     # theme switch and do not prove reuse.
                                     "reused_bands": 25 - sum(event["address"] == syms["PROF_DETAIL"] and event["value"] == 2 for event in events)}
             mon.command("bank ram")
-            state = layouts.decode("Game", mon.read(game_address, layouts.size("Game")))
+            state = vice.logical_game_state(layouts.decode("Game", mon.read(game_address, layouts.size("Game"))))
             end["simulation_ticks"] = state["ticks"]
             if "ENEMY_CODE_PROFILE" in syms:
                 section = vice.active_section(state["rail_ticks"], state["mode"], state.get("stage_id"))
@@ -750,7 +773,7 @@ def main():
                     print(f"BENCH {args.video} {fixture['name']} ticks={ticks} palette={palette}: {case['median_cycles']/bus_hz*1000:.3f}ms DMA={case['samples'][0]['dma']['bytes']}B", flush=True)
                     (output/"report.json").write_text(json.dumps(report, indent=2)+"\n")
         if "SKY_CACHE" in syms and not args.skip_cache_checks:
-            cache_report = {"passed": False, "sequence": cache_sequence(package_format["medal"], package_format["campaign"]), "runs": {}}
+            cache_report = {"passed": False, "sequence": cache_sequence(package_format["medal"], package_format["campaign"], package_format["space"]), "runs": {}}
             report["cache_checks"] = cache_report
             for forced in (False, True):
                 name = "forced-misses" if forced else "normal-cache"
@@ -793,7 +816,12 @@ def main():
                         quarter = fixture["patch"]["transition_ticks"] // 100
                         if info:
                             next_sky = SKY_COLORS[info["next_theme"]]
-                            if expected_sky != next_sky:
+                            if info["theme"] >= 10:
+                                expected_sky = 0
+                            elif info["next_theme"] >= 10:
+                                elapsed = fixture["patch"]["transition_ticks"]
+                                expected_sky = expected_sky if elapsed < 80 else 6 if elapsed < 180 else 0
+                            elif expected_sky != next_sky:
                                 midpoint_sky = next_sky if info["next_theme"] == 4 else 12
                                 expected_sky = (expected_sky, 14, midpoint_sky, next_sky)[quarter]
                         else:
@@ -812,8 +840,9 @@ def main():
                         raise RuntimeError(f"Stable theme {fixture['section']} never reused its eligible native sky")
                 if fixture.get("camera_check"):
                     section = fixture["section"]
-                    if cached["static_background_triangles"] != 14:
-                        raise RuntimeError(f"Camera sweep {index} did not retain all 14 backdrop triangles")
+                    expected_backdrop = 10 if package_format["space"] and section >= 12 else 14
+                    if cached["static_background_triangles"] != expected_backdrop:
+                        raise RuntimeError(f"Camera sweep {index} did not retain all {expected_backdrop} backdrop triangles")
                     reference = camera_backgrounds.setdefault(section, cached["static_background_sha256"])
                     if cached["static_background_sha256"] != reference:
                         raise RuntimeError(f"Camera sweep {index} moved the static backdrop")

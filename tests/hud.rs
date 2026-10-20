@@ -1,11 +1,12 @@
 use havoc::{
+    assets::SEGMENT_COUNT,
     game::{Hud, Mode},
     hud,
     render::{draw_text, pack_band, HUD_INK},
     victory::REVEAL_TICKS,
 };
 
-const LEVEL_NAMES: [&[u8]; 12] = [
+const LEVEL_NAMES: [&[u8]; SEGMENT_COUNT as usize] = [
     b"LOWLAND APPROACH",
     b"CRYSTAL CAVE",
     b"IRON CANYON",
@@ -18,6 +19,12 @@ const LEVEL_NAMES: [&[u8]; 12] = [
     b"METEOR REACH",
     b"CARRIER COAST",
     b"CARRIER ASSAULT",
+    b"ASTEROID BELT",
+    b"SHATTERED MOON",
+    b"SHIP GRAVEYARD",
+    b"ORBITAL SHIPYARD",
+    b"SPACE CARRIER",
+    b"JUMP GATE",
 ];
 
 fn state(mode: Mode) -> Hud {
@@ -101,10 +108,10 @@ fn all_level_names_fit_between_score_and_lives_in_every_cockpit_mode() {
 
 #[cfg(feature = "host-tools")]
 #[test]
-fn crossing_keeps_the_outgoing_name_until_arrival_for_all_eleven_boundaries() {
+fn crossing_keeps_the_outgoing_name_until_arrival_for_all_seventeen_boundaries() {
     use havoc::game::{Game, TRANSITION_TICKS};
 
-    for section in 0..11 {
+    for section in 0..SEGMENT_COUNT - 1 {
         for tick in [
             0,
             TRANSITION_TICKS / 2,
@@ -199,9 +206,9 @@ fn sector_banner_expires_and_boss_meter_uses_normalized_health() {
 }
 
 #[test]
-fn all_twelve_sector_numbers_and_three_boss_labels_remain_distinct() {
+fn all_eighteen_sector_numbers_and_five_boss_labels_remain_distinct() {
     let mut sectors = Vec::new();
-    for stage in 0..12 {
+    for stage in 0..SEGMENT_COUNT {
         let mut status = state(Mode::Playing);
         status.section = stage;
         status.distance = stage as u32 * havoc::assets::SEGMENT_DISTANCE;
@@ -214,7 +221,7 @@ fn all_twelve_sector_numbers_and_three_boss_labels_remain_distinct() {
         sectors.push(number);
     }
     let mut labels = Vec::new();
-    for kind in 1..=3 {
+    for kind in 1..=5 {
         let mut status = state(Mode::Playing);
         status.boss_kind = kind;
         status.boss_shield = 100;
@@ -290,7 +297,7 @@ fn victory_results_leave_the_star_clear_and_show_score_and_restart() {
 #[test]
 fn attract_labels_identify_each_map_without_cockpit_or_boss_panels() {
     let mut images = Vec::new();
-    for section in 0..12 {
+    for section in 0..SEGMENT_COUNT {
         let mut status = state(Mode::Attract);
         status.section = section;
         status.distance = section as u32 * 30_000;
@@ -324,7 +331,7 @@ fn attract_labels_identify_each_map_without_cockpit_or_boss_panels() {
 #[test]
 fn every_level_top_strip_survives_native_packing_and_previous_cell_palettes() {
     for mode in [Mode::Playing, Mode::Attract] {
-        for section in 0..12 {
+        for section in 0..SEGMENT_COUNT {
             let mut status = state(mode);
             status.section = section;
             status.score = u32::MAX;

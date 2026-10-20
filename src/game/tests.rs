@@ -1,6 +1,107 @@
 use super::*;
 
 #[test]
+fn small_debris_is_targetable_but_cannot_farm_enemy_rewards() {
+    let mut game = Game::preview_at_for_test(12);
+    let bank = test_bank(12);
+    game.spawn_actor(
+        Spawn {
+            distance: 0,
+            kind: assets::ROCK,
+            x: 0,
+            y: -10,
+            flags: 2,
+        },
+        0,
+        &bank,
+    );
+    game.spawn_actor(
+        Spawn {
+            distance: 0,
+            kind: assets::ROCK,
+            x: 70,
+            y: -20,
+            flags: 0,
+        },
+        0,
+        &bank,
+    );
+    assert_eq!((game.actors[0].hp, game.actors[1].hp), (2, 255));
+    assert_eq!(actor_center_sim(&game.actors[0], &bank).y, 0);
+    assert_eq!(
+        game.missile_target(Vec3 { x: 0, y: 0, z: 180 }, &bank)
+            .unwrap()
+            .0
+            .x,
+        0
+    );
+    game.kills = 3;
+    game.bomb_kills = 4;
+    game.actors[0].pos.z = 900;
+    game.actors[1].pos.z = 900;
+    game.bomb(&bank);
+    assert_eq!(game.actors[0].kind, 0);
+    assert_eq!(game.actors[1].hp, 255);
+    assert_eq!(
+        (game.score, game.kills, game.bomb_kills, game.bombs),
+        (25, 3, 4, 2)
+    );
+    assert!(game.pickups.iter().all(|pickup| pickup.kind == 0));
+}
+
+#[test]
+fn debris_shot_bounds_follow_its_half_size_mesh() {
+    let bank = test_bank(12);
+    for (x, hit) in [(18, true), (19, false)] {
+        let mut game = Game::preview_at_for_test(12);
+        game.spawn_actor(
+            Spawn {
+                distance: 0,
+                kind: assets::ROCK,
+                x: 0,
+                y: -10,
+                flags: 2,
+            },
+            0,
+            &bank,
+        );
+        game.actors[0].pos.z = 520;
+        game.shots[0] = Shot {
+            pos: Vec3 { x, y: 0, z: 480 },
+            damage: 2,
+            kind: 1,
+            ..Shot::EMPTY
+        };
+        game.update_shots(&bank);
+        assert_eq!(game.actors[0].kind == 0, hit);
+        assert_eq!(game.score, if hit { 25 } else { 0 });
+    }
+}
+
+#[test]
+fn ascent_pitch_levels_out_without_changing_the_controls() {
+    let mut game = running();
+    game.mode = Mode::Transition;
+    set_rail(&mut game, 12 * SECTION_TICKS as u32);
+    for (tick, expected) in [(0, 0), (100, 236), (300, 236), (350, 246), (399, 0)] {
+        game.transition_ticks = tick;
+        assert_eq!(game.ascent_pitch(), expected);
+    }
+    game.controls.bits = RIGHT | UP;
+    game.transition_ticks = 200;
+    game.move_player();
+    assert_eq!((game.player.x, game.player.y), (3, 3));
+}
+
+impl Game {
+    fn preview_at_for_test(stage: u8) -> Self {
+        let mut game = running();
+        set_rail(&mut game, stage as u32 * SECTION_TICKS as u32);
+        game
+    }
+}
+
+#[test]
 fn planar_effects_preserve_ordered_vertices_colors_and_flags() {
     #[derive(Default)]
     struct Capture(std::vec::Vec<([Vec3; 3], u8, u8)>);
@@ -123,6 +224,12 @@ fn test_bank(level: u8) -> AssetBank<'static> {
             test_bank_bytes(9),
             test_bank_bytes(10),
             test_bank_bytes(11),
+            test_bank_bytes(12),
+            test_bank_bytes(13),
+            test_bank_bytes(14),
+            test_bank_bytes(15),
+            test_bank_bytes(16),
+            test_bank_bytes(17),
         ];
         AssetBank::new(&BANKS[level as usize]).unwrap()
     }
@@ -136,7 +243,8 @@ fn music_follows_stage_boss_crossing_and_result_identity() {
     let mut game = Game::new();
     assert_eq!(game.music_state(), MusicState::Title);
     for index in 0..assets::SEGMENT_COUNT {
-        set_rail(&mut game, index as u16 * SECTION_TICKS);
+        game.mode = Mode::Playing;
+        set_rail(&mut game, index as u32 * SECTION_TICKS as u32);
         let cue = MusicState::from_cue(game.stage_info.music_cue).unwrap();
         for mode in [Mode::Playing, Mode::Attract, Mode::Respawning] {
             game.mode = mode;
@@ -144,10 +252,22 @@ fn music_follows_stage_boss_crossing_and_result_identity() {
             assert_eq!(game.music_state(), cue);
             if game.stage_info.boss_kind != 0 {
                 game.boss_started = true;
-                let boss = MusicState::from_cue(9 + game.stage_info.boss_kind).unwrap();
+                let boss = MusicState::from_cue(match game.stage_info.boss_kind {
+                    4 => 12,
+                    5 => 20,
+                    kind => 9 + kind,
+                })
+                .unwrap();
                 assert_eq!(game.music_state(), boss);
                 game.mode = Mode::Transition;
-                assert_eq!(game.music_state(), boss);
+                assert_eq!(
+                    game.music_state(),
+                    if index == 11 {
+                        MusicState::from_cue(19).unwrap()
+                    } else {
+                        boss
+                    }
+                );
             }
         }
     }
@@ -250,14 +370,15 @@ fn running() -> Game {
 }
 /// Position hand-built fixtures using the explicit stage identity introduced
 /// by the campaign. Transition fixtures remain attached to the outgoing stage.
-fn set_rail(game: &mut Game, ticks: u16) {
-    game.rail_ticks = ticks;
+fn set_rail(game: &mut Game, ticks: impl TryInto<u32>) {
+    let ticks = ticks.try_into().ok().unwrap();
     let position = if game.mode == Mode::Transition {
         ticks.saturating_sub(1)
     } else {
         ticks
     };
-    game.stage_id = (position / SECTION_TICKS).min((assets::SEGMENT_COUNT - 1) as u16) as u8;
+    game.stage_id = (position / SECTION_TICKS as u32).min((assets::SEGMENT_COUNT - 1) as u32) as u8;
+    game.stage_ticks = (ticks - game.stage_id as u32 * SECTION_TICKS as u32) as u16;
     game.stage_info = assets::preview_stage_info(game.stage_id);
 }
 fn sample(game: &mut Game, bits: u8, ms: u32) {
@@ -277,7 +398,7 @@ fn queue_roll(game: &mut Game, direction: u8) {
 fn scenic_bridges_add_exactly_eight_seconds_and_keep_the_outgoing_checkpoint() {
     for outgoing in 0..assets::SEGMENT_COUNT - 1 {
         let mut game = running();
-        let boundary = (outgoing as u16 + 1) * SECTION_TICKS;
+        let boundary = (outgoing as u32 + 1) * SECTION_TICKS as u32;
         set_rail(&mut game, boundary - 1);
         game.spawn_segment = outgoing;
         game.spawn_cursor = 17;
@@ -295,7 +416,14 @@ fn scenic_bridges_add_exactly_eight_seconds_and_keep_the_outgoing_checkpoint() {
             assert_eq!(game.transition_progress(), Some((outgoing, elapsed)));
             assert_eq!(game.hud().distance, boundary as u32 * 8);
             assert_eq!(game.segment_index(), outgoing);
-            assert_eq!(game.music_state(), cue);
+            assert_eq!(
+                game.music_state(),
+                if outgoing == 11 {
+                    MusicState::from_cue(19).unwrap()
+                } else {
+                    cue
+                }
+            );
             assert_eq!(game.scenery_ticks(), before_scene + elapsed + 1);
             game.damage_player(100);
             assert_eq!(
@@ -306,11 +434,11 @@ fn scenic_bridges_add_exactly_eight_seconds_and_keep_the_outgoing_checkpoint() {
         }
         assert_eq!(game.mode, Mode::Playing);
         assert_eq!(game.segment_index(), outgoing + 1);
-        assert_eq!(game.rail_ticks, boundary);
-        assert_eq!(game.scenery_ticks(), before_scene + TRANSITION_TICKS + 1);
+        assert_eq!(game.stage_ticks, 0);
+        assert_eq!(game.scenery_ticks(), 0);
         assert_eq!((game.spawn_segment, game.spawn_cursor), (outgoing + 1, 0));
         game.tick(&segment, &test_bank(game.segment_index())); // A stale outgoing view cannot spawn encounters.
-        assert_eq!((game.rail_ticks, game.spawn_cursor), (boundary + 1, 0));
+        assert_eq!((game.stage_ticks, game.spawn_cursor), (1, 0));
         let mut incoming = empty_segment(outgoing + 1);
         incoming[7] = 1;
         incoming[18] = assets::FIGHTER; // An encounter at local distance zero.
@@ -336,8 +464,8 @@ fn scenic_bridges_add_exactly_eight_seconds_and_keep_the_outgoing_checkpoint() {
 fn crossing_exit_exposes_incoming_host_metadata_before_the_next_tick() {
     for outgoing in 0..assets::SEGMENT_COUNT - 1 {
         let mut game = running();
-        set_rail(&mut game, (outgoing as u16 + 1) * SECTION_TICKS - 1);
-        game.rail_ticks += 1;
+        set_rail(&mut game, (outgoing as u32 + 1) * SECTION_TICKS as u32 - 1);
+        game.stage_ticks += 1;
         game.mode = Mode::Transition;
         game.transition_ticks = TRANSITION_TICKS - 1;
         game.boss_started = game.stage_info.boss_kind != 0;
@@ -470,10 +598,10 @@ fn all_controls_and_double_taps_behave_identically_across_both_bridge_seams() {
     }
 }
 #[test]
-fn all_twelve_checkpoints_restore_stage_encounters_and_bosses_after_repeated_deaths() {
+fn all_eighteen_checkpoints_restore_stage_encounters_and_bosses_after_repeated_deaths() {
     for stage in 0..assets::SEGMENT_COUNT {
         let mut game = running();
-        set_rail(&mut game, stage as u16 * SECTION_TICKS + 2200);
+        set_rail(&mut game, stage as u32 * SECTION_TICKS as u32 + 2200);
         game.score = 12345;
         for remaining in [2, 1] {
             game.boss_started = true;
@@ -490,11 +618,8 @@ fn all_twelve_checkpoints_restore_stage_encounters_and_bosses_after_repeated_dea
             game.respawn();
             assert_eq!(game.stage_id, stage);
             assert_eq!(game.stage_info, assets::preview_stage_info(stage));
-            assert_eq!(game.rail_ticks, stage as u16 * SECTION_TICKS);
-            assert_eq!(
-                game.scenery_ticks(),
-                stage as u16 * (SECTION_TICKS + TRANSITION_TICKS)
-            );
+            assert_eq!(game.stage_ticks, 0);
+            assert_eq!(game.scenery_ticks(), 0);
             assert_eq!((game.spawn_segment, game.spawn_cursor), (stage, 0));
             assert_eq!(
                 (game.boss_left, game.boss_right, game.boss_core),
@@ -508,8 +633,8 @@ fn all_twelve_checkpoints_restore_stage_encounters_and_bosses_after_repeated_dea
     }
 }
 #[test]
-fn three_boss_gates_start_at_twenty_seconds_and_allow_early_or_late_kills() {
-    for stage in [3u8, 7, 11] {
+fn all_boss_gates_start_on_time_and_allow_early_or_late_kills() {
+    for stage in [3u8, 7, 11, 16, 17] {
         for early in [true, false] {
             let bytes = empty_segment(stage);
             let segment = Segment::new(&bytes).unwrap();
@@ -517,16 +642,25 @@ fn three_boss_gates_start_at_twenty_seconds_and_allow_early_or_late_kills() {
             let mut game = running();
             set_rail(
                 &mut game,
-                stage as u16 * SECTION_TICKS + BOSS_START_TICKS - 2,
+                stage as u32 * SECTION_TICKS as u32
+                    + if stage >= 16 {
+                        SPACE_BOSS_START_TICKS as u32
+                    } else {
+                        BOSS_START_TICKS as u32
+                    }
+                    - 2,
             );
             game.tick(&segment, &bank);
             assert!(!game.boss_started);
             game.tick(&segment, &bank);
             assert!(game.boss_started);
-            assert_eq!(game.simulation_profile(), 3 + game.stage_info.boss_kind);
+            assert_eq!(
+                game.simulation_profile(),
+                game.stage_info.simulation_profile()
+            );
             assert_eq!(game.hud().boss_kind, game.stage_info.boss_kind);
             assert_eq!(game.hud().boss_shield, 100);
-            let boundary = (stage as u16 + 1) * SECTION_TICKS;
+            let boundary = (stage as u32 + 1) * SECTION_TICKS as u32;
             if early {
                 game.boss_left = 0;
                 game.boss_right = 0;
@@ -547,7 +681,7 @@ fn three_boss_gates_start_at_twenty_seconds_and_allow_early_or_late_kills() {
                     game.tick(&segment, &bank);
                 }
                 assert_eq!(game.mode, Mode::Playing);
-                assert_eq!(game.rail_ticks, boundary);
+                assert_eq!(game.stage_ticks, SECTION_TICKS);
                 assert_eq!(game.ticks, animation + 80);
                 assert!(
                     game.boss_z < before_z,
@@ -559,10 +693,10 @@ fn three_boss_gates_start_at_twenty_seconds_and_allow_early_or_late_kills() {
                 game.check_boss_death();
             }
             game.tick(&segment, &bank);
-            assert_eq!(game.rail_ticks, boundary);
+            assert_eq!(game.stage_ticks, SECTION_TICKS);
             assert_eq!(
                 game.mode,
-                if stage == 11 {
+                if stage == assets::SEGMENT_COUNT - 1 {
                     Mode::Victory
                 } else {
                     Mode::Transition
@@ -574,7 +708,7 @@ fn three_boss_gates_start_at_twenty_seconds_and_allow_early_or_late_kills() {
 }
 #[test]
 fn act_clear_resupply_happens_once_and_the_new_stage_uses_its_own_metadata() {
-    for stage in [3u8, 7] {
+    for stage in [3u8, 7, 11, 16] {
         for (bombs, lives, expected_bombs, expected_lives) in
             [(0, 1, 2, 2), (1, 2, 2, 3), (3, 3, 3, 3)]
         {
@@ -582,7 +716,7 @@ fn act_clear_resupply_happens_once_and_the_new_stage_uses_its_own_metadata() {
             let segment = Segment::new(&bytes).unwrap();
             let bank = test_bank(stage);
             let mut game = running();
-            set_rail(&mut game, (stage as u16 + 1) * SECTION_TICKS - 1);
+            set_rail(&mut game, (stage as u32 + 1) * SECTION_TICKS as u32 - 1);
             game.boss_started = true;
             game.boss_defeated = true;
             game.shield = 17;
@@ -673,11 +807,8 @@ fn checkpoints_and_carrier_start_use_combat_distance_after_bridges() {
     set_rail(&mut before, SECTION_TICKS * 11 - 1);
     before.damage_player(100);
     before.respawn();
-    assert_eq!(before.rail_ticks, SECTION_TICKS * 10);
-    assert_eq!(
-        before.scenery_ticks(),
-        SECTION_TICKS * 10 + TRANSITION_TICKS * 10
-    );
+    assert_eq!(before.stage_ticks, 0);
+    assert_eq!(before.scenery_ticks(), 0);
     let mut game = running();
     set_rail(&mut game, SECTION_TICKS * 11 - 1);
     game.tick(
@@ -703,15 +834,12 @@ fn checkpoints_and_carrier_start_use_combat_distance_after_bridges() {
         &test_bank(game.segment_index()),
     );
     assert!(game.boss_started);
-    assert_eq!(game.rail_ticks, SECTION_TICKS * 11 + BOSS_START_TICKS);
+    assert_eq!(game.stage_ticks, BOSS_START_TICKS);
     game.damage_player(100);
     game.respawn();
-    assert_eq!(game.rail_ticks, SECTION_TICKS * 11);
+    assert_eq!(game.stage_ticks, 0);
     assert_eq!(game.transition_progress(), None);
-    assert_eq!(
-        game.scenery_ticks(),
-        SECTION_TICKS * 11 + TRANSITION_TICKS * 11
-    );
+    assert_eq!(game.scenery_ticks(), 0);
     set_rail(&mut game, MISSION_TICKS - 1);
     game.boss_defeated = true;
     game.tick(
@@ -719,7 +847,7 @@ fn checkpoints_and_carrier_start_use_combat_distance_after_bridges() {
         &test_bank(game.segment_index()),
     );
     assert_eq!(game.mode, Mode::Victory);
-    assert_eq!(game.scenery_ticks(), MISSION_TICKS + 11 * TRANSITION_TICKS);
+    assert_eq!(game.scenery_ticks(), SECTION_TICKS);
 }
 #[derive(Debug, PartialEq, Eq)]
 struct TerrainCapture {
@@ -1211,7 +1339,7 @@ fn resident_state_fits_budget() {
 #[test]
 fn attract_silences_all_effects_and_gameplay_restores_them() {
     let mut g = Game::new();
-    g.reset_scene(Mode::Attract, 0);
+    g.reset_scene(Mode::Attract, 0, 0);
     let effects = [
         Effect::Fire,
         Effect::EnemyFire,
@@ -1237,11 +1365,11 @@ fn attract_enemy_and_carrier_shots_spawn_and_move_silently() {
     for carrier in [false, true] {
         let mut g = Game::new();
         if carrier {
-            g.reset_scene(Mode::Attract, SECTION_TICKS * 11 + 1000);
+            g.reset_scene(Mode::Attract, 11, 1000);
             g.boss_z = 680;
             g.ticks = 39;
         } else {
-            g.reset_scene(Mode::Attract, 0);
+            g.reset_scene(Mode::Attract, 0, 0);
             g.actors[0] = enemy(assets::FIGHTER, 50, 0, 1000);
             g.actors[0].age = 64;
         }
@@ -1263,7 +1391,7 @@ fn attract_enemy_and_carrier_shots_spawn_and_move_silently() {
 #[test]
 fn attract_has_no_player_collisions_or_pickup_collection() {
     let mut g = Game::new();
-    g.reset_scene(Mode::Attract, 0);
+    g.reset_scene(Mode::Attract, 0, 0);
     g.shield = 30;
     g.bombs = 0;
     g.actors[0] = enemy(assets::FIGHTER, 0, 0, PLAYER_Z + SPEED);
@@ -1310,7 +1438,7 @@ fn attract_has_no_player_collisions_or_pickup_collection() {
 #[test]
 fn attract_section_cuts_clear_encounters_boss_audio_and_gestures() {
     let mut g = Game::new();
-    g.reset_scene(Mode::Attract, SECTION_TICKS * 6);
+    g.reset_scene(Mode::Attract, 6, 0);
     g.menu_ticks = ATTRACT_TICKS - 1;
     g.actors[0] = enemy(assets::FIGHTER, 50, 0, 500);
     g.shots[0] = Shot {
@@ -1344,7 +1472,7 @@ fn attract_section_cuts_clear_encounters_boss_audio_and_gestures() {
         &test_bank(g.segment_index()),
     );
     assert_eq!(g.mode, Mode::Attract);
-    assert_eq!(g.rail_ticks, SECTION_TICKS * 10);
+    assert_eq!(g.stage_ticks, 0);
     assert_eq!(g.spawn_segment, 10);
     assert_eq!((g.menu_ticks, g.spawn_cursor), (0, 0));
     assert!(g.actors.iter().all(|a| a.kind == 0));
@@ -1372,7 +1500,7 @@ fn result_screens_do_not_enter_attract_mode() {
             g.tick(&segment, &test_bank(g.segment_index()));
         }
         assert_eq!(g.mode, mode);
-        assert_eq!(g.rail_ticks, 0);
+        assert_eq!(g.stage_ticks, 0);
     }
 }
 #[test]
@@ -1459,9 +1587,9 @@ fn compact_reset_matches_every_constructor_field_without_comparing_padding() {
 }
 #[test]
 fn victory_freezes_the_run_and_consumes_inputs_through_all_four_hundred_ticks() {
-    let bytes = empty_segment(11);
+    let bytes = empty_segment(assets::SEGMENT_COUNT - 1);
     let segment = Segment::new(&bytes).unwrap();
-    let bank = test_bank(11);
+    let bank = test_bank(assets::SEGMENT_COUNT - 1);
     let mut game = running();
     set_rail(&mut game, MISSION_TICKS - 1);
     game.boss_started = true;
@@ -1479,10 +1607,13 @@ fn victory_freezes_the_run_and_consumes_inputs_through_all_four_hundred_ticks() 
     game.tick(&segment, &bank);
     assert_eq!(game.mode, Mode::Victory);
     assert_eq!(game.victory_ticks(), 0);
-    assert_eq!((game.simulation_profile(), game.segment_index()), (7, 11));
+    assert_eq!(
+        (game.simulation_profile(), game.segment_index()),
+        (7, assets::SEGMENT_COUNT - 1)
+    );
     let frozen = (
         game.player,
-        game.rail_ticks,
+        game.stage_ticks,
         game.bank,
         game.roll_ticks,
         game.boss_z,
@@ -1507,7 +1638,7 @@ fn victory_freezes_the_run_and_consumes_inputs_through_all_four_hundred_ticks() 
         assert_eq!(
             (
                 game.player,
-                game.rail_ticks,
+                game.stage_ticks,
                 game.bank,
                 game.roll_ticks,
                 game.boss_z,
@@ -1550,9 +1681,9 @@ fn victory_world_keeps_only_the_frozen_ship_and_scenery_until_blackout() {
             self.0.push(([a, b, c], color, flags));
         }
     }
-    let bytes = empty_segment(11);
+    let bytes = empty_segment(assets::SEGMENT_COUNT - 1);
     let segment = Segment::new(&bytes).unwrap();
-    let bank = test_bank(11);
+    let bank = test_bank(assets::SEGMENT_COUNT - 1);
     let mut game = running();
     game.mode = Mode::Victory;
     set_rail(&mut game, MISSION_TICKS);
@@ -1605,8 +1736,8 @@ fn victory_world_keeps_only_the_frozen_ship_and_scenery_until_blackout() {
 #[test]
 fn victory_host_and_native_staging_match_through_fade_reveal_and_idle() {
     use crate::render::{Renderer, BAND_PIXELS};
-    let bank = test_bank(11);
-    let bytes = mission_segment(3);
+    let bank = test_bank(assets::SEGMENT_COUNT - 1);
+    let bytes = mission_segment(assets::SEGMENT_COUNT - 1);
     let segment = Segment::new(&bytes).unwrap();
     for elapsed in [
         0, 1, 20, 40, 60, 80, 99, 100, 101, 200, 399, 400, 401, 800, 65535,
@@ -1617,7 +1748,7 @@ fn victory_host_and_native_staging_match_through_fade_reveal_and_idle() {
         game.render(&mut direct, &bank, &segment);
         direct.finish();
         let mut staged = Renderer::new();
-        staged.begin(crate::scenery::sky_color(3, None));
+        staged.begin(crate::scenery::sky_color(15, None));
         let raw_count = {
             let mut stage = staged.scenery_stage();
             game.render_scenery(&mut stage, &segment);
@@ -2008,7 +2139,7 @@ fn bomb_presentation_survives_rewarded_inventory_full_audio_and_catch_up() {
     assert_eq!(g.take_presentation_event(), PresentationEvent::None);
 }
 #[test]
-fn killing_the_carrier_keeps_bomb_presentation_on_the_victory_screen() {
+fn killing_the_gate_guardian_keeps_bomb_presentation_on_the_victory_screen() {
     let mut g = running();
     set_rail(&mut g, MISSION_TICKS - 1);
     g.boss_started = true;
@@ -2016,7 +2147,7 @@ fn killing_the_carrier_keeps_bomb_presentation_on_the_victory_screen() {
     g.boss_right = 0;
     g.boss_core = 8;
     g.controls.bomb_pending = true;
-    let bytes = empty_segment(11);
+    let bytes = empty_segment(assets::SEGMENT_COUNT - 1);
     let segment = Segment::new(&bytes).unwrap();
     g.tick(&segment, &test_bank(g.segment_index()));
     assert_eq!(g.mode, Mode::Victory);
@@ -2034,7 +2165,7 @@ fn presentation_resets_and_bombs_keep_only_the_latest_request() {
     assert_eq!(g.take_presentation_event(), PresentationEvent::Reset);
     assert_eq!(g.take_presentation_event(), PresentationEvent::None);
     g.bomb(&test_bank(g.segment_index()));
-    g.reset_scene(Mode::Title, 0);
+    g.reset_scene(Mode::Title, 0, 0);
     assert_eq!(g.take_presentation_event(), PresentationEvent::Reset);
     g.reset_run();
     g.bomb(&test_bank(g.segment_index()));
@@ -2942,11 +3073,11 @@ fn damage_flash_is_independent_of_immunity_and_resets_with_the_run() {
     assert_eq!(g.hit_flash_ticks, 0);
 }
 #[test]
-fn full_twelve_stage_campaign_is_winnable_with_regular_joystick_input() {
+fn full_eighteen_stage_campaign_is_winnable_with_regular_joystick_input() {
     let banks: [_; assets::SEGMENT_COUNT as usize] =
         core::array::from_fn(|i| mission_segment(i as u8));
     let mut g = running();
-    let mut visited = 0u16;
+    let mut visited = 0u32;
     let mut scenic_ticks = 0u16;
     for tick in 1..=90_000u32 {
         let section = g.segment_index();
@@ -3028,8 +3159,11 @@ fn full_twelve_stage_campaign_is_winnable_with_regular_joystick_input() {
         );
         if g.mode == Mode::Victory {
             assert_eq!(visited, (1 << assets::SEGMENT_COUNT) - 1);
-            assert!(tick >= MISSION_TICKS as u32 + 11 * TRANSITION_TICKS as u32);
-            assert!(scenic_ticks >= 11 * TRANSITION_TICKS);
+            assert!(
+                tick >= MISSION_TICKS as u32
+                    + (assets::SEGMENT_COUNT as u32 - 1) * TRANSITION_TICKS as u32
+            );
+            assert!(scenic_ticks >= (assets::SEGMENT_COUNT as u16 - 1) * TRANSITION_TICKS);
             assert!(g.score >= 5000);
             return;
         }
@@ -3154,7 +3288,7 @@ fn every_level_enemy_uses_banked_health_rewards_and_missile_guidance() {
             assert_eq!(g.actors[0].kind, 0, "bomb kill level {level} kind {kind}");
         }
     }
-    assert_eq!(exercised, 33);
+    assert_eq!(exercised, 49);
 }
 
 #[test]

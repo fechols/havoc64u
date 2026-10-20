@@ -108,13 +108,21 @@ SECTIONS {
     } >phase
     .phase.audio 0x3000 : AT(0x50000) {
         __phase_audio_start = .;
-        *(.phase.audio .phase.audio.*)
+        *(.phase.audio .phase.audio.data)
+        /* After the full bank scan, refills use the immutable resident cue
+         * directory and no longer need the startup validator or parser. */
+        __phase_audio_runtime_end = .;
+        *(.phase.audio.startup .phase.audio.startup.*)
         __phase_audio_end = .;
     } >phase
-    /* Scenery has its own REU pages; the score bank begins at $100000. */
+    /* Scenery has its own REU pages; the score bank begins at $200000. */
     .phase.scenery 0x3000 : AT(0x70000) {
         __phase_scenery_start = .;
         *(.phase.scenery .phase.scenery.data)
+        /* Ordinary terrestrial frames omit space-only helpers and data. The
+         * opaque decoration ABI remains after the complete shared prefix. */
+        __phase_scenery_terrain_end = .;
+        *(.phase.scenery.space_shared .phase.scenery.space_shared.*)
         __phase_scenery_base_end = .;
     } >phase
     scenic_decoration = __phase_scenery_base_end;
@@ -129,6 +137,34 @@ SECTIONS {
     .phase.scenery.meteors scenic_decoration : AT(0x160000 + SIZEOF(.phase.scenery)) {
         KEEP(*(.phase.scenery.meteors.entry))
         *(.phase.scenery.meteors .phase.scenery.meteors.*)
+    } >phase
+    .phase.scenery.ascent scenic_decoration : AT(0x180000 + SIZEOF(.phase.scenery)) {
+        KEEP(*(.phase.scenery.ascent.entry))
+        *(.phase.scenery.ascent .phase.scenery.ascent.*)
+    } >phase
+    .phase.scenery.asteroid scenic_decoration : AT(0x190000 + SIZEOF(.phase.scenery)) {
+        KEEP(*(.phase.scenery.asteroid.entry))
+        *(.phase.scenery.asteroid .phase.scenery.asteroid.*)
+    } >phase
+    .phase.scenery.moon scenic_decoration : AT(0x1A0000 + SIZEOF(.phase.scenery)) {
+        KEEP(*(.phase.scenery.moon.entry))
+        *(.phase.scenery.moon .phase.scenery.moon.*)
+    } >phase
+    .phase.scenery.graveyard scenic_decoration : AT(0x1B0000 + SIZEOF(.phase.scenery)) {
+        KEEP(*(.phase.scenery.graveyard.entry))
+        *(.phase.scenery.graveyard .phase.scenery.graveyard.*)
+    } >phase
+    .phase.scenery.shipyard scenic_decoration : AT(0x1C0000 + SIZEOF(.phase.scenery)) {
+        KEEP(*(.phase.scenery.shipyard.entry))
+        *(.phase.scenery.shipyard .phase.scenery.shipyard.*)
+    } >phase
+    .phase.scenery.carrier scenic_decoration : AT(0x1D0000 + SIZEOF(.phase.scenery)) {
+        KEEP(*(.phase.scenery.carrier.entry))
+        *(.phase.scenery.carrier .phase.scenery.carrier.*)
+    } >phase
+    .phase.scenery.gate scenic_decoration : AT(0x1E0000 + SIZEOF(.phase.scenery)) {
+        KEEP(*(.phase.scenery.gate.entry))
+        *(.phase.scenery.gate .phase.scenery.gate.*)
     } >phase
     /* Shared SIM helpers reuse the retired startup / renderer workspace.
      * load_sim restores them before every SIM entry. No IRQ references. */
@@ -160,6 +196,13 @@ SECTIONS {
         SHORT(__phase_scenery_size)
         SHORT(__phase_scenery_size)
         SHORT(__phase_sim_aux_size)
+        SHORT(__phase_scenery_size)
+        SHORT(__phase_scenery_size)
+        SHORT(__phase_scenery_size)
+        SHORT(__phase_scenery_size)
+        SHORT(__phase_scenery_size)
+        SHORT(__phase_scenery_size)
+        SHORT(__phase_scenery_size)
         __startup_checks_end = .;
     } >startup_checks
 
@@ -236,9 +279,13 @@ __phase_geometry_base_size = __phase_geometry_base_end - __phase_geometry_start;
 __phase_victory_size = __phase_geometry_base_size + SIZEOF(.phase.victory);
 __phase_pixels_size = SIZEOF(.phase.pixels);
 __phase_audio_size = SIZEOF(.phase.audio);
-__phase_scenery_size = SIZEOF(.phase.scenery) + MAX(SIZEOF(.phase.scenery.wildlife), MAX(SIZEOF(.phase.scenery.transport), SIZEOF(.phase.scenery.meteors)));
+__phase_audio_runtime_size = __phase_audio_runtime_end - __phase_audio_start;
+__phase_scenery_earth_tail_size = MAX(SIZEOF(.phase.scenery.wildlife), MAX(SIZEOF(.phase.scenery.transport), SIZEOF(.phase.scenery.meteors)));
+__phase_scenery_space_tail_size = MAX(MAX(MAX(SIZEOF(.phase.scenery.ascent), SIZEOF(.phase.scenery.asteroid)), MAX(SIZEOF(.phase.scenery.moon), SIZEOF(.phase.scenery.graveyard))), MAX(MAX(SIZEOF(.phase.scenery.shipyard), SIZEOF(.phase.scenery.carrier)), SIZEOF(.phase.scenery.gate)));
+__phase_scenery_size = SIZEOF(.phase.scenery) + MAX(__phase_scenery_earth_tail_size, __phase_scenery_space_tail_size);
 __phase_scenery_end = __phase_scenery_start + __phase_scenery_size;
 __phase_scenery_base_size = __phase_scenery_base_end - __phase_scenery_start;
+__phase_scenery_terrain_size = __phase_scenery_terrain_end - __phase_scenery_start;
 /* SCENERY stages 96 camera-space records in the command array's tail.
  * GEOMETRY copies each record out before projection reuses consumed bytes. */
 __scenery_records_start = 0xD880;
@@ -286,8 +333,10 @@ ASSERT(__phase_victory_size <= 0x4200, "victory GEOMETRY overlay exceeds $3000-$
 ASSERT(__phase_geometry_base_size > 0 && __phase_geometry_base_size < __phase_geometry_size, "GEOMETRY needs a common prefix and a combat tail")
 ASSERT(SIZEOF(.phase.pixels) <= 0x3000, "PIXELS overlay overlaps prepared edges at $6000")
 ASSERT(SIZEOF(.phase.audio) <= 0x4200, "AUDIO overlay exceeds $3000-$71FF")
-ASSERT(SIZEOF(.phase.scenery) <= 0x4200, "SCENERY overlay exceeds $3000-$71FF")
+ASSERT(__phase_audio_runtime_size > 0 && __phase_audio_runtime_size < __phase_audio_size, "AUDIO needs a runtime prefix before startup validation")
+ASSERT(__phase_scenery_size <= 0x4200, "composed SCENERY overlay exceeds $3000-$71FF")
 ASSERT(__phase_scenery_base_size > 0 && __phase_scenery_base_size < __phase_scenery_size, "SCENERY needs a common prefix and a wildlife tail")
+ASSERT(__phase_scenery_terrain_size > 0 && __phase_scenery_terrain_size < __phase_scenery_base_size, "SCENERY needs a terrestrial prefix before space helpers")
 ASSERT(__scenery_records_end - __scenery_records_start == 96 * 20, "incorrect scenery staging allocation")
 ASSERT(__scenery_records_start >= __raster_heads_start && __scenery_records_end <= __raster_heads_end, "scenery staging exceeds command array")
 ASSERT(SIZEOF(.startup_checks) > 0 && SIZEOF(.startup_checks) <= 0x0500, "startup checks exceed retired pixel-band workspace")

@@ -38,7 +38,7 @@ static ERROR_PACKAGE_HEADER: [u8; 36] = *b"LOAD MATCHING H.A.V.O.C. REU AT ZERO"
 static ERROR_MUSIC_PAGE: [u8; 18] = *b"INVALID MUSIC PAGE";
 #[link_section = ".phase.audio.data"]
 static ERROR_MUSIC_DIRECTORY: [u8; 23] = *b"INVALID MUSIC DIRECTORY";
-#[link_section = ".phase.audio.data"]
+#[link_section = ".phase.audio.startup.data"]
 static ERROR_MUSIC_CHECKSUM: [u8; 22] = *b"INVALID MUSIC CHECKSUM";
 
 #[link_section = ".renderer"]
@@ -52,6 +52,11 @@ static mut AUDIO: MaybeUninit<AudioEngine> = MaybeUninit::uninit();
 static mut NEXT_PAGE: MaybeUninit<[u8; PAGE_SIZE]> = MaybeUninit::uninit();
 static mut MUSIC_DIRECTORY_HASH: u16 = 0;
 static mut MUSIC_VALIDATED: bool = false;
+// Immutable after the complete boot scan succeeds. Only foreground AUDIO code
+// reads this directory; the IRQ continues to consume bounded published pages.
+// Keep it outside .noinit, which holds the IRQ-saved compiler static stack.
+#[link_section = ".bss.music_directory"]
+static mut MUSIC_DIRECTORY: MaybeUninit<[music::CueInfo; music::CUE_COUNT]> = MaybeUninit::uninit();
 #[no_mangle]
 pub static mut MUSIC_CUE: u8 = 0;
 #[no_mangle]
@@ -138,12 +143,16 @@ extern "C" {
     fn victory_geometry(game: *const (), renderer: *mut Renderer, bank: *const ());
     static __phase_pixels_size: u8;
     static __phase_audio_size: u8;
+    static __phase_audio_runtime_size: u8;
     static __phase_scenery_size: u8;
+    static __phase_scenery_terrain_size: u8;
     static __phase_scenery_base_size: u8;
+    static __phase_scenery_base_end: u8;
+    static __phase_scenery_earth_tail_size: u8;
     static __resident_end: u8;
     static __startup_checks_start: u8;
     static __startup_checks_end: u8;
-    static __code_sizes: [u16; 17];
+    static __code_sizes: [u16; 24];
     static __sim_load_sizes: [u16; 8];
 }
 struct HardwareSid;
@@ -178,6 +187,11 @@ pub unsafe extern "C" fn irq_body() {
         // seven reads raster position but writes the IRQ compare high bit.
         poke(0xd011, (peek(0xd011) & 0x78) | (scroll >> 3));
         poke(0xd020, border);
+        // Initial score validation can outlast the input queue. Begin input
+        // capture and the simulation clock only when that boot work is done.
+        if !MUSIC_VALIDATED {
+            return;
+        }
         let bits = if TEST_INPUT == 0xff {
             (!peek(0xdc00)) & 31
         } else {
@@ -220,7 +234,9 @@ pub unsafe extern "C" fn irq_body() {
 }
 #[inline(never)]
 unsafe fn audio_tick() {
-    CLOCK_MS = CLOCK_MS.wrapping_add(20);
+    if MUSIC_VALIDATED {
+        CLOCK_MS = CLOCK_MS.wrapping_add(20);
+    }
     AUDIO_TICKS = AUDIO_TICKS.wrapping_add(1);
     BOMB_EFFECT.tick();
     let audio = AUDIO.assume_init_mut();
@@ -311,7 +327,6 @@ unsafe fn load_phase(page: u8, size: u16) {
     }
 }
 #[inline(never)]
-#[cfg_attr(feature = "benchmarks", link_section = ".benchmark_resident")]
 unsafe fn load_sim(profile: u8) {
     // GEOMETRY, PIXELS and AUDIO reuse this workspace after SIM returns.
     // Reload on every SIM entry; the IRQ never references these helpers.
@@ -341,7 +356,7 @@ unsafe fn load_sim(profile: u8) {
 unsafe fn check_code_package() {
     dma(0x100, 0x7600, 128);
     let directory = core::slice::from_raw_parts(0x7600 as *const u8, 128);
-    if &directory[..4] != b"OVL6"
+    if &directory[..4] != b"OVL7"
         || assets::checksum(&directory[..126]) != assets::u16_at(directory, 126)
     {
         fail(&ERROR_CODE_DIRECTORY)
@@ -365,7 +380,7 @@ unsafe fn check_code_package() {
     {
         fail(&ERROR_RESIDENT_PAIR)
     }
-    for index in 0..17 {
+    for index in 0..24 {
         let size = sizes[index];
         let size_offset = if index >= 11 {
             64 + (index - 11) * 4
@@ -605,12 +620,12 @@ unsafe fn send_audio(game: &mut Game) {
 #[link_section = ".phase.audio"]
 #[inline(never)]
 unsafe fn service_audio() {
-    dma(assets::MUSIC_OFFSET, 0x8c00, BANK_HEADER_SIZE as u16);
-    let header = core::slice::from_raw_parts(0x8c00 as *const u8, BANK_HEADER_SIZE);
-    if assets::checksum(header) != MUSIC_DIRECTORY_HASH {
-        fail(&ERROR_MUSIC_DIRECTORY)
-    }
     if !MUSIC_VALIDATED {
+        dma(assets::MUSIC_OFFSET, 0x8c00, BANK_HEADER_SIZE as u16);
+        let header = core::slice::from_raw_parts(0x8c00 as *const u8, BANK_HEADER_SIZE);
+        if assets::checksum(header) != MUSIC_DIRECTORY_HASH {
+            fail(&ERROR_MUSIC_DIRECTORY)
+        }
         validate_music_bank(header);
         MUSIC_VALIDATED = true;
     }
@@ -620,9 +635,11 @@ unsafe fn service_audio() {
     let Some(request) = request else {
         return;
     };
-    let info = match music::cue_info(header, request.cue as u8) {
-        Ok(info) => info,
-        Err(_) => fail(&ERROR_MUSIC_DIRECTORY),
+    // REU directory bytes are no longer an authority after boot. Every refill
+    // uses the immutable descriptors from the fully verified initial bank.
+    let info = match MUSIC_DIRECTORY.assume_init_ref().get(request.cue as usize) {
+        Some(info) => *info,
+        None => fail(&ERROR_MUSIC_DIRECTORY),
     };
     if request.page >= info.pages {
         fail(&ERROR_MUSIC_PAGE)
@@ -649,7 +666,7 @@ unsafe fn service_audio() {
     }
 }
 
-#[link_section = ".phase.audio"]
+#[link_section = ".phase.audio.startup"]
 #[inline(never)]
 unsafe fn validate_music_bank(header: &[u8]) {
     let mut end = BANK_HEADER_SIZE as u32;
@@ -691,6 +708,14 @@ unsafe fn validate_music_bank(header: &[u8]) {
         if ((b << 8) | a) != info.checksum {
             fail(&ERROR_MUSIC_CHECKSUM)
         }
+        // Write each entry only after its complete cue has passed validation.
+        // MUSIC_VALIDATED publishes the array only after all cues and the final
+        // bank extent have passed, so no partially initialized entry is read.
+        MUSIC_DIRECTORY
+            .as_mut_ptr()
+            .cast::<music::CueInfo>()
+            .add(cue as usize)
+            .write(info);
     }
     if end != assets::u32_at(header, 8) {
         fail(&ERROR_MUSIC_DIRECTORY)
@@ -774,10 +799,25 @@ unsafe fn prepare_sky(section: u8) -> u8 {
 #[inline(never)]
 unsafe fn prepare_scenery(current: u8, sounds: &mut TransitionAudio) -> u8 {
     let game = GAME.assume_init_ref();
-    let cues = sounds.update(
-        game.transition_progress()
-            .map(|(_, tick)| (game.stage_info().bridge_profile, tick)),
-    );
+    let data = segment_data(current);
+    let bridge = data[10];
+    if bridge < 3 && game.transition_progress().is_some() {
+        // Terrestrial crossings omit the space helpers between this prefix and
+        // the opaque tail. Restore only the selected tail with bounded DMA.
+        let page = match bridge {
+            1 => 0x15,
+            2 => 0x16,
+            _ => 7,
+        };
+        io_on();
+        dma(
+            ((page as u32) << 16) + core::ptr::addr_of!(__phase_scenery_base_size) as u32,
+            core::ptr::addr_of!(__phase_scenery_base_end) as u16,
+            core::ptr::addr_of!(__phase_scenery_earth_tail_size) as u16,
+        );
+        io_off();
+    }
+    let cues = sounds.update(game.transition_progress().map(|(_, tick)| (bridge, tick)));
     // I/O is banked out here. Only update RAM; the IRQ restores I/O before
     // writing SID registers. No AudioEngine reference survives this mask.
     disable_irq();
@@ -794,7 +834,6 @@ unsafe fn prepare_scenery(current: u8, sounds: &mut TransitionAudio) -> u8 {
     }
     enable_irq();
     let renderer = RENDERER.assume_init_mut();
-    let data = segment_data(current);
     renderer.begin(prepare_sky(data[4]));
     let mut stage = renderer.scenery_stage();
     game.render_scenery(&mut stage, &Segment::from_validated(data));
@@ -1113,27 +1152,46 @@ pub unsafe extern "C" fn main() -> i32 {
         enable_irq();
         if music_pending {
             wr(core::ptr::addr_of_mut!(PROF_PHASE), 8);
-            load_phase(5, core::ptr::addr_of!(__phase_audio_size) as u16);
+            // The fully verified boot directory makes the validation tail
+            // unnecessary for later page refills.
+            load_phase(
+                5,
+                if MUSIC_VALIDATED {
+                    core::ptr::addr_of!(__phase_audio_runtime_size) as u16
+                } else {
+                    core::ptr::addr_of!(__phase_audio_size) as u16
+                },
+            );
             wr(core::ptr::addr_of_mut!(PROF_PHASE), 9);
             service_audio();
         }
         wr(core::ptr::addr_of_mut!(PROF_PHASE), 10);
         // Simulation's mode is unchanged through AUDIO and both render phases.
-        // Only Transition can call a decoration tail; ordinary frames load the
-        // common scenery prefix. Startup still checksums the entire overlay.
-        let scenery_size = if status.mode == havoc::game::Mode::Transition {
-            core::ptr::addr_of!(__phase_scenery_size) as u16
+        // Space environments use the opaque scenery tail on ordinary frames.
+        // Crossings clear to shared stars before the midpoint tail change.
+        let info = GAME.assume_init_ref().stage_info();
+        let crossing = GAME.assume_init_ref().transition_progress();
+        let scenery_page = if info.theme >= 10 {
+            let theme = if crossing.map_or(false, |(_, tick)| tick >= 200) {
+                info.next_theme
+            } else {
+                info.theme
+            };
+            0x19 + theme - 10
         } else {
-            core::ptr::addr_of!(__phase_scenery_base_size) as u16
-        };
-        load_phase(
-            match GAME.assume_init_ref().stage_info().bridge_profile {
+            match info.bridge_profile {
                 1 => 0x15,
                 2 => 0x16,
+                3 if crossing.is_some() => 0x18,
                 _ => 7,
-            },
-            scenery_size,
-        );
+            }
+        };
+        let scenery_size = if scenery_page >= 0x18 {
+            core::ptr::addr_of!(__phase_scenery_size) as u16
+        } else {
+            core::ptr::addr_of!(__phase_scenery_terrain_size) as u16
+        };
+        load_phase(scenery_page, scenery_size);
         wr(core::ptr::addr_of_mut!(PROF_PHASE), 11);
         io_off();
         let scenery_count = prepare_scenery(runtime.current, &mut runtime.transition_audio);
@@ -1181,6 +1239,7 @@ pub unsafe extern "C" fn main() -> i32 {
 }
 
 #[panic_handler]
+#[cfg_attr(feature = "benchmarks", link_section = ".benchmark_resident")]
 fn panic(_: &core::panic::PanicInfo) -> ! {
     unsafe { fail(b"H.A.V.O.C. PANIC - RESET TO EXIT") }
 }

@@ -8,9 +8,9 @@ pub const PAGE_ROWS: usize = 16;
 pub const PAGE_SIZE: usize = if cfg!(feature = "four-sid") { 224 } else { 96 };
 pub const INSTRUMENT_OFFSET: usize = 12;
 pub const EVENT_OFFSET: usize = INSTRUMENT_OFFSET + MUSIC_VOICES * 5;
-pub const BANK_HEADER_SIZE: usize = 128;
-pub const BANK_CAPACITY: u32 = 0x20000;
-pub const CUE_COUNT: usize = 13;
+pub const BANK_HEADER_SIZE: usize = 256;
+pub const BANK_CAPACITY: u32 = 0x40000;
+pub const CUE_COUNT: usize = 21;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ScoreError {
@@ -53,7 +53,7 @@ pub fn page_checksum(bytes: &[u8]) -> u16 {
 }
 
 #[inline(never)]
-#[cfg_attr(target_arch = "mos", link_section = ".phase.audio")]
+#[cfg_attr(target_arch = "mos", link_section = ".phase.audio.startup")]
 pub fn bank_header_checksum(bytes: &[u8]) -> u16 {
     checksum_excluding(bytes, 14)
 }
@@ -67,12 +67,12 @@ pub struct CueInfo {
 }
 
 #[inline(never)]
-#[cfg_attr(target_arch = "mos", link_section = ".phase.audio")]
+#[cfg_attr(target_arch = "mos", link_section = ".phase.audio.startup")]
 pub fn cue_info(header: &[u8], cue: u8) -> Result<CueInfo, ScoreError> {
     if header.len() < BANK_HEADER_SIZE {
         return Err(ScoreError::Truncated);
     }
-    if &header[..4] != b"SMU2" {
+    if &header[..4] != b"SMU3" {
         return Err(ScoreError::Signature);
     }
     if header[4] != SID_COUNT as u8

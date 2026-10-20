@@ -988,3 +988,113 @@ and comparisons are in the neighboring Kaiju workspace under
 `target/terrain-visibility/native-oracle.json`. These generated files are not
 committed. Timing is measured in calibrated VICE; physical C64 Ultimate
 acceptance remains separate.
+
+## Off-planet campaign expansion: 2026-10-20
+
+The campaign now has eighteen stages, including atmospheric ascent after the
+original finale and six space missions. The original terrestrial workload is
+checked against the frozen twelve-stage package at
+`target/bench/visual-refresh-fast3`. The selected instrumented build is
+`target/offplanet-fast9/2sid`; shipping packages are separately frozen at
+`target/offplanet-release/{2sid,4sid}`. These are distinct binaries, and the
+checks below identify which package they exercised.
+
+The matched matrix passes all 96 cases: twelve fixtures, zero/ten simulation
+ticks, cold/retained palettes and both video standards. Each case uses three CIA
+phases, giving 288 before/after sample pairs. Ordered projected geometry and all
+native display bytes match the baseline. Stage identity fields intentionally
+differ because the campaign clock is now local to each stage. No case exceeds
+the 5% median-FPS regression limit.
+
+| Measurement | PAL | NTSC |
+| --- | ---: | ---: |
+| Matched fixed cases passed | 48/48 | 48/48 |
+| Smallest median-FPS ratio, expanded / baseline | 0.999959x | 0.999955x |
+| Change in mean fixed-case frame time | -0.451% | -0.228% |
+| Median per-case frame-time change | +0.0020% | +0.0019% |
+| Ordinary scheduling, baseline -> expanded | 6.248 -> 6.197 FPS | 6.493 -> 6.349 FPS |
+| Largest measured audio lateness | 1.173 ms | 1.144 ms |
+| Input queue overflows / music underruns | 0 / 0 | 0 / 0 |
+
+The smallest PAL ratio occurs at `carrier/10/cold`; the NTSC minimum is
+`section-boundary/0/retained`. Ordinary scheduling is a separate 400-audio-tick
+held-FIRE run, excluding the first second. Reports are
+`target/offplanet-validation/bench-fast9-{pal,ntsc}/report.json`; references are
+`target/offplanet-validation/baseline-{pal,ntsc}/report.json`. The exact fixture
+list and invocation are recorded in each report. The selected benchmark ELF
+SHA-256 is
+`fa3135cc9af070203f4d6f392179aa7b18d53736bd9afd865ab92d8d53138f71`.
+
+Three transfer reductions keep the expanded campaign within that timing gate.
+Terrestrial frames load the 10,726-byte SCENERY prefix, omitting 2,865 bytes of
+space helpers. Terrestrial crossings then DMA only their selected decoration
+tail to its original fixed address. Space frames retain the complete composed
+image. Boot validates all 21 music descriptors and caches their 168 bytes in
+BSS; ongoing audio service no longer transfers and parses the directory.
+Finally, ongoing AUDIO transfers omit the startup-only validation tail:
+1,117 of 3,078 bytes are loaded for two SIDs, or 1,127 of 3,109 for four.
+Startup still verifies the complete code image and music bank. Input capture
+and the simulation clock begin only after music validation completes, avoiding
+boot-time input overflow.
+
+Both shipping profiles pass the positive memory, overlay, IRQ and package
+audits. They also pass 66 negative layout fixtures and 55 negative overlay
+fixtures each, with the original packages unchanged. These cover malformed
+transfer lengths, a music cache incorrectly placed inside IRQ-saved memory,
+calls into omitted AUDIO startup code, and terrestrial references into omitted
+space helpers. The sole reviewed AUDIO prefix-to-tail call is the initial
+`service_audio` call to `validate_music_bank`, guarded by `MUSIC_VALIDATED`.
+Logs are `target/offplanet-validation/layout-negative-release-{2sid,4sid}.log`
+and `overlay-negative-release-{2sid,4sid}.log`.
+Each shipping profile also rejects all 125 private corrupt REU packages with
+the expected native error; reports are
+`target/offplanet-validation/release-corrupt-{2sid,4sid}/summary.json`.
+
+In the shipping ELFs the cached directory occupies `$0212-$02B9`, outside
+the 524-byte IRQ-saved `.noinit` region at `$04B4-$06BF`. Resident headroom is
+139 bytes for two SIDs and 127 for four. GEOMETRY uses 16,680 of 16,896 bytes;
+PIXELS uses 12,234 of 12,288; the largest composed SCENERY image uses 16,709 of
+16,896; resident tables use 1,777 of 1,792. OVL7 verifies all 24 code images.
+Shipping ELF SHA-256 values are:
+
+| Profile | SHA-256 |
+| --- | --- |
+| Two SIDs | `8148e16303cea1df0de24eb6df3f09c001097bcd57adf076209c4f4f408f5083` |
+| Four SIDs | `c16ba40e17c075170900acbd4c13e980c2a91684289af06ab13cc4bf5e99f3ce` |
+
+All four shipping-profile/video combinations pass the final native smoke run.
+Each checks four control, six weapon, 43 streaming and seven attract scenarios,
+including all seventeen crossings, eighteen respawns, five bosses and victory
+restarts. Each also plays complete loops plus one page for the eight new cues
+(13-20), with full page coverage, clock and pitch audits, intact stack guards
+and no music underruns. Reports are
+`target/offplanet-validation/release-smoke-{2sid,4sid}-{pal,ntsc}/report.json`.
+Their PRG, ELF and REU hashes match the frozen shipping packages, and all four
+reports confirm that those files remained unchanged.
+
+Broader campaign evidence was collected on earlier frozen expansion packages
+and is retained with its own provenance. Continuous joystick-only pilots of
+all eighteen stages passed on `target/offplanet-final/2sid` under PAL and
+`target/offplanet-final/4sid` under NTSC; these pilots do not write game state or
+clocks. Every one of the 21 cues completed a full loop plus another page on
+both SID profiles and both video standards. Reports are
+`final-campaign-2sid-pal`, `final-campaign-4sid-ntsc`,
+`final-smoke-2sid-{pal,ntsc}` and `final-music-4sid-{pal,ntsc}`, each beneath
+`target/offplanet-validation` with filename `report.json`. These complete
+pilots and 21-cue loops were not rerun on the later optimized shipping binaries.
+
+The intermediate `target/bench/offplanet-fast` package separately passed 659
+cached-versus-forced-miss pairs under PAL, covering all stages and crossings,
+camera/HUD changes and victory. Its report is
+`target/offplanet-validation/cache-fast-pal/report.json`. Four-SID stress
+coverage on `target/offplanet-fast8/4sid` passed 24 space/ascent fixtures with
+three CIA phases under each standard, with no input overflow or music underrun;
+reports are `space-fast8-4sid-{pal,ntsc}/report.json` in the same directory.
+These checks supplement the selected build's matched matrix; they do not
+establish binary identity with it.
+
+All reports record their package hashes. Consolidated hashes and matrix
+statistics are in
+`target/offplanet-validation/expansion-validation-summary.json`. Generated
+packages, reports, captures and logs are not committed. Timing is measured in
+calibrated VICE; physical C64 Ultimate acceptance remains separate.

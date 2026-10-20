@@ -1131,7 +1131,551 @@ fn defeat() -> Cue {
     }
 }
 
-/// Stable runtime cue order: original seven, three worlds, three bosses.
+#[derive(Clone, Copy)]
+enum SpaceTexture {
+    Asteroids,
+    Moon,
+    Graveyard,
+    Shipyard,
+    Dreadnought,
+    Gate,
+    Ascent,
+    Guardian,
+}
+
+// Original melodies inspired by Jeroen Tel's tuneful, syncopated SID writing.
+// The compatible quartet is bass, lead, drums, arpeggio; the expanded ensemble
+// adds harmony and answering lines. No effects voice is borrowed for drums.
+fn arrange_space(
+    harmony: Chord,
+    lead: [u8; 8],
+    texture: SpaceTexture,
+    index: usize,
+    section: usize,
+) -> ScoreBar {
+    let mut bar = arrange(harmony, lead, Texture::Crystal, index, section);
+    let spacious = section == 2;
+    bar.instruments[0] = [0x40, 0x00, 0x03, 0x02, 0x42];
+    bar.instruments[1] = match texture {
+        SpaceTexture::Asteroids => [0x40, 0x80, 0x01, 0x02, 0x83],
+        SpaceTexture::Moon => [0x40, 0x00, 0x06, 0x14, 0x84],
+        SpaceTexture::Graveyard => [0x40, 0x00, 0x07, 0x25, 0x74],
+        SpaceTexture::Shipyard => [0x40, 0x80, 0x02, 0x02, 0x83],
+        SpaceTexture::Dreadnought => [0x40, 0x00, 0x03, 0x03, 0x83],
+        SpaceTexture::Gate => [0x40, 0x00, 0x05, 0x14, 0x84],
+        SpaceTexture::Ascent => [0x40, 0x80, 0x04, 0x03, 0x84],
+        SpaceTexture::Guardian => [0x40, 0x00, 0x01, 0x02, 0x83],
+    };
+    bar.instruments[2] = [0x80, 0x00, 0x08, 0x01, 0x12];
+    for row in &mut bar.rows {
+        row[0] = R;
+        row[2] = R;
+    }
+    let rhythm = match texture {
+        SpaceTexture::Asteroids | SpaceTexture::Gate | SpaceTexture::Ascent => [0, 3, 8, 11],
+        SpaceTexture::Moon | SpaceTexture::Graveyard => [0, 6, 9, 12],
+        SpaceTexture::Shipyard | SpaceTexture::Guardian => [0, 3, 7, 10],
+        SpaceTexture::Dreadnought => [0, 4, 7, 11],
+    };
+    let fifth = harmony.tones[2] - 12;
+    for (beat, at) in rhythm.into_iter().enumerate() {
+        let pitch = match beat {
+            1 if !spacious => harmony.bass + 12,
+            2 => fifth,
+            _ => harmony.bass,
+        };
+        note(&mut bar, 0, at, pitch, if spacious { 3 } else { 2 });
+    }
+    // Low noise attacks reinforce the pulse bass; high short attacks are hats,
+    // and lower backbeats make snares. The contrasting middle eight breathes.
+    for (at, pitch) in [
+        (0, 40),
+        (2, 88),
+        (4, 67),
+        (6, 86),
+        (8, 43),
+        (10, 88),
+        (12, 70),
+        (14, 86),
+    ] {
+        if !spacious || at % 4 == 0 {
+            note(&mut bar, 2, at, pitch, 1);
+        }
+    }
+    if index % 8 == 7 && !spacious {
+        for (at, pitch) in [(13, 76), (15, 82)] {
+            note(&mut bar, 2, at, pitch, 1);
+        }
+    }
+    if index & 1 != 0 {
+        for (beat, pitch) in harmony.tones.into_iter().enumerate() {
+            note(&mut bar, 6, beat * 4, pitch, 3);
+        }
+    }
+    bar
+}
+
+fn space_composed(
+    name: &'static str,
+    row_ticks: u8,
+    texture: SpaceTexture,
+    harmony: [[Chord; 8]; 4],
+    lead: [[[u8; 8]; 8]; 4],
+) -> Cue {
+    let mut bars = Vec::with_capacity(32);
+    for section in 0..4 {
+        for local in 0..8 {
+            bars.push(arrange_space(
+                harmony[section][local],
+                lead[section][local],
+                texture,
+                section * 8 + local,
+                section,
+            ));
+        }
+    }
+    Cue {
+        name,
+        row_ticks,
+        bars,
+    }
+}
+
+fn asteroid_belt() -> Cue {
+    // E-minor skipping hook, an answering descent, open C-major middle eight,
+    // then a varied high return whose dominant drops cleanly into the loop.
+    space_composed(
+        "Slingshot Through the Belt",
+        5,
+        SpaceTexture::Asteroids,
+        [
+            [EM, C, G, D, EM, AM, FSS, B7],
+            [EM, G, AM, C, D, EM, C, B7],
+            [C, G, D, EM, AM, C, D, B7],
+            [EM, C, G, D, AM, EM, FSS, B7],
+        ],
+        [
+            [
+                [76, 71, H, 79, 76, H, 74, 71],
+                [72, 67, H, 76, 79, H, 76, R],
+                [74, 71, H, 79, 83, 81, 79, H],
+                [78, 74, H, 69, 74, H, 76, 78],
+                [76, 71, H, 79, 83, H, 81, 79],
+                [81, 76, H, 72, 69, H, 72, 76],
+                [78, 72, H, 69, 66, 69, 72, H],
+                [75, H, 71, 66, 63, H, H, R],
+            ],
+            [
+                [83, H, 81, 79, 76, 74, 71, H],
+                [79, H, 74, 71, 67, H, 71, 74],
+                [76, 72, 69, H, 72, 76, 81, H],
+                [79, 76, 72, H, 67, H, 72, R],
+                [78, 76, 74, 69, 66, H, 69, 74],
+                [76, 74, 71, H, 67, H, 64, 67],
+                [72, 76, H, 79, 84, H, 79, 76],
+                [78, H, 75, 71, 69, 66, 63, R],
+            ],
+            [
+                [76, H, H, H, 72, H, 67, H],
+                [74, H, H, H, 71, H, 67, H],
+                [69, H, 74, H, 78, H, H, H],
+                [79, H, 76, H, 71, H, H, R],
+                [72, H, H, 76, 81, H, 79, 76],
+                [79, H, 76, H, 72, H, 71, 67],
+                [74, H, 78, H, 81, H, 78, 74],
+                [75, H, H, H, 71, H, 66, R],
+            ],
+            [
+                [83, 79, H, 86, 83, H, 81, 79],
+                [84, 79, H, 76, 72, H, 76, 79],
+                [83, H, 79, 74, 71, 74, 79, H],
+                [81, H, 78, 74, 69, H, 74, R],
+                [81, 79, 76, H, 72, H, 69, 72],
+                [79, 76, 71, H, 67, 64, 67, 71],
+                [78, 74, 72, H, 69, 66, 69, 72],
+                [75, H, 78, 75, 71, H, 66, R],
+            ],
+        ],
+    )
+}
+
+fn shattered_moon() -> Cue {
+    // Broad D-major orbiting intervals answer the frantic asteroid mission.
+    space_composed(
+        "Silver Fractures",
+        6,
+        SpaceTexture::Moon,
+        [
+            [D, BM, G, D, EM, G, A, A],
+            [BM, FSM, G, D, EM, BM, G, A],
+            [G, D, EM, BM, G, EM, A, A],
+            [D, G, BM, FSM, EM, G, A, D],
+        ],
+        [
+            [
+                [74, H, 81, H, 78, 76, 74, H],
+                [78, H, 74, H, 71, H, 69, 71],
+                [79, H, 83, H, 81, 79, 74, H],
+                [78, H, H, H, 74, H, 69, R],
+                [76, H, 79, 83, 86, H, 83, 79],
+                [83, H, 79, H, 74, H, 71, 74],
+                [81, H, 76, 73, 69, H, 73, 76],
+                [73, H, 76, H, 81, H, H, R],
+            ],
+            [
+                [83, 81, 78, H, 74, H, 71, H],
+                [81, 78, 73, H, 69, H, 66, R],
+                [79, 78, 74, H, 71, 74, 79, H],
+                [81, 78, H, 74, 69, H, 66, 69],
+                [79, 83, H, 86, 83, 79, 76, H],
+                [78, H, 74, 71, 66, 71, 74, H],
+                [79, 83, 86, H, 83, H, 81, 79],
+                [81, H, 79, 76, 73, H, 69, R],
+            ],
+            [
+                [79, H, H, H, 74, H, 71, H],
+                [78, H, 74, H, 69, H, H, H],
+                [76, H, H, H, 79, H, 83, H],
+                [81, H, 78, 74, 71, H, H, R],
+                [74, H, 79, H, 83, H, 86, H],
+                [83, H, H, 79, 76, H, 74, 71],
+                [76, H, 81, H, 85, H, 83, 81],
+                [76, H, H, H, 73, H, 69, R],
+            ],
+            [
+                [86, H, 81, H, 78, 81, 86, H],
+                [83, H, 86, H, 83, 79, 74, H],
+                [83, 81, 78, H, 74, 71, 74, H],
+                [81, 78, 73, H, 69, H, 73, 78],
+                [83, H, 79, 76, 71, H, 76, 79],
+                [86, H, 83, 79, 74, H, 79, R],
+                [85, 81, 76, H, 73, H, 76, 81],
+                [78, H, H, H, 74, H, 69, R],
+            ],
+        ],
+    )
+}
+
+fn ship_graveyard() -> Cue {
+    // C minor, sighing semitones and descending answers; the E-flat middle
+    // eight briefly lights the wreckage before the narrower opening returns.
+    space_composed(
+        "Echoes of Lost Fleets",
+        7,
+        SpaceTexture::Graveyard,
+        [
+            [CM, AB, FM, G7, CM, EF, DS, G7],
+            [FM, CM, AB, EF, DS, G7, CM, G7],
+            [EF, BF, AB, CM, FM, EF, DS, G7],
+            [CM, AB, FM, G7, EF, CMB, DS, G7],
+        ],
+        [
+            [
+                [72, H, H, 71, 72, H, 67, R],
+                [68, H, H, 72, 75, H, 74, 72],
+                [77, H, 76, 77, 72, H, 68, H],
+                [71, H, H, 70, 67, H, 65, R],
+                [75, H, 74, 72, 67, H, H, H],
+                [70, H, H, 75, 79, H, 77, 75],
+                [74, H, 71, 68, 65, H, 62, H],
+                [67, H, 71, H, 74, H, H, R],
+            ],
+            [
+                [80, H, 77, 72, 68, H, 65, H],
+                [79, H, 75, 72, 67, H, 63, R],
+                [80, H, 79, 75, 72, H, 68, H],
+                [79, H, 77, 75, 70, H, 67, 70],
+                [77, H, 74, 68, 65, H, 62, H],
+                [79, H, 77, 74, 71, H, 67, R],
+                [75, 74, 72, H, 67, H, 63, H],
+                [74, H, 71, 67, 65, H, H, R],
+            ],
+            [
+                [75, H, H, H, 79, H, 82, H],
+                [81, H, H, H, 77, H, 74, H],
+                [80, H, 79, 75, 72, H, H, H],
+                [79, H, H, 75, 72, H, 70, R],
+                [77, H, H, H, 80, H, 84, H],
+                [82, H, 79, H, 75, H, H, H],
+                [80, H, 77, 74, 71, H, 68, H],
+                [71, H, H, H, 74, H, 79, R],
+            ],
+            [
+                [84, H, 83, 84, 79, H, 75, H],
+                [80, H, H, 79, 75, H, 72, R],
+                [80, H, 77, 76, 77, H, 72, H],
+                [83, H, 82, 79, 74, H, 71, H],
+                [82, H, H, 79, 75, H, 70, R],
+                [79, H, 75, 72, 67, H, 63, H],
+                [74, H, 71, 68, 65, 62, 65, H],
+                [71, H, H, H, 67, H, 62, R],
+            ],
+        ],
+    )
+}
+
+fn orbital_shipyard() -> Cue {
+    // A-minor work-song rhythm over short industrial bass stabs. The opening
+    // jumps down a sixth; the return turns it upward without recycling a span.
+    space_composed(
+        "Rivets in Orbit",
+        5,
+        SpaceTexture::Shipyard,
+        [
+            [AM, F, C, G, AM, D, FSS, B7],
+            [AM, EM, F, C, D, AM, FSS, B7],
+            [C, G, F, AM, C, D, G, B7],
+            [AM, F, C, G, D, AM, FSS, B7],
+        ],
+        [
+            [
+                [81, 72, H, 76, 72, H, 69, 72],
+                [77, 69, H, 72, 69, H, 65, R],
+                [79, 72, H, 76, 79, H, 76, 72],
+                [79, 71, H, 74, 71, H, 67, 71],
+                [81, 76, H, 72, 69, 72, 76, H],
+                [78, 74, H, 69, 66, 69, 74, H],
+                [78, 72, H, 69, 66, H, 69, 72],
+                [75, H, 71, 66, 63, H, H, R],
+            ],
+            [
+                [72, 76, 81, H, 79, 76, 72, H],
+                [71, 76, 79, H, 76, 71, 67, H],
+                [69, 72, 77, H, 76, 72, 69, H],
+                [67, 72, 76, H, 79, H, 76, R],
+                [69, 74, 78, H, 81, H, 78, 74],
+                [72, 76, 81, 76, 72, H, 69, H],
+                [78, 74, 72, H, 69, H, 66, 69],
+                [78, 75, 71, H, 66, H, 63, R],
+            ],
+            [
+                [76, H, H, H, 79, H, 84, H],
+                [83, H, 79, H, 74, H, H, H],
+                [81, H, H, H, 77, H, 72, H],
+                [76, H, H, 72, 69, H, 67, R],
+                [72, H, 76, H, 79, H, 84, H],
+                [81, H, 78, 74, 69, H, H, H],
+                [79, H, 74, H, 71, H, 69, 67],
+                [75, H, 71, H, 66, H, H, R],
+            ],
+            [
+                [81, 84, H, 88, 84, H, 81, 76],
+                [81, 77, H, 72, 69, H, 72, 77],
+                [84, 79, H, 76, 72, 76, 79, H],
+                [83, 79, H, 74, 71, H, 74, R],
+                [81, 78, 74, H, 69, 74, 78, H],
+                [81, 79, 76, H, 72, H, 69, 72],
+                [78, H, 74, 72, 69, 66, 69, H],
+                [75, 78, 83, H, 78, 75, 71, R],
+            ],
+        ],
+    )
+}
+
+fn space_carrier() -> Cue {
+    // Heavy C-minor dotted subject, ascending resistance, E-flat release and
+    // a high command-deck reprise; distinct from the reused terrestrial boss.
+    space_composed(
+        "Shadow of the Dreadnought",
+        5,
+        SpaceTexture::Dreadnought,
+        [
+            [CM, CM, AB, BF, FM, CMB, DS, G7],
+            [CM, EF, FM, AB, DS, G7, CM, G7],
+            [EF, BF, AB, CM, FM, EF, DS, G7],
+            [CM, AB, EF, BF, FM, CM, DS, G7],
+        ],
+        [
+            [
+                [67, H, H, 72, 75, 72, 67, H],
+                [66, 67, H, 72, 79, H, 75, 72],
+                [68, H, H, 75, 80, 79, 75, H],
+                [70, H, H, 77, 82, H, 77, R],
+                [72, H, 68, 65, 77, H, 72, 68],
+                [67, H, 72, 75, 79, H, 75, 72],
+                [68, H, 71, 74, 77, H, 74, 71],
+                [71, H, H, 74, 79, H, 74, R],
+            ],
+            [
+                [72, 75, 79, H, 84, H, 83, 79],
+                [75, 79, 82, H, 87, H, 84, 82],
+                [77, 80, 84, H, 87, 84, 80, H],
+                [80, 84, 87, H, 84, H, 80, 75],
+                [77, 74, 71, H, 68, H, 65, 62],
+                [74, 79, 83, H, 86, H, 83, 79],
+                [84, 79, 75, H, 72, H, 70, 67],
+                [83, H, 79, 74, 71, H, 67, R],
+            ],
+            [
+                [82, H, H, H, 79, H, 75, H],
+                [81, H, 77, H, 74, H, H, H],
+                [80, H, H, H, 75, H, 72, H],
+                [79, H, 75, H, 72, H, 70, R],
+                [80, H, H, H, 77, H, 72, H],
+                [79, H, 82, H, 87, H, 84, 82],
+                [80, H, 77, 74, 71, H, 68, H],
+                [79, H, H, H, 74, H, 71, R],
+            ],
+            [
+                [79, H, H, 84, 87, 84, 79, H],
+                [80, H, H, 84, 87, 84, 80, H],
+                [82, 79, 75, H, 79, H, 82, 87],
+                [86, 82, 77, H, 74, H, 77, R],
+                [84, H, 80, 77, 72, H, 77, 80],
+                [87, 84, 79, H, 75, H, 72, 67],
+                [80, 77, 74, H, 71, 68, 65, H],
+                [83, H, 79, H, 74, 71, 67, R],
+            ],
+        ],
+    )
+}
+
+fn jump_gate() -> Cue {
+    // E-major awe with a C-sharp-minor response: the gate's promise is audible
+    // before the guardian twists the tonal centre back into E minor.
+    space_composed(
+        "Beyond the Blue Threshold",
+        6,
+        SpaceTexture::Gate,
+        [
+            [E, A, CSM, B, E, FSM, A, B],
+            [CSM, FSM, A, E, FSM, CSM, A, B],
+            [A, E, FSM, CSM, A, E, B, B7],
+            [E, CSM, A, B, FSM, A, B, E],
+        ],
+        [
+            [
+                [76, H, 80, 83, H, 80, 76, H],
+                [81, H, 85, H, 83, 81, 76, R],
+                [80, H, 85, 88, H, 85, 83, 80],
+                [78, H, 83, H, 81, 78, 75, H],
+                [80, 83, H, 88, 83, H, 80, 76],
+                [81, H, 78, 73, 69, H, 73, 78],
+                [81, H, 85, 88, 85, H, 83, 81],
+                [83, H, 78, 75, 71, H, H, R],
+            ],
+            [
+                [88, H, 85, 83, 80, H, 76, 73],
+                [85, H, 81, 78, 73, H, 69, R],
+                [88, 85, 81, H, 76, H, 73, 76],
+                [83, 80, 76, H, 71, H, 68, 71],
+                [78, 81, 85, H, 90, H, 85, 81],
+                [88, H, 85, 80, 76, H, 73, 76],
+                [85, 83, 81, H, 76, H, 73, 69],
+                [75, 78, 83, H, 81, 78, 75, R],
+            ],
+            [
+                [81, H, H, H, 85, H, 88, H],
+                [83, H, 80, H, 76, H, H, H],
+                [78, H, H, H, 81, H, 85, H],
+                [83, H, 80, 76, 73, H, H, R],
+                [76, H, H, 81, 85, H, 88, H],
+                [87, H, 83, H, 80, H, 76, H],
+                [78, H, 83, H, 87, H, 85, 83],
+                [81, H, 78, 75, 71, H, H, R],
+            ],
+            [
+                [88, H, 83, 80, H, 83, 88, H],
+                [85, H, 88, H, 85, 83, 80, R],
+                [88, 85, H, 81, 76, H, 81, 85],
+                [87, H, 83, 78, 75, H, 78, 83],
+                [85, H, 81, 78, 73, H, 78, 81],
+                [88, H, 85, 81, 76, 73, 76, H],
+                [87, 83, 78, H, 75, H, 78, 83],
+                [80, H, 76, H, 71, H, 68, R],
+            ],
+        ],
+    )
+}
+
+fn ascent() -> Cue {
+    // Five bars at five ticks per sixteenth are exactly 400 audio ticks:
+    // lifting away, two cloud layers, the curved horizon, then open stars.
+    let harmony = [CM, EF, AB, B7, EM];
+    let lead = [
+        [60, H, 63, H, 67, 72, 75, H],
+        [70, H, 75, 79, 82, H, 79, 75],
+        [80, H, 84, 87, 84, H, 80, 75],
+        [78, 81, 83, H, 87, H, 83, 78],
+        [88, H, H, 83, 79, H, H, R],
+    ];
+    let bars = (0..5)
+        .map(|index| {
+            arrange_space(
+                harmony[index],
+                lead[index],
+                SpaceTexture::Ascent,
+                index,
+                index.min(3),
+            )
+        })
+        .collect();
+    Cue {
+        name: "Atmosphere to Starlight",
+        row_ticks: 5,
+        bars,
+    }
+}
+
+fn gate_guardian() -> Cue {
+    // Urgent E-minor asymmetric hook, chromatic dominant answer, a lyrical
+    // final-flight recollection and a rewritten ascent into the last attack.
+    space_composed(
+        "The Last Sentinel",
+        5,
+        SpaceTexture::Guardian,
+        [
+            [EM, C, AM, B7, EM, G, FSS, B7],
+            [AM, D, G, C, FSS, B7, EM, B7],
+            [G, D, C, EM, AM, C, FSS, B7],
+            [EM, C, G, D, AM, EM, FSS, B7],
+        ],
+        [
+            [
+                [76, 79, H, 78, 76, H, 71, 75],
+                [76, 79, H, 84, 83, 79, 76, R],
+                [81, 76, H, 72, 76, H, 79, 81],
+                [83, 82, 78, H, 75, H, 71, 75],
+                [83, 79, 76, H, 71, H, 76, 79],
+                [86, 83, 79, H, 74, H, 79, R],
+                [84, 81, 78, H, 74, 72, 69, H],
+                [83, 78, 75, H, 71, H, 66, R],
+            ],
+            [
+                [81, H, 84, 88, 84, 81, 76, H],
+                [81, H, 86, 90, 86, 81, 78, H],
+                [83, H, 86, 91, 86, 83, 79, H],
+                [84, H, 88, 91, 88, 84, 79, R],
+                [84, 81, 78, H, 72, 69, 66, H],
+                [87, 83, 78, H, 75, H, 71, 75],
+                [88, 86, 83, H, 79, 76, 74, H],
+                [87, H, 83, 81, 78, 75, 71, R],
+            ],
+            [
+                [83, H, H, H, 79, H, 74, H],
+                [81, H, 78, H, 74, H, H, H],
+                [79, H, H, 76, 72, H, 71, 67],
+                [76, H, H, H, 71, H, 67, R],
+                [81, H, 76, H, 72, H, 69, H],
+                [79, H, H, 76, 72, H, 67, H],
+                [78, H, 74, 72, 69, H, 66, H],
+                [75, H, 78, H, 83, H, H, R],
+            ],
+            [
+                [88, 91, H, 90, 88, H, 83, 79],
+                [84, 88, 91, H, 88, H, 84, 79],
+                [86, 83, 79, H, 74, 79, 83, H],
+                [90, 86, 81, H, 78, H, 74, R],
+                [88, 84, 81, H, 76, H, 72, 69],
+                [83, 79, 76, H, 71, 67, 71, H],
+                [78, 81, 84, H, 81, 78, 74, 72],
+                [75, H, 78, 83, 78, H, 75, R],
+            ],
+        ],
+    )
+}
+
+/// Stable runtime cue order: original thirteen, six space worlds, ascent, boss.
 /// This always returns all ten authored parts, independently of build profile.
 pub fn cues() -> Vec<Cue> {
     vec![
@@ -1148,6 +1692,14 @@ pub fn cues() -> Vec<Cue> {
         gorge_warden(),
         citadel_heart(),
         carrier_overdrive(),
+        asteroid_belt(),
+        shattered_moon(),
+        ship_graveyard(),
+        orbital_shipyard(),
+        space_carrier(),
+        jump_gate(),
+        ascent(),
+        gate_guardian(),
     ]
 }
 
@@ -1159,7 +1711,7 @@ pub fn score_bank() -> Vec<u8> {
     };
     let suite = cues();
     let mut bank = vec![0; BANK_HEADER_SIZE];
-    bank[..4].copy_from_slice(b"SMU2");
+    bank[..4].copy_from_slice(b"SMU3");
     bank[4] = SID_COUNT as u8;
     bank[5] = MUSIC_VOICES as u8;
     bank[6] = CUE_COUNT as u8;
@@ -1196,7 +1748,7 @@ pub fn score_bank() -> Vec<u8> {
     let length = bank.len() as u32;
     assert!(
         length <= music::BANK_CAPACITY,
-        "the suite must fit its 128 KiB REU bank"
+        "the suite must fit its 256 KiB REU bank"
     );
     bank[8..12].copy_from_slice(&length.to_le_bytes());
     let checksum = music::bank_header_checksum(&bank[..BANK_HEADER_SIZE]);

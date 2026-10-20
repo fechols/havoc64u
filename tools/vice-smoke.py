@@ -323,7 +323,8 @@ def dwarf_game_layout(elf, tool, syms, output, controls=False):
         value = re.search(r"DW_AT_const_value\s+\((0x[0-9a-fA-F]+|\d+)\)", block)
         if name and value:
             modes[name[1]] = int(value[1], 0)
-    required = {"rail_ticks": "u16", "boss_z": "i16", "mode": "havoc::game::Mode",
+    clock_field = "stage_ticks" if "stage_ticks" in fields else "rail_ticks"
+    required = {clock_field: "u16", "boss_z": "i16", "mode": "havoc::game::Mode",
                 "boss_started": "bool", "boss_defeated": "bool", "score": "u32",
                 "shield": "u8", "lives": "u8", "bombs": "u8", "respawn_ticks": "u8",
                 "menu_ticks": "u16", "boss_left": "u8", "boss_right": "u8", "boss_core": "u8"}
@@ -386,6 +387,7 @@ def dwarf_game_layout(elf, tool, syms, output, controls=False):
     if end is None or any(address+fields[field]["offset"]+fields[field]["size"] > end for field in required):
         raise RuntimeError("DWARF Game fields exceed the linked game-state memory range")
     return {"symbol": name, "address": address, "fields": fields, "modes": modes, "input_sample": sample,
+            "clock_field": clock_field,
             "source": "llvm-dwarfdump from the matching packaged ELF; no assumed Rust field offsets"}
 
 
@@ -402,23 +404,153 @@ def active_section(rail_ticks, mode, stage_id=None):
     return stage_id if stage_id is not None else min(max(rail_ticks - (mode == 6), 0) // 3750, 3)
 
 
+def logical_game_state(state):
+    """Expose total progress for existing reports without aliasing a RAM field."""
+    state = dict(state)
+    if "stage_ticks" in state:
+        state["rail_ticks"] = state["stage_id"] * 3750 + state["stage_ticks"]
+    return state
+
+
+def read_game_field(mon, layout, name, raw=None):
+    """Read real DWARF fields; total rail_ticks is explicitly derived for v6."""
+    if name == "rail_ticks" and "stage_ticks" in layout["fields"]:
+        return (read_game_field(mon, layout, "stage_id", raw) * 3750
+                + read_game_field(mon, layout, "stage_ticks", raw))
+    field = layout["fields"][name]
+    data = (raw[field["offset"]:field["offset"] + field["size"]] if raw is not None
+            else mon.read(layout["address"] + field["offset"], field["size"]))
+    return int.from_bytes(data, "little", signed=field["type"].startswith("i"))
+
+
+def read_game_state(mon, layout, names, raw=None):
+    names = list(names)
+    if "stage_ticks" in layout["fields"]:
+        names += ["stage_id", "stage_ticks"]
+    return {name: read_game_field(mon, layout, name, raw) for name in names}
+
+
+def clock_fixture(values, fields, count, transition_mode=6):
+    """Translate logical total-progress fixtures to the package's actual clock.
+
+    v5 owns u16 rail_ticks; v6 owns u16 stage_ticks plus stage_id. No synthetic
+    DWARF offsets are installed, and conflicting dual-clock fixtures fail.
+    """
+    values = dict(values)
+    if not any(name in values for name in ("rail_ticks", "stage_ticks", "stage_id")):
+        return values
+    stage = values.get("stage_id")
+    if stage is None and "rail_ticks" in values:
+        stage = min(max(values["rail_ticks"] - (values.get("mode") == transition_mode), 0)
+                    // 3750, count - 1)
+    if stage is None or not 0 <= stage < count:
+        raise RuntimeError(f"Invalid or missing monitor stage fixture {stage}")
+    if "stage_id" in fields:
+        values["stage_id"] = stage
+    if "stage_ticks" in fields:
+        if "rail_ticks" in values:
+            local = values.pop("rail_ticks") - stage * 3750
+            if "stage_ticks" in values and values["stage_ticks"] != local:
+                raise RuntimeError("Conflicting local and total monitor clocks")
+            values["stage_ticks"] = local
+        if "stage_ticks" in values and not 0 <= values["stage_ticks"] <= 65535:
+            raise RuntimeError("Local monitor clock exceeds its u16 representation")
+    elif "stage_ticks" in values:
+        total = stage * 3750 + values.pop("stage_ticks")
+        if "rail_ticks" in values and values["rail_ticks"] != total:
+            raise RuntimeError("Conflicting local and total monitor clocks")
+        values["rail_ticks"] = total
+    if "rail_ticks" in values and not 0 <= values["rail_ticks"] <= 65535:
+        raise RuntimeError("Baseline absolute monitor clock exceeds its u16 representation")
+    return values
+
+
+def boss_sim_profile(enemy, boss):
+    return {0: enemy, 1: 4, 2: 5, 3: 6, 4: 6, 5: 5}[boss]
+
+
+def music_pitch_audit(events, registers, voices, notes, clock_hz):
+    """Validate complete native frequency writes against independent MIDI tuning."""
+    registers = [bytearray(chip) for chip in registers]
+    owners = {(sid, voice * 7): lane for lane, (sid, voice) in enumerate(voices)}
+    expected = [{note: round(440 * 2 ** ((note - 69) / 12) * (1 << 24) / clock_hz)
+                 for note in pitches} for pitches in notes]
+    seen = [set() for _ in voices]
+    pending = None
+    last_register = -1
+    last_cycle = 0
+    writes = [0 for _ in voices]
+    gates = [0 for _ in voices]
+
+    def check(owner, frequency_write):
+        sid, base = owner
+        lane = owners[owner]
+        actual = registers[sid][base] | registers[sid][base + 1] << 8
+        # The native table rounds a high octave then shifts it; an independently
+        # rounded equal-temperament calculation differs by at most one unit.
+        matching = [note for note, frequency in expected[lane].items()
+                    if abs(actual - frequency) <= 1]
+        if not matching:
+            raise RuntimeError(f"Native music lane {lane} wrote unauthored/detuned frequency {actual}")
+        seen[lane].update(matching)
+        if frequency_write:
+            writes[lane] += 1
+        else:
+            gates[lane] += 1
+
+    def flush():
+        if pending is not None:
+            check(pending, True)
+
+    for event in events:
+        sid, register = divmod(event["address"] - 0xd400, 32)
+        if not 0 <= sid < len(registers) or register >= 25:
+            continue
+        base, part = divmod(register, 7)
+        owner = (sid, base * 7)
+        pitch_write = owner in owners and part in (0, 1)
+        cycle = event.get("bus_cycles", 0)
+        if pending is not None and (not pitch_write or pending != owner
+                                    or part <= last_register or cycle - last_cycle > clock_hz // 100):
+            flush()
+            pending = None
+        registers[sid][register] = event["value"]
+        if pitch_write:
+            pending, last_register = owner, part
+            last_cycle = cycle
+        elif owner in owners and part == 4 and event["value"] & 1:
+            # Repeated percussion can retain one frequency for an entire cue.
+            # Its gate attacks still verify the pitch in the native cache.
+            check(owner, False)
+    flush()
+    for lane, pitches in enumerate(notes):
+        if pitches and not seen[lane]:
+            raise RuntimeError(f"Native music lane {lane} has no verified pitch writes")
+    return [{"lane": lane, "verified_frequency_writes": writes[lane],
+             "verified_gate_attacks": gates[lane],
+             "authored_notes": sorted(notes[lane]), "observed_notes": sorted(seen[lane]),
+             "tuning_tolerance_register_units": 1} for lane in range(len(voices))]
+
+
 def package_model_layout(package):
     """Keep baseline benchmarks compatible while checking the current format."""
     version = int.from_bytes(package[4:8], "little")
-    formats = {0x534d0300: (b"SMA2", 80), 0x534d0400: (b"SMA3", 88), 0x534d0500: (b"SMA3", 88)}
-    campaign = version == 0x534d0500
-    count = 12 if campaign else 4
+    formats = {0x534d0300: (b"SMA2", 80), 0x534d0400: (b"SMA3", 88),
+               0x534d0500: (b"SMA3", 88), 0x534d0600: (b"SMA3", 88)}
+    campaign = version >= 0x534d0500
+    space = version == 0x534d0600
+    count = 18 if space else 12 if campaign else 4
     if package[:4] != b"SM64" or version not in formats or package[16] != count or package[17] not in (2, 4):
-        raise RuntimeError("Expected a supported version 3.0, 4.0 or twelve-stage 5.0 package")
+        raise RuntimeError("Expected supported package v3/v4, twelve-stage v5 or eighteen-stage v6")
     magic, descriptors = formats[version]
     return {"version": version, "magic": magic, "descriptors": descriptors,
-            "medal": version >= 0x534d0400, "campaign": campaign, "count": count,
+            "medal": version >= 0x534d0400, "campaign": campaign, "space": space, "count": count,
             "segment_magic": b"SMS2" if campaign else b"SMS1"}
 
 
 def stage_fixture(values, layout, package):
     """Keep monitor-authored clock, stage identity and bank metadata together."""
-    values = dict(values)
+    values = clock_fixture(values, layout["fields"], package[16], layout["modes"].get("Transition", 6))
     if "stage_id" not in layout["fields"] or not ("rail_ticks" in values or "stage_id" in values):
         return values
     count = package[16]
@@ -454,7 +586,7 @@ def enemy_bank_check(mon, syms, package, section, game=None):
         enemy, boss = package[start+8], package[start+11]
         active_attract = mode == 5 and (game is None or (
             game["menu_ticks"] < 749 and not game["menu_activity"] and not game["controls.bits"]))
-        expected_code = (3 + boss if boss else enemy) if mode == 1 or active_attract else 7
+        expected_code = boss_sim_profile(enemy, boss) if mode == 1 or active_attract else 7
     else:
         expected_code = 4 if format["medal"] and mode in (3, 4) else section
     mon.command("bank cpu")
@@ -484,9 +616,7 @@ def streaming_checks(mon, syms, failures, elf, reu, dwarf_tool, output, result):
             raise RuntimeError(f"Missing {name} guard symbol")
 
     def field_read(name):
-        field = layout["fields"][name]
-        raw = mon.read(layout["address"] + field["offset"], field["size"])
-        return int.from_bytes(raw, "little", signed=field["type"].startswith("i"))
+        return read_game_field(mon, layout, name)
 
     def seed(scenario, values):
         values = stage_fixture(values, layout, data)
@@ -536,7 +666,7 @@ def streaming_checks(mon, syms, failures, elf, reu, dwarf_tool, output, result):
             observed += ["ticks", "transition_ticks"]
         if "stage_id" in layout["fields"]:
             observed += ["stage_id"]
-        frame["game"] = {name: field_read(name) for name in observed}
+        frame["game"] = read_game_state(mon, layout, observed)
         frame["stack_guards"] = {name: mon.integer(syms[name], 1) for name in ("__stack_bottom", "__irq_stack_bottom")}
         mon.command("bank cpu")
         frame["cache_views"] = caches()
@@ -595,14 +725,15 @@ def streaming_checks(mon, syms, failures, elf, reu, dwarf_tool, output, result):
     result["initial_cache_views"] = caches("streaming-initial")
     labels = ("lowlands", "crystal-cave", "iron-canyon", "canyon-gate", "ashen-wastes",
               "foundry-belt", "fortress-run", "citadel-core", "storm-front", "meteor-reach",
-              "carrier-coast", "carrier-assault") if format["campaign"] else ("lowlands", "canyon", "base", "carrier-approach")
+              "carrier-coast", "carrier-assault", "asteroid-belt", "shattered-moon",
+              "ship-graveyard", "orbital-shipyard", "space-carrier", "jump-gate") if format["campaign"] else ("lowlands", "canyon", "base", "carrier-approach")
     for section in range(1, format["count"]):
         label = labels[section]
         following = (section + 1) % format["count"]
         scenario = {"name": f"section-{section}-boundary", "expected_section": section,
                     "expected_prefetch": following}
         result["scenarios"].append(scenario)
-        outgoing_boss = format["campaign"] and section in (4, 8)
+        outgoing_boss = format["campaign"] and section in (4, 8, 12, 17)
         seed(scenario, {"rail_ticks": section*3750-1, "mode": layout["modes"]["Playing"],
                         "boss_started": int(outgoing_boss), "boss_defeated": int(outgoing_boss),
                         "shield": 61, "lives": 2, "bombs": 0, "score": 1234})
@@ -660,10 +791,13 @@ def streaming_checks(mon, syms, failures, elf, reu, dwarf_tool, output, result):
         finish_capture(scenario, label)
 
     final_stage = format["count"] - 1
-    for section, label in (((3, "gorge-warden"), (7, "citadel-heart"), (11, "carrier")) if format["campaign"] else ((3, "carrier"),)):
+    bosses = [(3, "gorge-warden"), (7, "citadel-heart"), (11, "carrier")] if format["campaign"] else [(3, "carrier")]
+    if format["space"]:
+        bosses += [(16, "dreadnought"), (17, "gate-guardian")]
+    for section, label in bosses:
         scenario = {"name": f"visible-{label}", "note": "Monitor advances to the boss entry and places it at the normal settled depth."}
         result["scenarios"].append(scenario)
-        seed(scenario, {"rail_ticks": section*3750 + (1000 if format["campaign"] else 150),
+        seed(scenario, {"rail_ticks": section*3750 + (2500 if section >= 16 else 1000 if format["campaign"] else 150),
                         "mode": layout["modes"]["Playing"], "boss_z": 680,
                         "boss_started": 0, "boss_defeated": 0, "boss_left": 20, "boss_right": 20, "boss_core": 60})
         frame = wait_ready(scenario, layout["modes"]["Playing"], section, (section+1) % format["count"])
@@ -809,11 +943,11 @@ def attract_checks(mon, syms, failures, elf, reu, dwarf_tool, output, result):
     if "stage_id" in fields:
         observed += ("stage_id",) + tuple(name for name in fields if name.startswith("stage_info."))
     result.update(passed=False, monitor_assisted=True, excluded_from_timing=True, layout=layout,
-                  scope="One natural 15-second title, four 15-second maps, and another 15-second title, verified by counting native 20-ms Game::tick calls. Monitor writes establish a clean timer baseline and per-map dismissal fixtures; all dismiss/relaunch input uses joystick port 2.",
+                  scope="A natural 15-second title and every 15-second attract map, returning to title and repeating, verified by native 20-ms Game::tick calls. Monitor writes establish a clean timer baseline and per-map dismissal fixtures; all dismiss/relaunch input uses joystick port 2.",
                   scenarios=[])
     data = reu.read_bytes()
     format = package_model_layout(data)
-    tour = (0, 1, 6, 10) if format["campaign"] else (0, 1, 2, 3)
+    tour = (0, 1, 6, 10, 12, 14, 16) if format["space"] else (0, 1, 6, 10) if format["campaign"] else (0, 1, 2, 3)
     segment_base = int.from_bytes(data[12:16], "little")
     references = [data[segment_base+i*2048:segment_base+i*2048+512] for i in range(format["count"])]
     if any(len(part) != 512 or part[:4] != format["segment_magic"] or part[4] != i
@@ -857,10 +991,7 @@ def attract_checks(mon, syms, failures, elf, reu, dwarf_tool, output, result):
     def read_game():
         mon.command("bank ram")
         raw = mon.read(layout["address"], game_size)
-        game = {name: int.from_bytes(raw[fields[name]["offset"]:
-                                         fields[name]["offset"]+fields[name]["size"]],
-                                    "little", signed=fields[name]["type"].startswith("i"))
-                for name in observed}
+        game = read_game_state(mon, layout, observed, raw)
         mon.command("bank cpu")
         return game
 
@@ -874,7 +1005,7 @@ def attract_checks(mon, syms, failures, elf, reu, dwarf_tool, output, result):
             raw = value.to_bytes(field["size"], "little")
             mon.command(f"> {address:04x} " + " ".join(f"{byte:02x}" for byte in raw))
             scenario.setdefault("monitor_patches", []).append(
-                {"field": name, "previous": previous[name], "seeded": value})
+                {"field": name, "previous": previous.get(name), "seeded": value})
         mon.command("bank cpu")
         actual = read_game()
         if any(actual[name] != value for name, value in values.items()):
@@ -937,21 +1068,24 @@ def attract_checks(mon, syms, failures, elf, reu, dwarf_tool, output, result):
     seed(setup, {"menu_ticks": 0, "menu_activity": 0})
     finish(setup)
 
+    tour_labels = (["Lowland Approach", "Crystal Cave", "Fortress Run", "Carrier Coast"]
+                   if format["campaign"] else ["Lowlands", "Canyon", "Base", "Carrier"])
+    if format["space"]:
+        tour_labels += ["Asteroid Belt", "Ship Graveyard", "Space Carrier"]
     cycle = {"name": "natural-750-tick-tour-and-repeat", "captures": {},
-             "expected_order": (["Title", "Lowland Approach", "Crystal Cave", "Fortress Run", "Carrier Coast", "Title", "Lowland Approach"]
-                                if format["campaign"] else ["Title", "Lowlands", "Canyon", "Base", "Carrier", "Title", "Lowlands"])}
+             "expected_order": ["Title", *tour_labels, "Title", tour_labels[0]]}
     result["scenarios"].append(cycle)
     mon.command(f"trace exec {tick_address:04x} if @cpu:${syms['PROF_PHASE']:04x} == $05")
     tracing = True
     baseline = tick_count()
-    for _ in range(1000):
+    for _ in range(1800):
         frame = observe(cycle)
         elapsed = frame["native_tick_calls"] - baseline
         phase, remainder = divmod(elapsed, 750)
-        if phase > 6:
+        if phase > len(tour) + 2:
             raise RuntimeError("Attract check skipped more than one complete presentation interval")
-        section = tour[phase - 1] if 1 <= phase <= 4 else 0
-        expected_mode = modes["Title"] if phase in (0, 5) else modes["Attract"]
+        section = tour[phase - 1] if 1 <= phase <= len(tour) else 0
+        expected_mode = modes["Title"] if phase in (0, len(tour) + 1) else modes["Attract"]
         expected_rail = 0 if expected_mode == modes["Title"] else section * 3750 + remainder
         game = frame["game"]
         if (game["mode"] != expected_mode or game["menu_ticks"] != remainder
@@ -963,13 +1097,13 @@ def attract_checks(mon, syms, failures, elf, reu, dwarf_tool, output, result):
         if expected_mode == modes["Attract"] and remainder >= 250 and str(section) not in cycle["captures"]:
             cycle["captures"][str(section)] = capture(mon, syms, output, f"attract-section-{section}")
             print(f"ATTRACT natural tour: section {section}, {elapsed} native ticks", flush=True)
-        if phase == 5 and "title-return" not in cycle["captures"]:
+        if phase == len(tour) + 1 and "title-return" not in cycle["captures"]:
             cycle["captures"]["title-return"] = capture(mon, syms, output, "attract-title-return")
-        if phase == 6:
+        if phase == len(tour) + 2:
             cycle["native_ticks_observed"] = elapsed
             break
     else:
-        raise RuntimeError("Natural attract tour did not repeat within 1000 rendered frames")
+        raise RuntimeError("Natural attract tour did not repeat within 1800 rendered frames")
     if any(str(section) not in cycle["captures"] for section in tour):
         raise RuntimeError("Natural attract tour did not capture every map")
     finish(cycle)
@@ -1038,10 +1172,7 @@ def control_checks(mon, syms, failures, elf, dwarf_tool, output, result):
                     "controls.bits", "roll_ticks", "roll_cooldown", "roll_direction")
         if "stage_id" in layout["fields"]:
             observed += ("stage_id",)
-        for name in observed:
-            field = layout["fields"][name]
-            raw = mon.read(layout["address"] + field["offset"], field["size"])
-            frame["game"][name] = int.from_bytes(raw, "little", signed=field["type"].startswith("i"))
+        frame["game"] = read_game_state(mon, layout, observed)
         frame["stack_guards"] = {name: mon.integer(syms[name], 1)
                                  for name in ("__stack_bottom", "__irq_stack_bottom")}
         mon.command("bank cpu")
@@ -1219,9 +1350,7 @@ def weapon_checks(mon, syms, failures, elf, dwarf_tool, output, result, video):
                   layout=layout, arrays=arrays, renderer=renderer, triangle=triangle, bomb_effect=effect, scenarios=[])
 
     def read_field(name):
-        field = fields[name]
-        return int.from_bytes(mon.read(layout["address"] + field["offset"], field["size"]),
-                              "little", signed=field["type"].startswith("i"))
+        return read_game_field(mon, layout, name)
 
     def write_bytes(scenario, label, address, raw):
         previous = mon.read(address, len(raw))
@@ -1236,7 +1365,7 @@ def weapon_checks(mon, syms, failures, elf, dwarf_tool, output, result, video):
 
     def seed(scenario, values=None, clear=()):
         mon.command("bank ram")
-        for name, value in (values or {}).items():
+        for name, value in clock_fixture(values or {}, fields, 18 if "stage_ticks" in fields else 12).items():
             field = fields[name]
             write_bytes(scenario, name, layout["address"] + field["offset"],
                         value.to_bytes(field["size"], "little", signed=field["type"].startswith("i")))
@@ -1298,7 +1427,7 @@ def weapon_checks(mon, syms, failures, elf, dwarf_tool, output, result, video):
         mon.run_until(syms["frame_complete"], failures)
         frame = counters(mon, syms)
         mon.command("bank ram")
-        frame["game"] = {name: read_field(name) for name in observed_fields}
+        frame["game"] = read_game_state(mon, layout, observed_fields)
         frame["actors"], frame["shots"] = read_array("actors"), read_array("shots")
         frame["stack_guards"] = {name: mon.integer(syms[name], 1)
                                  for name in ("__stack_bottom", "__irq_stack_bottom")}
@@ -1636,8 +1765,16 @@ def weapon_checks(mon, syms, failures, elf, dwarf_tool, output, result, video):
     result["passed"] = True
 
 
-def music_checks(mon, syms, failures, elf, reu, dwarf_tool, output, result, sid_count, video):
-    """Run every complete cue with native IRQ playback and foreground refills."""
+def music_cue_selection(cue_count, requested):
+    selected = list(range(cue_count)) if requested is None else sorted(set(requested))
+    if not selected or any(cue < 0 or cue >= cue_count for cue in selected):
+        raise RuntimeError(f"Music selection must contain cues from this {cue_count}-cue package")
+    return selected
+
+
+def music_checks(mon, syms, failures, elf, reu, dwarf_tool, output, result, sid_count, video,
+                 requested_cues=None):
+    """Run complete selected cues with native IRQ playback and foreground refills."""
     required = ("MUSIC_CUE", "MUSIC_PAGE", "MUSIC_UNDERRUNS", "AUDIO_TICKS")
     if any(name not in syms for name in required):
         raise RuntimeError("Music checks require exported cue, page, underrun and audio-tick diagnostics")
@@ -1646,21 +1783,37 @@ def music_checks(mon, syms, failures, elf, reu, dwarf_tool, output, result, sid_
     if fields.get("menu_ticks", {}).get("type") != "u16":
         raise RuntimeError("Music fixtures require the DWARF Game::menu_ticks field")
     fields["menu_ticks"]["size"] = 2
+    audio_description = subprocess.check_output(
+        [str(dwarf_tool), "--name=AudioEngine", "--show-children", str(elf)], text=True)
+    register_field = dwarf_members(audio_description, "AudioEngine").get("registers")
+    audio_size = re.search(r"DW_AT_byte_size\s+\((0x[0-9a-fA-F]+|\d+)\)", audio_description)
+    if (not register_field or register_field["type"] not in
+            (f"[[u8; 25]; {sid_count}]", f"u8[{sid_count}]")
+            or not audio_size or register_field["offset"] + sid_count * 25 > int(audio_size[1], 0)):
+        raise RuntimeError("Pitch audit requires the exact native AudioEngine register-cache layout")
+    register_address = resident_symbol(syms, "AUDIO")[1] + register_field["offset"]
     data = reu.read_bytes()
-    score_offset = 0x100000
-    header = data[score_offset:score_offset + 128]
-    if header[:4] != b"SMU2" or header[4] != sid_count or header[6] != 13:
-        raise RuntimeError("Music checks require a matching thirteen-cue SMU2 bank")
+    format = package_model_layout(data)
+    score_offset, header_size, magic, cue_count = ((0x200000, 256, b"SMU3", 21)
+        if format["space"] else (0x100000, 128, b"SMU2", 13))
+    header = data[score_offset:score_offset + header_size]
+    if header[:4] != magic or header[4] != sid_count or header[6] != cue_count:
+        raise RuntimeError("Music checks require the matching complete score bank")
+    selected_cues = music_cue_selection(cue_count, requested_cues)
     page_size = int.from_bytes(header[12:14], "little")
     names = ("title", "lowlands", "canyon", "fortress", "carrier", "victory", "defeat",
              "crystal-current", "ashes-and-steel", "tempest-drive",
              "gorge-warden", "citadel-heart", "carrier-overdrive")
     stages = {1: 0, 2: 2, 3: 6, 4: 10, 7: 1, 8: 4, 9: 8, 10: 3, 11: 7, 12: 11}
+    if format["space"]:
+        names += ("asteroid-belt", "shattered-moon", "ship-graveyard", "orbital-shipyard",
+                  "space-carrier", "jump-gate", "ascent", "gate-guardian")
+        stages.update({13: 12, 14: 13, 15: 14, 16: 15, 17: 16, 18: 17, 19: 11, 20: 17})
     chips = ("left_d400", "right_d420", "socket1_d440", "socket2_d460")[:sid_count]
     bus_hz = 985248 if video == "pal" else 1022727
     result.update(passed=False, monitor_assisted=True, excluded_from_timing=True,
-                  scope="All thirteen cues play one complete native loop plus a page while rendering continues. DWARF-derived respawn/results fixtures hold each cue; lowlands uses physical held FIRE during play for both effects voices. Later four-SID cues cross 64 KiB score offsets.",
-                  sid_count=sid_count, scenarios=[], layout=layout)
+                  scope="Each selected cue plays one complete native loop plus a page while rendering continues. DWARF-derived respawn/results/ascent fixtures hold each cue; lowlands uses physical held FIRE during play for both effects voices. Expanded four-SID scores cross 128 KiB offsets.",
+                  sid_count=sid_count, selected_cues=selected_cues, scenarios=[], layout=layout)
 
     def patch(values):
         values = stage_fixture(values, layout, data)
@@ -1698,7 +1851,8 @@ def music_checks(mon, syms, failures, elf, reu, dwarf_tool, output, result, sid_
     mon.command("jpdb 1 $1f")
     observe()
     observe()
-    for cue, name in enumerate(names):
+    for cue in selected_cues:
+        name = names[cue]
         at = 16 + cue * 8
         offset = int.from_bytes(header[at:at+4], "little")
         pages, row_ticks = header[at+4], header[at+5]
@@ -1709,14 +1863,20 @@ def music_checks(mon, syms, failures, elf, reu, dwarf_tool, output, result, sid_
             fixture = {"mode": modes["Title"], "rail_ticks": 0, "menu_ticks": 0}
         elif cue in (5, 6):
             fixture = {"mode": modes["Victory"] if cue == 5 else modes["GameOver"],
-                       "stage_id": 11, "rail_ticks": 45000, "menu_ticks": 400 if cue == 5 else 0,
+                       "stage_id": format["count"] - 1, "rail_ticks": format["count"] * 3750,
+                       "menu_ticks": 400 if cue == 5 else 0,
                        "boss_started": 1, "boss_defeated": 1}
+        elif cue == 19:
+            fixture = {"mode": modes["Transition"], "stage_id": 11, "rail_ticks": 12 * 3750,
+                       "transition_ticks": 1, "boss_started": 1, "boss_defeated": 1,
+                       "menu_ticks": 0, "shield": 100, "lives": 3, "player.x": 0}
         else:
             stage = stages[cue]
+            boss = cue in (10, 11, 12, 20)
             fixture = {"mode": modes["Playing"] if cue == 1 else modes["Respawning"],
-                       "stage_id": stage, "rail_ticks": stage*3750 + (1100 if cue >= 10 else 100),
+                       "stage_id": stage, "rail_ticks": stage*3750 + (2600 if boss else 100),
                        "menu_ticks": 0, "shield": 100, "lives": 3, "respawn_ticks": 255,
-                       "boss_started": int(cue >= 10), "boss_defeated": 0, "player.x": 0}
+                       "boss_started": int(boss), "boss_defeated": 0, "player.x": 0}
         scenario = {"name": name, "cue": cue, "pages": pages, "row_ticks": row_ticks,
                     "loop_ticks": loop_ticks, "loop_seconds": loop_ticks/50,
                     "fixture": fixture, "page_transitions": [], "observed_frames": 0}
@@ -1744,6 +1904,9 @@ def music_checks(mon, syms, failures, elf, reu, dwarf_tool, output, result, sid_
         if first is None:
             raise RuntimeError(f"{name} did not begin on its opening page")
         start_cycles = mon.registers()["bus_cycles"]
+        mon.command("bank ram")
+        initial_registers = mon.read(register_address, sid_count * 25)
+        mon.command("bank cpu")
         previous_page, wraps = 0, 0
         seen = {0}
         scenario["page_transitions"].append(dict(first, elapsed_ticks=0))
@@ -1785,6 +1948,7 @@ def music_checks(mon, syms, failures, elf, reu, dwarf_tool, output, result, sid_
         music_voices = [(0, 0), (1, 0), (0, 1), (1, 1)]
         if sid_count == 4:
             music_voices += [(sid, voice) for sid in (2, 3) for voice in range(3)]
+        authored_notes = [set() for _ in music_voices]
         for lane, (sid, voice) in enumerate(music_voices):
             # Only demand a gate where the composition actually has attacks.
             # Intentional rests and staggered entrances remain legitimate.
@@ -1792,6 +1956,14 @@ def music_checks(mon, syms, failures, elf, reu, dwarf_tool, output, result, sid_
                            for p in range(pages) for row in range(16))
             if attacked and not scenario["sid"][chips[sid]]["voices"][voice]["gate_on"]:
                 raise RuntimeError(f"{name} never sounded composed music lane {lane}")
+            authored_notes[lane] = {
+                event & 127 for p in range(pages) for row in range(16)
+                if (event := data[score_offset+offset+p*page_size+12+5*len(music_voices)
+                                  +row*len(music_voices)+lane]) > 1}
+        scenario["pitch_audit"] = music_pitch_audit(
+            [event for event in events if start_cycles <= event["bus_cycles"] < end_cycles],
+            [initial_registers[sid * 25:(sid + 1) * 25] for sid in range(sid_count)],
+            music_voices, authored_notes, bus_hz)
         if sid_count == 2 and any(0xd440 <= event["address"] <= 0xd478 for event in events):
             raise RuntimeError("Two-SID music wrote to an enhancement SID address")
         if cue == 1 and not all(scenario["sid"][chips[sid]]["voices"][2]["gate_on"] for sid in (0, 1)):
@@ -1826,7 +1998,9 @@ def main():
     parser.add_argument("--attract-checks", action="store_true",
                         help="after timing, count a natural title/map tour and verify physical-input dismissal and fresh-FIRE relaunch")
     parser.add_argument("--music-checks", action="store_true",
-                        help="after timing, play all thirteen full native cue loops with page, clock, effects and underrun checks")
+                        help="after timing, play every full native cue loop with page, clock, effects and underrun checks")
+    parser.add_argument("--music-cues", type=int, nargs="+", metavar="CUE",
+                        help="with --music-checks, limit full-loop checks to these cue IDs; default is every packaged cue")
     parser.add_argument("--llvm-dwarfdump", type=Path,
                         help="DWARF reader for optional streaming/control/weapon checks; defaults beside --llvm-nm")
     parser.add_argument("--out-dir", type=Path)
@@ -1836,6 +2010,8 @@ def main():
     args = parser.parse_args()
     if not 1 <= args.frames <= 1000 or not 1 <= args.timeout <= 60:
         parser.error("frames must be 1..1000 and timeout 1..60 seconds")
+    if args.music_cues is not None and not args.music_checks:
+        parser.error("--music-cues requires --music-checks")
     output = (args.out_dir or ROOT / "target/vice" / args.video).resolve()
     output.mkdir(parents=True, exist_ok=True)
     report = {"passed": False, "video": args.video, "scope": "Calibrated VICE emulation; not physical hardware timing", "frames": []}
@@ -1998,7 +2174,7 @@ def main():
             report["music_checks"] = {}
             music_checks(mon, syms, failures, elf, reu,
                          args.llvm_dwarfdump or args.llvm_nm.with_name("llvm-dwarfdump"),
-                         output, report["music_checks"], sid_count, args.video)
+                         output, report["music_checks"], sid_count, args.video, args.music_cues)
         for extension, path in (("prg", prg), ("reu", reu), ("elf", elf)):
             if hashlib.sha256(path.read_bytes()).hexdigest() != report[extension+"_sha256"]:
                 raise RuntimeError(f"Packaged {extension.upper()} changed while the emulator test ran")
