@@ -1606,6 +1606,201 @@ mod tests {
     }
 
     #[test]
+    fn carrier_hulls_continue_past_the_camera_without_row_wrap_disappearance() {
+        for camera in [24, 40, 56] {
+            for tick in (0..256u16).chain(core::iter::once(u16::MAX)) {
+                let before = orbital_capture(16, tick, None, camera);
+                let after = orbital_capture(16, tick.wrapping_add(1), None, camera);
+                let hull_start = before
+                    .0
+                    .iter()
+                    .position(|f| f.1 == 15 && f.2 & crate::game::STATIC_SKY == 0)
+                    .unwrap();
+                for &(points, color, flags) in &before.0[hull_start..] {
+                    let next = points.map(|p| Vec3 { z: p.z - 8, ..p });
+                    if next.iter().any(|p| p.z >= crate::render::NEAR) {
+                        assert!(
+                            after.0.contains(&(next, color, flags)),
+                            "visible carrier hull vanished at tick {tick}, camera {camera}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    fn graveyard_wrecks(scene: &Capture) -> Vec<Capture> {
+        // The wrecks flank the flight corridor; stars and the distant upper
+        // rock lie outside this volume. Group connected faces by shared
+        // coordinates, without depending on emission order or triangle count.
+        let mut remaining: Vec<_> = scene
+            .0
+            .iter()
+            .copied()
+            .filter(|(points, _, _)| {
+                points
+                    .iter()
+                    .all(|p| p.x.abs() <= 750 && (-200..300).contains(&p.y))
+            })
+            .collect();
+        let mut wrecks = Vec::new();
+        while let Some(seed) = remaining.pop() {
+            let mut wreck = Capture(Vec::from([seed]));
+            loop {
+                let linked = remaining.iter().position(|(points, _, _)| {
+                    wreck
+                        .0
+                        .iter()
+                        .any(|(existing, _, _)| points.iter().any(|p| existing.contains(p)))
+                });
+                let Some(index) = linked else { break };
+                wreck.0.push(remaining.swap_remove(index));
+            }
+            wrecks.push(wreck);
+        }
+        assert!(!wrecks.is_empty(), "graveyard must contain visible wrecks");
+        wrecks
+    }
+
+    #[test]
+    fn graveyard_bodies_are_closed_and_use_visible_gray_orange_facets() {
+        use std::collections::{BTreeMap, BTreeSet};
+        for camera in [24, 40, 56] {
+            for tick in [0, 127, 128, 255, u16::MAX] {
+                for wreck in graveyard_wrecks(&orbital_capture(14, tick, None, camera)) {
+                    let highest = wreck
+                        .0
+                        .iter()
+                        .flat_map(|f| &f.0)
+                        .map(|p| p.y)
+                        .max()
+                        .unwrap();
+                    let mut edges = BTreeMap::new();
+                    let mut vertices = BTreeSet::new();
+                    let mut body_faces = 0;
+                    let mut fins = 0;
+                    for (points, color, flags) in wreck.0 {
+                        assert!(matches!(color, 8 | 12 | 15), "wreck ink must stay visible");
+                        assert_eq!(flags & TWO_SIDED, TWO_SIDED);
+                        if points.iter().any(|p| p.y == highest) {
+                            fins += 1;
+                            assert_eq!(color, 15, "attached fin is a light-gray accent");
+                            continue;
+                        }
+                        body_faces += 1;
+                        let p = points.map(|p| [p.x, p.y, p.z]);
+                        vertices.extend(p);
+                        let a = core::array::from_fn::<_, 3, _>(|i| i32::from(p[1][i] - p[0][i]));
+                        let b = core::array::from_fn::<_, 3, _>(|i| i32::from(p[2][i] - p[0][i]));
+                        assert_ne!(
+                            [
+                                a[1] * b[2] - a[2] * b[1],
+                                a[2] * b[0] - a[0] * b[2],
+                                a[0] * b[1] - a[1] * b[0]
+                            ],
+                            [0; 3],
+                            "body facets must have area"
+                        );
+                        for (from, to) in [(p[0], p[1]), (p[1], p[2]), (p[2], p[0])] {
+                            let edge = edges.entry((from.min(to), from.max(to))).or_insert((0, 0));
+                            edge.0 += 1;
+                            edge.1 += if from < to { 1 } else { -1 };
+                        }
+                    }
+                    assert_eq!(fins, 1, "only the attached fin is an open sheet");
+                    assert!(
+                        edges.values().all(|&edge| edge == (2, 0)),
+                        "body must have no missing faces or inconsistent shared edges"
+                    );
+                    assert_eq!(
+                        vertices.len() + body_faces,
+                        edges.len() + 2,
+                        "connected body must form a closed shell"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn both_graveyard_inward_sides_have_visible_projected_fill_at_every_camera_height() {
+        for camera in [24, 40, 56] {
+            let mut checked_sides = [false; 2];
+            for tick in [0, 128] {
+                for wreck in graveyard_wrecks(&orbital_capture(14, tick, None, camera)) {
+                    let bow = *wreck
+                        .0
+                        .iter()
+                        .flat_map(|f| &f.0)
+                        .min_by_key(|p| p.z)
+                        .unwrap();
+                    if !(256..1500).contains(&bow.z) {
+                        continue;
+                    }
+                    let left = bow.x < 0;
+                    let inward = Capture(
+                        wreck
+                            .0
+                            .iter()
+                            .copied()
+                            .filter(|(points, color, _)| {
+                                *color == 12
+                                    && points.iter().all(|p| {
+                                        if left {
+                                            p.x >= bow.x
+                                        } else {
+                                            p.x <= bow.x
+                                        }
+                                    })
+                            })
+                            .collect(),
+                    );
+                    assert!(!inward.0.is_empty(), "missing flight-corridor-facing wall");
+                    let side_pixels = pixels(&inward);
+                    let covered = side_pixels.iter().filter(|&&p| p == 12).count();
+                    let complete = pixels(&wreck);
+                    let visible = side_pixels
+                        .iter()
+                        .zip(complete)
+                        .filter(|(side, actual)| **side == 12 && *actual == 12)
+                        .count();
+                    assert!(
+                        covered >= 12,
+                        "inward wall must project to a substantial surface"
+                    );
+                    assert!(
+                        visible >= covered / 2,
+                        "inward wall is obscured or missing at camera {camera}, left={left}"
+                    );
+                    checked_sides[usize::from(left)] = true;
+                }
+            }
+            assert_eq!(checked_sides, [true; 2]);
+        }
+    }
+
+    #[test]
+    fn graveyard_wrecks_move_continuously_until_every_facet_passes_the_camera() {
+        for camera in [24, 40, 56] {
+            for tick in (0..256u16).chain(core::iter::once(u16::MAX)) {
+                let before = orbital_capture(14, tick, None, camera);
+                let after = orbital_capture(14, tick.wrapping_add(1), None, camera);
+                for wreck in graveyard_wrecks(&before) {
+                    for (points, color, flags) in wreck.0 {
+                        let next = points.map(|p| Vec3 { z: p.z - 8, ..p });
+                        if next.iter().any(|p| p.z >= crate::render::NEAR) {
+                            assert!(
+                                after.0.contains(&(next, color, flags)),
+                                "visible graveyard face vanished at tick {tick}, camera {camera}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
     fn orbital_scenes_are_distinct_black_space_with_bounded_geometry() {
         let mut samples = Vec::new();
         for section in 12..18u8 {

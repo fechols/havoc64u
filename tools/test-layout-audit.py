@@ -60,6 +60,25 @@ def main():
             assert expected in result.stderr, result.stdout + result.stderr
             cases += 1
             print(f"Rejected {label}")
+        for name, value, expected in (
+            ("__phase_pixels_prefix_size", 0x3001, "PIXELS prefix overlaps raster tails"),
+            ("__phase_pixels_aux_start", 0x6f1f, "PIXELS helpers overlap raster masks"),
+            ("__phase_pixels_aux_size", 0x2e1, "PIXELS helpers exceed workspace"),
+            ("__phase_pixels_aux_load", 0x43f21, "incorrect PIXELS helper REU address"),
+            ("__phase_pixels_size", 0x3000, "incorrect composed PIXELS size"),
+        ):
+            entry = next(table.offset + index * table.entry_size
+                         for table in elf.sections if table.kind == 2
+                         for index, symbol in enumerate(elf.symbol_tables[table.index])
+                         if symbol.name == name)
+            data = bytearray(elf.data)
+            struct.pack_into("<I", data, entry + 4, value)
+            damaged_elf.write_bytes(data)
+            result = check(prg, damaged_elf)
+            assert result.returncode != 0, f"accepted {name}={value}"
+            assert expected in result.stderr, result.stdout + result.stderr
+            cases += 1
+            print(f"Rejected {name}={value}")
     assert prg.read_bytes() == original, "input PRG changed"
     assert source.read_bytes() == elf.data, "input ELF changed"
     print(f"Layout audit negative fixtures: {cases} passed; original package unchanged")

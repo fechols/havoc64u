@@ -1,52 +1,54 @@
 use super::*;
 
 #[test]
-fn small_debris_is_targetable_but_cannot_farm_enemy_rewards() {
-    let mut game = Game::preview_at_for_test(12);
-    let bank = test_bank(12);
-    game.spawn_actor(
-        Spawn {
-            distance: 0,
-            kind: assets::ROCK,
-            x: 0,
-            y: -10,
-            flags: 2,
-        },
-        0,
-        &bank,
-    );
-    game.spawn_actor(
-        Spawn {
-            distance: 0,
-            kind: assets::ROCK,
-            x: 70,
-            y: -20,
-            flags: 0,
-        },
-        0,
-        &bank,
-    );
-    assert_eq!((game.actors[0].hp, game.actors[1].hp), (2, 255));
-    assert_eq!(actor_center_sim(&game.actors[0], &bank).y, 0);
-    assert_eq!(
-        game.missile_target(Vec3 { x: 0, y: 0, z: 180 }, &bank)
-            .unwrap()
-            .0
-            .x,
-        0
-    );
-    game.kills = 3;
-    game.bomb_kills = 4;
-    game.actors[0].pos.z = 900;
-    game.actors[1].pos.z = 900;
-    game.bomb(&bank);
-    assert_eq!(game.actors[0].kind, 0);
-    assert_eq!(game.actors[1].hp, 255);
-    assert_eq!(
-        (game.score, game.kills, game.bomb_kills, game.bombs),
-        (25, 3, 4, 2)
-    );
-    assert!(game.pickups.iter().all(|pickup| pickup.kind == 0));
+fn orbital_debris_is_bomb_destructible_but_cannot_farm_enemy_rewards() {
+    for stage in 12..18 {
+        let mut game = Game::preview_at_for_test(stage);
+        let bank = test_bank(stage);
+        game.spawn_actor(
+            Spawn {
+                distance: 0,
+                kind: assets::ROCK,
+                x: 0,
+                y: -10,
+                flags: 2,
+            },
+            0,
+            &bank,
+        );
+        game.spawn_actor(
+            Spawn {
+                distance: 0,
+                kind: assets::ROCK,
+                x: 70,
+                y: -20,
+                flags: 0,
+            },
+            0,
+            &bank,
+        );
+        assert_eq!((game.actors[0].hp, game.actors[1].hp), (2, 255));
+        assert_eq!(actor_center_sim(&game.actors[0], &bank).y, 0);
+        assert_eq!(
+            game.missile_target(Vec3 { x: 0, y: 0, z: 180 }, &bank)
+                .unwrap()
+                .0
+                .x,
+            0
+        );
+        game.kills = 7;
+        game.bomb_kills = 4;
+        game.actors[0].pos.z = 900;
+        game.actors[1].pos.z = 900;
+        game.bomb(&bank);
+        assert_eq!(game.actors[0].kind, 0);
+        assert_eq!(game.actors[1].kind, 0);
+        assert_eq!(
+            (game.score, game.kills, game.bomb_kills, game.bombs),
+            (50, 7, 4, 2)
+        );
+        assert!(game.pickups.iter().all(|pickup| pickup.kind == 0));
+    }
 }
 
 #[test]
@@ -75,6 +77,57 @@ fn debris_shot_bounds_follow_its_half_size_mesh() {
         game.update_shots(&bank);
         assert_eq!(game.actors[0].kind == 0, hit);
         assert_eq!(game.score, if hit { 25 } else { 0 });
+    }
+}
+
+#[test]
+fn large_orbital_rocks_still_absorb_lasers_and_missiles_without_damage() {
+    for stage in 12..18 {
+        for shot_kind in [1, 3] {
+            let mut game = Game::preview_at_for_test(stage);
+            let bank = test_bank(stage);
+            game.actors[0] = Actor {
+                kind: assets::ROCK,
+                hp: 255,
+                pos: Vec3 {
+                    x: 0,
+                    y: -20,
+                    z: 520,
+                },
+                ..Actor::EMPTY
+            };
+            game.shots[0] = Shot {
+                pos: Vec3 { x: 0, y: 0, z: 500 },
+                damage: 4,
+                kind: shot_kind,
+                ..Shot::EMPTY
+            };
+            game.update_shots(&bank);
+            assert_eq!(
+                (game.actors[0].kind, game.actors[0].hp),
+                (assets::ROCK, 255)
+            );
+            assert_eq!((game.shots[0].kind, game.score, game.kills), (0, 0, 0));
+        }
+    }
+}
+
+#[test]
+fn bombs_preserve_terrestrial_obstacles_and_orbital_buildings() {
+    for (stage, kind) in [
+        (0, assets::ROCK),
+        (0, assets::BUILDING),
+        (12, assets::BUILDING),
+    ] {
+        let mut game = Game::preview_at_for_test(stage);
+        game.actors[0] = Actor {
+            kind,
+            hp: 255,
+            ..Actor::EMPTY
+        };
+        game.bomb(&test_bank(stage));
+        assert_eq!((game.actors[0].kind, game.actors[0].hp), (kind, 255));
+        assert_eq!((game.bombs, game.score, game.kills), (2, 0, 0));
     }
 }
 
@@ -406,7 +459,10 @@ fn scenic_bridges_add_exactly_eight_seconds_and_keep_the_outgoing_checkpoint() {
         game.shield = 61;
         game.boss_started = game.stage_info.boss_kind != 0;
         game.boss_defeated = game.boss_started;
-        let expected_shield = if game.boss_defeated { 100 } else { 61 };
+        game.boss_left = 0;
+        game.boss_right = 0;
+        game.boss_core = 0;
+        let expected_shield = 61;
         let before_scene = game.scenery_ticks();
         let cue = game.music_state();
         let bytes = empty_segment(outgoing);
@@ -437,6 +493,10 @@ fn scenic_bridges_add_exactly_eight_seconds_and_keep_the_outgoing_checkpoint() {
         assert_eq!(game.stage_ticks, 0);
         assert_eq!(game.scenery_ticks(), 0);
         assert_eq!((game.spawn_segment, game.spawn_cursor), (outgoing + 1, 0));
+        assert_eq!(
+            (game.boss_left, game.boss_right, game.boss_core),
+            (40, 40, 120)
+        );
         game.tick(&segment, &test_bank(game.segment_index())); // A stale outgoing view cannot spawn encounters.
         assert_eq!((game.stage_ticks, game.spawn_cursor), (1, 0));
         let mut incoming = empty_segment(outgoing + 1);
@@ -623,7 +683,7 @@ fn all_eighteen_checkpoints_restore_stage_encounters_and_bosses_after_repeated_d
             assert_eq!((game.spawn_segment, game.spawn_cursor), (stage, 0));
             assert_eq!(
                 (game.boss_left, game.boss_right, game.boss_core),
-                (20, 20, 60)
+                (40, 40, 120)
             );
             assert!(!game.boss_started && !game.boss_defeated);
             assert!(game.actors.iter().all(|actor| actor.kind == 0));
@@ -707,11 +767,9 @@ fn all_boss_gates_start_on_time_and_allow_early_or_late_kills() {
     }
 }
 #[test]
-fn act_clear_resupply_happens_once_and_the_new_stage_uses_its_own_metadata() {
+fn act_clear_awards_a_life_without_repeating_the_boss_refill() {
     for stage in [3u8, 7, 11, 16] {
-        for (bombs, lives, expected_bombs, expected_lives) in
-            [(0, 1, 2, 2), (1, 2, 2, 3), (3, 3, 3, 3)]
-        {
+        for (bombs, lives, expected_lives) in [(0, 1, 2), (1, 2, 3), (3, 3, 3)] {
             let bytes = empty_segment(stage);
             let segment = Segment::new(&bytes).unwrap();
             let bank = test_bank(stage);
@@ -727,7 +785,7 @@ fn act_clear_resupply_happens_once_and_the_new_stage_uses_its_own_metadata() {
             assert_eq!(game.mode, Mode::Transition);
             assert_eq!(
                 (game.shield, game.bombs, game.lives),
-                (100, expected_bombs, expected_lives)
+                (17, bombs, expected_lives)
             );
             game.shield = 72;
             game.bombs = 0;
@@ -755,6 +813,67 @@ fn act_clear_resupply_happens_once_and_the_new_stage_uses_its_own_metadata() {
         }
     }
 }
+#[test]
+fn every_boss_refills_immediately_once_by_projectile_or_finishing_bomb() {
+    for stage in [3, 7, 11, 16, 17] {
+        for use_bomb in [false, true] {
+            let mut game = Game::preview_at_for_test(stage);
+            let bank = test_bank(stage);
+            game.boss_started = true;
+            game.boss_left = 0;
+            game.boss_right = 0;
+            game.boss_core = if use_bomb { 8 } else { 4 };
+            game.boss_z = 680;
+            game.shield = 17;
+            game.bombs = 1;
+            game.lives = 2;
+            game.shots[1] = Shot {
+                kind: 2,
+                ..Shot::EMPTY
+            };
+            if use_bomb {
+                game.bomb(&bank);
+            } else {
+                game.shots[0] = Shot {
+                    pos: Vec3 { x: 0, y: 0, z: 450 },
+                    kind: 1,
+                    damage: 4,
+                    ..Shot::EMPTY
+                };
+                game.update_shots(&bank);
+            }
+            assert!(game.boss_defeated, "stage {stage}, bomb {use_bomb}");
+            assert_eq!(
+                (game.shield, game.bombs, game.lives, game.score),
+                (100, 3, 2, 5000)
+            );
+            assert!(game.shots.iter().all(|s| s.kind != 2));
+            game.shield = 73;
+            game.bombs = 0;
+            game.check_boss_death();
+            assert_eq!((game.shield, game.bombs, game.score), (73, 0, 5000));
+        }
+    }
+}
+
+#[test]
+fn doubled_boss_health_keeps_a_normalized_hud_until_the_last_hit() {
+    let mut game = running();
+    assert_eq!(
+        (game.boss_left, game.boss_right, game.boss_core),
+        (40, 40, 120)
+    );
+    assert_eq!(game.hud().boss_shield, 0);
+    game.boss_started = true;
+    assert_eq!(game.hud().boss_shield, 100);
+    game.boss_left = 0;
+    game.boss_right = 0;
+    for (health, percent) in [(120, 60), (119, 60), (2, 1), (1, 1), (0, 0)] {
+        game.boss_core = health;
+        assert_eq!(game.hud().boss_shield, percent);
+    }
+}
+
 #[test]
 fn each_boss_has_a_distinct_side_and_exposed_core_attack() {
     for (stage, rate, side_shots, core_rate, core_shots) in
@@ -1480,7 +1599,7 @@ fn attract_section_cuts_clear_encounters_boss_audio_and_gestures() {
     assert!(g.pickups.iter().all(|p| p.kind == 0));
     assert!(g.explosions.iter().all(|e| e.ticks == 0));
     assert!(!g.boss_started);
-    assert_eq!((g.boss_left, g.boss_right, g.boss_core), (20, 20, 60));
+    assert_eq!((g.boss_left, g.boss_right, g.boss_core), (40, 40, 120));
     assert_eq!(g.controls.now, 0xffff_fff0);
     assert_eq!(g.controls.released_at, g.controls.now);
     assert!(!g.controls.fire_armed);
@@ -1958,7 +2077,7 @@ fn carrier_core_is_protected_until_both_turrets_die() {
         ..Shot::EMPTY
     };
     g.update_shots(&test_bank(g.segment_index()));
-    assert_eq!(g.boss_core, 60);
+    assert_eq!(g.boss_core, 120);
     g.boss_left = 0;
     g.boss_right = 0;
     g.shots[0] = Shot {
@@ -1968,12 +2087,12 @@ fn carrier_core_is_protected_until_both_turrets_die() {
         ..Shot::EMPTY
     };
     g.update_shots(&test_bank(g.segment_index()));
-    assert_eq!(g.boss_core, 56);
+    assert_eq!(g.boss_core, 116);
 }
 #[test]
 fn shield_magnet_recovers_near_misses_and_rewards_once() {
     for (x, y) in [(56, -56), (-56, 56)] {
-        for (initial_shield, expected_shield) in [(40, 70), (90, 100), (100, 100)] {
+        for (initial_shield, expected_shield) in [(10, 70), (40, 100), (90, 100), (100, 100)] {
             let mut g = running();
             g.shield = initial_shield;
             g.pickups[0] = Pickup {
@@ -2010,7 +2129,7 @@ fn shield_magnet_recovers_near_misses_and_rewards_once() {
 }
 
 #[test]
-fn shield_magnet_respects_proximity_kind_and_mode() {
+fn pickup_magnet_respects_proximity_and_mode() {
     // Depths describe the pickup after its normal forward movement.
     for (kind, mode, x, y, depth, attracted) in [
         (1, Mode::Playing, 64, -64, 240, true),
@@ -2019,8 +2138,14 @@ fn shield_magnet_respects_proximity_kind_and_mode() {
         (1, Mode::Playing, 0, -65, 120, false),
         (1, Mode::Playing, 56, -56, 241, false),
         (1, Mode::Playing, 56, -56, -1, false),
-        (2, Mode::Playing, 56, -56, 120, false),
+        (2, Mode::Playing, 56, -56, 120, true),
+        (2, Mode::Playing, -64, 64, 240, true),
+        (2, Mode::Playing, 65, 0, 120, false),
+        (2, Mode::Playing, 0, -65, 120, false),
+        (2, Mode::Playing, 56, -56, 241, false),
+        (2, Mode::Playing, 56, -56, -1, false),
         (1, Mode::Attract, 56, -56, 120, false),
+        (2, Mode::Attract, 56, -56, 120, false),
     ] {
         let mut g = running();
         g.mode = mode;
@@ -2047,48 +2172,79 @@ fn shield_magnet_respects_proximity_kind_and_mode() {
 }
 
 #[test]
-fn shield_magnet_does_not_overshoot_or_expand_collection_hitbox() {
-    let mut g = running();
-    g.shield = 40;
-    g.pickups[0] = Pickup {
-        pos: Vec3 {
-            x: 1,
-            y: -1,
-            z: PLAYER_Z + 80 + SPEED,
-        },
-        kind: 1,
-    };
-    for _ in 0..2 {
-        g.update_pickups();
-        assert_eq!((g.pickups[0].pos.x, g.pickups[0].pos.y), (0, 0));
-        assert_eq!(g.pickups[0].kind, 1);
+fn bomb_pickups_follow_the_same_pull_and_award_once_at_the_inventory_cap() {
+    for bombs in [0, 2, 3] {
+        let mut game = running();
+        game.bombs = bombs;
+        game.shield = 17;
+        game.pickups[0] = Pickup {
+            pos: Vec3 {
+                x: -56,
+                y: 56,
+                z: PLAYER_Z + 240 + SPEED,
+            },
+            kind: 2,
+        };
+        for _ in 0..40 {
+            game.update_pickups();
+        }
+        assert_eq!(game.pickups[0].kind, 0);
+        assert_eq!(
+            (game.bombs, game.shield, game.score),
+            ((bombs + 1).min(3), 17, 50)
+        );
+        assert_eq!(game.pop_audio().unwrap().effect, Effect::Pickup);
+        game.update_pickups();
+        assert!(game.pop_audio().is_none());
+        assert_eq!(game.score, 50);
     }
-    for (x, y) in [(31, 0), (-31, 0), (0, 31), (0, -31)] {
+}
+
+#[test]
+fn pickup_magnet_does_not_overshoot_or_expand_collection_hitbox() {
+    for kind in [1, 2] {
+        let mut g = running();
+        g.shield = 40;
         g.pickups[0] = Pickup {
             pos: Vec3 {
-                x,
-                y,
-                z: PLAYER_Z + 8 + SPEED,
+                x: 1,
+                y: -1,
+                z: PLAYER_Z + 80 + SPEED,
             },
-            kind: 1,
+            kind,
+        };
+        for _ in 0..2 {
+            g.update_pickups();
+            assert_eq!((g.pickups[0].pos.x, g.pickups[0].pos.y), (0, 0));
+            assert_eq!(g.pickups[0].kind, kind);
+        }
+        for (x, y) in [(31, 0), (-31, 0), (0, 31), (0, -31)] {
+            g.pickups[0] = Pickup {
+                pos: Vec3 {
+                    x,
+                    y,
+                    z: PLAYER_Z + 8 + SPEED,
+                },
+                kind,
+            };
+            g.update_pickups();
+            assert_eq!(g.pickups[0].kind, kind, "29 units is outside the hitbox");
+            g.update_pickups();
+            assert_eq!(g.pickups[0].kind, 0, "27 units is inside the hitbox");
+        }
+        g.pickups[0] = Pickup {
+            pos: Vec3 {
+                x: 0,
+                y: 0,
+                z: PLAYER_Z + 25 + SPEED,
+            },
+            kind,
         };
         g.update_pickups();
-        assert_eq!(g.pickups[0].kind, 1, "29 units is outside the hitbox");
+        assert_eq!(g.pickups[0].kind, kind, "depth 25 is outside the hitbox");
         g.update_pickups();
-        assert_eq!(g.pickups[0].kind, 0, "27 units is inside the hitbox");
+        assert_eq!(g.pickups[0].kind, 0, "depth 17 is inside the hitbox");
     }
-    g.pickups[0] = Pickup {
-        pos: Vec3 {
-            x: 0,
-            y: 0,
-            z: PLAYER_Z + 25 + SPEED,
-        },
-        kind: 1,
-    };
-    g.update_pickups();
-    assert_eq!(g.pickups[0].kind, 1, "depth 25 is outside the hitbox");
-    g.update_pickups();
-    assert_eq!(g.pickups[0].kind, 0, "depth 17 is inside the hitbox");
 }
 
 #[test]
@@ -2152,6 +2308,7 @@ fn killing_the_gate_guardian_keeps_bomb_presentation_on_the_victory_screen() {
     g.tick(&segment, &test_bank(g.segment_index()));
     assert_eq!(g.mode, Mode::Victory);
     assert!(g.boss_defeated);
+    assert_eq!((g.shield, g.bombs), (100, 3));
     for _ in 0..50 {
         g.tick(&segment, &test_bank(g.segment_index()));
     }
@@ -2212,7 +2369,7 @@ fn every_fifth_projectile_kill_adds_a_bomb_up_to_three_without_banking_overflow(
             (kill / 5).min(3) as u8
         };
         assert_eq!(g.hud().bombs, expected, "kill {kill}");
-        if kill == 4 {
+        if kill == 8 {
             assert_eq!(g.pickups.iter().filter(|p| p.kind == 1).count(), 1);
         }
         if kill == 5 {
@@ -2224,6 +2381,52 @@ fn every_fifth_projectile_kill_adds_a_bomb_up_to_three_without_banking_overflow(
         assert_eq!(g.bombs, expected);
     }
 }
+#[test]
+fn shields_drop_every_eighth_enemy_kill_with_existing_priority_and_pool_rules() {
+    let mut game = running();
+    let bank = test_bank(0);
+    for kill in 1..=24 {
+        game.pickups.fill(Pickup::EMPTY);
+        game.actors[0] = enemy(assets::FIGHTER, 0, 0, 900);
+        game.kill_actor(0, &bank);
+        assert_eq!(
+            game.pickups.iter().filter(|p| p.kind == 1).count(),
+            usize::from(kill % 8 == 0)
+        );
+    }
+    // A marked bomb drop takes precedence on the same eighth-kill milestone.
+    game.kills = 31;
+    game.pickups.fill(Pickup::EMPTY);
+    game.actors[0] = enemy(assets::FIGHTER, 0, 0, 900);
+    game.actors[0].flags = 1;
+    game.kill_actor(0, &bank);
+    assert_eq!(game.pickups[0].kind, 2);
+    assert!(game.pickups.iter().all(|p| p.kind != 1));
+    game.kills = u16::MAX;
+    game.pickups.fill(Pickup::EMPTY);
+    game.actors[0] = enemy(assets::FIGHTER, 0, 0, 900);
+    game.kill_actor(0, &bank);
+    assert_eq!((game.kills, game.pickups[0].kind), (0, 1));
+    // Neither a full pool nor the total-kill wrap defers a milestone.
+    game.kills = u16::MAX;
+    game.pickups.fill(Pickup {
+        kind: 2,
+        ..Pickup::EMPTY
+    });
+    game.actors[0] = enemy(assets::FIGHTER, 0, 0, 900);
+    game.kill_actor(0, &bank);
+    assert_eq!(game.kills, 0);
+    game.pickups.fill(Pickup::EMPTY);
+    for kill in 1..=8 {
+        game.actors[0] = enemy(assets::FIGHTER, 0, 0, 900);
+        game.kill_actor(0, &bank);
+        assert_eq!(
+            game.pickups.iter().filter(|p| p.kind == 1).count(),
+            usize::from(kill == 8)
+        );
+    }
+}
+
 #[test]
 fn bomb_multi_kills_award_each_crossed_five_kill_milestone() {
     let mut g = running();
@@ -2553,7 +2756,7 @@ fn missile_boss_targeting_tracks_live_turrets_then_exposed_core() {
     for _ in 0..20 {
         g.update_shots(&test_bank(g.segment_index()));
     }
-    assert_eq!(g.boss_core, 56);
+    assert_eq!(g.boss_core, 116);
     g.boss_defeated = true;
     assert_eq!(
         g.missile_target(origin, &test_bank(g.segment_index())),
@@ -2711,12 +2914,12 @@ fn all_boss_turret_shots_keep_inclusive_bounds_and_ignore_destroyed_sides() {
                     };
                     assert_eq!(
                         actual,
-                        (if hit { hp.saturating_sub(4) } else { hp }, 20),
+                        (if hit { hp.saturating_sub(4) } else { hp }, 40),
                         "stage {stage}, side {side}, hp {hp}, ({x},{y},{old_z})"
                     );
                     assert_eq!(
                         (game.boss_core, game.boss_defeated, game.score),
-                        (60, false, 0)
+                        (120, false, 0)
                     );
                     assert_eq!(game.shots[0].kind, if hit { 0 } else { 1 });
                     assert_eq!(
@@ -2768,9 +2971,9 @@ fn all_boss_cores_absorb_shielded_shots_at_the_same_inclusive_bounds() {
                 assert_eq!(
                     game.boss_core,
                     if hit && left == 0 && right == 0 {
-                        56
+                        116
                     } else {
-                        60
+                        120
                     },
                     "stage {stage}, shields ({left},{right}), ({x},{y},{old_z})"
                 );
@@ -2810,7 +3013,7 @@ fn all_boss_shots_keep_actor_priority_and_single_core_death_feedback() {
             assert_eq!(game.actors[0].hp, 2);
             assert_eq!(
                 (game.boss_left, game.boss_right, game.boss_core),
-                (20, 20, 60)
+                (40, 40, 120)
             );
             assert_eq!(game.shots[0].kind, 0);
             assert_eq!(game.pop_audio().unwrap().effect, Effect::Hit);
@@ -2880,7 +3083,7 @@ fn enlarged_carrier_targets_are_reachable_and_fire_from_the_visible_parts() {
             g.update_shots(&test_bank(11));
             assert_eq!(
                 if side < 0 { g.boss_left } else { g.boss_right },
-                20 - u8::from(hit)
+                40 - u8::from(hit)
             );
         }
         // Center launches have room to turn during approach; at the parked
@@ -2901,7 +3104,7 @@ fn enlarged_carrier_targets_are_reachable_and_fire_from_the_visible_parts() {
             }
             assert_eq!(
                 if side < 0 { g.boss_left } else { g.boss_right },
-                16,
+                36,
                 "side {side}, boss_z {boss_z}"
             );
         }
@@ -2977,7 +3180,7 @@ fn missiles_obey_obstacle_collision_and_boss_core_protection() {
     };
     g.update_shots(&test_bank(g.segment_index()));
     assert_eq!(g.shots[0].kind, 0);
-    assert_eq!(g.boss_core, 60, "a missile cannot damage a shielded core");
+    assert_eq!(g.boss_core, 120, "a missile cannot damage a shielded core");
 }
 #[test]
 fn missile_pool_priority_preserves_charge_and_ordinary_shot_rules() {

@@ -71,6 +71,15 @@ for profile in scenery_profiles:
 assert (symbols['__raster_tails_start'],symbols['__raster_tails_end'])==(0x6000,0x6c00)
 assert (symbols['__raster_masks_start'],symbols['__raster_masks_end'])==(0x6c00,0x6f20)
 assert symbols['__raster_masks_end']<=symbols['__irq_stack_bottom']
+assert symbols['__phase_pixels_start'] == 0x3000
+assert 0 < symbols['__phase_pixels_prefix_size'] <= 0x3000, 'PIXELS prefix overlaps raster tails'
+assert symbols['__phase_pixels_end'] == 0x3000 + symbols['__phase_pixels_prefix_size']
+assert symbols['__phase_pixels_aux_start'] == symbols['__raster_masks_end'], 'PIXELS helpers overlap raster masks'
+assert 0 < symbols['__phase_pixels_aux_size'] <= 0x2e0, 'PIXELS helpers exceed workspace'
+assert symbols['__phase_pixels_aux_end'] == 0x6f20 + symbols['__phase_pixels_aux_size']
+assert symbols['__phase_pixels_aux_end'] <= symbols['__irq_stack_bottom'], 'PIXELS helpers overlap IRQ stack'
+assert symbols['__phase_pixels_aux_load'] == 0x43f20, 'incorrect PIXELS helper REU address'
+assert symbols['__phase_pixels_size'] == 0x3f20 + symbols['__phase_pixels_aux_size'], 'incorrect composed PIXELS size'
 assert symbols['__raster_player_seen']==0x77ab
 assert (symbols['__raster_prepare_scratch_start'],symbols['__raster_prepare_scratch_end'])==(0x77a0,0x77bf)
 assert symbols['__irq_stack']<=symbols['__raster_prepare_scratch_start']<symbols['__raster_prepare_scratch_end']<=0x7800
@@ -88,6 +97,9 @@ for line in listing.splitlines():
     if name == '.phase.sim_aux':
         assert address == 0x8c00 and 0 < size <= 0x500, name
         assert size == symbols['__phase_sim_aux_size'], name
+    elif name == '.phase.pixels_aux':
+        assert address == 0x6f20 and 0 < size <= 0x2e0, 'PIXELS helpers outside workspace'
+        assert size == symbols['__phase_pixels_aux_size'], 'PIXELS helper size mismatch'
     elif name == '.phase.victory':
         assert address == symbols['victory_geometry'] and address + size <= 0x7200, name
     elif name in enemy_sections or name == '.phase.terminal':
@@ -108,6 +120,7 @@ for line in listing.splitlines():
         used.append((name,address,address+size))
     print(f'{name:18} ${address:04X}-${address+size-1:04X} {size:5} bytes')
 assert phase_sizes['.phase.sim'] == symbols['__phase_sim_base_size']
+assert phase_sizes['.phase.pixels'] == symbols['__phase_pixels_prefix_size']
 assert symbols['__phase_enemy_size'] == max(phase_sizes[name] for name in enemy_sections | {'.phase.terminal'})
 load_table = symbols['__sim_load_sizes']
 assert any(name == '.tables' and start <= load_table and load_table + 16 <= end
@@ -141,7 +154,8 @@ print('Startup checks8C00-90FF: retired before BOOT asset loading and rendering'
 print('VIC A: screen8000 bitmapA000-BF3F; VIC B: screenC000 bitmapE000-FF3F')
 print('Models8400-8BFF; band8C00-90FF; color9100-94FF; segments9500-98FF')
 print('Overlay3000-71FF; main stackC400-C7FF; IRQ stack7200-75FF')
-print('PIXELS code3000-5FFF; edge headsD000-DFFF tails6000-6BFF masks6C00-6F1F')
+print('PIXELS code3000-5FFF helpers6F20-71FF; edge headsD000-DFFF tails6000-6BFF masks6C00-6F1F')
+print(f'PIXELS prefix {symbols["__phase_pixels_prefix_size"]} bytes; helpers {symbols["__phase_pixels_aux_size"]} bytes; checksummed composition {symbols["__phase_pixels_size"]} bytes; runtime omits the raster-data gap')
 print('GEOMETRY code3000-71FF; projection/sort cache8C00-8E7F shares PIXELS band')
 print('SCENERY code3000-71FF; raw recordsD880-DFFF share GEOMETRY commands')
 print(f'SCENERY terrestrial prefix {symbols["__phase_scenery_terrain_size"]} bytes; complete prefix {symbols["__phase_scenery_base_size"]} bytes; largest decoration tail {symbols["__phase_scenery_size"]-symbols["__phase_scenery_base_size"]} bytes; ten padded images')

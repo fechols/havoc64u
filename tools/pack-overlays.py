@@ -51,6 +51,14 @@ def main():
         if name == 'sim':
             continue
         code = extract(name)
+        if name == 'pixels':
+            assert len(code) == symbols['__phase_pixels_prefix_size'] <= 0x3000
+            auxiliary = extract('pixels_aux')
+            assert len(auxiliary) == symbols['__phase_pixels_aux_size'] <= 0x2e0
+            assert symbols['__phase_pixels_aux_start'] == 0x6f20
+            assert symbols['__phase_pixels_aux_load'] == 0x43f20
+            code = code.ljust(0x3f20, b'\0') + auxiliary
+            (elf.parent / 'phase-pixels-composed.bin').write_bytes(code)
         assert len(code) == symbols[f'__phase_{name}_size'] and 0 < len(code) <= 0x4200
         if name in ('scenery', 'geometry'):
             assert 0 < symbols[f'__phase_{name}_base_size'] < len(code)

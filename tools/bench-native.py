@@ -116,7 +116,8 @@ def stage_metadata(package, stage):
     return dict(zip(STAGE_FIELDS, package[start:start+8]))
 
 
-def fixtures(include_victory=True, campaign=False, space=False):
+def fixtures(include_victory=True, campaign=False, space=False, boss_health=None):
+    boss_health = boss_health or dict(boss_left=20, boss_right=20, boss_core=60)
     count = 18 if space else 12 if campaign else 4
     matching = (0, 2, 6, 11) if campaign else (0, 1, 2, 3)
     result = []
@@ -137,7 +138,7 @@ def fixtures(include_victory=True, campaign=False, space=False):
                  "spawn_segment": rail // 3750, "spawn_cursor": 255,
                  "shield": 100, "lives": 3, "bombs": 3, "invulnerability": 255}
         if name in ("carrier", "full-pools"):
-            patch.update(boss_started=1, boss_z=680, boss_left=20, boss_right=20, boss_core=60)
+            patch.update(boss_started=1, boss_z=680, **boss_health)
         if name == "missiles":
             for index in range(8):
                 x = (index % 4) * 70 - 105
@@ -189,7 +190,7 @@ def fixtures(include_victory=True, campaign=False, space=False):
             patch = dict(result[1]["patch"], rail_ticks=section*3750+625,
                          spawn_segment=section)
             if section == count - 1:
-                patch.update(boss_started=1, boss_z=680, boss_left=20, boss_right=20, boss_core=60)
+                patch.update(boss_started=1, boss_z=680, **boss_health)
             actor_count = 12 if saturated else (2 if section == count - 1 else 3)
             for index in range(actor_count):
                 kind = 1 + index % (2 if section == count - 1 else 3)
@@ -210,7 +211,7 @@ def fixtures(include_victory=True, campaign=False, space=False):
         for section, label in bosses:
             patch = dict(result[1]["patch"], rail_ticks=section*3750+(2600 if section >= 16 else 1200),
                          spawn_segment=section, boss_started=1, boss_z=680,
-                         boss_left=20, boss_right=20, boss_core=60)
+                         **boss_health)
             result.append({"name": f"boss-{label}", "patch": patch,
                            "section": section, "cache_miss": False, "input_bits": 0})
     if space:
@@ -243,10 +244,11 @@ def fixtures(include_victory=True, campaign=False, space=False):
     return result
 
 
-def cache_sequence(include_victory=True, campaign=False, space=False):
+def cache_sequence(include_victory=True, campaign=False, space=False, boss_health=None):
     """Entry/exit histories that can leave stale pixels in either VIC bank."""
     count = 18 if space else 12 if campaign else 4
-    all_fixtures = fixtures(include_victory, campaign, space)
+    boss_health = boss_health or dict(boss_left=20, boss_right=20, boss_core=60)
+    all_fixtures = fixtures(include_victory, campaign, space, boss_health)
     base = next(fixture for fixture in all_fixtures if fixture["name"] == "lowlands")
 
     def variant(name, patch, **metadata):
@@ -257,7 +259,7 @@ def cache_sequence(include_victory=True, campaign=False, space=False):
         "actors[0].pos.x": 0, "actors[0].pos.y": 340, "actors[0].pos.z": 1100})
     banner = variant("sector-banner", {"rail_ticks": 25})
     boss = variant("boss-hud", {"boss_started": 1, "boss_z": 680,
-        "boss_left": 20, "boss_right": 20, "boss_core": 60})
+        **boss_health})
     title = variant("title-transition", {"mode": 0})
     sequence = [base]*3 + [occluder]*2 + [base]*3 + [banner]*2 + [base]*3 + [boss]*2 + [base]*3 + [title] + [base]*3
     themes = {section: variant(STAGE_LABELS[section] if campaign else
@@ -362,6 +364,24 @@ def execution_cycles(text, address):
         if int(match[1], 16) == address and tail:
             cycles.append(int(tail[1]))
     return cycles
+
+
+def validate_pixels_transfers(transfers, symbols):
+    """Prove runtime DMA skips the live edge/mask gap in split PIXELS images."""
+    if "__phase_pixels_aux_size" not in symbols:
+        return None  # Preserve measurements of the earlier contiguous image.
+    prefix = symbols["__phase_pixels_prefix_size"]
+    helper = symbols["__phase_pixels_aux_size"]
+    # geometry_complete marks the subsequent PIXELS transfer as phase 3.
+    expected = [(0x40000 + offset, 0x3000 + offset, min(1024, prefix - offset), 3)
+                for offset in range(0, prefix, 1024)]
+    expected.append((symbols["__phase_pixels_aux_load"],
+                     symbols["__phase_pixels_aux_start"], helper, 7))
+    actual = [(item["reu"], item["cpu"], item["bytes"], item["phase_marker"])
+              for item in transfers if item["reu"] >> 16 == 4]
+    if actual != expected:
+        raise RuntimeError(f"PIXELS split DMA differs from linked prefix/helper ranges: {actual} != {expected}")
+    return {"prefix_bytes": prefix, "helper_bytes": helper, "gap_skipped": True}
 
 
 def native_bytes(mon, syms):
@@ -478,6 +498,12 @@ def main():
         initial_runtime = mon.read(runtime_address, layouts.size("Runtime"))
         mon.command("bank cpu")
         report["initial_game"] = layouts.decode("Game", initial_game)
+        boss_health = vice.full_boss_health(report["initial_game"])
+        chosen = [fixture for fixture in fixtures(package_format["medal"], package_format["campaign"],
+                  package_format["space"], boss_health)
+                  if args.fixtures == "all" or fixture["name"] in args.fixtures.split(",")]
+        report.update(full_boss_health=boss_health, fixtures=chosen,
+                      fixture_sha256=semantic_hash(chosen))
 
         def write(address, data):
             for offset in range(0, len(data), 16):
@@ -659,6 +685,7 @@ def main():
             vice.phase_profile(events, syms["PROF_PHASE"], start, [end])
             vice.pixel_profile(events, syms["PROF_DETAIL"], start, [end])
             transfers = dma_events(events, syms["PROF_PHASE"])
+            end["pixels_transfers"] = validate_pixels_transfers(transfers, syms)
             end["dma"] = {"bytes": sum(item["bytes"] for item in transfers), "commands": len(transfers),
                           "max_bytes": max((item["bytes"] for item in transfers), default=0), "transfers": transfers,
                           "bytes_by_phase_marker": {str(phase): sum(item["bytes"] for item in transfers if item["phase_marker"] == phase)
@@ -773,7 +800,7 @@ def main():
                     print(f"BENCH {args.video} {fixture['name']} ticks={ticks} palette={palette}: {case['median_cycles']/bus_hz*1000:.3f}ms DMA={case['samples'][0]['dma']['bytes']}B", flush=True)
                     (output/"report.json").write_text(json.dumps(report, indent=2)+"\n")
         if "SKY_CACHE" in syms and not args.skip_cache_checks:
-            cache_report = {"passed": False, "sequence": cache_sequence(package_format["medal"], package_format["campaign"], package_format["space"]), "runs": {}}
+            cache_report = {"passed": False, "sequence": cache_sequence(package_format["medal"], package_format["campaign"], package_format["space"], boss_health), "runs": {}}
             report["cache_checks"] = cache_report
             for forced in (False, True):
                 name = "forced-misses" if forced else "normal-cache"

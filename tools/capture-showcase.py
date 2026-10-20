@@ -259,7 +259,9 @@ class Capture:
         setup = dict(mode=1, stage_id=stage, stage_ticks=local,
                      spawn_segment=stage, spawn_cursor=0, menu_ticks=0, ticks=local,
                      boss_started=0, boss_defeated=0, boss_z=1800,
-                     boss_left=20, boss_right=20, boss_core=60)
+                     **vice.full_boss_health(self.game()))
+        self.report["full_boss_health"] = {name: setup[name] for name in
+                                          ("boss_left", "boss_right", "boss_core")}
         crossing = self.scene["name"] == "crossing" or self.scene.get("crossing")
         if crossing:
             setup["stage_ticks"] -= 100  # Leave room for cache/gesture warmup.

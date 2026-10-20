@@ -8,6 +8,7 @@
 //! ordinary foreground still paints normally and retains the bit.
 
 use crate::projection::project;
+use crate::space_dust::SpaceDustFrame;
 use crate::{GeometrySink, Vec3, TWO_SIDED};
 
 mod sort;
@@ -296,13 +297,26 @@ impl Renderer {
         }
     }
 
+    #[inline(always)]
+    pub fn render_band(&self, band: u8, pixels: &mut [u8; BAND_PIXELS]) {
+        self.render_band_with_ambient(band, pixels, None);
+    }
+
     #[inline(never)]
     #[cfg_attr(target_arch = "mos", link_section = ".phase.pixels")]
-    pub fn render_band(&self, band: u8, pixels: &mut [u8; BAND_PIXELS]) {
+    pub fn render_band_with_ambient(
+        &self,
+        band: u8,
+        pixels: &mut [u8; BAND_PIXELS],
+        ambient: Option<&SpaceDustFrame>,
+    ) {
         assert_eq!(self.padding, 0, "raster pass consumed geometry commands");
         fill_color(pixels, self.clear_color);
         if band >= 25 {
             return;
+        }
+        if let Some(ambient) = ambient {
+            ambient.draw_band(band, pixels);
         }
         let mut coverage_seen = false;
         for triangle in &self.triangles[..self.triangle_count as usize] {
@@ -535,9 +549,19 @@ impl RasterPass<'_> {
     }
     /// Produce the next band. Hidden scene bands leave pixels untouched while
     /// advancing every active edge; an opaque HUD panel must replace the band.
+    #[inline(always)]
+    pub fn next_band(&mut self, pixels: &mut [u8; BAND_PIXELS], paint_scene: bool) -> Option<u8> {
+        self.next_band_with_ambient(pixels, paint_scene, None)
+    }
+
     #[inline(never)]
     #[cfg_attr(target_arch = "mos", link_section = ".phase.pixels")]
-    pub fn next_band(&mut self, pixels: &mut [u8; BAND_PIXELS], paint_scene: bool) -> Option<u8> {
+    pub fn next_band_with_ambient(
+        &mut self,
+        pixels: &mut [u8; BAND_PIXELS],
+        paint_scene: bool,
+        ambient: Option<&SpaceDustFrame>,
+    ) -> Option<u8> {
         let band = self.next_band;
         if band >= 25 {
             return None;
@@ -553,6 +577,9 @@ impl RasterPass<'_> {
         let mut coverage_seen = false;
         if paint_scene {
             fill_color(pixels, self.renderer.clear_color);
+            if let Some(ambient) = ambient {
+                ambient.draw_band(band, pixels);
+            }
         }
         for byte in 0..32usize {
             let mut mask = self.masks_mut()[band as usize][byte];

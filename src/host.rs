@@ -1163,7 +1163,64 @@ fn medal_model(player: &Model) -> Model {
             color,
         ]);
     }
-    assert_eq!((vertices.len(), faces.len()), (50, 88));
+    // A bronze canopy stands above the original gold cockpit ridge. Separate
+    // nozzles and short exhaust wedges make the twin engines readable on the
+    // coin; the flying PLAYER's exhaust is procedural rather than mesh data.
+    vertices.extend_from_slice(&[
+        [-6, 12, -30],
+        [6, 12, -30],
+        [6, -10, -31],
+        [-6, -10, -31],
+        [0, 15, -34],
+        [0, -9, -35],
+        [-16, -21, -27],
+        [-6, -21, -27],
+        [-6, -31, -29],
+        [-16, -31, -29],
+        [-11, -23, -31],
+        [-11, -40, -25],
+        [-11, -40, -14],
+        [6, -21, -27],
+        [16, -21, -27],
+        [16, -31, -29],
+        [6, -31, -29],
+        [11, -23, -31],
+        [11, -40, -25],
+        [11, -40, -14],
+    ]);
+    faces.extend_from_slice(&[
+        // Closed bronze canopy with a small gold nose facet.
+        [50, 54, 53, 9],
+        [53, 54, 55, 9],
+        [51, 52, 54, 9],
+        [52, 55, 54, 9],
+        [50, 51, 54, 7],
+        [53, 55, 52, 8],
+        [50, 52, 51, 8],
+        [50, 53, 52, 8],
+        // Left nozzle and its closed, short gold exhaust wedge.
+        [56, 57, 60, 7],
+        [57, 58, 60, 8],
+        [58, 59, 60, 9],
+        [59, 56, 60, 7],
+        [56, 58, 57, 8],
+        [56, 59, 58, 8],
+        [58, 61, 59, 7],
+        [58, 62, 61, 8],
+        [59, 61, 62, 9],
+        [58, 59, 62, 8],
+        // Right nozzle and exhaust, separated by the original aft fin.
+        [63, 64, 67, 7],
+        [64, 65, 67, 8],
+        [65, 66, 67, 9],
+        [66, 63, 67, 7],
+        [63, 65, 64, 8],
+        [63, 66, 65, 8],
+        [65, 68, 66, 7],
+        [65, 69, 68, 8],
+        [66, 68, 69, 9],
+        [65, 66, 69, 8],
+    ]);
     (vertices, faces)
 }
 

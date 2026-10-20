@@ -98,6 +98,13 @@ def main():
         overlays += (("ascent", 24, 88), ("asteroid", 25, 92), ("moon", 26, 96),
                      ("graveyard", 27, 100), ("shipyard", 28, 104),
                      ("space-carrier", 29, 108), ("gate", 30, 112))
+    # The split PIXELS image authenticates its unused gap as well as its
+    # separately loaded helper tail. Neither region enters the main PRG.
+    if int.from_bytes(image[0x10a:0x10c], "little") > 0x3f20:
+        cases += [
+            ("pixels-raster-gap", 0x43000, "REU CODE CHECKSUM FAILED"),
+            ("pixels-helper-code", 0x43f20, "REU CODE CHECKSUM FAILED"),
+        ]
     for name, page, directory_offset in overlays:
         size_at = 0x100 + directory_offset
         size = int.from_bytes(image[size_at:size_at + 2], "little")

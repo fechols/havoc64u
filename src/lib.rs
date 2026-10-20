@@ -18,6 +18,7 @@ pub mod scenery;
 pub mod sky_cache;
 #[cfg(feature = "host-tools")]
 pub mod soundtrack;
+pub mod space_dust;
 pub mod transition;
 pub mod victory;
 

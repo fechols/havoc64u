@@ -44,6 +44,20 @@ def layout(space):
 
 
 class CampaignTools(unittest.TestCase):
+    def test_full_boss_seeds_follow_initialized_old_and_balanced_targets(self):
+        for health in ((20, 20, 60), (40, 40, 120)):
+            state = dict(zip(("boss_left", "boss_right", "boss_core"), health))
+            selected = vice.full_boss_health(dict(state, mode=0))
+            self.assertEqual(selected, state)
+            for fixture in (bench.fixtures(True, True, True, selected)
+                            + bench.cache_sequence(True, True, True, selected)):
+                for name, value in state.items():
+                    if name in fixture["patch"]:
+                        self.assertEqual(fixture["patch"][name], value, fixture["name"])
+        for health in ((0, 40, 120), (40, 40, 256), (100, 100, 100)):
+            with self.assertRaisesRegex(RuntimeError, "initialized boss health"):
+                vice.full_boss_health(dict(zip(("boss_left", "boss_right", "boss_core"), health)))
+
     def test_music_selection_defaults_to_complete_package_and_rejects_unknown_cues(self):
         self.assertEqual(vice.music_cue_selection(13, None), list(range(13)))
         self.assertEqual(vice.music_cue_selection(21, None), list(range(21)))
@@ -115,6 +129,25 @@ class CampaignTools(unittest.TestCase):
             self.assertNotIn("rail_ticks", values)
             self.assertTrue(0 <= values["stage_ticks"] <= 65535, fixture["name"])
             self.assertEqual(values["stage_id"], fixture["section"], fixture["name"])
+
+    def test_pixels_dma_rejects_gap_writes_wrong_addresses_and_missing_reload(self):
+        symbols = {"__phase_pixels_prefix_size": 12180, "__phase_pixels_aux_size": 643,
+                   "__phase_pixels_aux_load": 0x43f20, "__phase_pixels_aux_start": 0x6f20}
+        transfers = [{"reu": 0x40000 + offset, "cpu": 0x3000 + offset,
+                      "bytes": min(1024, 12180 - offset), "phase_marker": 3}
+                     for offset in range(0, 12180, 1024)]
+        transfers.append({"reu": 0x43f20, "cpu": 0x6f20, "bytes": 643, "phase_marker": 7})
+        self.assertTrue(bench.validate_pixels_transfers(transfers, symbols)["gap_skipped"])
+        self.assertIsNone(bench.validate_pixels_transfers([], {}))
+        for field, value in (("reu", 0x43f21), ("cpu", 0x6f1f), ("bytes", 644), ("phase_marker", 6)):
+            bad = [dict(item) for item in transfers]
+            bad[-1][field] = value
+            with self.assertRaisesRegex(RuntimeError, "PIXELS split DMA"):
+                bench.validate_pixels_transfers(bad, symbols)
+        for bad in (transfers[:-1],
+                    transfers + [{"reu": 0x43000, "cpu": 0x6000, "bytes": 1024, "phase_marker": 7}]):
+            with self.assertRaisesRegex(RuntimeError, "PIXELS split DMA"):
+                bench.validate_pixels_transfers(bad, symbols)
 
     def test_native_pitch_audit_combines_bytes_and_ignores_effect_lanes(self):
         def frequency(note):

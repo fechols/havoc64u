@@ -106,6 +106,13 @@ SECTIONS {
         *(.phase.pixels .phase.pixels.*)
         __phase_pixels_end = .;
     } >phase
+    /* PIXELS keeps edges/masks in $6000-$6F1F. The remaining tail is always
+     * reloaded before rasterization, after GEOMETRY relinquishes this window. */
+    .phase.pixels_aux 0x6F20 : AT(0x43F20) {
+        __phase_pixels_aux_start = .;
+        *(.phase.pixels_aux .phase.pixels_aux.*)
+        __phase_pixels_aux_end = .;
+    } >phase
     .phase.audio 0x3000 : AT(0x50000) {
         __phase_audio_start = .;
         *(.phase.audio .phase.audio.data)
@@ -277,7 +284,12 @@ __phase_sim_end = __phase_sim_start + __phase_sim_size;
 __phase_geometry_size = SIZEOF(.phase.geometry);
 __phase_geometry_base_size = __phase_geometry_base_end - __phase_geometry_start;
 __phase_victory_size = __phase_geometry_base_size + SIZEOF(.phase.victory);
-__phase_pixels_size = SIZEOF(.phase.pixels);
+__phase_pixels_prefix_size = SIZEOF(.phase.pixels);
+__phase_pixels_aux_size = SIZEOF(.phase.pixels_aux);
+__phase_pixels_aux_load = LOADADDR(.phase.pixels_aux);
+/* Startup checks the complete image, including its zero-filled raster gap.
+ * Runtime DMA transfers only the prefix and auxiliary tail. */
+__phase_pixels_size = __phase_pixels_aux_end - __phase_pixels_start;
 __phase_audio_size = SIZEOF(.phase.audio);
 __phase_audio_runtime_size = __phase_audio_runtime_end - __phase_audio_start;
 __phase_scenery_earth_tail_size = MAX(SIZEOF(.phase.scenery.wildlife), MAX(SIZEOF(.phase.scenery.transport), SIZEOF(.phase.scenery.meteors)));
@@ -332,6 +344,10 @@ ASSERT(SIZEOF(.phase.geometry) <= 0x4200, "GEOMETRY overlay exceeds $3000-$71FF"
 ASSERT(__phase_victory_size <= 0x4200, "victory GEOMETRY overlay exceeds $3000-$71FF")
 ASSERT(__phase_geometry_base_size > 0 && __phase_geometry_base_size < __phase_geometry_size, "GEOMETRY needs a common prefix and a combat tail")
 ASSERT(SIZEOF(.phase.pixels) <= 0x3000, "PIXELS overlay overlaps prepared edges at $6000")
+ASSERT(__phase_pixels_aux_start == __raster_masks_end, "PIXELS helpers must follow prepared raster masks")
+ASSERT(__phase_pixels_aux_size > 0 && __phase_pixels_aux_size <= 0x02E0, "PIXELS helpers exceed $6F20-$71FF")
+ASSERT(__phase_pixels_aux_end <= __irq_stack_bottom, "PIXELS helpers overlap IRQ stack")
+ASSERT(__phase_pixels_size <= 0x4200, "composed PIXELS image exceeds phase slot")
 ASSERT(SIZEOF(.phase.audio) <= 0x4200, "AUDIO overlay exceeds $3000-$71FF")
 ASSERT(__phase_audio_runtime_size > 0 && __phase_audio_runtime_size < __phase_audio_size, "AUDIO needs a runtime prefix before startup validation")
 ASSERT(__phase_scenery_size <= 0x4200, "composed SCENERY overlay exceeds $3000-$71FF")

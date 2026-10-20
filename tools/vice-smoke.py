@@ -596,6 +596,15 @@ def enemy_bank_check(mon, syms, package, section, game=None):
             "all_2048_bytes_match": True, "sha256": hashlib.sha256(cache).hexdigest()}
 
 
+def full_boss_health(initial_state):
+    """Read full health from a freshly initialized target, including old builds."""
+    health = {name: initial_state[name] for name in ("boss_left", "boss_right", "boss_core")}
+    if (any(type(value) is not int or not 0 < value <= 255 for value in health.values())
+            or sum(health.values()) > 255):
+        raise RuntimeError(f"Invalid initialized boss health: {health}")
+    return health
+
+
 def streaming_checks(mon, syms, failures, elf, reu, dwarf_tool, output, result):
     """Monitor-assisted boundary scenarios, deliberately separate from timing."""
     layout = dwarf_game_layout(elf, dwarf_tool, syms, output, controls=True)
@@ -605,6 +614,10 @@ def streaming_checks(mon, syms, failures, elf, reu, dwarf_tool, output, result):
                   layout=layout, scenarios=[])
     data = reu.read_bytes()
     format = package_model_layout(data)
+    boss_health = result["full_boss_health"]
+    # Preserve old-binary smoke compatibility while checking the revised policy
+    # explicitly for the doubled-health balance revision.
+    defeat_refill = boss_health == dict(boss_left=40, boss_right=40, boss_core=120)
     segment_base = int.from_bytes(data[12:16], "little")
     references = [data[segment_base+i*2048:segment_base+i*2048+512] for i in range(format["count"])]
     checksums = [int.from_bytes(data[20+i*2:22+i*2], "little") for i in range(format["count"])]
@@ -747,9 +760,9 @@ def streaming_checks(mon, syms, failures, elf, reu, dwarf_tool, output, result):
             # exactly 400 plus the resumed local combat ticks.
             epoch = (bridge[0]["game"]["ticks"] - bridge[0]["game"]["transition_ticks"]) & 0xffff
             initial_resources = {name: bridge[0]["game"][name] for name in ("shield", "lives", "bombs", "score")}
-            expected_resources = {"shield": 100 if outgoing_boss else 61,
+            expected_resources = {"shield": 100 if outgoing_boss and not defeat_refill else 61,
                                   "lives": 3 if outgoing_boss else 2,
-                                  "bombs": 2 if outgoing_boss else 0, "score": 1234}
+                                  "bombs": 2 if outgoing_boss and not defeat_refill else 0, "score": 1234}
             if initial_resources != expected_resources:
                 raise RuntimeError(f"Stage crossing resource policy failed: {initial_resources}")
             for frame in bridge:
@@ -799,7 +812,7 @@ def streaming_checks(mon, syms, failures, elf, reu, dwarf_tool, output, result):
         result["scenarios"].append(scenario)
         seed(scenario, {"rail_ticks": section*3750 + (2500 if section >= 16 else 1000 if format["campaign"] else 150),
                         "mode": layout["modes"]["Playing"], "boss_z": 680,
-                        "boss_started": 0, "boss_defeated": 0, "boss_left": 20, "boss_right": 20, "boss_core": 60})
+                        "boss_started": 0, "boss_defeated": 0, **boss_health})
         frame = wait_ready(scenario, layout["modes"]["Playing"], section, (section+1) % format["count"])
         if not frame["game"]["boss_started"] or frame["game"]["boss_z"] != 680:
             raise RuntimeError(f"Seeded {label} encounter did not activate at its settled depth")
@@ -1286,7 +1299,7 @@ def control_checks(mon, syms, failures, elf, dwarf_tool, output, result):
     result["passed"] = True
 
 
-def weapon_checks(mon, syms, failures, elf, dwarf_tool, output, result, video):
+def weapon_checks(mon, syms, failures, elf, dwarf_tool, output, result, video, package=None):
     """Seed encounter fixtures; exercise damage, charging and FIRE through game code."""
     layout = dwarf_game_layout(elf, dwarf_tool, syms, output, controls=True)
     scalar_sizes = {"u8": 1, "i8": 1, "bool": 1, "u16": 2, "i16": 2, "u32": 4}
@@ -1365,7 +1378,9 @@ def weapon_checks(mon, syms, failures, elf, dwarf_tool, output, result, video):
 
     def seed(scenario, values=None, clear=()):
         mon.command("bank ram")
-        for name, value in clock_fixture(values or {}, fields, 18 if "stage_ticks" in fields else 12).items():
+        values = (stage_fixture(values or {}, layout, package) if package is not None else
+                  clock_fixture(values or {}, fields, 18 if "stage_ticks" in fields else 12))
+        for name, value in values.items():
             field = fields[name]
             write_bytes(scenario, name, layout["address"] + field["offset"],
                         value.to_bytes(field["size"], "little", signed=field["type"].startswith("i")))
@@ -1415,6 +1430,7 @@ def weapon_checks(mon, syms, failures, elf, dwarf_tool, output, result, video):
 
     observed_fields = ("mode", "ticks", "rail_ticks", "player.x", "player.y", "player.z", "shield",
                        "invulnerability", "hit_flash_ticks", "score", "kills", "bomb_kills", "bombs",
+                       "boss_started", "boss_defeated", "boss_left", "boss_right", "boss_core",
                        "controls.bits", "controls.cached_charge")
 
     def observe(scenario, geometry=False):
@@ -1429,6 +1445,7 @@ def weapon_checks(mon, syms, failures, elf, dwarf_tool, output, result, video):
         mon.command("bank ram")
         frame["game"] = read_game_state(mon, layout, observed_fields)
         frame["actors"], frame["shots"] = read_array("actors"), read_array("shots")
+        frame["pickups"] = read_array("pickups")
         frame["stack_guards"] = {name: mon.integer(syms[name], 1)
                                  for name in ("__stack_bottom", "__irq_stack_bottom")}
         if geometry:
@@ -1760,6 +1777,122 @@ def weapon_checks(mon, syms, failures, elf, dwarf_tool, output, result, video):
         verify_bomb_trace(scenario, trace_path, 2 if retrigger else int(inventory > 0), initial_bank)
         scenario["expired_capture"] = capture(mon, syms, output, f"weapons-{name}-expired")
         finish(scenario)
+
+    if result.get("full_boss_health") == dict(boss_left=40, boss_right=40, boss_core=120):
+        # These fixture patches isolate encounters; native update_pickups,
+        # projectile collisions and real double-FIRE still perform the actions.
+        for kind, label in ((1, "shield"), (2, "bomb")):
+            scenario = {"name": f"magnet-{label}-pickup"}
+            result["scenarios"].append(scenario)
+            seed(scenario, {"shield": 10, "bombs": 0, "score": 0,
+                            "player.x": 0, "player.y": 0},
+                 clear=("actors", "shots", "pickups", "explosions"))
+            seed_element(scenario, "pickups", 0,
+                         {"kind": kind, "pos.x": 56, "pos.y": -56, "pos.z": 428})
+            first = observe(scenario)
+            pickup = first["pickups"][0]
+            if not (0 < pickup["pos.x"] < 56 and -56 < pickup["pos.y"] < 0):
+                raise RuntimeError(f"{label} pickup did not visibly move toward the player")
+            for _ in range(12):
+                frame = observe(scenario)
+                if frame["pickups"][0]["kind"] == 0:
+                    break
+            expected = dict(shield=70 if kind == 1 else 10, bombs=int(kind == 2), score=50)
+            if any(frame["game"][name] != value for name, value in expected.items()):
+                raise RuntimeError(f"{label} pickup did not award exactly its intended resource")
+            frame = observe(scenario)
+            if any(frame["game"][name] != value for name, value in expected.items()):
+                raise RuntimeError("Collected pickup repeated its reward")
+            finish(scenario)
+
+        scenario = {"name": "shield-drop-eighth-kill"}
+        result["scenarios"].append(scenario)
+        for previous, expected in ((3, 0), (7, 1)):
+            seed(scenario, {"kills": previous, "bomb_kills": 0},
+                 clear=("actors", "shots", "pickups", "explosions"))
+            seed_element(scenario, "actors", 0,
+                         {"kind": 1, "hp": 1, "pos.x": 0, "pos.y": 0, "pos.z": 900})
+            seed_element(scenario, "shots", 0,
+                         {"kind": 1, "damage": 1, "pos.x": 0, "pos.y": 0, "pos.z": 880})
+            frame = observe(scenario)
+            if frame["game"]["kills"] != previous + 1:
+                raise RuntimeError("Shield cadence fixture did not kill its target")
+            if sum(pickup["kind"] == 1 for pickup in frame["pickups"]) != expected:
+                raise RuntimeError("Shield drop cadence is not every eighth enemy kill")
+        finish(scenario)
+
+        def ready_stage(scenario, stage):
+            pulse_fire(scenario, 0, 35)
+            observe(scenario)
+            seed(scenario, {"rail_ticks": stage * 3750 + 625,
+                            "spawn_segment": stage, "spawn_cursor": 255,
+                            "player.x": 0, "player.y": 0, "shield": 100,
+                            "invulnerability": 255, "boss_started": 0,
+                            "boss_defeated": 0, **result["full_boss_health"]},
+                 clear=("actors", "shots", "pickups", "explosions"))
+            for _ in range(4):
+                frame = observe(scenario)
+                if frame.get("render_segment") == stage:
+                    scenario["enemy_bank"] = enemy_bank_check(mon, syms, package, stage)
+                    return
+            raise RuntimeError("Balance fixture did not load its stage")
+
+        for stage in range(12, 18):
+            scenario = {"name": f"orbital-bomb-clears-all-debris-{stage}"}
+            result["scenarios"].append(scenario)
+            ready_stage(scenario, stage)
+            seed(scenario, {"kills": 7, "bomb_kills": 4, "bombs": 1, "score": 0})
+            for index in range(12):
+                small = index % 2 == 0
+                seed_element(scenario, "actors", index,
+                             {"kind": 7, "flags": 2 if small else 0,
+                              "hp": 2 if small else 255, "approach_speed": 8,
+                              "pos.x": -80 if index < 6 else 80,
+                              "pos.y": 80, "pos.z": 1200})
+            double_fire(scenario)
+            for _ in range(4):
+                frame = observe(scenario)
+                if frame["game"]["bombs"] == 0:
+                    break
+            expected = dict(kills=7, bomb_kills=4, bombs=0, score=300)
+            if (any(actor["kind"] for actor in frame["actors"])
+                    or any(pickup["kind"] for pickup in frame["pickups"])
+                    or any(frame["game"][name] != value for name, value in expected.items())):
+                raise RuntimeError("Orbital bomb left debris or incorrectly awarded enemy-kill rewards")
+            finish(scenario)
+
+        for stage in (3, 7, 11, 16, 17):
+            scenario = {"name": f"boss-{stage}-immediate-refill",
+                        "finisher": "physical bomb" if stage == 16 else "projectile"}
+            result["scenarios"].append(scenario)
+            ready_stage(scenario, stage)
+            seed(scenario, {"boss_started": 1, "boss_defeated": 0, "boss_z": 680,
+                            "boss_left": 0, "boss_right": 0,
+                            "boss_core": 8 if stage == 16 else 4,
+                            "shield": 17, "bombs": 1, "score": 0},
+                 clear=("actors", "shots", "pickups", "explosions"))
+            if stage == 16:
+                double_fire(scenario)
+            else:
+                seed_element(scenario, "shots", 0,
+                             {"kind": 1, "damage": 4, "pos.x": 0, "pos.y": 0, "pos.z": 450})
+            for _ in range(4):
+                frame = observe(scenario)
+                if frame["game"]["boss_defeated"]:
+                    break
+            expected = dict(boss_defeated=1, shield=100, bombs=3, score=5000)
+            if any(frame["game"][name] != value for name, value in expected.items()):
+                raise RuntimeError("Boss defeat did not immediately refill shields and bombs")
+            seed(scenario, {"shield": 73, "bombs": 0})
+            for _ in range(3):
+                frame = observe(scenario)
+                if any(frame["game"][name] != value for name, value in
+                       dict(shield=73, bombs=0, score=5000).items()):
+                    raise RuntimeError("Boss defeat repeated its refill")
+            finish(scenario)
+
+        # Leave the next optional smoke phase in an ordinary, unfought stage.
+        ready_stage(setup, 0)
     mon.command("jpdb 1 $1f")
     mon.command("log off")
     result["passed"] = True
@@ -2082,6 +2215,13 @@ def main():
         report["title"]["capture"] = capture(mon, syms, output, "title")
         if report["title"]["game_mode"] != 0:
             raise RuntimeError("Expected title mode after boot")
+        if args.streaming_checks or args.weapon_checks:
+            initial_layout = dwarf_game_layout(elf,
+                args.llvm_dwarfdump or args.llvm_nm.with_name("llvm-dwarfdump"), syms, output)
+            mon.command("bank ram")
+            report["full_boss_health"] = full_boss_health(read_game_state(mon, initial_layout,
+                ("boss_left", "boss_right", "boss_core")))
+            mon.command("bank cpu")
         if args.title_reference:
             expected = args.title_reference.read_bytes()
             actual = (output / "title-native.bin").read_bytes()
@@ -2156,12 +2296,12 @@ def main():
                            args.llvm_dwarfdump or args.llvm_nm.with_name("llvm-dwarfdump"),
                            output, report["control_checks"])
         if args.weapon_checks:
-            report["weapon_checks"] = {}
+            report["weapon_checks"] = {"full_boss_health": report["full_boss_health"]}
             weapon_checks(mon, syms, failures, elf,
                           args.llvm_dwarfdump or args.llvm_nm.with_name("llvm-dwarfdump"),
-                          output, report["weapon_checks"], args.video)
+                          output, report["weapon_checks"], args.video, reu.read_bytes())
         if args.streaming_checks:
-            report["streaming_checks"] = {}
+            report["streaming_checks"] = {"full_boss_health": report["full_boss_health"]}
             streaming_checks(mon, syms, failures, elf, reu,
                              args.llvm_dwarfdump or args.llvm_nm.with_name("llvm-dwarfdump"),
                              output, report["streaming_checks"])

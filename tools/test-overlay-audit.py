@@ -62,6 +62,19 @@ def main():
     auxiliary = next(section for section in elf.sections if section.name == checker["SIM_AUX_SECTION"])
     auxiliary_name = next(symbol.name for symbol in elf.symbols if symbol.section == auxiliary.index and symbol.kind == 2)
     auxiliary_call = next(entry for entry in entries if entry[1].index == auxiliary.index and entry[3] == 3)
+    pixels_auxiliary = next(section for section in elf.sections if section.name == checker["PIXELS_AUX_SECTION"])
+    pixels_auxiliary_name = next(symbol.name for symbol in elf.symbols
+                                if symbol.section == pixels_auxiliary.index and symbol.kind == 2)
+    pixels_prefix_size = next(entry for entry in entries if entry[4].name == "__phase_pixels_prefix_size")
+    pixels_dma = next(entry for entry in entries if entry[1].name == ".phase.pixels" and entry[3] == 3
+                      and (caller := elf.function_at(entry[1].index, entry[2]))
+                      and caller.name == "havoc_c64::draw_pixels"
+                      and entry[4].section < len(elf.sections)
+                      and (callee := elf.function_at(entry[4].section, entry[4].address
+                           + struct.unpack_from("<i", elf.data, entry[0] + 8)[0]))
+                      and callee.name == "havoc_c64::dma")
+    pixels_io_on = next(entry for entry in entries if entry[1].name == ".phase.pixels"
+                        and entry[4].name == "io_on")
     startup_name = next(symbol.name for symbol in elf.symbols
                         if checker["readable_name"](symbol.name) == checker["STARTUP_ENTRY"])
     phase_loader_name = next(symbol.name for symbol in elf.symbols
@@ -76,6 +89,10 @@ def main():
     def auxiliary_header(data, field, value):
         headers = struct.unpack_from("<I", data, 32)[0]
         struct.pack_into("<I", data, headers + auxiliary.index * 40 + field, value)
+
+    def pixels_header(data, field, value):
+        headers = struct.unpack_from("<I", data, 32)[0]
+        struct.pack_into("<I", data, headers + pixels_auxiliary.index * 40 + field, value)
 
     def non_jsr(data, entry):
         _position, owner, address, _kind, _symbol, _table = entry
@@ -122,9 +139,20 @@ def main():
         ("helpers-wrong-address", lambda data: auxiliary_header(data, 12, 0x8c01), "SIM helpers must fit"),
         ("helpers-outgrow-workspace", lambda data: auxiliary_header(data, 20, 0x501), "SIM helpers must fit"),
         ("helpers-not-reloaded", lambda data: replace_target(data, helper_dma, phase_loader_name), "SIM helper loader"),
+        ("pixels-helpers-overlap-masks", lambda data: pixels_header(data, 12, 0x6f1f), "PIXELS helpers must fit"),
+        ("pixels-helpers-overlap-irq", lambda data: pixels_header(data, 20, 0x2e1), "PIXELS helpers must fit"),
+        ("pixels-helpers-not-reloaded", lambda data: replace_target(data, pixels_dma, phase_loader_name), "PIXELS helper loader"),
+        ("pixels-helper-dma-with-io-hidden", lambda data: replace_target(data, pixels_io_on, "io_off"), "PIXELS helper loader"),
+        ("pixels-load-overwrites-raster-data", lambda data: replace_target(data, pixels_prefix_size, "__phase_pixels_size"), "runtime PIXELS loader"),
+        ("geometry-calls-pixels-helpers", lambda data: replace_target(data, geometry, pixels_auxiliary_name), "unsafe overlay references"),
+        ("irq-calls-pixels-helpers", lambda data: replace_target(data, irq, pixels_auxiliary_name), "unsafe overlay references"),
+        ("escaped-pixels-helper-pointer", lambda data: replace_target(data, pointer, pixels_auxiliary_name), "unsafe overlay references"),
     ]
-    for phase in (".phase.boot", ".phase.geometry", ".phase.pixels", ".phase.audio", ".phase.scenery", checker["STARTUP_SECTION"]):
-        source_call = next(entry for entry in entries if entry[1].name == phase and entry[3] == 3)
+    for phase in (".phase.boot", ".phase.geometry", ".phase.pixels", checker["PIXELS_AUX_SECTION"], ".phase.audio", ".phase.scenery", checker["STARTUP_SECTION"]):
+        source_call = next(entry for entry in entries if entry[1].name == phase and entry[3] == 3
+                           and (phase != ".phase.pixels"
+                                or (caller := elf.function_at(entry[1].index, entry[2]))
+                                and caller.name != "havoc_c64::draw_pixels"))
         cases.append((f"{phase}-calls-sim-helpers",
                       lambda data, call=source_call: replace_target(data, call, auxiliary_name),
                       "unsafe overlay references"))

@@ -225,7 +225,7 @@ fn cockpit(band: u8, pixels: &mut [u8; 1280], hud: &Hud, frame: u16) {
 }
 
 #[inline(never)]
-#[cfg_attr(target_arch = "mos", link_section = ".phase.pixels")]
+#[cfg_attr(target_arch = "mos", link_section = ".phase.pixels_aux")]
 fn section_name(section: u8) -> &'static [u8] {
     let index = section.min(SEGMENT_COUNT - 1) as usize;
     // The bounded index selects two monotonically increasing authored offsets.
@@ -244,17 +244,17 @@ static SECTOR_NAMES: [u8; 228] = *b"LOWLAND APPROACHCRYSTAL CAVEIRON CANYONCANYO
 ASHEN WASTESFOUNDRY BELTFORTRESS RUNCITADEL CORESTORM FRONTMETEOR REACH\
 CARRIER COASTCARRIER ASSAULTASTEROID BELTSHATTERED MOONSHIP GRAVEYARD\
 ORBITAL SHIPYARDSPACE CARRIERJUMP GATE";
-#[cfg_attr(target_arch = "mos", link_section = ".phase.pixels.hud_data")]
+#[cfg_attr(target_arch = "mos", link_section = ".phase.pixels_aux.data")]
 static SECTOR_OFFSETS: [u8; SEGMENT_COUNT as usize + 1] = [
     0, 16, 28, 39, 50, 62, 74, 86, 98, 109, 121, 134, 149, 162, 176, 190, 206, 219, 228,
 ];
 #[cfg_attr(target_arch = "mos", link_section = ".rodata.hud_names")]
 static BOSS_NAMES: [u8; 56] = *b"GORGE WARDENCITADEL HEARTCARRIERDREADNOUGHTGATE GUARDIAN";
-#[cfg_attr(target_arch = "mos", link_section = ".phase.pixels.hud_data")]
+#[cfg_attr(target_arch = "mos", link_section = ".phase.pixels_aux.data")]
 static BOSS_OFFSETS: [u8; 6] = [0, 12, 25, 32, 43, 56];
 
 #[inline(never)]
-#[cfg_attr(target_arch = "mos", link_section = ".phase.pixels")]
+#[cfg_attr(target_arch = "mos", link_section = ".phase.pixels_aux")]
 fn boss_name(kind: u8) -> &'static [u8] {
     let index = if kind >= 1 && kind <= 5 { kind - 1 } else { 2 } as usize;
     // As above, every accepted index and both offset endpoints are bounded.
@@ -276,7 +276,7 @@ fn blink(frame: u16) -> u8 {
 }
 
 #[inline(never)]
-#[cfg_attr(target_arch = "mos", link_section = ".phase.pixels")]
+#[cfg_attr(target_arch = "mos", link_section = ".phase.pixels_aux")]
 fn centered(band: u8, pixels: &mut [u8; 1280], y: i16, text: &[u8], color: u8) {
     draw_text(
         band,

@@ -317,21 +317,65 @@ fn hull(sink: &mut SceneSink<'_>, x: i16, y: i16, z: i16, color: u8) {
 }
 
 #[inline(never)]
+#[cfg_attr(target_arch = "mos", link_section = ".phase.scenery.graveyard")]
+fn graveyard_hull(sink: &mut SceneSink<'_>, x: i16, y: i16, z: i16) {
+    // A closed body keeps both inward sides visible against the starfield.
+    let a = Vec3 { x: x - 100, y, z };
+    let b = Vec3 { x: x + 100, y, z };
+    let c = Vec3 {
+        x: x + 65,
+        y: y + 90,
+        z: z + 620,
+    };
+    let d = Vec3 {
+        x: x - 65,
+        y: y + 90,
+        z: z + 620,
+    };
+    let lower_c = Vec3 { y: c.y - 160, ..c };
+    let lower_d = Vec3 { y: d.y - 160, ..d };
+    let bow = Vec3 {
+        x,
+        y: y - 120,
+        z: z - 100,
+    };
+    quad(sink, [a, b, c, d], 15);
+    quad(sink, [a, d, lower_d, bow], 12);
+    quad(sink, [b, bow, lower_c, c], 12);
+    sink.triangle(b, a, bow, 8, TWO_SIDED);
+    sink.triangle(bow, lower_d, lower_c, 12, TWO_SIDED);
+    quad(sink, [d, c, lower_c, lower_d], 12);
+    sink.triangle(
+        d,
+        c,
+        Vec3 {
+            x: x + 210,
+            y: y + 140,
+            z: z + 770,
+        },
+        15,
+        TWO_SIDED,
+    );
+}
+
+#[inline(never)]
 #[cfg_attr(target_arch = "mos", no_mangle)]
 #[cfg_attr(target_arch = "mos", link_section = ".phase.scenery.graveyard.entry")]
 pub fn scenic_graveyard(sink: &mut SceneSink<'_>, context: &Decoration) {
     stars(sink, context);
     let travel = drop(context) + context.camera_y;
     let ticks = clock(context);
+    let phase = ((ticks & 127) * 8) as i16;
     for i in 0..3u16 {
-        let z = 1800 - ((ticks.wrapping_add(i * 85) & 255) * 8) as i16;
-        hull(
-            sink,
-            if i & 1 == 0 { -470 } else { 490 },
-            70 - travel,
-            z,
-            12,
-        );
+        let z = 52 + i as i16 * 1024 - phase;
+        if z + 770 >= crate::render::NEAR {
+            let x = if ((ticks >> 7).wrapping_add(i)) & 1 == 0 {
+                -470
+            } else {
+                490
+            };
+            graveyard_hull(sink, x, 70 - travel, z);
+        }
     }
     rock(
         sink,
@@ -508,9 +552,19 @@ pub fn scenic_carrier(sink: &mut SceneSink<'_>, context: &Decoration) {
             );
         }
     }
-    for i in 0..2u16 {
-        let z = 2100 - ((ticks.wrapping_add(i * 128) & 255) * 8) as i16;
-        hull(sink, if i == 0 { -330 } else { 330 }, -40 - travel, z, 15);
+    // Keep an additional near row until its entire hull passes the camera.
+    // Alternating sides follow the world row when the 128-tick window advances.
+    let phase = ((ticks & 127) * 8) as i16;
+    for i in 0..3u16 {
+        let z = 52 + i as i16 * 1024 - phase;
+        if z + 770 >= crate::render::NEAR {
+            let x = if ((ticks >> 7).wrapping_add(i)) & 1 == 0 {
+                -330
+            } else {
+                330
+            };
+            hull(sink, x, -40 - travel, z, 15);
+        }
     }
 }
 

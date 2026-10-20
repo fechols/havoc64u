@@ -12,7 +12,7 @@ Fly an original polygon rail shooter for the **64 MHz C64 Ultimate**. Skim green
 
 https://github.com/user-attachments/assets/7493efc7-68c3-4a6f-b649-75e3ac2fc472
 
-The current source campaign has eighteen stages and five bosses, with 24:46 of scheduled flight before retries or extended boss fights. The original twelve stages lead into six orbital missions, each with its own enemy silhouettes and scenery. The orbital score adds eight original, Jeroen Tel-inspired SID tracks. Steering and weapons stay the same in space: shoot the small fragments, steer around solid wreckage, and attack the bosses' side units before their cores. Brief scenic crossings include the climb out of the atmosphere.
+The current source campaign has eighteen stages and five bosses, with 24:46 of scheduled flight before retries or extended boss fights. The original twelve stages lead into six orbital missions, each with its own enemy silhouettes and scenery. The orbital score adds eight original, Jeroen Tel-inspired SID tracks. Steering and weapons stay the same in space: shoot the small fragments, use bombs to clear large rocks and wreckage, and attack the bosses' side units before their cores. Brief scenic crossings include the climb out of the atmosphere.
 
 | Lowland Approach | Crystal Cave |
 | --- | --- |
@@ -66,10 +66,11 @@ Your ship flies forward automatically. You steer around enemies, incoming shots,
 Watch the weapon meter: when it reads **HOMING MISSILE**, your next shot will seek an enemy ahead. Partial charges produce stronger straight shots.
 
 - **Roll through enemy fire.** Rolls deflect hostile shots, and you can keep steering and firing. Solid scenery can still hurt you; small orbital fragments can be destroyed.
-- **Use your bombs.** Every five enemy kills restore one, up to a maximum of three. Shield and bomb pickups help keep you flying.
-- **Aim for the boss's side units first.** Destroy both to expose its core. You must defeat the boss before its stage can end.
+- **Use your bombs.** Every five enemy kills restore one, up to a maximum of three. Bombs also destroy large orbital rock and wreckage hazards.
+- **Collect supplies.** Shield and bomb pickups pull toward you when nearby. Shield drops are eligible every eight enemy kills and restore 60 points, up to 100.
+- **Aim for the boss's side units first.** Destroy both to expose its core. Bosses now have twice their previous health; each defeat immediately restores full shields and three bombs. You must defeat the boss before its stage can end.
 - **Make each life count.** You start with three. Losing one returns you to the current stage's checkpoint with your score intact; losing all three ends the run.
-- **Catch your breath between stages.** Scenic crossings are safe, but bombs still consume inventory. Clearing a boss stage replenishes supplies for the next flight.
+- **Catch your breath between stages.** Scenic crossings are safe, but bombs still consume inventory. Leaving a cleared boss stage adds one life, up to three.
 
 Leave the title idle for fifteen seconds to watch the automatic scenery previews and hear the music. Move or press fire to return to the title, then release and press fire again to start. After a run, release any held fire button before restarting, too.
 

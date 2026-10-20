@@ -24,9 +24,11 @@ const BOSS_CORE_Z: i16 = -100 * assets::ENEMY_SCALE;
 const BOSS_TURRET_RADIUS: i16 = 23 * assets::ENEMY_SCALE;
 const BOSS_CORE_RADIUS: i16 = 30 * assets::ENEMY_SCALE;
 const BOSS_HIT_DEPTH: i16 = 48 * assets::ENEMY_SCALE;
-const SHIELD_MAGNET_RANGE: i16 = 64;
-const SHIELD_MAGNET_DEPTH: i16 = 240;
-const SHIELD_MAGNET_SPEED: i16 = 2;
+const PICKUP_MAGNET_RANGE: i16 = 64;
+const PICKUP_MAGNET_DEPTH: i16 = 240;
+const PICKUP_MAGNET_SPEED: i16 = 2;
+const BOSS_SIDE_HP: u8 = 40;
+const BOSS_CORE_HP: u8 = 120;
 pub const SECTION_TICKS: u16 = 3750;
 pub const MISSION_TICKS: u32 = SECTION_TICKS as u32 * assets::SEGMENT_COUNT as u32;
 const BOSS_START_TICKS: u16 = 1000;
@@ -283,6 +285,7 @@ impl Controls {
         self.cached_charge = self.computed_charge();
     }
     #[inline(never)]
+    #[cfg_attr(target_arch = "mos", link_section = ".phase.sim")]
     fn clear_pending(&mut self) {
         self.shot_pending = false;
         self.bomb_pending = false;
@@ -389,9 +392,9 @@ impl Game {
             respawn_ticks: 0,
             bank: 0,
             boss_z: 1800,
-            boss_left: 20,
-            boss_right: 20,
-            boss_core: 60,
+            boss_left: BOSS_SIDE_HP,
+            boss_right: BOSS_SIDE_HP,
+            boss_core: BOSS_CORE_HP,
             boss_started: false,
             boss_defeated: false,
             kills: 0,
@@ -563,7 +566,7 @@ impl Game {
             section: self.segment_index(),
             roll_ticks: self.roll_ticks,
             boss_shield: if self.boss_started {
-                self.boss_left + self.boss_right + self.boss_core
+                (self.boss_left + self.boss_right + self.boss_core + 1) >> 1
             } else {
                 0
             },
@@ -594,7 +597,6 @@ impl Game {
         }
     }
     #[inline(never)]
-    #[cfg_attr(target_arch = "mos", link_section = ".phase.sim")]
     pub fn pop_audio(&mut self) -> Option<AudioEvent> {
         if self.audio_len == 0 {
             return None;
@@ -688,9 +690,9 @@ impl Game {
         self.bombs = 3;
         self.lives = 3;
         self.boss_z = 1800;
-        self.boss_left = 20;
-        self.boss_right = 20;
-        self.boss_core = 60;
+        self.boss_left = BOSS_SIDE_HP;
+        self.boss_right = BOSS_SIDE_HP;
+        self.boss_core = BOSS_CORE_HP;
         self.stage_info = StageInfo::FIRST;
     }
     /// One 20 ms simulation step. Feed every captured input sample first.
@@ -727,8 +729,6 @@ impl Game {
                 self.mode = Mode::Transition;
                 self.transition_ticks = 0;
                 if self.stage_info.boss_kind != 0 {
-                    self.shield = 100;
-                    self.bombs = self.bombs.max(2);
                     self.lives = (self.lives + 1).min(3);
                 }
                 self.actors = [Actor::EMPTY; ACTORS];
@@ -874,9 +874,9 @@ impl Game {
                     self.boss_started = false;
                     self.boss_defeated = false;
                     self.boss_z = 1800;
-                    self.boss_left = 20;
-                    self.boss_right = 20;
-                    self.boss_core = 60;
+                    self.boss_left = BOSS_SIDE_HP;
+                    self.boss_right = BOSS_SIDE_HP;
+                    self.boss_core = BOSS_CORE_HP;
                 }
                 return;
             }
@@ -1412,7 +1412,7 @@ impl Game {
     fn kill_actor(&mut self, index: usize, bank: &AssetBank<'_>) {
         let a = self.actors[index];
         self.actors[index].kind = 0;
-        if a.small_debris() {
+        if a.kind == assets::ROCK {
             self.score += 25;
             self.explode(a.pos, 7);
             self.sound(Effect::Death, a.pos.x);
@@ -1431,7 +1431,7 @@ impl Game {
         self.sound(Effect::Death, a.pos.x);
         if a.flags & 1 != 0 {
             self.add_pickup(a.pos, 2);
-        } else if self.kills % 4 == 0 {
+        } else if self.kills % 8 == 0 {
             self.add_pickup(a.pos, 1);
         }
     }
@@ -1447,7 +1447,9 @@ impl Game {
             }
         }
         for i in 0..ACTORS {
-            if self.actors[i].kind != 0 && self.actors[i].hp != 255 {
+            if self.actors[i].kind == assets::ROCK && self.stage_info.theme >= 10 {
+                self.kill_actor(i, bank);
+            } else if self.actors[i].kind != 0 && self.actors[i].hp != 255 {
                 self.actors[i].hp = self.actors[i].hp.saturating_sub(8);
                 if self.actors[i].hp == 0 {
                     self.kill_actor(i, bank);
@@ -1470,6 +1472,8 @@ impl Game {
     fn check_boss_death(&mut self) {
         if self.boss_core == 0 && !self.boss_defeated {
             self.boss_defeated = true;
+            self.shield = 100;
+            self.bombs = 3;
             self.score += 5000;
             self.sound(Effect::Death, 0);
             for x in [-80, -40, 0, 40, 80] {
@@ -1541,9 +1545,9 @@ impl Game {
         self.boss_started = false;
         self.boss_defeated = false;
         self.boss_z = 1800;
-        self.boss_left = 20;
-        self.boss_right = 20;
-        self.boss_core = 60;
+        self.boss_left = BOSS_SIDE_HP;
+        self.boss_right = BOSS_SIDE_HP;
+        self.boss_core = BOSS_CORE_HP;
         self.controls.fire_armed = false;
         self.controls.left_armed = false;
         self.controls.right_armed = false;
@@ -1568,11 +1572,10 @@ impl Game {
             p.pos.z -= SPEED as i16;
             if self.mode == Mode::Playing {
                 let depth = p.pos.z.wrapping_sub(PLAYER_Z);
-                if p.kind == 1
-                    && depth as u16 <= SHIELD_MAGNET_DEPTH as u16
-                    && close_xy(p.pos, self.player, SHIELD_MAGNET_RANGE)
+                if depth as u16 <= PICKUP_MAGNET_DEPTH as u16
+                    && close_xy(p.pos, self.player, PICKUP_MAGNET_RANGE)
                 {
-                    // Move the visible shield gently toward the ship, leaving the
+                    // Move the visible pickup gently toward the ship, leaving the
                     // collection hitbox unchanged and allowing steering to outrun it.
                     p.pos.x = magnet_coordinate(p.pos.x, self.player.x);
                     p.pos.y = magnet_coordinate(p.pos.y, self.player.y);
@@ -1581,7 +1584,7 @@ impl Game {
                     let kind = p.kind;
                     p.kind = 0;
                     if kind == 1 {
-                        self.shield = self.shield.saturating_add(30).min(100);
+                        self.shield = self.shield.saturating_add(60).min(100);
                     } else {
                         self.bombs = (self.bombs + 1).min(3);
                     }
@@ -2108,9 +2111,10 @@ fn actor_center(actor: Actor, bank: &AssetBank<'_>) -> Vec3 {
             },
     }
 }
-// Shared collision bounds stay resident to leave room for the shield magnet
-// and benchmark instrumentation in the composed SIM overlay.
+// Collision and control helpers belong to every SIM profile. The small audio
+// queue drain stays resident to balance the tight SIM and resident allocations.
 #[inline(never)]
+#[cfg_attr(target_arch = "mos", link_section = ".phase.sim")]
 fn close_xy(a: Vec3, b: Vec3, radius: i16) -> bool {
     (a.x - b.x).abs() <= radius && (a.y - b.y).abs() <= radius
 }
@@ -2120,10 +2124,10 @@ fn magnet_coordinate(current: i16, target: i16) -> i16 {
     // The caller has proved both axes are within 64 units. Narrow only that
     // bounded difference, keeping the coordinates and result fully signed.
     let delta = (target - current) as i8;
-    if delta > SHIELD_MAGNET_SPEED as i8 {
-        current + SHIELD_MAGNET_SPEED
-    } else if delta < -SHIELD_MAGNET_SPEED as i8 {
-        current - SHIELD_MAGNET_SPEED
+    if delta > PICKUP_MAGNET_SPEED as i8 {
+        current + PICKUP_MAGNET_SPEED
+    } else if delta < -PICKUP_MAGNET_SPEED as i8 {
+        current - PICKUP_MAGNET_SPEED
     } else {
         target
     }

@@ -15,6 +15,7 @@ use havoc::{
     presentation::BombEffect,
     render::{self, Renderer},
     sky_cache::SkyCache,
+    space_dust::SpaceDustFrame,
     transition::TransitionAudio,
 };
 
@@ -45,6 +46,10 @@ static ERROR_MUSIC_CHECKSUM: [u8; 22] = *b"INVALID MUSIC CHECKSUM";
 static mut RENDERER: MaybeUninit<Renderer> = MaybeUninit::uninit();
 #[link_section = ".game_state"]
 static mut GAME: MaybeUninit<Game> = MaybeUninit::uninit();
+// PIXELS reloads this writable tail together with its helper code every frame.
+// It is never read by the IRQ and consumes no persistent resident storage.
+#[link_section = ".phase.pixels_aux.data"]
+static mut SPACE_DUST: SpaceDustFrame = SpaceDustFrame::EMPTY;
 #[link_section = ".audio_state"]
 static mut AUDIO: MaybeUninit<AudioEngine> = MaybeUninit::uninit();
 #[cfg_attr(feature = "four-sid", link_section = ".music_page")]
@@ -141,7 +146,8 @@ extern "C" {
     static __phase_geometry_base_size: u8;
     static __phase_victory_size: u8;
     fn victory_geometry(game: *const (), renderer: *mut Renderer, bank: *const ());
-    static __phase_pixels_size: u8;
+    static __phase_pixels_prefix_size: u8;
+    static __phase_pixels_aux_size: u8;
     static __phase_audio_size: u8;
     static __phase_audio_runtime_size: u8;
     static __phase_scenery_size: u8;
@@ -880,13 +886,31 @@ pub unsafe extern "C" fn medal_geometry(game: *const (), renderer: *mut Renderer
 #[link_section = ".phase.pixels"]
 #[inline(never)]
 unsafe fn draw_pixels(status: &Hud) -> u8 {
+    // GEOMETRY may have overwritten the tail. The caller has hidden I/O for
+    // raster access, so expose the REU only while loading the auxiliary image.
+    io_on();
+    dma(
+        0x043f20,
+        0x6f20,
+        core::ptr::addr_of!(__phase_pixels_aux_size) as u16,
+    );
+    io_off();
+    let ambient = SPACE_DUST.prepare(
+        status.section,
+        status.mode,
+        GAME.assume_init_ref().animation_ticks(),
+    );
     let renderer = RENDERER.assume_init_mut();
     let front = rd(core::ptr::addr_of!(FRONT_BANK));
     let back = if front == 3 { 2 } else { 3 };
     let front_screen = if front == 3 { 0xc000 } else { 0x8000 };
     let back_screen = if back == 3 { 0xc000 } else { 0x8000 };
     let back_bitmap = if back == 3 { 0xe000 } else { 0xa000 };
-    let eligible = SkyCache::eligible_bands(SKY_BANDS, status);
+    let eligible = if ambient.is_some() {
+        0
+    } else {
+        SkyCache::eligible_bands(SKY_BANDS, status)
+    };
     let mut reusable = SKY_CACHE.reusable_bands() & eligible;
     // Preparation belongs to raster time, including before the opaque HUD band.
     wr(core::ptr::addr_of_mut!(PROF_DETAIL), 1);
@@ -910,7 +934,7 @@ unsafe fn draw_pixels(status: &Hud) -> u8 {
                 status.mode,
                 havoc::game::Mode::Title | havoc::game::Mode::Attract | havoc::game::Mode::Victory
             ) || (band != 0 && band != 24));
-        if pass.next_band(pixels, paint_scene) != Some(band) {
+        if pass.next_band_with_ambient(pixels, paint_scene, ambient) != Some(band) {
             fail(b"INVALID RASTER BAND ORDER")
         }
         if reuse_sky {
@@ -1225,7 +1249,7 @@ pub unsafe extern "C" fn main() -> i32 {
         }
         io_on();
         geometry_complete();
-        load_phase(4, core::ptr::addr_of!(__phase_pixels_size) as u16);
+        load_phase(4, core::ptr::addr_of!(__phase_pixels_prefix_size) as u16);
         wr(core::ptr::addr_of_mut!(PROF_PHASE), 7);
         io_off();
         let back = draw_pixels(&status);
