@@ -16,14 +16,18 @@ pub const TRANSITION_TICKS: u16 = 400;
 pub(crate) const STATIC_SKY: u8 = 2;
 const PLAYER_Z: i16 = 180;
 const SPEED: i16 = 8;
-const ENEMY_RAM_DEPTH: i16 = 32 * assets::ENEMY_SCALE;
-const BOSS_TURRET_X: i16 = 65 * assets::ENEMY_SCALE;
-const BOSS_TURRET_Y: i16 = 15 * assets::ENEMY_SCALE;
-const BOSS_TURRET_Z: i16 = -35 * assets::ENEMY_SCALE;
-const BOSS_CORE_Z: i16 = -100 * assets::ENEMY_SCALE;
-const BOSS_TURRET_RADIUS: i16 = 23 * assets::ENEMY_SCALE;
-const BOSS_CORE_RADIUS: i16 = 30 * assets::ENEMY_SCALE;
-const BOSS_HIT_DEPTH: i16 = 48 * assets::ENEMY_SCALE;
+/// Actors fly past the camera instead of vanishing: they stay alive and drawn
+/// until the deepest actor mesh (72 units, checked by the asset tests) is
+/// entirely behind the near plane, where the renderer rejects every face.
+pub const ACTOR_RETIRE_Z: i16 = crate::render::NEAR - 72;
+const ENEMY_RAM_DEPTH: i16 = assets::enemy_scaled(32);
+const BOSS_TURRET_X: i16 = 65 * assets::BOSS_SCALE;
+const BOSS_TURRET_Y: i16 = 15 * assets::BOSS_SCALE;
+const BOSS_TURRET_Z: i16 = -35 * assets::BOSS_SCALE;
+const BOSS_CORE_Z: i16 = -100 * assets::BOSS_SCALE;
+const BOSS_TURRET_RADIUS: i16 = 23 * assets::BOSS_SCALE;
+const BOSS_CORE_RADIUS: i16 = 30 * assets::BOSS_SCALE;
+const BOSS_HIT_DEPTH: i16 = 48 * assets::BOSS_SCALE;
 const PICKUP_MAGNET_RANGE: i16 = 64;
 const PICKUP_MAGNET_DEPTH: i16 = 240;
 const PICKUP_MAGNET_SPEED: i16 = 2;
@@ -36,11 +40,17 @@ const SPACE_BOSS_START_TICKS: u16 = 2500;
 const ATTRACT_TICKS: u16 = 750;
 const ACTORS: usize = 12;
 const SHOTS: usize = 24;
+const MISSILE_SEED: u8 = 0xa5;
 const AUDIO_CAPACITY: usize = 8;
-const DOUBLE_TAP_WINDOW_MS: u32 = 500;
+const DOUBLE_TAP_WINDOW_MS: u16 = 500;
+/// Fire released this long charges a homing missile; the remembered release
+/// instant is held within this window of the present.
+const CHARGE_FULL_MS: u16 = 2000;
 
 mod enemies;
+pub mod flight;
 mod math;
+use flight::Flight;
 use math::swept_z;
 
 #[cfg(target_arch = "mos")]
@@ -62,7 +72,9 @@ pub struct InputSample {
     pub bits: u8,
     /// Rising edges accumulated since the previous sample, if any.
     pub pressed: u8,
-    pub ms: u32,
+    /// A 16-bit millisecond clock, wrapping every 65.5 s: every instant the
+    /// simulation remembers is kept within two seconds of the present.
+    pub ms: u16,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -83,6 +95,9 @@ pub enum PresentationEvent {
     None,
     Bomb,
     Reset,
+    /// The player took damage: a short shake with a red border flash.
+    /// A pending bomb outranks it; a reset replaces either.
+    Hit,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -93,7 +108,8 @@ pub struct Hud {
     pub lives: u8,
     pub charge: u8,
     pub score: u32,
-    pub distance: u32,
+    /// Distance into the current section, 0..=30,000 world units.
+    pub distance: u16,
     pub section: u8,
     pub roll_ticks: u8,
     /// Combined remaining boss health, normalized to 0..100.
@@ -182,11 +198,13 @@ impl Explosion {
 #[cfg_attr(test, derive(Debug, PartialEq, Eq))]
 struct Controls {
     bits: u8,
-    now: u32,
-    released_at: u32,
-    fire_at: u32,
-    left_at: u32,
-    right_at: u32,
+    // Sixteen-bit milliseconds: the windows below are all under two seconds
+    // and `sample` keeps every remembered instant within its window.
+    now: u16,
+    released_at: u16,
+    fire_at: u16,
+    left_at: u16,
+    right_at: u16,
     fire_armed: bool,
     left_armed: bool,
     right_armed: bool,
@@ -229,10 +247,10 @@ impl Controls {
         let elapsed = self.now.wrapping_sub(self.released_at);
         if elapsed <= 1000 {
             0
-        } else if elapsed >= 2000 {
+        } else if elapsed >= CHARGE_FULL_MS {
             255
         } else {
-            ((elapsed as u16 - 1000) * 51 / 200) as u8
+            ((elapsed - 1000) * 51 / 200) as u8
         }
     }
     #[inline(never)]
@@ -244,12 +262,28 @@ impl Controls {
         if old & FIRE != 0 && input.bits & FIRE == 0 {
             self.released_at = input.ms;
         }
+        // The clock wraps every 65.5 s. Samples arrive every frame (also
+        // while paused), so holding each remembered instant within its window
+        // keeps a stale one from ever looking recent again: a saturated
+        // charge stays saturated and an expired tap is disarmed.
+        if input.ms.wrapping_sub(self.released_at) > CHARGE_FULL_MS {
+            self.released_at = input.ms.wrapping_sub(CHARGE_FULL_MS);
+        }
+        if input.ms.wrapping_sub(self.fire_at) > DOUBLE_TAP_WINDOW_MS {
+            self.fire_armed = false;
+        }
+        if input.ms.wrapping_sub(self.left_at) > DOUBLE_TAP_WINDOW_MS {
+            self.left_armed = false;
+        }
+        if input.ms.wrapping_sub(self.right_at) > DOUBLE_TAP_WINDOW_MS {
+            self.right_armed = false;
+        }
         // Charge is measured before storing the newly held fire button.
         if pressed & FIRE != 0 {
             self.shot_charge = self.computed_charge();
             self.shot_pending = true;
             self.start_pending = true;
-            if self.fire_armed && input.ms.wrapping_sub(self.fire_at) <= DOUBLE_TAP_WINDOW_MS {
+            if self.fire_armed {
                 self.bomb_pending = true;
                 self.fire_armed = false;
             } else {
@@ -262,7 +296,7 @@ impl Controls {
             self.right_armed = false;
         } else {
             if pressed & LEFT != 0 {
-                if self.left_armed && input.ms.wrapping_sub(self.left_at) <= DOUBLE_TAP_WINDOW_MS {
+                if self.left_armed {
                     self.roll_pending = -1;
                     self.left_armed = false;
                 } else {
@@ -271,8 +305,7 @@ impl Controls {
                 }
             }
             if pressed & RIGHT != 0 {
-                if self.right_armed && input.ms.wrapping_sub(self.right_at) <= DOUBLE_TAP_WINDOW_MS
-                {
+                if self.right_armed {
                     self.roll_pending = 1;
                     self.right_armed = false;
                 } else {
@@ -303,6 +336,8 @@ pub struct Game {
     mode: Mode,
     presentation_event: PresentationEvent,
     player: Vec3,
+    /// Fractional position, velocity and attitude of the ship (flight.rs).
+    flight: Flight,
     // One tick is eight world units within this checkpoint. Campaign duration
     // may exceed 65535 ticks without widening the hot simulation arithmetic.
     stage_ticks: u16,
@@ -328,7 +363,6 @@ pub struct Game {
     roll_cooldown: u8,
     roll_direction: i8,
     respawn_ticks: u8,
-    bank: i8,
     boss_z: i16,
     boss_left: u8,
     boss_right: u8,
@@ -341,6 +375,9 @@ pub struct Game {
     pickups: [Pickup; 4],
     explosions: [Explosion; 6],
     audio: [AudioEvent; AUDIO_CAPACITY],
+    // Two four-bit locks per byte: 0 none, 1..12 actors, 13..15 boss parts.
+    missile_targets: [u8; SHOTS / 2],
+    missile_rng: u8,
 }
 
 impl Default for Game {
@@ -359,6 +396,7 @@ impl Game {
                 y: 0,
                 z: PLAYER_Z,
             },
+            flight: Flight::ZERO,
             stage_ticks: 0,
             stage_id: 0,
             stage_info: StageInfo::FIRST,
@@ -369,6 +407,8 @@ impl Game {
             menu_activity: false,
             actors: [Actor::EMPTY; ACTORS],
             shots: [Shot::EMPTY; SHOTS],
+            missile_targets: [0; SHOTS / 2],
+            missile_rng: MISSILE_SEED,
             pickups: [Pickup::EMPTY; 4],
             explosions: [Explosion::EMPTY; 6],
             audio: [AudioEvent {
@@ -390,7 +430,6 @@ impl Game {
             roll_cooldown: 0,
             roll_direction: 0,
             respawn_ticks: 0,
-            bank: 0,
             boss_z: 1800,
             boss_left: BOSS_SIDE_HP,
             boss_right: BOSS_SIDE_HP,
@@ -411,6 +450,21 @@ impl Game {
             self.menu_activity = true;
         }
         self.controls.sample(input);
+    }
+    /// Keep held controls and charge timing current while paused, discarding
+    /// actions and tap history so gestures cannot cross the pause boundary.
+    #[inline(never)]
+    #[cfg_attr(target_arch = "mos", link_section = ".phase.sim")]
+    pub fn sample_paused_input(&mut self, bits: u8, ms: u16) {
+        self.controls.sample(InputSample {
+            bits,
+            pressed: 0,
+            ms,
+        });
+        self.controls.clear_pending();
+        self.controls.fire_armed = false;
+        self.controls.left_armed = false;
+        self.controls.right_armed = false;
     }
     /// Host inspection starts at a useful mission location without changing the
     /// production binary. Late encounter records are aged on the following tick.
@@ -562,7 +616,7 @@ impl Game {
             lives: self.lives,
             charge: self.controls.charge(),
             score: self.score,
-            distance: self.stage_id as u32 * assets::SEGMENT_DISTANCE + self.stage_ticks as u32 * 8,
+            distance: self.stage_ticks * 8,
             section: self.segment_index(),
             roll_ticks: self.roll_ticks,
             boss_shield: if self.boss_started {
@@ -694,6 +748,7 @@ impl Game {
         self.boss_right = BOSS_SIDE_HP;
         self.boss_core = BOSS_CORE_HP;
         self.stage_info = StageInfo::FIRST;
+        self.missile_rng = MISSILE_SEED;
     }
     /// One 20 ms simulation step. Feed every captured input sample first.
     /// `bank` must belong to `segment_index()` before this step. If the step
@@ -732,6 +787,7 @@ impl Game {
                     self.lives = (self.lives + 1).min(3);
                 }
                 self.actors = [Actor::EMPTY; ACTORS];
+                self.missile_targets = [0; SHOTS / 2];
                 self.pickups = [Pickup::EMPTY; 4];
                 for shot in &mut self.shots {
                     if shot.kind == 2 {
@@ -793,6 +849,7 @@ impl Game {
             self.mode = Mode::Victory;
             self.menu_ticks = 0;
             self.shots = [Shot::EMPTY; SHOTS];
+            self.missile_targets = [0; SHOTS / 2];
             self.sound(Effect::Pickup, 0);
         }
     }
@@ -921,32 +978,17 @@ impl Game {
             self.bomb(bank);
         }
     }
+    /// The assisted flight model (flight.rs): the stick commands a velocity,
+    /// the barrel roll adds a sideways push while it spins, and the hull banks
+    /// and pitches with the manoeuvre. Resident: called from the SIM image.
     #[inline(never)]
     fn move_player(&mut self) {
-        let dx = ((self.controls.bits & RIGHT != 0) as i16
-            - (self.controls.bits & LEFT != 0) as i16)
-            * 3;
-        let dy =
-            ((self.controls.bits & UP != 0) as i16 - (self.controls.bits & DOWN != 0) as i16) * 3;
-        // The first 300 ms of a roll adds a tapering sideways burst. Steering
-        // remains live, and the ship keeps its new position when the burst ends.
-        let dodge = if self.roll_ticks > 20 {
-            6
-        } else if self.roll_ticks > 15 {
-            3
-        } else if self.roll_ticks > 10 {
-            1
+        let push = if self.roll_ticks > 0 {
+            self.roll_direction
         } else {
             0
         };
-        self.player.x = (self.player.x + dx + self.roll_direction as i16 * dodge).clamp(-100, 100);
-        self.player.y = (self.player.y + dy).clamp(-65, 65);
-        let target = (-dx * 4) as i8;
-        if self.bank < target {
-            self.bank += 2;
-        } else if self.bank > target {
-            self.bank -= 2;
-        }
+        flight::step(&mut self.player, &mut self.flight, self.controls.bits, push);
     }
     #[inline(never)]
     #[cfg_attr(target_arch = "mos", link_section = ".phase.sim")]
@@ -975,11 +1017,13 @@ impl Game {
     #[inline(never)]
     #[cfg_attr(target_arch = "mos", link_section = ".phase.sim")]
     fn add_shot(&mut self, shot: Shot) {
-        if let Some(slot) = self.shots.iter_mut().find(|s| s.kind == 0) {
-            *slot = shot;
+        if let Some(slot) = self.shots.iter().position(|s| s.kind == 0) {
+            self.shots[slot] = shot;
+            self.set_missile_lock(slot, 0);
         } else if shot.kind == 1 || shot.kind == 3 {
-            if let Some(slot) = self.shots.iter_mut().find(|s| s.kind == 2) {
-                *slot = shot;
+            if let Some(slot) = self.shots.iter().position(|s| s.kind == 2) {
+                self.shots[slot] = shot;
+                self.set_missile_lock(slot, 0);
             } else if shot.kind == 3 {
                 // A fully charged shot must not disappear in a saturated pool.
                 // Prefer replacing an ordinary laser nearest its range limit;
@@ -998,6 +1042,7 @@ impl Game {
                     }
                 }
                 self.shots[farthest] = shot;
+                self.set_missile_lock(farthest, 0);
             }
         }
     }
@@ -1070,8 +1115,18 @@ impl Game {
         } else {
             spec.hp
         };
-        if let Some(slot) = self.actors.iter_mut().find(|a| a.kind == 0) {
-            *slot = Actor {
+        if let Some(slot) = self.actors.iter().position(|a| a.kind == 0) {
+            // A reused slot is a new target, never an inherited lock.
+            let target = slot as u8 + 1;
+            for locks in &mut self.missile_targets {
+                if *locks & 15 == target {
+                    *locks &= 0xf0;
+                }
+                if *locks >> 4 == target {
+                    *locks &= 0x0f;
+                }
+            }
+            self.actors[slot] = Actor {
                 pos: Vec3 {
                     x: spawn.x,
                     y: spawn.y,
@@ -1142,7 +1197,7 @@ impl Game {
                 a.kind = 0;
                 self.damage_player(30);
                 self.explode(a.pos, 8);
-            } else if a.pos.z < 40 {
+            } else if a.pos.z < ACTOR_RETIRE_Z {
                 a.kind = 0;
             }
             self.actors[i] = a;
@@ -1190,7 +1245,7 @@ impl Game {
         }
         let side = pulse == 2;
         if exposed {
-            let x = 14 * assets::ENEMY_SCALE;
+            let x = 14 * assets::BOSS_SCALE;
             self.enemy_shot(Vec3 {
                 x: if side { x } else { -x },
                 y: 0,
@@ -1214,8 +1269,8 @@ impl Game {
                     self.enemy_attack(
                         Vec3 {
                             x: if right { BOSS_TURRET_X } else { -BOSS_TURRET_X },
-                            y: BOSS_TURRET_Y + 18 * assets::ENEMY_SCALE,
-                            z: self.boss_z + BOSS_TURRET_Z - 28 * assets::ENEMY_SCALE,
+                            y: BOSS_TURRET_Y + 18 * assets::BOSS_SCALE,
+                            z: self.boss_z + BOSS_TURRET_Z - 28 * assets::BOSS_SCALE,
                         },
                         if kind == 2 { 2 } else { 1 },
                     );
@@ -1232,7 +1287,9 @@ impl Game {
                 continue;
             }
             if s.kind == 3 {
-                self.steer_missile(&mut s, bank);
+                let mut target = self.missile_lock(i);
+                self.steer_missile(&mut s, &mut target, bank);
+                self.set_missile_lock(i, target);
             }
             let old_z = s.pos.z;
             s.pos.x += s.dx as i16;
@@ -1242,39 +1299,28 @@ impl Game {
                 3 => 32,
                 _ => -18,
             };
-            if s.pos.z > 2400 || s.pos.z < 32 || s.pos.x.abs() > 1000 || s.pos.y.abs() > 600 {
+            if s.pos.z > 2400
+                || s.pos.z < crate::render::NEAR
+                || s.pos.x.abs() > 1000
+                || s.pos.y.abs() > 600
+            {
                 s.kind = 0;
             }
             if s.kind == 1 || s.kind == 3 {
-                for a in 0..ACTORS {
+                if let Some(a) = self.shot_target(old_z, &s.pos, bank) {
                     let target = &self.actors[a];
-                    if target.kind == 0 {
-                        continue;
-                    }
-                    let radius = if target.small_debris() {
-                        18
-                    } else if matches!(target.kind, assets::ROCK | assets::BUILDING) {
-                        35
-                    } else {
-                        bank.enemy(target.kind).shot_radius as i16
-                    };
-                    if swept_z(old_z, s.pos.z, target.pos.z, radius)
-                        && close_xy(s.pos, actor_center_sim(target, bank), radius)
-                    {
-                        let target_hp = target.hp;
-                        let target_x = target.pos.x;
-                        s.kind = 0;
-                        if target_hp != 255 {
-                            self.actors[a].hp = self.actors[a].hp.saturating_sub(s.damage);
-                            if self.actors[a].hp == 0 {
-                                self.kill_actor(a, bank);
-                            } else {
-                                self.sound(Effect::Hit, target_x);
-                            }
+                    let target_hp = target.hp;
+                    let target_x = target.pos.x;
+                    s.kind = 0;
+                    if target_hp != 255 {
+                        self.actors[a].hp = self.actors[a].hp.saturating_sub(s.damage);
+                        if self.actors[a].hp == 0 {
+                            self.kill_actor(a, bank);
                         } else {
-                            self.explode(s.pos, 15);
+                            self.sound(Effect::Hit, target_x);
                         }
-                        break;
+                    } else {
+                        self.explode(s.pos, 15);
                     }
                 }
                 if s.kind != 0 && self.boss_started && !self.boss_defeated {
@@ -1329,83 +1375,255 @@ impl Game {
                 }
             }
             self.shots[i] = s;
-        }
-    }
-    #[inline(never)]
-    #[cfg_attr(target_arch = "mos", link_section = ".phase.sim")]
-    fn missile_target(&self, position: Vec3, bank: &AssetBank<'_>) -> Option<(Vec3, i16)> {
-        let mut best = None;
-        let mut best_z = i16::MAX;
-        let mut best_xy = i16::MAX;
-        // Stable order breaks exact ties: actor slots, left turret, right
-        // turret, exposed core. Reacquisition needs no persistent actor ID.
-        for i in 0..ACTORS + 3 {
-            let (target, closing) = if i < ACTORS {
-                let actor = self.actors[i];
-                let spec = bank.enemy(actor.kind);
-                if actor.hp == 0 || (spec.hp == 0 && !actor.small_debris()) {
-                    continue;
-                }
-                // Reacquisition scans every actor for every live missile.
-                // Keep this tiny descriptor read in the hot loop: an outlined
-                // transform spills its target/order state on the 6502.
-                (
-                    Vec3 {
-                        y: actor.pos.y
-                            + if actor.small_debris() {
-                                10
-                            } else {
-                                spec.center_y as i16
-                            },
-                        ..actor.pos
-                    },
-                    32 + actor.approach_speed as i16,
-                )
-            } else {
-                if !self.boss_started || self.boss_defeated {
-                    continue;
-                }
-                let (x, y, z) = match i - ACTORS {
-                    0 if self.boss_left > 0 => (-BOSS_TURRET_X, BOSS_TURRET_Y, BOSS_TURRET_Z),
-                    1 if self.boss_right > 0 => (BOSS_TURRET_X, BOSS_TURRET_Y, BOSS_TURRET_Z),
-                    2 if self.boss_left == 0 && self.boss_right == 0 && self.boss_core > 0 => {
-                        (0, 0, BOSS_CORE_Z)
-                    }
-                    _ => continue,
-                };
-                (
-                    Vec3 {
-                        x,
-                        y,
-                        z: self.boss_z + z,
-                    },
-                    if self.boss_z > 680 { 40 } else { 32 },
-                )
-            };
-            let dz = target.z - position.z;
-            let xy = (target.x - position.x).abs() + (target.y - position.y).abs();
-            if dz > 0 && (dz < best_z || (dz == best_z && xy < best_xy)) {
-                best = Some((target, closing));
-                best_z = dz;
-                best_xy = xy;
+            if s.kind == 0 {
+                self.set_missile_lock(i, 0);
             }
         }
-        best
+    }
+    /// The first actor slot, in slot order, that a player shot or missile at
+    /// `pos` hits after moving from depth `old_z`.
+    #[inline(always)]
+    fn shot_target(&self, old_z: i16, pos: &Vec3, bank: &AssetBank<'_>) -> Option<usize> {
+        #[cfg(target_arch = "mos")]
+        {
+            // The native body is `fast_shot_scan` (target-c64/asm/shots.S),
+            // compared against a transcription of the loop below by
+            // tools/test-shots-kernel.py.
+            extern "C" {
+                fn fast_shot_scan(
+                    old_z: i16,
+                    pos: *const Vec3,
+                    actors: *const Actor,
+                    specs: *const u8,
+                    enemy_count: u8,
+                ) -> u8;
+            }
+            // SAFETY: the kernel reads the position, the twelve actor slots
+            // and the bank's descriptors through these pointers and writes
+            // nothing.
+            let slot = unsafe {
+                fast_shot_scan(
+                    old_z,
+                    pos,
+                    self.actors.as_ptr(),
+                    bank.enemy_specs(),
+                    bank.enemy_count(),
+                )
+            };
+            if (slot as usize) < ACTORS {
+                Some(slot as usize)
+            } else {
+                None
+            }
+        }
+        #[cfg(not(target_arch = "mos"))]
+        {
+            for a in 0..ACTORS {
+                let target = &self.actors[a];
+                if target.kind == 0 {
+                    continue;
+                }
+                let radius = if target.small_debris() {
+                    18
+                } else if matches!(target.kind, assets::ROCK | assets::BUILDING) {
+                    35
+                } else {
+                    bank.enemy(target.kind).shot_radius as i16
+                };
+                if swept_z(old_z, pos.z, target.pos.z, radius)
+                    && close_xy(*pos, actor_center_sim(target, bank), radius)
+                {
+                    return Some(a);
+                }
+            }
+            None
+        }
+    }
+    #[inline(always)]
+    fn missile_lock(&self, index: usize) -> u8 {
+        let locks = self.missile_targets[index / 2];
+        if index & 1 == 0 {
+            locks & 15
+        } else {
+            locks >> 4
+        }
     }
     #[inline(never)]
     #[cfg_attr(target_arch = "mos", link_section = ".phase.sim")]
-    fn steer_missile(&self, shot: &mut Shot, bank: &AssetBank<'_>) {
-        let (dx, dy) = if let Some((target, closing)) = self.missile_target(shot.pos, bank) {
-            let dz = (target.z - shot.pos.z).max(closing);
+    fn set_missile_lock(&mut self, index: usize, target: u8) {
+        let locks = &mut self.missile_targets[index / 2];
+        if index & 1 == 0 {
+            *locks = (*locks & 0xf0) | target;
+        } else {
+            *locks = (*locks & 0x0f) | (target << 4);
+        }
+    }
+    #[cfg(not(target_arch = "mos"))]
+    fn missile_candidate(
+        &self,
+        position: Vec3,
+        id: u8,
+        bank: &AssetBank<'_>,
+    ) -> Option<(Vec3, i16)> {
+        let (target, closing) = if (1..=ACTORS as u8).contains(&id) {
+            let actor = self.actors[id as usize - 1];
+            let spec = bank.enemy(actor.kind);
+            if actor.kind == 0 || actor.hp == 0 || (spec.hp == 0 && !actor.small_debris()) {
+                return None;
+            }
             (
-                missile_velocity(target.x - shot.pos.x, closing, dz),
-                missile_velocity(target.y - shot.pos.y, closing, dz),
+                Vec3 {
+                    y: actor.pos.y
+                        + if actor.small_debris() {
+                            10
+                        } else {
+                            spec.center_y as i16
+                        },
+                    ..actor.pos
+                },
+                32 + actor.approach_speed as i16,
             )
         } else {
-            (0, 0)
+            if !self.boss_started || self.boss_defeated {
+                return None;
+            }
+            let (x, y, z) = match id {
+                13 if self.boss_left > 0 => (-BOSS_TURRET_X, BOSS_TURRET_Y, BOSS_TURRET_Z),
+                14 if self.boss_right > 0 => (BOSS_TURRET_X, BOSS_TURRET_Y, BOSS_TURRET_Z),
+                15 if self.boss_left == 0 && self.boss_right == 0 && self.boss_core > 0 => {
+                    (0, 0, BOSS_CORE_Z)
+                }
+                _ => return None,
+            };
+            (
+                Vec3 {
+                    x,
+                    y,
+                    z: self.boss_z + z,
+                },
+                if self.boss_z > 680 { 40 } else { 32 },
+            )
         };
-        shot.dx += (dx - shot.dx).clamp(-1, 1);
-        shot.dy += (dy - shot.dy).clamp(-1, 1);
+        if target.z - position.z > 0 {
+            Some((target, closing))
+        } else {
+            None
+        }
+    }
+    #[inline(never)]
+    #[cfg(not(target_arch = "mos"))]
+    fn missile_target(
+        &mut self,
+        position: Vec3,
+        target: &mut u8,
+        bank: &AssetBank<'_>,
+    ) -> Option<(Vec3, i16)> {
+        if let Some(candidate) = self.missile_candidate(position, *target, bank) {
+            return Some(candidate);
+        }
+        *target = 0;
+        let mut count = 0;
+        for id in 1..=15 {
+            count += u8::from(self.missile_candidate(position, id, bank).is_some());
+        }
+        if count == 0 {
+            return None;
+        }
+        let mut rank = 0;
+        if count > 1 {
+            if self.missile_rng == 0 {
+                self.missile_rng = MISSILE_SEED;
+            }
+            loop {
+                self.missile_rng =
+                    (self.missile_rng >> 1) ^ if self.missile_rng & 1 != 0 { 0xb8 } else { 0 };
+                // Each nonzero high nibble appears 16 times per LFSR cycle.
+                // Reject zero and out-of-range values instead of modulo bias.
+                let draw = self.missile_rng >> 4;
+                if draw != 0 && draw <= count {
+                    rank = draw - 1;
+                    break;
+                }
+            }
+        }
+        for id in 1..=15 {
+            if let Some(candidate) = self.missile_candidate(position, id, bank) {
+                if rank == 0 {
+                    *target = id;
+                    return Some(candidate);
+                }
+                rank -= 1;
+            }
+        }
+        None
+    }
+    #[inline(never)]
+    #[cfg_attr(target_arch = "mos", link_section = ".phase.sim")]
+    fn steer_missile(&mut self, shot: &mut Shot, target: &mut u8, bank: &AssetBank<'_>) {
+        #[cfg(target_arch = "mos")]
+        {
+            // The native body is `fast_steer_missile` (target-c64/asm/
+            // missile.S): the search below and `missile_velocity`, compared
+            // against a transcription of them by tools/test-missile-kernel.py.
+            #[repr(C)]
+            struct SteerArgs {
+                actors: *const Actor,
+                specs: *const u8,
+                shot: Vec3,
+                boss_z: i16,
+                enemy_count: u8,
+                boss_active: u8,
+                boss_left: u8,
+                boss_right: u8,
+                boss_core: u8,
+                dx: i8,
+                dy: i8,
+                target: u8,
+                rng: u8,
+            }
+            const _: [(); 21] = [(); core::mem::size_of::<SteerArgs>()];
+            extern "C" {
+                fn fast_steer_missile(args: *mut SteerArgs);
+            }
+            let mut args = SteerArgs {
+                actors: self.actors.as_ptr(),
+                specs: bank.enemy_specs(),
+                shot: shot.pos,
+                boss_z: self.boss_z,
+                enemy_count: bank.enemy_count(),
+                boss_active: (self.boss_started && !self.boss_defeated) as u8,
+                boss_left: self.boss_left,
+                boss_right: self.boss_right,
+                boss_core: self.boss_core,
+                dx: shot.dx,
+                dy: shot.dy,
+                target: *target,
+                rng: self.missile_rng,
+            };
+            // SAFETY: the kernel reads the twelve actor slots and the bank's
+            // descriptors through the pointers above and writes only dx/dy,
+            // the target lock and random state in this argument record.
+            unsafe { fast_steer_missile(&mut args) };
+            shot.dx = args.dx;
+            shot.dy = args.dy;
+            *target = args.target;
+            self.missile_rng = args.rng;
+        }
+        #[cfg(not(target_arch = "mos"))]
+        {
+            let (dx, dy) =
+                if let Some((target, closing)) = self.missile_target(shot.pos, target, bank) {
+                    let dz = (target.z - shot.pos.z).max(closing);
+                    (
+                        missile_velocity(target.x - shot.pos.x, closing, dz),
+                        missile_velocity(target.y - shot.pos.y, closing, dz),
+                    )
+                } else {
+                    (0, 0)
+                };
+            shot.dx += (dx - shot.dx).clamp(-1, 1);
+            shot.dy += (dy - shot.dy).clamp(-1, 1);
+        }
     }
     #[inline(never)]
     #[cfg_attr(target_arch = "mos", link_section = ".phase.sim")]
@@ -1502,6 +1720,9 @@ impl Game {
         self.shield = self.shield.saturating_sub(amount);
         self.invulnerability = 35;
         self.hit_flash_ticks = 35;
+        if self.presentation_event != PresentationEvent::Bomb {
+            self.presentation_event = PresentationEvent::Hit;
+        }
         self.sound(Effect::Hit, 0);
         if self.shield == 0 {
             self.lives = self.lives.saturating_sub(1);
@@ -1527,6 +1748,7 @@ impl Game {
         self.spawn_cursor = 0;
         self.actors = [Actor::EMPTY; ACTORS];
         self.shots = [Shot::EMPTY; SHOTS];
+        self.missile_targets = [0; SHOTS / 2];
         self.pickups = [Pickup::EMPTY; 4];
         self.explosions = [Explosion::EMPTY; 6];
         self.player = Vec3 {
@@ -1534,6 +1756,7 @@ impl Game {
             y: 0,
             z: PLAYER_Z,
         };
+        self.flight = Flight::ZERO;
         self.shield = 100;
         self.invulnerability = 100;
         self.hit_flash_ticks = 0;
@@ -1593,7 +1816,9 @@ impl Game {
                     continue;
                 }
             }
-            if p.pos.z < 40 {
+            // Camera-facing pickups are flat: once behind the near plane they
+            // cannot be drawn, so the slot is released there.
+            if p.pos.z < crate::render::NEAR {
                 p.kind = 0;
             }
         }
@@ -1722,9 +1947,9 @@ impl Game {
                 assets::PLAYER,
                 self.player,
                 0,
-                self.ascent_pitch(),
+                self.player_pitch(),
                 appearance as u8,
-                256,
+                false,
             );
             sink.color_override = 0;
             // A pair of flat exhaust triangles; deliberately no particles/textures.
@@ -1824,7 +2049,7 @@ impl Game {
             if p.kind == 1 {
                 shield_pickup(sink, p.pos);
             } else if p.kind != 0 {
-                diamond(sink, p.pos, 13, 7);
+                bomb_pickup(sink, p.pos);
             }
         }
         for e in &self.explosions {
@@ -1851,7 +2076,7 @@ impl Game {
                 0,
                 0,
                 0,
-                256,
+                false,
             );
             if self.boss_left > 0 {
                 emit_mesh(
@@ -1866,7 +2091,7 @@ impl Game {
                     0,
                     0,
                     0,
-                    256,
+                    false,
                 );
             }
             if self.boss_right > 0 {
@@ -1882,7 +2107,7 @@ impl Game {
                     0,
                     0,
                     0,
-                    256,
+                    false,
                 );
             }
             if self.boss_left == 0 && self.boss_right == 0 {
@@ -1893,14 +2118,14 @@ impl Game {
                         y: 0,
                         z: self.boss_z + BOSS_CORE_Z,
                     },
-                    22 * assets::ENEMY_SCALE,
+                    22 * assets::BOSS_SCALE,
                     if self.ticks & 8 == 0 { 7 } else { 2 },
                 );
             }
         }
         self.render_effects(sink);
         for (i, a) in self.actors.iter().enumerate() {
-            if a.kind != 0 && a.pos.z >= 80 {
+            if a.kind != 0 && a.pos.z >= ACTOR_RETIRE_Z {
                 // Authored ground guns and their proxies are terrain-clear:
                 // Lowlands fits the flight corridor; Fortress lies above its
                 // low shoulders. Its first spawn follows the Canyon bridge.
@@ -1921,9 +2146,9 @@ impl Game {
                         sink,
                         actor_center(*a, bank),
                         if a.kind == assets::FIGHTER {
-                            22 * assets::ENEMY_SCALE
+                            assets::enemy_scaled(22)
                         } else if a.kind <= bank.enemy_count() {
-                            18 * assets::ENEMY_SCALE
+                            assets::enemy_scaled(18)
                         } else if a.small_debris() {
                             9
                         } else {
@@ -1940,27 +2165,33 @@ impl Game {
                     // Rotate space rocks around their scaled center, preserving
                     // collision alignment while keeping terrestrial meshes still.
                     let space_rock = self.stage_info.theme >= 10 && a.kind == assets::ROCK;
-                    let scale = if a.small_debris() { 128 } else { 256 };
                     let pitch = if space_rock { (a.age as u8) >> 1 } else { 0 };
                     let position = if space_rock {
                         actor_center(*a, bank)
                     } else {
                         a.pos
                     };
-                    emit_mesh(sink, bank, a.kind, position, 0, pitch, roll, scale);
+                    emit_mesh(
+                        sink,
+                        bank,
+                        a.kind,
+                        position,
+                        0,
+                        pitch,
+                        roll,
+                        a.small_debris(),
+                    );
                 }
                 sink.extra_flags = 0;
             }
         }
     }
+    /// Stage unprojected scenery exactly as the native frame does. Backdrop
+    /// records carry STATIC_SKY; `Renderer::project_scenery` applies the sky
+    /// parallax when it replays them, so staging has no camera state.
     #[inline(never)]
     #[cfg_attr(target_arch = "mos", link_section = ".phase.scenery")]
-    pub fn render_scenery(
-        &self,
-        #[cfg(target_arch = "mos")] sink: &mut crate::render::SceneryStage<'_>,
-        #[cfg(not(target_arch = "mos"))] sink: &mut impl GeometrySink,
-        segment: &Segment<'_>,
-    ) {
+    pub fn stage_scenery(&self, sink: &mut crate::scenery::SceneSink<'_>, segment: &Segment<'_>) {
         if self.mode == Mode::Victory && self.menu_ticks >= crate::victory::FADE_TICKS {
             return;
         }
@@ -1974,25 +2205,70 @@ impl Game {
             matches!(self.mode, Mode::Title | Mode::Attract),
         );
     }
+    /// Host reference: scenery as it reaches the projector, sky parallax
+    /// included, in staging order.
+    #[cfg(not(target_arch = "mos"))]
+    pub fn render_scenery(&self, sink: &mut impl GeometrySink, segment: &Segment<'_>) {
+        struct SkyDrift<'a, S: ?Sized> {
+            sink: &'a mut S,
+            parallax: [i16; 2],
+        }
+        impl<S: GeometrySink + ?Sized> GeometrySink for SkyDrift<'_, S> {
+            fn triangle(&mut self, a: Vec3, b: Vec3, c: Vec3, color: u8, flags: u8) {
+                let mut points = [a, b, c];
+                crate::render::drift_sky(&mut points, flags, self.parallax[0], self.parallax[1]);
+                self.sink
+                    .triangle(points[0], points[1], points[2], color, flags);
+            }
+        }
+        let mut drifted = SkyDrift {
+            sink,
+            parallax: self.sky_parallax(),
+        };
+        self.stage_scenery(&mut drifted, segment);
+    }
+    /// A slight camera pan toward the ship: the far backdrop drifts opposite
+    /// to its sideways movement and dips as it climbs, nearer clouds more than
+    /// the horizon. Title and map tours keep their authored framing. The
+    /// arithmetic shift is exact enough and far cheaper than a signed divide;
+    /// outlined because inlining it bloats the GEOMETRY frame driver.
+    #[inline(never)]
+    #[cfg_attr(target_arch = "mos", link_section = ".phase.geometry")]
+    pub fn sky_parallax(&self) -> [i16; 2] {
+        if matches!(self.mode, Mode::Title | Mode::Attract) {
+            [0, 0]
+        } else {
+            [self.player.x, self.player.y >> 1]
+        }
+    }
     #[inline(never)]
     #[cfg_attr(target_arch = "mos", link_section = ".phase.geometry")]
     fn player_appearance(&self) -> u16 {
+        // The barrel roll's linear spin rides on the coordinated bank, so the
+        // end of the spin (a full turn) is continuous with the banked hull.
+        // Negative angles lower the right wing (clockwise from the cockpit),
+        // the bank's sense for a right turn, so a right roll spins negative.
+        let bank = (self.flight.bank >> 8) as u8;
         let roll = if self.roll_ticks > 0 {
-            ((25 - self.roll_ticks) as i16 * 256 / 25 * self.roll_direction as i16) as u8
+            ((25 - self.roll_ticks) as i16 * 256 / 25 * -(self.roll_direction as i16)) as u8
         } else {
-            self.bank as u8
-        };
+            0
+        }
+        .wrapping_add(bank);
         // 200 ms phases remain distinct at the current rendering cadence.
         let white = self.mode == Mode::Playing
             && (self.hit_flash_ticks > 25
                 || (self.hit_flash_ticks > 5 && self.hit_flash_ticks <= 15));
         roll as u16 | ((white as u16) << 8)
     }
+    /// The flight model's pitch (nose up while climbing) plus the authored
+    /// ascent of the orbital bridge.
     #[inline(never)]
     #[cfg_attr(target_arch = "mos", link_section = ".phase.geometry")]
-    fn ascent_pitch(&self) -> u8 {
+    fn player_pitch(&self) -> u8 {
+        let flight = (self.flight.pitch >> 8) as u8;
         if self.mode != Mode::Transition || self.stage_info.bridge_profile != 3 {
-            return 0;
+            return flight;
         }
         let tick = self.transition_ticks;
         let amount = if tick < 100 {
@@ -2002,7 +2278,7 @@ impl Game {
         } else {
             (400 - tick) / 5
         };
-        (0u8).wrapping_sub(amount as u8)
+        flight.wrapping_sub(amount as u8)
     }
     #[cfg(test)]
     fn terrain(&self, sink: &mut impl GeometrySink, segment: &Segment<'_>) {
@@ -2032,11 +2308,9 @@ impl<S: GeometrySink> GeometrySink for SceneBudget<'_, S> {
     fn triangle(&mut self, a: Vec3, b: Vec3, c: Vec3, color: u8, flags: u8) {
         if self.count < self.limit {
             self.count += 1;
-            let camera_y = if flags & STATIC_SKY != 0 {
-                0
-            } else {
-                self.camera_y
-            };
+            // Scenery (and so every STATIC_SKY face) is staged elsewhere; all
+            // foreground geometry follows the chase camera.
+            let camera_y = self.camera_y;
             self.sink.triangle(
                 camera_point(a, camera_y),
                 camera_point(b, camera_y),
@@ -2050,14 +2324,101 @@ impl<S: GeometrySink> GeometrySink for SceneBudget<'_, S> {
             );
         }
     }
+    /// The asm mesh path: `fast_emit_mesh` transforms the instance once into
+    /// the vertex records at $E000 and emits its unclipped faces straight into
+    /// the resident renderer, applying this budget, camera and overrides.
+    /// Faces that straddle the near plane come back one at a time and take
+    /// the inner sink's clipping path, exactly as the reference does.
+    #[cfg(target_arch = "mos")]
+    #[inline(never)]
+    #[link_section = ".phase.geometry"]
+    fn mesh(
+        &mut self,
+        bank: &AssetBank<'_>,
+        id: u8,
+        position: Vec3,
+        yaw: u8,
+        pitch: u8,
+        roll: u8,
+        half: bool,
+    ) {
+        #[repr(C)]
+        struct MeshArgs {
+            vertices: *const u8,
+            faces: *const u8,
+            matrix: *const [[i16; 3]; 3],
+            position: Vec3,
+            camera_y: i16,
+            count: u16,
+            limit: u16,
+            vertex_count: u8,
+            face_count: u8,
+            shift: u8,
+            flags: u8,
+            color: u8,
+            face_color: u8,
+            indices: [u8; 3],
+        }
+        extern "C" {
+            fn fast_emit_mesh(args: *mut MeshArgs, start: u8) -> u8;
+        }
+        const _: [(); 27] = [(); core::mem::size_of::<MeshArgs>()];
+        const RECORDS: usize = 0xE000;
+        let rotation = crate::math::RotationMatrix::new(yaw, pitch, roll);
+        let mut args = MeshArgs {
+            vertices: bank.vertex_data(id),
+            faces: bank.face_data(id),
+            matrix: &rotation.m,
+            position,
+            camera_y: self.camera_y,
+            count: self.count,
+            limit: self.limit,
+            vertex_count: bank.vertex_count(id),
+            face_count: bank.face_count(id),
+            shift: 8 - bank.shift(id) + half as u8,
+            flags: (if bank.one_sided(id) {
+                0
+            } else {
+                crate::TWO_SIDED
+            }) | self.extra_flags,
+            color: self.color_override,
+            face_color: 0,
+            indices: [0; 3],
+        };
+        let mut face = 0;
+        loop {
+            // SAFETY: the kernel reads this validated bank's mesh, writes the
+            // idle raster-tail region and the single resident renderer, and
+            // returns either face_count or the index of a face to clip.
+            face = unsafe { fast_emit_mesh(&mut args, face) };
+            if face >= args.face_count {
+                break;
+            }
+            let corner = |index: u8| -> Vec3 {
+                // SAFETY: the kernel stored every vertex's camera-space point
+                // at the start of its 16-byte record.
+                unsafe { ((RECORDS + index as usize * 16) as *const Vec3).read() }
+            };
+            self.sink.triangle(
+                corner(args.indices[0]),
+                corner(args.indices[1]),
+                corner(args.indices[2]),
+                args.face_color,
+                args.flags,
+            );
+            face += 1;
+        }
+        self.count = args.count;
+    }
 }
 // Only foreground GEOMETRY uses this transform. Keep one outlined copy in its
-// overlay so the expanded campaign leaves resident interrupt code room.
+// overlay so the expanded campaign leaves resident interrupt code room. Mesh
+// translation already saturates; the bounded camera cannot overflow i16.
 #[inline(never)]
 #[cfg_attr(target_arch = "mos", link_section = ".phase.geometry")]
 fn camera_point(p: Vec3, camera_y: i16) -> Vec3 {
     Vec3 {
-        y: p.y.saturating_sub(camera_y),
+        y: p.y - camera_y,
         ..p
     }
 }
@@ -2138,10 +2499,12 @@ fn enemy_velocity(player: i16, origin: i16, dz: i16) -> i8 {
     ((player.saturating_sub(origin).clamp(-512, 512) * 18) / dz).clamp(-8, 8) as i8
 }
 #[inline(never)]
-#[cfg_attr(target_arch = "mos", link_section = ".phase.sim")]
+#[cfg(not(target_arch = "mos"))]
 fn missile_velocity(error: i16, closing: i16, dz: i16) -> i8 {
     // Clamp before multiplying so all guidance arithmetic stays signed 16-bit.
-    ((error.clamp(-512, 512) * closing) / dz).clamp(-12, 12) as i8
+    // The product wraps and the division truncates toward zero, exactly as
+    // the native kernel reproduces them.
+    ((error.clamp(-512, 512).wrapping_mul(closing)) / dz).clamp(-12, 12) as i8
 }
 #[inline(never)]
 #[cfg_attr(target_arch = "mos", link_section = ".phase.geometry")]
@@ -2155,18 +2518,24 @@ fn tri(sink: &mut impl GeometrySink, a: Vec3, b: Vec3, c: Vec3, color: u8) {
 static DIAMOND_FACES: [[u8; 3]; 2] = [[4, 9, 6], [4, 6, 1]];
 #[cfg_attr(target_arch = "mos", link_section = ".phase.geometry.data")]
 static SHIELD_FACES: [[u8; 3]; 3] = [[8, 10, 6], [8, 6, 4], [4, 6, 1]];
+// The bomb pickup is the HUD's bomb icon: a solid rectangle split along one
+// diagonal, wound like the diamond.
+#[cfg_attr(target_arch = "mos", link_section = ".phase.geometry.data")]
+static BOMB_FACES: [[u8; 3]; 2] = [[8, 10, 2], [8, 2, 0]];
 
 #[inline(never)]
 #[cfg_attr(target_arch = "mos", link_section = ".phase.geometry")]
-fn flat_shape(sink: &mut impl GeometrySink, p: Vec3, r: i16, color: u8, shield: bool) {
+fn flat_shape(
+    sink: &mut impl GeometrySink,
+    p: Vec3,
+    rx: i16,
+    ry: i16,
+    color: u8,
+    faces: &[[u8; 3]],
+) {
     // The spare center entry makes every masked selector a valid array index.
-    let x = [p.x - r, p.x, p.x + r, p.x];
-    let y = [p.y - r, p.y, p.y + r, p.y];
-    let faces: &[[u8; 3]] = if shield {
-        &SHIELD_FACES
-    } else {
-        &DIAMOND_FACES
-    };
+    let x = [p.x - rx, p.x, p.x + rx, p.x];
+    let y = [p.y - ry, p.y, p.y + ry, p.y];
     for face in faces {
         let mut points = [p; 3];
         for corner in 0..3 {
@@ -2181,7 +2550,7 @@ fn flat_shape(sink: &mut impl GeometrySink, p: Vec3, r: i16, color: u8, shield: 
 #[inline(never)]
 #[cfg_attr(target_arch = "mos", link_section = ".phase.geometry")]
 fn diamond(sink: &mut impl GeometrySink, p: Vec3, r: i16, color: u8) {
-    flat_shape(sink, p, r, color, false);
+    flat_shape(sink, p, r, r, color, &DIAMOND_FACES);
 }
 
 #[inline(never)]
@@ -2192,8 +2561,18 @@ fn shield_pickup(sink: &mut impl GeometrySink, p: Vec3) {
     // Use green for subpixel rims: a distant gray edge can otherwise
     // displace the green face when terrain competes for cell colors.
     let rim = if p.z > 600 { 5 } else { 15 };
-    flat_shape(sink, p, 13, rim, true);
-    flat_shape(sink, p, 10, 5, true);
+    flat_shape(sink, p, 13, 13, rim, &SHIELD_FACES);
+    flat_shape(sink, p, 10, 10, 5, &SHIELD_FACES);
+}
+
+/// The HUD's bomb icon as a camera-facing 4:3 rectangle with the shield
+/// pickup's pale rim: rim first, then the yellow inset at equal depth.
+#[inline(never)]
+#[cfg_attr(target_arch = "mos", link_section = ".phase.geometry")]
+fn bomb_pickup(sink: &mut impl GeometrySink, p: Vec3) {
+    let rim = if p.z > 600 { 7 } else { 15 };
+    flat_shape(sink, p, 16, 12, rim, &BOMB_FACES);
+    flat_shape(sink, p, 13, 9, 7, &BOMB_FACES);
 }
 
 #[cfg(test)]

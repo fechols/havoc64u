@@ -34,26 +34,49 @@ fn digit(depth: i16, shift: u8) -> usize {
     ((!(depth as u16 ^ 0x8000) >> shift) & 15) as usize
 }
 
+/// The logical scan order of the native sort: commands [prefix, pivot) first
+/// (the foreground), then [0, prefix) (the scenery staged before it), then
+/// the rest. Both zero means emission order. The pivot is modulo 256.
+#[cfg(target_arch = "mos")]
+static mut SORT_SEGMENTS: [u8; 2] = [0; 2];
+
+#[cfg(target_arch = "mos")]
+#[inline(always)]
+pub(super) fn set_segments(prefix: u8, pivot: u8) {
+    // SAFETY: GEOMETRY is the only writer and finish() the only reader, both
+    // on the main thread.
+    unsafe {
+        SORT_SEGMENTS = [prefix, pivot];
+    }
+}
+
 #[inline(never)]
 #[cfg_attr(target_arch = "mos", link_section = ".phase.geometry")]
 pub(super) fn depth_sort(triangles: &mut [Triangle]) {
-    if triangles.len() < 2 {
-        return;
-    }
     #[cfg(target_arch = "mos")]
     {
-        // All projection is complete. This 624-byte record fits in the 640-byte
-        // projection cache; every field is initialized before its first read.
+        // The kernel leaves the commands in emission order and writes the
+        // sorted order (command index per position) to $7600 for the raster
+        // preparation — also for a single command, whose position 0 it
+        // records; its key tables and buckets use the retired projection
+        // cache and the rest of the pixel band, which PIXELS refills later.
+        // Ties keep the logical order given by the scenery segments.
         extern "C" {
-            fn fast_depth_sort(triangles: *mut Triangle, count: u16);
+            fn fast_depth_sort(triangles: *mut Triangle, count: u16, segments: u16);
         }
-        unsafe { fast_depth_sort(triangles.as_mut_ptr(), triangles.len() as u16) };
+        unsafe {
+            let segments = u16::from_le_bytes(SORT_SEGMENTS);
+            fast_depth_sort(triangles.as_mut_ptr(), triangles.len() as u16, segments);
+        }
         // finish() may be followed by triangle insertion, so cache tags must
-        // not retain index/count bytes masquerading as projected vertices.
+        // not retain key/index bytes masquerading as projected vertices.
         crate::projection::begin_frame();
     }
     #[cfg(not(target_arch = "mos"))]
     {
+        if triangles.len() < 2 {
+            return;
+        }
         let mut scratch = Scratch::EMPTY;
         sort_with_scratch(triangles, &mut scratch);
     }

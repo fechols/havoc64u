@@ -48,16 +48,16 @@ def main():
     spec.loader.exec_module(vice)
     original = {extension: (package/f"havoc.{extension}").read_bytes()
                 for extension in ("prg", "elf", "reu", "cfg")}
-    if len(original["reu"]) != 16*1024*1024:
-        parser.error("input REU image must contain exactly 16 MiB")
     before = {extension: hashlib.sha256(data).hexdigest() for extension, data in original.items()}
     image = original["reu"]
-    package_format = vice.package_model_layout(image)
+    package_format = vice.package_model_layout(image, validate_size=True)
     space = package_format["space"]
     if (not package_format["campaign"]
             or image[0x100:0x104] != (b"OVL7" if space else b"OVL6")):
-        parser.error("input must be a matched v5/OVL6 or v6/OVL7 campaign package")
-    score_offset, header_size, cue_count = (0x200000, 256, 21) if space else (0x100000, 128, 13)
+        parser.error("input must be a matched v5/OVL6 or v6-v8/OVL7 campaign package")
+    score_offset = package_format["music_offset"]
+    header_size, cue_count = (256, 21) if space else (128, 13)
+    overlay_offsets = package_format["overlay_offsets"]
     summary = {"passed": False, "scope": "Private corrupt REU copies in calibrated VICE; not physical hardware acceptance",
                "package": str(package), "original_sha256": before, "cases": []}
     native_command = vice.Monitor.command
@@ -81,7 +81,7 @@ def main():
         ("directory-profile", 0x120, "PRG AND REU DO NOT MATCH"),
         ("model-directory", 0x40, "INVALID MODEL DIRECTORY"),
         ("model-hp-sentinel", 0xb0000 + 2*2048 + 88, "INVALID LEVEL MODEL BANK"),
-        ("sim-helpers-second-chunk", 0x170000 + 1024, "REU CODE CHECKSUM FAILED"),
+        ("sim-helpers-second-chunk", overlay_offsets[23] + 1024, "REU CODE CHECKSUM FAILED"),
         ("transport-directory-size", 0x14c, "INVALID REU CODE SIZE"),
         ("sim-helpers-directory-size", 0x154, "INVALID REU CODE SIZE"),
     ]
@@ -110,9 +110,9 @@ def main():
         size = int.from_bytes(image[size_at:size_at + 2], "little")
         if not 16 < size <= 0x4200:
             parser.error(f"invalid {name} overlay size")
-        cases.append((f"{name}-code", page * 0x10000 + 16, "REU CODE CHECKSUM FAILED"))
+        cases.append((f"{name}-code", overlay_offsets[page] + 16, "REU CODE CHECKSUM FAILED"))
         # Boot authenticates complete padded images, including inactive tails.
-        cases.append((f"{name}-tail", page * 0x10000 + size - 1, "REU CODE CHECKSUM FAILED"))
+        cases.append((f"{name}-tail", overlay_offsets[page] + size - 1, "REU CODE CHECKSUM FAILED"))
     for level in range(package_format["count"]):
         cases.append((f"level-{level}-models", 0xb0000 + level*2048 + 200, "INVALID LEVEL MODEL BANK"))
         cases.append((f"level-{level}-encounters", 0x2000 + level*2048 + 20, "INVALID MISSION SEGMENT"))
@@ -136,6 +136,17 @@ def main():
         cases.append((f"music-cue-{cue}", last_event, "INVALID MUSIC PAGE"))
     cases.extend((("music-bank-bound", score_offset + 8, "INVALID MUSIC DIRECTORY"),
                   ("music-offset-overflow", score_offset + 16 + (cue_count - 1)*8, "INVALID MUSIC DIRECTORY")))
+    # Per-song music kernels: the directory, an entry, and the first and last
+    # images are all authenticated by the AUDIO validator before music starts.
+    kernels_at = 0xb9000
+    if image[kernels_at:kernels_at + 4] == b"SMK1" and any(image[kernels_at + 16:kernels_at + 16 + cue_count * 4]):
+        slot = int.from_bytes(image[kernels_at + 6:kernels_at + 8], "little")
+        cases += [
+            ("music-kernel-signature", kernels_at + 2, "INVALID MUSIC KERNEL"),
+            ("music-kernel-entry", kernels_at + 16, "INVALID MUSIC KERNEL"),
+            ("music-kernel-first-image", kernels_at + 0x100 + 16, "INVALID MUSIC KERNEL"),
+            ("music-kernel-last-image", kernels_at + 0x100 + (cue_count - 1) * slot + 40, "INVALID MUSIC KERNEL"),
+        ]
     if args.case:
         unknown = set(args.case) - {name for name, _, _ in cases}
         if unknown:

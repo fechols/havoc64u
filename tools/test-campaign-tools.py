@@ -19,11 +19,12 @@ vice = load("vice-smoke")
 bench = load("bench-native")
 
 
-def package(space):
+def package(space, version=None):
     count = 18 if space else 12
     data = bytearray(0x2000 + count * 2048)
     data[:4] = b"SM64"
-    data[4:8] = (0x534d0600 if space else 0x534d0500).to_bytes(4, "little")
+    data[4:8] = (version if version is not None else
+                 0x534d0800 if space else 0x534d0500).to_bytes(4, "little")
     data[12:16] = (0x2000).to_bytes(4, "little")
     data[16:18] = bytes((count, 2))
     for stage in range(count):
@@ -44,13 +45,58 @@ def layout(space):
 
 
 class CampaignTools(unittest.TestCase):
+    def test_pixel_profile_accounts_for_wait_separately_from_pack_and_copy(self):
+        events = [{"address": 0x200, "value": marker, "bus_cycles": cycle}
+                  for marker, cycle in ((3, 10), (9, 30), (4, 80), (1, 110), (0, 140))]
+        frame = {"bus_cycles": 150, "phase_bus_cycles": {"pixels": 140}}
+        vice.pixel_profile(events, 0x200, {"bus_cycles": 0}, [frame])
+        self.assertEqual(frame["pixel_bus_cycles_detail"],
+                         {"raster": 30, "hud": 0, "pack": 20, "copy": 30, "wait": 50})
+        self.assertEqual(frame["pixel_unprofiled_bus_cycles"], 10)
+
+    def test_scanout_commit_trace_pairs_all_bands_and_enforces_bus_time_bound(self):
+        symbols = {"publish_guard": 0x3000, "publish_commit": 0x3100, "publish_done": 0x3200}
+
+        def trace(events):
+            return "".join(f"#3 (Trace on exec ${address:04x})\n"
+                           f".C:{address:04x} EA NOP - A:00 X:00 Y:00 {cycle}\n"
+                           for address, cycle in events)
+
+        events = [(address, 1000 + band * 1000 + delta)
+                  for band in range(25) for address, delta in ((0x3000, 0), (0x3100, 4), (0x3200, 440))]
+        profile = bench.scanout_commit_profile(trace(events), symbols, 63)
+        self.assertEqual(profile["copies"], 25)
+        self.assertEqual(profile["max_bus_cycles"], 436)
+        self.assertEqual(profile["max_protected_bus_cycles"], 440)
+        self.assertEqual(profile["limit_bus_cycles_exclusive"], 441)
+        self.assertEqual(profile["duration_bus_cycles"], [436] * 25)
+        self.assertEqual(profile["guard_retries"], 0)
+        retried = [(0x3000, 900), *events]
+        self.assertEqual(bench.scanout_commit_profile(trace(retried), symbols, 63)["guard_retries"], 1)
+        self.assertIsNone(bench.scanout_commit_profile("", {}, 63))
+        with self.assertRaisesRegex(RuntimeError, "incomplete"):
+            bench.scanout_commit_profile("", {"publish_commit": 0x3100}, 63)
+        for bad in (events[:-1], events[1:], events[:2] + events, events[:3] + events[2:],
+                    events[:-3], events + [(0x3000, 27000), (0x3100, 27004), (0x3200, 27440)]):
+            with self.assertRaisesRegex(RuntimeError, "Scan-out commit"):
+                bench.scanout_commit_profile(trace(bad), symbols, 63)
+        for duration in (4, 441, 455):
+            bad = list(events)
+            bad[2] = (0x3200, 1000 + duration)
+            with self.assertRaisesRegex(RuntimeError, "seven-scanline bound"):
+                bench.scanout_commit_profile(trace(bad), symbols, 63)
+        ntsc = [(address, cycle + (14 if address == 0x3200 else 0)) for address, cycle in events]
+        self.assertEqual(bench.scanout_commit_profile(trace(ntsc), symbols, 65)["max_protected_bus_cycles"], 454)
+        ntsc[2] = (0x3200, 1455)
+        with self.assertRaisesRegex(RuntimeError, "seven-scanline bound"):
+            bench.scanout_commit_profile(trace(ntsc), symbols, 65)
+
     def test_full_boss_seeds_follow_initialized_old_and_balanced_targets(self):
         for health in ((20, 20, 60), (40, 40, 120)):
             state = dict(zip(("boss_left", "boss_right", "boss_core"), health))
             selected = vice.full_boss_health(dict(state, mode=0))
             self.assertEqual(selected, state)
-            for fixture in (bench.fixtures(True, True, True, selected)
-                            + bench.cache_sequence(True, True, True, selected)):
+            for fixture in (bench.fixtures(True, True, True, selected)):
                 for name, value in state.items():
                     if name in fixture["patch"]:
                         self.assertEqual(fixture["patch"][name], value, fixture["name"])
@@ -71,6 +117,49 @@ class CampaignTools(unittest.TestCase):
         self.assertEqual(vice.package_model_layout(package(True))["count"], 18)
         self.assertEqual([vice.boss_sim_profile(2, kind) for kind in range(6)],
                          [2, 4, 5, 6, 6, 5])
+
+    def test_compact_package_relocations_fit_one_mib_and_leave_pixels_bank_exclusive(self):
+        compact = vice.package_model_layout(package(True))
+        self.assertEqual((compact["reu_size"], compact["music_offset"]), (0x100000, 0xc0000))
+        self.assertEqual((compact["magic"], compact["descriptors"]), (b"SMA4", 88))
+        offsets = compact["overlay_offsets"]
+        self.assertEqual((offsets[12], offsets[13], offsets[23], offsets[30]),
+                         (0x15000, 0x1a000, 0x5a000, 0x8a000))
+        self.assertEqual(len(offsets), 24)
+        self.assertEqual([page for page, offset in offsets.items() if offset >> 16 == 4], [4])
+        self.assertEqual(offsets[4], 0x40000)
+        reservations = [(0, 0x180), (0x1000, 0x1c00), (0x2000, 0xb000),
+                        (0xb0000, 0xb9000), (compact["music_offset"], compact["music_offset"] + 0x40000)]
+        reservations.extend((offset, offset + 0x4200) for offset in offsets.values())
+        reservations.sort()
+        for (start, end), (next_start, _) in zip(reservations, reservations[1:]):
+            self.assertLess(start, end)
+            self.assertLessEqual(end, next_start)
+        self.assertEqual(reservations[-1][1], compact["reu_size"])
+
+    def test_historical_package_layouts_preserve_music_and_overlay_locations(self):
+        for version in range(3, 8):
+            data = package(version >= 6, 0x534d0000 + (version << 8))
+            if version < 5:
+                data[16] = 4
+            legacy = vice.package_model_layout(data)
+            self.assertEqual(legacy["reu_size"], 16 * 1024 * 1024)
+            self.assertEqual(legacy["music_offset"], 0x200000 if version >= 6 else 0x100000)
+            self.assertTrue(all(offset == page * 0x10000
+                                for page, offset in legacy["overlay_offsets"].items()))
+
+    def test_package_size_validation_rejects_truncated_extended_and_wrong_capacity_images(self):
+        for version, expected_size, wrong_size in ((0x534d0800, 0x100000, 0x1000000),
+                                                   (0x534d0700, 0x1000000, 0x100000)):
+            data = package(True, version)
+            data.extend(bytes(expected_size - len(data)))
+            self.assertEqual(vice.package_model_layout(data, validate_size=True)["reu_size"], expected_size)
+            for invalid in (data[:-1], data + b"\0", data[:18] + bytes(wrong_size - 18)):
+                with self.assertRaisesRegex(RuntimeError, "must be exactly"):
+                    vice.package_model_layout(invalid, validate_size=True)
+        for invalid in (b"", b"SM64", package(True)[:17]):
+            with self.assertRaisesRegex(RuntimeError, "Expected supported package"):
+                vice.package_model_layout(invalid, validate_size=True)
 
     def test_last_stage_clock_exceeds_old_absolute_limit_without_wrapping(self):
         values = vice.stage_fixture({"stage_id": 17, "rail_ticks": 17 * 3750 + 2600},
@@ -124,7 +213,7 @@ class CampaignTools(unittest.TestCase):
         for name in ("boss-dreadnought", "boss-gate-guardian", "hazards-asteroid-belt",
                      "enemies-jump-gate-full", "bridge-11-200", "bridge-16-399"):
             self.assertIn(name, after)
-        for fixture in expanded + bench.cache_sequence(True, True, True):
+        for fixture in expanded:
             values = vice.clock_fixture(fixture["patch"], layout(True)["fields"], 18)
             self.assertNotIn("rail_ticks", values)
             self.assertTrue(0 <= values["stage_ticks"] <= 65535, fixture["name"])
@@ -164,10 +253,22 @@ class CampaignTools(unittest.TestCase):
                    {"address": 0xd40f, "value": 255}]
         checked = vice.music_pitch_audit(events, registers, [(0, 0)], [set(notes)], 985248)
         self.assertEqual(checked[0]["observed_notes"], notes)
-        self.assertEqual(checked[0]["verified_frequency_writes"], 3)
+        self.assertEqual(checked[0]["frequency_writes"], 3)
+        self.assertEqual(checked[0]["modulated_frequency_writes"], 0)
+        self.assertEqual(checked[0]["verified_gate_attacks"], 3)
+        # A detuned pitch under a gate attack is rejected...
         events[0]["value"] ^= 16
         with self.assertRaisesRegex(RuntimeError, "detuned"):
             vice.music_pitch_audit(events, registers, [(0, 0)], [set(notes)], 985248)
+        # ...while a kernel's gate-less modulation write is merely counted.
+        events[0]["value"] ^= 16
+        swing = frequency(69) + 40
+        events[3:3] = [{"address": 0xd400, "value": swing & 255},
+                       {"address": 0xd401, "value": swing >> 8}]
+        checked = vice.music_pitch_audit(events, registers, [(0, 0)], [set(notes)], 985248)
+        self.assertEqual(checked[0]["frequency_writes"], 4)
+        self.assertEqual(checked[0]["modulated_frequency_writes"], 1)
+        self.assertEqual(checked[0]["verified_gate_attacks"], 3)
         constant = frequency(82)
         registers[0][0:2] = constant.to_bytes(2, "little")
         checked = vice.music_pitch_audit([{"address": 0xd404, "value": 0x81}],

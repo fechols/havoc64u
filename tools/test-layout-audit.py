@@ -1,4 +1,4 @@
-"""Reject incorrect transfer lengths and IRQ-unsafe music-directory placement."""
+"""Reject incorrect DMA layouts, transfer lengths and unsafe music directories."""
 from pathlib import Path
 import runpy
 import struct
@@ -41,6 +41,17 @@ def main():
                     assert expected in result.stderr, result.stdout + result.stderr
                     cases += 1
                     print(f"Rejected {label} {profile} length {length + delta}")
+        reu_table = next(symbol for symbol in elf.symbols if symbol.name == "__code_reu_pages")
+        reu_offset = reu_table.address - int.from_bytes(original[:2], "little") + 2
+        for phase_id in range(31):
+            data = bytearray(original)
+            data[reu_offset + phase_id] ^= 1
+            damaged.write_bytes(data)
+            result = check(damaged)
+            assert result.returncode != 0, f"accepted REU address table phase {phase_id}"
+            assert "REU address table disagrees" in result.stderr, result.stdout + result.stderr
+            cases += 1
+            print(f"Rejected REU address table phase {phase_id}")
         directory_entry = next(
             table.offset + index * table.entry_size
             for table in elf.sections if table.kind == 2
@@ -61,11 +72,27 @@ def main():
             cases += 1
             print(f"Rejected {label}")
         for name, value, expected in (
-            ("__phase_pixels_prefix_size", 0x3001, "PIXELS prefix overlaps raster tails"),
-            ("__phase_pixels_aux_start", 0x6f1f, "PIXELS helpers overlap raster masks"),
+            ("__phase_pixels_prefix_size", 0x3f21, "PIXELS prefix overlaps its helpers"),
+            ("__phase_pixels_aux_start", 0x6f1f, "PIXELS helpers must start at $6F20"),
             ("__phase_pixels_aux_size", 0x2e1, "PIXELS helpers exceed workspace"),
             ("__phase_pixels_aux_load", 0x43f21, "incorrect PIXELS helper REU address"),
             ("__phase_pixels_size", 0x3000, "incorrect composed PIXELS size"),
+            ("__staged_bitmap_start", 0x933f, "staged bitmap must reuse cell coverage only"),
+            ("__staged_bitmap_end", 0x9481, "staged bitmap must reuse cell coverage only"),
+            ("__staged_screen_start", 0x76ff, "staged screen must reuse HUD slot flags"),
+            ("__staged_screen_end", 0x7729, "staged screen must reuse HUD slot flags"),
+            ("__staged_color_start", 0x7727, "staged colors must reuse overflow flags only"),
+            ("__staged_color_end", 0x7751, "staged colors must reuse overflow flags only"),
+            ("__reu_size", 0x200000, "incorrect 1 MiB REU image size"),
+            ("__reu_code_slot_size", 0x4000, "incorrect REU code slot size"),
+            ("__reu_models", 0xb1000, "incorrect REU model bank address"),
+            ("__reu_music", 0xd0000, "incorrect REU music bank address"),
+            ("__reu_scenery_gate", 0x100000, "gate REU slot exceeds image"),
+            ("__reu_scenery_gate", 0x8a001, "gate REU slot must be 4 KiB aligned"),
+            ("__reu_scenery_gate", 0x8c000, "gate REU slot crosses a 64 KiB bank"),
+            ("__reu_scenery_gate", 0x88000, "gate REU slot overlaps scenery_carrier"),
+            ("__reu_scenery_gate", 0x95000, "incorrect scenery_gate REU slot address"),
+            ("__code_reu_pages_end", reu_table.address + 30, "incorrect REU address table size"),
         ):
             entry = next(table.offset + index * table.entry_size
                          for table in elf.sections if table.kind == 2
@@ -79,6 +106,22 @@ def main():
             assert expected in result.stderr, result.stdout + result.stderr
             cases += 1
             print(f"Rejected {name}={value}")
+        program_offset = struct.unpack_from("<I", elf.data, 28)[0]
+        program_stride, program_count = struct.unpack_from("<HH", elf.data, 42)
+        boot = next(section for section in elf.sections if section.name == ".phase.boot")
+        boot_program = next(program_offset + index * program_stride
+                            for index in range(program_count)
+                            if struct.unpack_from("<II", elf.data, program_offset + index * program_stride)
+                            == (1, boot.offset))
+        data = bytearray(elf.data)
+        physical = struct.unpack_from("<I", data, boot_program + 12)[0]
+        struct.pack_into("<I", data, boot_program + 12, physical + 0x1000)
+        damaged_elf.write_bytes(data)
+        result = check(prg, damaged_elf)
+        assert result.returncode != 0, "accepted incorrect BOOT ELF load address"
+        assert ".phase.boot ELF load address disagrees with REU slot" in result.stderr, result.stdout + result.stderr
+        cases += 1
+        print("Rejected BOOT ELF load address")
     assert prg.read_bytes() == original, "input PRG changed"
     assert source.read_bytes() == elf.data, "input ELF changed"
     print(f"Layout audit negative fixtures: {cases} passed; original package unchanged")

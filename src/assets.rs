@@ -9,11 +9,14 @@ pub const SEGMENT_CACHE_SIZE: usize = 512;
 pub const MAX_SEGMENT_SPAWNS: u8 = 62;
 pub const SEGMENT_COUNT: u8 = 18;
 pub const SEGMENT_DISTANCE: u32 = 30_000;
-pub const REU_SIZE: u32 = 0x1000000;
+pub const REU_SIZE: u32 = 0x100000;
 pub const COMMON_OFFSET: u32 = 0x1000;
 pub const SEGMENTS_OFFSET: u32 = 0x2000;
-pub const MUSIC_OFFSET: u32 = 0x200000;
+pub const MUSIC_OFFSET: u32 = 0x0c0000;
 pub const MUSIC_CAPACITY: u32 = crate::music::BANK_CAPACITY;
+/// Per-song music kernel images (`SMK1`) sit between the model banks and the
+/// score bank; the packer writes them from the linked ELF with the code images.
+pub const MUSIC_KERNELS_OFFSET: u32 = 0x0b9000;
 pub const PACKAGE_HEADER_SIZE: usize = 64;
 pub const PACKAGE_CHECKSUM_OFFSET: usize = PACKAGE_HEADER_SIZE - 2;
 pub const SEGMENT_CHECKSUM_OFFSET: usize = 20;
@@ -25,8 +28,10 @@ pub const MODEL_COUNT: u8 = 9;
 pub const ENEMY_SPECS_OFFSET: usize = 16 + MODEL_COUNT as usize * 8;
 pub const ENEMY_SPEC_SIZE: usize = 8;
 pub const MODEL_DATA_OFFSET: usize = ENEMY_SPECS_OFFSET + 3 * ENEMY_SPEC_SIZE;
-// Version 6 extends the checked campaign through orbital combat and the jump gate.
-pub const PACKAGE_ID: u32 = 0x534D0600;
+// Version 8 packs code and music into a 1 MiB REU without changing bank formats.
+// Version 7 stores mesh vertices as i8 with a per-mesh shift (SMA4 banks);
+// version 6 extended the checked campaign through orbital combat and the gate.
+pub const PACKAGE_ID: u32 = 0x534D0800;
 pub const PLAYER: u8 = 0;
 pub const FIGHTER: u8 = 1;
 pub const DIVER: u8 = 2;
@@ -38,8 +43,20 @@ pub const ROCK: u8 = 7;
 pub const MEDAL: u8 = 8;
 /// A ROCK encounter is a small shootable fragment instead of a solid obstacle.
 pub const SMALL_DEBRIS: u8 = 2;
-/// Uniform enemy enlargement, baked into meshes and collision descriptors.
-pub const ENEMY_SCALE: i16 = 2;
+/// Per-mesh descriptor flag (byte 7): cull back faces instead of drawing both sides.
+pub const MESH_ONE_SIDED: u8 = 1;
+/// Largest per-mesh coordinate shift: `i8` vertices in units of up to eight.
+pub const MAX_MESH_SHIFT: u8 = 3;
+/// Bytes per stored vertex: `i8` x, y, z in units of `1 << shift`.
+pub const VERTEX_BYTES: usize = 3;
+/// Boss hulls and their side units keep the original uniform enlargement,
+/// baked into meshes, collision descriptors and the boss layout constants.
+pub const BOSS_SCALE: i16 = 2;
+/// Regular enemies are baked at three halves of their authored size: a quarter
+/// smaller than bosses. Truncation toward zero keeps mirrored meshes symmetric.
+pub const fn enemy_scaled(authored: i16) -> i16 {
+    authored * 3 / 2
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AssetError {
@@ -158,7 +175,7 @@ impl<'a> AssetBank<'a> {
         if data.len() != COMMON_SIZE && data.len() != MODEL_SIZE {
             return Err(AssetError::Size);
         }
-        if &data[..4] != b"SMA3" {
+        if &data[..4] != b"SMA4" {
             return Err(AssetError::Magic);
         }
         if data[4] != MODEL_COUNT {
@@ -193,8 +210,10 @@ impl<'a> AssetBank<'a> {
                 || vo < MODEL_DATA_OFFSET
                 || vo > MODEL_SIZE
                 || fo > MODEL_SIZE
-                || fo < vo + vc * 6
+                || fo < vo + vc * VERTEX_BYTES
                 || fo + fc * 4 > MODEL_SIZE
+                || data[d + 6] > MAX_MESH_SHIFT
+                || data[d + 7] > MESH_ONE_SIDED
             {
                 return Err(AssetError::Bounds);
             }
@@ -276,33 +295,87 @@ impl<'a> AssetBank<'a> {
             0
         }
     }
+    /// Stored vertices are `i8` in units of `1 << shift` (0..=MAX_MESH_SHIFT).
     #[inline(always)]
-    pub fn vertex(&self, id: u8, index: u8) -> Vec3 {
+    pub fn shift(&self, id: u8) -> u8 {
+        if id < MODEL_COUNT {
+            // SAFETY: validated banks contain all MODEL_COUNT descriptors.
+            unsafe { *self.data.get_unchecked(22 + id as usize * 8) }
+        } else {
+            0
+        }
+    }
+    /// Whether the mesh culls its back faces (`MESH_ONE_SIDED`).
+    #[inline(always)]
+    pub fn one_sided(&self, id: u8) -> bool {
+        if id < MODEL_COUNT {
+            // SAFETY: validated banks contain all MODEL_COUNT descriptors.
+            unsafe { *self.data.get_unchecked(23 + id as usize * 8) & MESH_ONE_SIDED != 0 }
+        } else {
+            false
+        }
+    }
+    /// The stored `i8` x, y, z bytes of one vertex, before the mesh shift.
+    #[inline(always)]
+    pub fn vertex_bytes(&self, id: u8, index: u8) -> [i8; 3] {
         if index >= self.vertex_count(id) {
-            return Vec3::default();
+            return [0; 3];
         }
         // SAFETY: the count guard proves a valid mesh and vertex; validation
-        // proves that its directory offset and complete six-byte record fit.
+        // proves that its directory offset and complete three-byte record fit.
         unsafe {
             let d = 16 + id as usize * 8;
             let p =
                 u16::from_le_bytes([*self.data.get_unchecked(d), *self.data.get_unchecked(d + 1)])
                     as usize
-                    + index as usize * 6;
-            Vec3 {
-                x: i16::from_le_bytes([
-                    *self.data.get_unchecked(p),
-                    *self.data.get_unchecked(p + 1),
-                ]),
-                y: i16::from_le_bytes([
-                    *self.data.get_unchecked(p + 2),
-                    *self.data.get_unchecked(p + 3),
-                ]),
-                z: i16::from_le_bytes([
-                    *self.data.get_unchecked(p + 4),
-                    *self.data.get_unchecked(p + 5),
-                ]),
-            }
+                    + index as usize * VERTEX_BYTES;
+            [
+                *self.data.get_unchecked(p) as i8,
+                *self.data.get_unchecked(p + 1) as i8,
+                *self.data.get_unchecked(p + 2) as i8,
+            ]
+        }
+    }
+    /// Address of the first enemy descriptor (kernel input: `ENEMY_SPEC_SIZE`
+    /// bytes per kind, kinds `1..=enemy_count()`).
+    #[inline(always)]
+    pub fn enemy_specs(&self) -> *const u8 {
+        // SAFETY: both constructors require a bank holding every descriptor.
+        unsafe { self.data.as_ptr().add(ENEMY_SPECS_OFFSET) }
+    }
+    /// Address of the first stored vertex byte of a mesh (kernel input).
+    #[inline(always)]
+    pub fn vertex_data(&self, id: u8) -> *const u8 {
+        // SAFETY: validation proves the directory offset lies inside the bank.
+        unsafe {
+            let d = 16 + (id.min(MODEL_COUNT - 1)) as usize * 8;
+            let p =
+                u16::from_le_bytes([*self.data.get_unchecked(d), *self.data.get_unchecked(d + 1)])
+                    as usize;
+            self.data.as_ptr().add(p)
+        }
+    }
+    /// Address of the first face record (three indices, colour) of a mesh.
+    #[inline(always)]
+    pub fn face_data(&self, id: u8) -> *const u8 {
+        // SAFETY: validation proves the directory offset lies inside the bank.
+        unsafe {
+            let d = 20 + (id.min(MODEL_COUNT - 1)) as usize * 8;
+            let p =
+                u16::from_le_bytes([*self.data.get_unchecked(d), *self.data.get_unchecked(d + 1)])
+                    as usize;
+            self.data.as_ptr().add(p)
+        }
+    }
+    /// One vertex in model units: the stored bytes scaled by the mesh shift.
+    #[inline(always)]
+    pub fn vertex(&self, id: u8, index: u8) -> Vec3 {
+        let [x, y, z] = self.vertex_bytes(id, index);
+        let shift = self.shift(id);
+        Vec3 {
+            x: (x as i16) << shift,
+            y: (y as i16) << shift,
+            z: (z as i16) << shift,
         }
     }
     #[inline(always)]
@@ -549,7 +622,7 @@ impl<'a> Segment<'a> {
     }
 }
 
-/// DMA chunks never wrap REU's 512KiB pages, 16MiB address space, or CPU RAM.
+/// DMA chunks never wrap REU's 512 KiB pages, installed 1 MiB, or CPU RAM.
 pub fn dma_chunk(reu: u32, cpu: u16, remaining: u16) -> u16 {
     if remaining == 0 || reu >= REU_SIZE as u32 {
         return 0;

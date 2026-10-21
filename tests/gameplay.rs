@@ -95,7 +95,7 @@ fn input(game: &mut Game, bits: u8, ms: u32) {
     game.sample_input(InputSample {
         bits,
         pressed: 0,
-        ms,
+        ms: ms as u16,
     });
 }
 fn started(segment: &Segment<'_>) -> Game {
@@ -139,11 +139,11 @@ fn attract_waits_fifteen_seconds_then_previews_each_section_and_returns_to_title
     for section in [0, 1, 6, 10, 12, 14, 16] {
         assert_eq!(game.hud().mode, Mode::Attract);
         assert_eq!(game.hud().section, section);
-        assert_eq!(game.hud().distance, section as u32 * 30_000);
+        assert_eq!(game.hud().distance, 0);
         advance(&mut game, &sections, 749);
         assert_eq!(game.hud().mode, Mode::Attract);
         assert_eq!(game.hud().section, section);
-        assert_eq!(game.hud().distance, section as u32 * 30_000 + 5992);
+        assert_eq!(game.hud().distance, 5992);
         advance(&mut game, &sections, 1);
     }
     assert_eq!(game.hud().mode, Mode::Title);
@@ -647,7 +647,7 @@ fn chase_camera_translates_foreground_without_moving_world_geometry_or_backdrop(
         0,
         0,
         0,
-        256,
+        false,
     );
     for face in &mut world_ship.0 {
         face.2 |= TERRAIN_CLEAR_SCENE_FLAG;
@@ -707,19 +707,26 @@ fn chase_camera_reveals_carrier_and_reticle_and_keeps_controlled_hull_on_screen(
     let bank = test_bank(0);
     for direction in [UP, DOWN, UP | LEFT, UP | RIGHT, DOWN | LEFT, DOWN | RIGHT] {
         let mut game = started(&segment);
-        for tick in 1..=60 {
+        // The flight model settles exactly on the arena corner within 120
+        // ticks: velocity zero, the coordinated bank level again, and the
+        // commanded climb or dive held as 11/256 of a turn of pitch.
+        for tick in 1..=150 {
             input(&mut game, direction, tick * 20);
             game.tick(&segment, &test_bank(game.segment_index()));
         }
         let mut geometry = CapturedGeometry::default();
         game.render(&mut geometry, &bank, &segment);
-        let world_y = if direction & UP != 0 { 65 } else { -65 };
-        let (world_x, bank_angle) = if direction & LEFT != 0 {
-            (-100, 12)
-        } else if direction & RIGHT != 0 {
-            (100, (-12i8) as u8)
+        let (world_y, pitch) = if direction & UP != 0 {
+            (65, (-11i8) as u8)
         } else {
-            (0, 0)
+            (-65, 11)
+        };
+        let world_x = if direction & LEFT != 0 {
+            -100
+        } else if direction & RIGHT != 0 {
+            100
+        } else {
+            0
         };
         let mut expected = CapturedGeometry::default();
         emit_mesh(
@@ -732,9 +739,9 @@ fn chase_camera_reveals_carrier_and_reticle_and_keeps_controlled_hull_on_screen(
                 z: 180,
             },
             0,
+            pitch,
             0,
-            bank_angle,
-            256,
+            false,
         );
         let eye_y = 40 + world_y / 4;
         for face in &mut expected.0 {

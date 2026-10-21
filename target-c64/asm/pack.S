@@ -1,8 +1,20 @@
 ; Native multicolor cell quantization, byte-for-byte equivalent to the Rust
-; reference. Six pointer arguments use rc2/3, rc4/5, ..., rc12/13 respectively:
-; pixels, previous screen, previous colors, bitmap, screen, colors.
-; rc14..19 are volatile; rc20..31 and the software stack are untouched.
-; $77A0-$77F8 is private main-thread scratch, never used by the audio IRQ.
+; reference render::pack_cell: the fallback of the cell-direct rasterizer for a
+; cell whose pixel form holds more colours than the three hardware slots.
+; Code 0 is the VIC background, which shows the frame's clear colour (the
+; cell writer keeps it in zero page $FF): that colour needs no slot and is
+; the nearest-colour fallback of every omitted colour; black is an ordinary
+; colour. Unused slots hold the background colour, which also marks "no
+; colour" in the working tables below, since no slot ever holds it.
+; C ABI: cell A, bitmap rc2/3 (already at the cell's eight bytes), screen
+; rc4/5 and colors rc6/7 (band bases). rc2..13 are clobbered; rc14..19 are
+; volatile; rc20..31 and the software stack are untouched.
+; $77A0-$77FA is private main-thread scratch, never used by the audio IRQ.
+; The pixel band is the fixed workspace at $8C00 (rows 160 bytes apart).
+; In-place contract: the cell's previous screen byte and color nibble are read
+; at .Lpk_cell before any of the cell's outputs are written at .Lpk_attributes.
+; The previous-screen and previous-color pointers may therefore equal the
+; outputs, including live color RAM, whose undefined upper nibble is masked.
 
 .zeropage __rc2
 .zeropage __rc3
@@ -23,36 +35,80 @@
 .zeropage __rc18
 .zeropage __rc19
 
-.set PK_COUNT, $77a0
-.set PK_HUD, $77b0
-.set PK_FLAGS, $77c0
-.set PK_MAP, $77d0
-.set PK_PAL, $77e0
-.set PK_OLD, $77e4
-.set PK_CHOSEN, $77e7
-.set PK_CELL, $77ea
-.set PK_ROW, $77eb
-.set PK_UNIFORM, $77ec
-.set PK_NONBLACK, $77ed
-.set PK_RAW, $77ee
-.set PK_PICK, $77ef
-.set PK_BEST, $77f0
-.set PK_BEST_LO, $77f1
-.set PK_BEST_HI, $77f2
-.set PK_SCORE, $77f3
-.set PK_COLOR, $77f4
-.set PK_SLOT, $77f5
-.set PK_DIST_LO, $77f6
-.set PK_DIST_HI, $77f7
-.set PK_PACKED, $77f8
+; Packer scratch (the mos-sim harness relocates the base).
+.ifndef PK_SCRATCH
+.set PK_SCRATCH, $77a0
+.endif
+.set PK_COUNT, PK_SCRATCH+0
+.set PK_HUD, PK_SCRATCH+16
+.set PK_FLAGS, PK_SCRATCH+32
+.set PK_MAP, PK_SCRATCH+48
+.set PK_PAL, PK_SCRATCH+64
+.set PK_OLD, PK_SCRATCH+68
+.set PK_CHOSEN, PK_SCRATCH+71
+.set PK_ROW, PK_SCRATCH+75
+.set PK_UNIFORM, PK_SCRATCH+76
+.set PK_NONBLACK, PK_SCRATCH+77
+.set PK_PICK, PK_SCRATCH+79
+.set PK_BEST_LO, PK_SCRATCH+81
+.set PK_BEST_HI, PK_SCRATCH+82
+.set PK_SCORE, PK_SCRATCH+83
+.set PK_COLOR, PK_SCRATCH+84
+.set PK_SLOT, PK_SCRATCH+85
+.set PK_DIST_LO, PK_SCRATCH+86
+.set PK_DIST_HI, PK_SCRATCH+87
+.set PK_PACKED, PK_SCRATCH+88
+.set PK_CELLX, PK_SCRATCH+89
+.set PK_INDEX, PK_SCRATCH+92
+; The background colour: the cell writer's clear colour (cells.S CS_CLEAR).
+.set PK_BG, $ff
+; The pixel band the quantizer reads (the mos-sim harness moves it).
+.ifndef PIXELS
+.set PIXELS, $8c00
+.endif
 
 .section .phase.pixels,"ax",@progbits
-.globl fast_pack_band
-fast_pack_band:
-    lda #40
-    sta PK_CELL
+
+; void fast_pack_cell(uint8_t cell, uint8_t *bitmap_cell, uint8_t *screen_band,
+;                     uint8_t *color_band)
+.globl fast_pack_cell
+.type fast_pack_cell,@function
+fast_pack_cell:
+    sta PK_INDEX
+    ldx __rc2
+    stx __rc8
+    ldx __rc3
+    stx __rc9
+    clc
+    adc __rc4
+    sta __rc10
+    sta __rc4
+    lda __rc5
+    adc #0
+    sta __rc11
+    sta __rc5
+    lda PK_INDEX
+    clc
+    adc __rc6
+    sta __rc12
+    sta __rc6
+    lda __rc7
+    adc #0
+    sta __rc13
+    sta __rc7
+    lda PK_INDEX
+    asl
+    asl
+    sta PK_CELLX
+    clc
+    adc #<PIXELS
+    sta __rc2
+    lda #>PIXELS
+    adc #0
+    sta __rc3
 .Lpk_cell:
-    lda #0
+    ; every slot starts "unused": the background colour
+    lda PK_BG
     ldx #3
 .Lpk_clear_palette:
     sta PK_PAL,x
@@ -112,9 +168,12 @@ fast_pack_band:
     dec PK_ROW
     bne .Lpk_uniform_row
 
-    ; A single-color cell needs neither ranking nor nearest-color lookup.
+    ; A single-colour cell needs neither ranking nor nearest-colour lookup:
+    ; the background is code 0, any other colour keeps its preceding slot or
+    ; takes slot 1.
     ldx #0
     lda PK_UNIFORM
+    cmp PK_BG
     beq .Lpk_uniform_slot
 .Lpk_uniform_find:
     cmp PK_OLD,x
@@ -179,7 +238,6 @@ fast_pack_band:
     dec PK_ROW
     bne .Lpk_histogram_row
 
-.Lpk_select_begin:
     lda #0
     sta PK_NONBLACK
     ldx #15
@@ -188,16 +246,21 @@ fast_pack_band:
     sta PK_MAP,x
     dex
     bpl .Lpk_clear_flags
+    lda PK_BG
     sta PK_CHOSEN
     sta PK_CHOSEN+1
     sta PK_CHOSEN+2
-    ; A stable top-three insertion pass ranks each present color once.
-    ; MAP[0..3] temporarily holds score lows, MAP[3..6] the HUD priorities.
-    ; Ascending color iteration and strict comparison retain Rust's tie order.
-    ldx #1
+    ; A stable top-three insertion pass ranks each present colour once; the
+    ; background is never ranked (it is code 0). MAP[0..3] temporarily holds
+    ; score lows, MAP[3..6] the HUD priorities. Ascending colour iteration and
+    ; strict comparison retain Rust's tie order.
+    ldx #0
 .Lpk_rank_color:
+    cpx PK_BG
+    beq .Lpk_rank_skip
     lda PK_COUNT,x
     bne .Lpk_rank_present
+.Lpk_rank_skip:
     jmp .Lpk_rank_next
 .Lpk_rank_present:
     inc PK_NONBLACK
@@ -259,13 +322,17 @@ fast_pack_band:
     beq .Lpk_rank_done
     jmp .Lpk_rank_color
 .Lpk_rank_done:
-    ldx PK_CHOSEN
+    ; flag the chosen colours (an unfilled choice is the background: skip)
+    ldy #2
+.Lpk_flag_chosen:
+    ldx PK_CHOSEN,y
+    cpx PK_BG
+    beq .Lpk_flag_next
     lda #1
     sta PK_FLAGS,x
-    ldx PK_CHOSEN+1
-    sta PK_FLAGS,x
-    ldx PK_CHOSEN+2
-    sta PK_FLAGS,x
+.Lpk_flag_next:
+    dey
+    bpl .Lpk_flag_chosen
     lda #0
     ldx #5
 .Lpk_clear_scores:
@@ -273,12 +340,11 @@ fast_pack_band:
     dex
     bpl .Lpk_clear_scores
 
-    ; Keep retained colors in their preceding-frame hardware slots.
+    ; Keep retained colors in their preceding-frame hardware slots (a
+    ; preceding slot showing the background is never a chosen colour).
     ldx #0
 .Lpk_retain_slot:
-    lda PK_OLD,x
-    beq .Lpk_retain_next
-    tay
+    ldy PK_OLD,x
     lda PK_FLAGS,y
     cmp #1
     bne .Lpk_retain_next
@@ -295,6 +361,7 @@ fast_pack_band:
 .Lpk_assign_color:
     ldx PK_PICK
     lda PK_CHOSEN,x
+    cmp PK_BG
     beq .Lpk_assign_next
     sta PK_COLOR
     tay
@@ -304,6 +371,7 @@ fast_pack_band:
     ldx #1
 .Lpk_find_empty:
     lda PK_PAL,x
+    cmp PK_BG
     beq .Lpk_assign_empty
     inx
     cpx #4
@@ -323,10 +391,11 @@ fast_pack_band:
 
     ; Every retained/chosen color has exact distance zero. Assign those
     ; hardware slots directly; only omitted colors need distance comparisons.
-    ; This also handles every mixed cell with <=3 nonblack colors exactly.
+    ; This also handles every mixed cell with <=3 colours exactly.
     ldx #1
 .Lpk_exact_slot:
     lda PK_PAL,x
+    cmp PK_BG
     beq .Lpk_exact_next
     tay
     txa
@@ -336,17 +405,20 @@ fast_pack_band:
     cpx #4
     bne .Lpk_exact_slot
 
-    ; With at most three nonblack colors, exact-slot assignment covered every
-    ; present color. Ranking/retention still ran, preserving all palette bytes.
+    ; With at most three colours besides the background, exact-slot
+    ; assignment covered every present colour.
     lda PK_NONBLACK
     cmp #4
     bcs .Lpk_omitted_colors
     jmp .Lpk_map_done
 .Lpk_omitted_colors:
 
-    ; COLOR_DISTANCE is a 16x16 little-endian u16 table shared with Rust.
-    ldx #1
+    ; COLOR_DISTANCE is a 16x16 little-endian u16 table shared with Rust. An
+    ; omitted colour starts from its distance to the background (code 0).
+    ldx #0
 .Lpk_map_color:
+    cpx PK_BG
+    beq .Lpk_map_next
     lda PK_FLAGS,x
     bne .Lpk_map_next
     lda PK_COUNT,x
@@ -371,7 +443,9 @@ fast_pack_band:
     bcc .Lpk_distance_address
     inc __rc19
 .Lpk_distance_address:
-    ldy #0
+    lda PK_BG
+    asl
+    tay
     lda (__rc18),y
     sta PK_BEST_LO
     iny
@@ -415,7 +489,6 @@ fast_pack_band:
     beq .Lpk_map_done
     jmp .Lpk_map_color
 .Lpk_map_done:
-
     lda __rc2
     sta __rc14
     lda __rc3
@@ -482,40 +555,7 @@ fast_pack_band:
     sta (__rc10),y
     lda PK_PAL+3
     sta (__rc12),y
-    clc
-    lda __rc2
-    adc #4
-    sta __rc2
-    bcc .Lpk_next_pixels
-    inc __rc3
-.Lpk_next_pixels:
-    inc __rc4
-    bne .Lpk_next_previous_screen
-    inc __rc5
-.Lpk_next_previous_screen:
-    inc __rc6
-    bne .Lpk_next_previous_color
-    inc __rc7
-.Lpk_next_previous_color:
-    clc
-    lda __rc8
-    adc #8
-    sta __rc8
-    bcc .Lpk_next_bitmap
-    inc __rc9
-.Lpk_next_bitmap:
-    inc __rc10
-    bne .Lpk_next_screen
-    inc __rc11
-.Lpk_next_screen:
-    inc __rc12
-    bne .Lpk_next_color
-    inc __rc13
-.Lpk_next_color:
-    dec PK_CELL
-    beq .Lpk_done
-    jmp .Lpk_cell
-.Lpk_done:
     rts
+.size fast_pack_cell, .-fast_pack_cell
 .Lpk_patterns:
     .byte $00,$55,$aa,$ff

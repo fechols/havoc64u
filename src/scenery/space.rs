@@ -32,7 +32,7 @@ static RING: [[i16; 2]; 8] = [
 
 #[inline(never)]
 #[cfg_attr(target_arch = "mos", link_section = ".phase.scenery.space_shared")]
-fn stars(sink: &mut SceneSink<'_>, context: &Decoration) {
+fn stars(sink: &mut SceneSink<'_>) {
     for [x, y] in STARS {
         sink.triangle(
             Vec3 { x, y, z: 3000 },
@@ -47,12 +47,7 @@ fn stars(sink: &mut SceneSink<'_>, context: &Decoration) {
                 z: 3000,
             },
             15,
-            TWO_SIDED
-                | if context.elapsed >= 400 {
-                    crate::game::STATIC_SKY
-                } else {
-                    0
-                },
+            TWO_SIDED | crate::game::STATIC_SKY,
         );
     }
 }
@@ -176,7 +171,7 @@ pub fn scenic_ascent(sink: &mut SceneSink<'_>, context: &Decoration) {
         super::land(sink, context, tick as i16 * 24);
     }
     if tick >= 100 {
-        stars(sink, context);
+        stars(sink);
     }
     if tick >= 250 {
         let remaining = if tick >= 399 { 0 } else { 400 - tick };
@@ -214,7 +209,7 @@ pub fn scenic_ascent(sink: &mut SceneSink<'_>, context: &Decoration) {
 #[cfg_attr(target_arch = "mos", no_mangle)]
 #[cfg_attr(target_arch = "mos", link_section = ".phase.scenery.asteroid.entry")]
 pub fn scenic_asteroid(sink: &mut SceneSink<'_>, context: &Decoration) {
-    stars(sink, context);
+    stars(sink);
     let travel = drop(context);
     planet(sink, -1040, -540 - travel, 760, 14);
     asteroid_debris(sink, clock(context), travel + context.camera_y);
@@ -224,7 +219,7 @@ pub fn scenic_asteroid(sink: &mut SceneSink<'_>, context: &Decoration) {
 #[cfg_attr(target_arch = "mos", no_mangle)]
 #[cfg_attr(target_arch = "mos", link_section = ".phase.scenery.moon.entry")]
 pub fn scenic_moon(sink: &mut SceneSink<'_>, context: &Decoration) {
-    stars(sink, context);
+    stars(sink);
     let travel = drop(context);
     // The two displaced halves and dark crack read as a shattered moon.
     planet(sink, 720, 680 - travel, 560, 15);
@@ -362,7 +357,7 @@ fn graveyard_hull(sink: &mut SceneSink<'_>, x: i16, y: i16, z: i16) {
 #[cfg_attr(target_arch = "mos", no_mangle)]
 #[cfg_attr(target_arch = "mos", link_section = ".phase.scenery.graveyard.entry")]
 pub fn scenic_graveyard(sink: &mut SceneSink<'_>, context: &Decoration) {
-    stars(sink, context);
+    stars(sink);
     let travel = drop(context) + context.camera_y;
     let ticks = clock(context);
     let phase = ((ticks & 127) * 8) as i16;
@@ -393,7 +388,7 @@ pub fn scenic_graveyard(sink: &mut SceneSink<'_>, context: &Decoration) {
 #[cfg_attr(target_arch = "mos", no_mangle)]
 #[cfg_attr(target_arch = "mos", link_section = ".phase.scenery.shipyard.entry")]
 pub fn scenic_shipyard(sink: &mut SceneSink<'_>, context: &Decoration) {
-    stars(sink, context);
+    stars(sink);
     let travel = drop(context) + context.camera_y;
     let ticks = clock(context);
     for i in 0..3u16 {
@@ -487,7 +482,7 @@ pub fn scenic_shipyard(sink: &mut SceneSink<'_>, context: &Decoration) {
 #[cfg_attr(target_arch = "mos", no_mangle)]
 #[cfg_attr(target_arch = "mos", link_section = ".phase.scenery.carrier.entry")]
 pub fn scenic_carrier(sink: &mut SceneSink<'_>, context: &Decoration) {
-    stars(sink, context);
+    stars(sink);
     let travel = drop(context) + context.camera_y;
     let ticks = clock(context);
     let offset = ((ticks & 63) * 8) as i16;
@@ -582,7 +577,7 @@ fn gate_point(v: [i16; 2], radius: i16, travel: i16) -> Vec3 {
 #[cfg_attr(target_arch = "mos", no_mangle)]
 #[cfg_attr(target_arch = "mos", link_section = ".phase.scenery.gate.entry")]
 pub fn scenic_gate(sink: &mut SceneSink<'_>, context: &Decoration) {
-    stars(sink, context);
+    stars(sink);
     let travel = drop(context) + context.camera_y;
     for i in 0..8usize {
         let a = RING[i];

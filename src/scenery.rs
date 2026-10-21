@@ -110,12 +110,12 @@ pub(crate) fn terrain_palette(style: u8) -> u16 {
 // transferred with every scenery frame. The linker checks their shared budget.
 #[cfg_attr(target_arch = "mos", link_section = ".tables.scenery_data")]
 static TERRAIN_PALETTES: [u16; 10] = [
-    0x0d05, 0x0c09, 0x0c0b, 0x0c0b, 0x040b, 0x0b08, 0x0c09, 0x0f0c, 0x0e0b, 0x0a04,
+    0x0d05, 0x0c09, 0x0c0b, 0x0c0b, 0x060b, 0x0b08, 0x0c09, 0x0f0c, 0x0e0b, 0x0a04,
 ];
 #[cfg_attr(target_arch = "mos", link_section = ".tables.scenery_data")]
 static GROUND_COLORS: [u8; 10] = [5, 9, 11, 6, 11, 11, 9, 12, 11, 4];
 #[cfg_attr(target_arch = "mos", link_section = ".tables.scenery_data")]
-static GROUND_SHADES: [u8; 10] = [13, 11, 11, 14, 4, 8, 11, 15, 14, 10];
+static GROUND_SHADES: [u8; 10] = [13, 11, 11, 14, 6, 8, 11, 15, 14, 10];
 static PROFILE: [u8; 16] = [0, 1, 3, 2, 1, 0, 2, 4, 3, 1, 0, 1, 2, 4, 2, 1];
 #[cfg_attr(target_arch = "mos", link_section = ".tables.scenery_data")]
 static HEIGHT_BASE: [i16; 10] = [-105, 96, -105, -105, -70, -80, -60, -40, -90, -100];
@@ -315,6 +315,7 @@ fn emit_side(
 /// Emit camera-space triangles. Legacy mode preserves title and attract terrain.
 /// Gameplay samples every terrain edge from its absolute world row, including
 /// incoming land ahead of a bridge and the terrain left behind its far end.
+/// Backdrop faces carry STATIC_SKY; the projector applies the sky parallax.
 #[inline(always)]
 #[cfg_attr(target_arch = "mos", link_section = ".phase.scenery")]
 pub fn emit(
@@ -433,13 +434,9 @@ fn land(sink: &mut SceneSink<'_>, context: &Decoration, drop: i16) {
                 point.y -= drop;
             }
         }
-        sink.triangle(
-            points[0],
-            points[1],
-            points[2],
-            color,
-            TWO_SIDED | if elapsed >= 400 { STATIC_SKY } else { 0 },
-        );
+        // STATIC_SKY marks the far backdrop for the projector's parallax
+        // drift, also while a crossing blends it, so the drift never jumps.
+        sink.triangle(points[0], points[1], points[2], color, TWO_SIDED | STATIC_SKY);
     }
 }
 
@@ -737,8 +734,13 @@ fn wildlife(sink: &mut SceneSink<'_>, context: &Decoration) {
         } else if lateral >= row.edge {
             height
         } else {
-            -105 + ((height + 105) as i32 * (lateral - row.lane) as i32
-                / (row.edge - row.lane) as i32) as i16
+            // The slope's fraction in Q8 from the bounded division kernel and
+            // one Q8 product: 16-bit, within a unit of the 32-bit quotient.
+            let t = crate::math::div_u32_u16(
+                ((lateral - row.lane) as u32) << 8,
+                (row.edge - row.lane) as u16,
+            ) as i16;
+            -105 + crate::math::mul_q8(height + 105, t)
         };
         let palette = [7, 1, 0];
         for leg in 0..4u8 {
@@ -1231,7 +1233,6 @@ mod tests {
                         "bridge {section} tick {elapsed}: {}",
                         scene.0.len()
                     );
-                    assert!(scene.0.iter().all(|face| face.2 & STATIC_SKY == 0));
                     let mut renderer = crate::render::Renderer::new();
                     renderer.begin(sky_color(
                         STAGE_INFOS[section].theme,
@@ -1863,7 +1864,6 @@ mod tests {
             for camera in [24, 40, 56] {
                 let scene = orbital_capture(11, 3750 + tick, Some(tick), camera);
                 assert!(scene.0.len() <= 80, "ascent tick {tick}");
-                assert!(scene.0.iter().all(|f| f.2 & STATIC_SKY == 0));
                 let mut renderer = crate::render::Renderer::new();
                 renderer.begin(sky_color(3, Some((10, tick))));
                 for &(p, color, flags) in &scene.0 {

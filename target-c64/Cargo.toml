@@ -2,13 +2,16 @@
 name = "havoc-c64"
 version = "0.1.0"
 edition = "2021"
+license = "MIT"
 build = "build.rs"
 
 [workspace]
 
 [features]
+default = ["music-kernels"]
 benchmarks = []
 four-sid = ["havoc/four-sid"]
+music-kernels = ["havoc/music-kernels"]
 
 [dependencies]
 havoc = { path = "..", default-features = false }

@@ -159,6 +159,7 @@ class Capture:
                            frames=[], screenshot="screenshot.png", setup_patches=[])
 
     def boot(self):
+        package_layout = vice.package_model_layout(self.package, validate_size=True)
         with socket.socket() as probe:
             probe.bind(("127.0.0.1", 0))
             port = probe.getsockname()[1]
@@ -167,7 +168,7 @@ class Capture:
         command = [str(self.args.vice), "-directory", str(self.args.roms), "+logtofile", "+logcolorize",
                    "-" + self.args.video, "-warp", "-sound", "-sounddev", "alsa", "-soundarg", "null",
                    "-soundoutput", "2", "-soundrate", "44100", "-soundfragsize", "0", "-soundwarpmode", "1",
-                   "-jamaction", "5", "-autostartprgmode", "1", "-reu", "-reusize", "16384",
+                   "-jamaction", "5", "-autostartprgmode", "1", "-reu", "-reusize", str(package_layout["reu_size"] // 1024),
                    "-reuimage", str(self.args.package_dir / "havoc.reu"), "+reuimagerw",
                    "-sidmodel", "1", "-sidextra", str(self.package[17] - 1),
                    "-sid2address", "0xd420", "-sid3address", "0xd440", "-sid4address", "0xd460",
@@ -440,8 +441,8 @@ def main():
         if not path.exists():
             raise RuntimeError(f"Required path missing: {path}")
     package = (args.package_dir / "havoc.reu").read_bytes()
-    package_layout = vice.package_model_layout(package)
-    if len(package) != 16 * 1024 * 1024 or package_layout["count"] != 18 or package[17] not in (2, 4):
+    package_layout = vice.package_model_layout(package, validate_size=True)
+    if package_layout["count"] != 18:
         raise RuntimeError("README showcase requires an eighteen-stage two- or four-SID package")
     args.out_dir.mkdir(parents=True, exist_ok=True)
     syms = vice.symbols(elf, args.llvm_nm)

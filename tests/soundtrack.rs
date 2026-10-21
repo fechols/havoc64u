@@ -88,6 +88,7 @@ fn bank_round_trips_all_cues_and_only_strips_optional_orchestration() {
             music::validate_page(page, index as u8, page_index as u8).unwrap();
             assert_eq!(page[6] as usize, (page_index + 1) % cue.bars.len());
             assert_eq!(page[7], cue.row_ticks);
+            assert_eq!(page[music::FILTER_OFFSET], authored.filter);
             for voice in 0..MUSIC_VOICES {
                 assert_eq!(
                     &page[INSTRUMENT_OFFSET + voice * 5..INSTRUMENT_OFFSET + (voice + 1) * 5],
@@ -108,25 +109,259 @@ fn bank_round_trips_all_cues_and_only_strips_optional_orchestration() {
 }
 
 #[test]
-fn original_thirteen_cue_payloads_keep_their_published_checksums() {
-    // Taken from the pre-expansion SMU2 packages. Moving the directory and
-    // appending space music must not rewrite a note, instrument, or page link.
+fn every_cue_payload_keeps_its_published_checksums() {
+    // Lost Wing retains its pre-expansion SMU2 payload in both profiles; the
+    // other twenty cues carry the produced score. Any change to a note,
+    // instrument, filter target or page link must be a deliberate republish.
     let expected = if cfg!(feature = "four-sid") {
         [
-            48391, 10627, 28627, 64536, 43533, 26356, 25190, 43185, 10057, 28300, 53802, 3033,
-            31639,
+            38531, 512, 64174, 35058, 39356, 33967, 25190, 59886, 19350, 48525, 3712, 59866,
+            10096, 12466, 35448, 40978, 42760, 37503, 47833, 8652, 15101,
         ]
     } else {
         [
-            26075, 12282, 43603, 4708, 36127, 22337, 46112, 55830, 44142, 1474, 6341, 11423, 50158,
+            4100, 55587, 62212, 23317, 52142, 53213, 46112, 61879, 49160, 6697, 11474, 48593,
+            41170, 48867, 33569, 57674, 61441, 64467, 32115, 1671, 48869,
         ]
     };
     let bank = soundtrack::score_bank();
     for (cue, checksum) in expected.into_iter().enumerate() {
         assert_eq!(
             music::cue_info(&bank, cue as u8).unwrap().checksum,
-            checksum
+            checksum,
+            "cue {cue}"
         );
+    }
+    let lost_wing = if cfg!(feature = "four-sid") { 25190 } else { 46112 };
+    assert_eq!(expected[havoc::audio::MusicState::Defeat as usize], lost_wing);
+}
+
+fn echo_delay(cue: &soundtrack::Cue) -> usize {
+    if cue.row_ticks > 5 {
+        2
+    } else {
+        3
+    }
+}
+
+fn produced(index: usize) -> bool {
+    index >= havoc::audio::MusicState::CrystalCurrent as usize
+}
+
+#[test]
+fn every_cue_opens_its_loop_without_holds_or_slurs() {
+    // Page zero must publish on a cue change, which rejects any voice that
+    // starts the loop with a hold or legato, including echoes of the last bar.
+    for cue in soundtrack::cues() {
+        for (voice, &event) in cue.bars[0].rows[0].iter().enumerate() {
+            assert!(
+                event != HOLD && event & 0x80 == 0,
+                "{} voice{voice} opens with a tie",
+                cue.name
+            );
+        }
+    }
+}
+
+#[test]
+fn produced_cues_echo_the_lead_on_the_opposite_sid_voice() {
+    for (index, cue) in soundtrack::cues().into_iter().enumerate() {
+        let lead: Vec<u8> = cue
+            .bars
+            .iter()
+            .flat_map(|bar| bar.rows.iter().map(|row| row[1]))
+            .collect();
+        let echo: Vec<u8> = cue
+            .bars
+            .iter()
+            .flat_map(|bar| bar.rows.iter().map(|row| row[6]))
+            .collect();
+        if !produced(index) {
+            assert!(
+                cue.bars.iter().all(|bar| bar.instruments[6] == [0x10, 0x00, 0x08, 0x24, 0x43]),
+                "{} keeps its cello counterline",
+                cue.name
+            );
+            continue;
+        }
+        let delay = echo_delay(&cue);
+        assert!(
+            cue.bars.iter().all(|bar| bar.instruments[6] == [0x40, 0x00, 0x06, 0x02, 0x34]),
+            "{} echo instrument",
+            cue.name
+        );
+        for at in 0..lead.len() {
+            let expected = if at < delay { 0 } else { lead[at - delay] };
+            assert_eq!(echo[at], expected, "{} echo row {at}", cue.name);
+        }
+    }
+}
+
+#[test]
+fn space_drums_have_kick_bodies_falling_snares_and_phrase_rolls() {
+    use havoc::audio::MusicState;
+    let suite = soundtrack::cues();
+    for cue in &suite[MusicState::AsteroidBelt as usize..] {
+        for (index, bar) in cue.bars.iter().enumerate() {
+            let drums = &bar.instruments[2];
+            assert_eq!(drums[0], 0x80, "{} noise kit", cue.name);
+            assert_eq!(drums[4] & 0xf0, 0, "{} drums decay to silence", cue.name);
+            assert!(drums[3] >= 4, "{} drums have a real decay", cue.name);
+            // Snares slur down a fifth on the following sixteenth.
+            for at in [4, 12] {
+                let snare = bar.rows[at][2];
+                assert!(snare > HOLD && snare & 0x80 == 0, "{} bar {index} snare", cue.name);
+                if index % 8 != 7 || at == 4 {
+                    assert_eq!(bar.rows[at + 1][2], (snare - 7) | 0x80, "{} bar {index}", cue.name);
+                }
+            }
+            if index % 8 == 7 {
+                let roll: Vec<u8> = bar.rows[12..].iter().map(|row| row[2]).collect();
+                assert_eq!(roll, [64, 66, 68, 70], "{} bar {index} roll", cue.name);
+            }
+            // The tuned sub-octave kick body sits under both kicks.
+            assert_eq!(bar.instruments[8], [0x40, 0x00, 0x08, 0x04, 0x04]);
+            for at in [0, 8] {
+                let body = bar.rows[at][8];
+                assert!((24..=35).contains(&body), "{} bar {index} kick body {body}", cue.name);
+                assert_eq!(bar.rows[at + 1][8], 0);
+            }
+        }
+    }
+}
+
+#[test]
+fn pulse_widths_step_through_each_phrase_and_strings_swell_into_reprises() {
+    let steps = [0u16, 0x80, 0x100, 0x180, 0x200, 0x180, 0x100, 0x80];
+    let width = |instrument: &[u8; 5]| u16::from(instrument[2]) << 8 | u16::from(instrument[1]);
+    for (index, cue) in soundtrack::cues().into_iter().enumerate() {
+        if index == havoc::audio::MusicState::Defeat as usize {
+            continue;
+        }
+        for (bar_index, bar) in cue.bars.iter().enumerate() {
+            let base_bass = width(&bar.instruments[0]) - steps[bar_index % 8];
+            assert!(
+                base_bass == 0x300 || base_bass == 0x400,
+                "{} bar {bar_index} bass width",
+                cue.name
+            );
+            if produced(index) {
+                assert_eq!(bar.instruments[1][0], 0x40);
+                let first = width(&cue.bars[bar_index / 8 * 8].instruments[1]);
+                assert_eq!(width(&bar.instruments[1]), first + steps[bar_index % 8], "{} bar {bar_index}", cue.name);
+            }
+        }
+        if produced(index) && cue.bars.len() == 32 {
+            for section in [1, 3] {
+                let sustain: Vec<u8> = cue.bars[section * 8..section * 8 + 8]
+                    .iter()
+                    .map(|bar| bar.instruments[4][4] >> 4)
+                    .collect();
+                assert_eq!(sustain, [3, 3, 4, 4, 5, 5, 6, 6], "{} section {section}", cue.name);
+            }
+            for bar in &cue.bars[22..24] {
+                for voice in [3, 4, 5, 7] {
+                    assert!(bar.rows.iter().all(|row| row[voice] == 0), "{} breakdown", cue.name);
+                }
+                assert!(bar.rows.iter().any(|row| row[0] > HOLD));
+                assert!(bar.rows.iter().any(|row| row[1] > HOLD));
+            }
+            for section_start in [0, 8, 16, 24] {
+                let bar = &cue.bars[section_start];
+                assert_eq!(bar.instruments[9], [0x80, 0x00, 0x08, 0x09, 0x08]);
+                assert_eq!(bar.rows[0][9], 80);
+                assert_eq!(&[bar.rows[1][9], bar.rows[2][9], bar.rows[3][9]], &[HOLD; 3]);
+            }
+        }
+    }
+}
+
+#[test]
+fn produced_bass_lines_walk_chromatically_into_chord_changes() {
+    for (index, cue) in soundtrack::cues().into_iter().enumerate() {
+        let bars = cue.bars.len();
+        let mut approaches = 0;
+        for (bar_index, bar) in cue.bars.iter().enumerate() {
+            let next = cue.bars[(bar_index + 1) % bars].rows[0][0];
+            let walk = bar.rows[15][0];
+            if !produced(index) {
+                assert!(walk <= HOLD, "{} has no bass approach", cue.name);
+                continue;
+            }
+            assert!(next > HOLD && next & 0x80 == 0, "{} bar {bar_index} bass re-attacks", cue.name);
+            if walk > HOLD {
+                assert_eq!((walk as i16 - next as i16).abs(), 1, "{} bar {bar_index} approach", cue.name);
+                approaches += 1;
+            }
+        }
+        if produced(index) {
+            assert!(approaches >= bars / 2, "{} walks into its changes", cue.name);
+        }
+    }
+}
+
+#[test]
+fn ring_modulation_colours_only_the_extra_voices_of_four_cues() {
+    use havoc::audio::MusicState as M;
+    for (index, cue) in soundtrack::cues().into_iter().enumerate() {
+        let state = M::from_cue(index as u8).unwrap();
+        let coloured = matches!(
+            state,
+            M::ShatteredMoon | M::JumpGate | M::AshesAndSteel | M::OrbitalShipyard
+        );
+        for bar in &cue.bars {
+            for (voice, instrument) in bar.instruments.iter().enumerate() {
+                assert!(music::valid_control(instrument[0]), "{} voice{voice}", cue.name);
+                if voice < 4 {
+                    assert_eq!(instrument[0] & 0x0f, 0, "{} core voice{voice} is plain", cue.name);
+                }
+            }
+            assert_eq!(
+                bar.instruments[7][0] == 0x10 | music::RING,
+                coloured,
+                "{} ring modulation",
+                cue.name
+            );
+        }
+        if matches!(state, M::AshesAndSteel | M::OrbitalShipyard) {
+            assert!(
+                cue.bars.iter().filter(|bar| bar.rows[4][7] == 93 && bar.rows[12][7] == 93).count() >= 24,
+                "{} anvil backbeats",
+                cue.name
+            );
+        }
+    }
+}
+
+#[test]
+fn filter_programme_opens_through_the_first_eight_and_dips_before_each_reprise() {
+    use havoc::audio::MusicState as M;
+    for (index, cue) in soundtrack::cues().into_iter().enumerate() {
+        let targets: Vec<u8> = cue.bars.iter().map(|bar| bar.filter).collect();
+        match M::from_cue(index as u8).unwrap() {
+            M::Defeat => assert!(targets.iter().all(|&t| t == 0), "Lost Wing is untouched"),
+            M::Ascent => assert!(targets.windows(2).all(|w| w[0] < w[1]), "the ascent opens"),
+            state if produced(index) => {
+                assert!(targets.iter().all(|&t| t != 0));
+                assert!(targets[..8].windows(2).all(|w| w[0] < w[1]), "{} opens", cue.name);
+                let dip = *targets[16..24].iter().min().unwrap();
+                assert!(dip < targets[8] && dip < targets[24], "{} dips", cue.name);
+                assert_eq!(targets[24], 0xd0, "{} snaps open at the reprise", cue.name);
+                let pumping = targets[8..16].windows(2).filter(|w| w[0] != w[1]).count();
+                if matches!(
+                    state,
+                    M::AshesAndSteel | M::GorgeWarden | M::CitadelHeart | M::OrbitalShipyard | M::SpaceCarrier | M::GateGuardian
+                ) {
+                    assert!(targets[9] - targets[8] >= 0x40, "{} pumps", cue.name);
+                }
+                assert!(pumping >= 7);
+            }
+            _ => assert!(
+                targets.iter().all(|&t| (0x70..=0x98).contains(&t)),
+                "{} breathes gently",
+                cue.name
+            ),
+        }
     }
 }
 
@@ -470,6 +705,13 @@ fn authored_suite_loops_exactly_with_five_fps_page_service_on_both_video_clocks(
             let mut next_page = [0u8; PAGE_SIZE];
             player.reset(&mut bus);
             player.set_music(state);
+            #[cfg(feature = "music-kernels")]
+            {
+                // The foreground loads the slot before publishing page zero.
+                assert_eq!(player.kernel_request(), Some(state));
+                player.accept_kernel(state, havoc::audio::kernels::has_kernel(state));
+                assert_eq!(player.kernel_request(), None);
+            }
             let opening = player.page_request().unwrap();
             assert_eq!((opening.cue, opening.page), (state, 0));
             let start = info.offset as usize;
@@ -482,6 +724,7 @@ fn authored_suite_loops_exactly_with_five_fps_page_service_on_both_video_clocks(
             let loop_ticks = cue.duration_ticks();
             let page_ticks = ROWS_PER_BAR * cue.row_ticks as usize;
             let mut trace = Vec::with_capacity(loop_ticks * 2);
+            let mut cutoffs = Vec::with_capacity(loop_ticks * 2);
             let mut visited_pages = Vec::new();
             for tick in 0..loop_ticks * 2 {
                 // Main-thread work happens only once per ten audio ticks: five
@@ -531,6 +774,10 @@ fn authored_suite_loops_exactly_with_five_fps_page_service_on_both_video_clocks(
                         match event {
                             0 => assert_eq!(sounding[voice], None),
                             HOLD => assert!(sounding[voice].is_some()),
+                            // A kernel's portamento glides into slurred notes.
+                            _ if cfg!(feature = "music-kernels") && event & 0x80 != 0 => {
+                                assert!(sounding[voice].is_some())
+                            }
                             _ => assert_eq!(
                                 sounding[voice],
                                 Some(note_frequency(standard, event & 0x7f)),
@@ -543,6 +790,7 @@ fn authored_suite_loops_exactly_with_five_fps_page_service_on_both_video_clocks(
                 if tick % page_ticks == 0 {
                     visited_pages.push(player.current_page());
                 }
+                cutoffs.push(bus.registers[0][22]);
                 trace.push(sounding);
             }
             let expected_visits: Vec<_> = (0..2).flat_map(|_| 0..info.pages).collect();
@@ -554,6 +802,24 @@ fn authored_suite_loops_exactly_with_five_fps_page_service_on_both_video_clocks(
                 cue.name
             );
             assert!(bus.effect_writes > 0, "effects must run during the score");
+            let moving = cutoffs.iter().any(|&c| c != 0x80);
+            if cfg!(feature = "music-kernels") && state != MusicState::Defeat {
+                assert!(moving, "{} sweeps its filter", cue.name);
+                // Each bar's authored target is reached before the bar ends,
+                // apart from the wah kernels' deliberate overshoot on attacks.
+                for (bar, authored) in cue.bars.iter().enumerate() {
+                    let end = loop_ticks + (bar + 1) * page_ticks - 1;
+                    let cutoff = cutoffs[end];
+                    assert!(
+                        cutoff >= authored.filter && cutoff <= authored.filter.saturating_add(0x40),
+                        "{} bar {bar}: cutoff {cutoff:#x} target {:#x}",
+                        cue.name,
+                        authored.filter
+                    );
+                }
+            } else {
+                assert!(!moving, "{} must not touch the filter", cue.name);
+            }
         }
     }
 }

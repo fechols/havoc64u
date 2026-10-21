@@ -155,6 +155,7 @@ fn packed_vic_frames_preserve_single_gray_specks_without_double_buffer_trails() 
                 &pixels,
                 &previous_screen,
                 &previous_color,
+                0,
                 bitmap,
                 screen,
                 color,

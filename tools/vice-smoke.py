@@ -115,6 +115,22 @@ def png(path, rows, width, height):
     path.write_bytes(image + chunk(b"IEND", b""))
 
 
+def decoded_pixels(native, background):
+    """The 32,000 visible pixel colours of a 10,000-byte native capture
+    (bitmap, screen, colour RAM) shown over the VIC background `background`."""
+    bitmap, screen, colors = native[:8000], native[8000:9000], native[9000:10000]
+    pixels = bytearray(32000)
+    for cell in range(1000):
+        slots = (background & 15, screen[cell] >> 4, screen[cell] & 15, colors[cell] & 15)
+        row0 = (cell // 40) * 8 * 160 + (cell % 40) * 4
+        for row in range(8):
+            byte = bitmap[cell * 8 + row]
+            at = row0 + row * 160
+            for column in range(4):
+                pixels[at + column] = slots[(byte >> (6 - column * 2)) & 3]
+    return bytes(pixels)
+
+
 def capture(mon, syms, output, name):
     bank = mon.integer(syms["FRONT_BANK"], 1)
     if bank not in (2, 3):
@@ -261,19 +277,28 @@ def phase_profile(events, address, title, frames):
 
 
 def pixel_profile(events, address, title, frames):
-    names = {1: "raster", 2: "hud", 3: "pack", 4: "copy"}
-    transitions = [event for event in events if event["address"] == address and event["value"] in (0, 1, 2, 3, 4)]
+    names = {1: "raster", 2: "hud", 3: "pack", 4: "copy", 9: "wait"}
+    geometry_names = {5: "replay", 6: "meshes", 7: "reorder", 8: "sort"}
+    accepted = {0, *names, *geometry_names}
+    transitions = [event for event in events if event["address"] == address and event["value"] in accepted]
     previous = title["bus_cycles"]
     for frame in frames:
         end = frame["bus_cycles"]
         selected = [event for event in transitions if previous <= event["bus_cycles"] < end]
         costs = {name: 0 for name in names.values()}
+        geometry = {name: 0 for name in geometry_names.values()}
         for index, event in enumerate(selected):
             if event["value"] == 0:
                 continue  # Explicit end marker excludes frame publication.
             next_cycle = selected[index+1]["bus_cycles"] if index+1 < len(selected) else end
-            costs[names[event["value"]]] += next_cycle - event["bus_cycles"]
+            duration = next_cycle - event["bus_cycles"]
+            if event["value"] in names:
+                costs[names[event["value"]]] += duration
+            else:
+                geometry[geometry_names[event["value"]]] += duration
         frame["pixel_bus_cycles_detail"] = costs
+        if any(geometry.values()):
+            frame["geometry_bus_cycles_detail"] = geometry
         if "phase_bus_cycles" in frame:
             frame["pixel_unprofiled_bus_cycles"] = frame["phase_bus_cycles"]["pixels"] - sum(costs.values())
         frame["pixel_profile_markers"] = len(selected)
@@ -366,7 +391,7 @@ def dwarf_game_layout(elf, tool, syms, output, controls=False):
         sample = {"size": int(byte_size[1], 0), "fields": sample_fields,
                   "address": resident_symbol(syms, "INPUTS")[1],
                   "head_address": resident_symbol(syms, "INPUT_HEAD")[1]}
-        for field, kind in (("ms", "u32"), ("bits", "u8"), ("pressed", "u8")):
+        for field, kind in (("ms", "u16"), ("bits", "u8"), ("pressed", "u8")):
             if sample_fields.get(field, {}).get("type") != kind:
                 raise RuntimeError(f"Unsupported InputSample::{field} DWARF type")
             sample_fields[field]["size"] = sizes[kind]
@@ -470,7 +495,15 @@ def boss_sim_profile(enemy, boss):
 
 
 def music_pitch_audit(events, registers, voices, notes, clock_hz):
-    """Validate complete native frequency writes against independent MIDI tuning."""
+    """Validate native gate attacks against independent MIDI tuning.
+
+    Every gate attack on a music lane must sound an authored note: the
+    transport writes the pitch before it raises the gate, and so does the
+    kernels' drum program. Frequency writes without a gate attack are the
+    per-song kernels' vibrato, portamento, double-time arpeggios, drum slides
+    and modulator sweeps; they are counted as authored or modulated rather than
+    rejected.
+    """
     registers = [bytearray(chip) for chip in registers]
     owners = {(sid, voice * 7): lane for lane, (sid, voice) in enumerate(voices)}
     expected = [{note: round(440 * 2 ** ((note - 69) / 12) * (1 << 24) / clock_hz)
@@ -480,27 +513,31 @@ def music_pitch_audit(events, registers, voices, notes, clock_hz):
     last_register = -1
     last_cycle = 0
     writes = [0 for _ in voices]
+    modulated = [0 for _ in voices]
     gates = [0 for _ in voices]
 
-    def check(owner, frequency_write):
+    def matching(owner):
         sid, base = owner
         lane = owners[owner]
         actual = registers[sid][base] | registers[sid][base + 1] << 8
         # The native table rounds a high octave then shifts it; an independently
         # rounded equal-temperament calculation differs by at most one unit.
-        matching = [note for note, frequency in expected[lane].items()
-                    if abs(actual - frequency) <= 1]
-        if not matching:
-            raise RuntimeError(f"Native music lane {lane} wrote unauthored/detuned frequency {actual}")
-        seen[lane].update(matching)
-        if frequency_write:
-            writes[lane] += 1
-        else:
-            gates[lane] += 1
+        return lane, actual, [note for note, frequency in expected[lane].items()
+                              if abs(actual - frequency) <= 1]
+
+    def check(owner):
+        lane, actual, notes_hit = matching(owner)
+        if not notes_hit:
+            raise RuntimeError(f"Native music lane {lane} attacked an unauthored/detuned frequency {actual}")
+        seen[lane].update(notes_hit)
+        gates[lane] += 1
 
     def flush():
         if pending is not None:
-            check(pending, True)
+            lane, _actual, notes_hit = matching(pending)
+            writes[lane] += 1
+            if not notes_hit:
+                modulated[lane] += 1
 
     for event in events:
         sid, register = divmod(event["address"] - 0xd400, 32)
@@ -521,31 +558,47 @@ def music_pitch_audit(events, registers, voices, notes, clock_hz):
         elif owner in owners and part == 4 and event["value"] & 1:
             # Repeated percussion can retain one frequency for an entire cue.
             # Its gate attacks still verify the pitch in the native cache.
-            check(owner, False)
+            check(owner)
     flush()
     for lane, pitches in enumerate(notes):
         if pitches and not seen[lane]:
-            raise RuntimeError(f"Native music lane {lane} has no verified pitch writes")
-    return [{"lane": lane, "verified_frequency_writes": writes[lane],
+            raise RuntimeError(f"Native music lane {lane} has no verified gate attacks")
+    return [{"lane": lane, "frequency_writes": writes[lane],
+             "modulated_frequency_writes": modulated[lane],
              "verified_gate_attacks": gates[lane],
              "authored_notes": sorted(notes[lane]), "observed_notes": sorted(seen[lane]),
              "tuning_tolerance_register_units": 1} for lane in range(len(voices))]
 
 
-def package_model_layout(package):
+def package_model_layout(package, *, validate_size=False):
     """Keep baseline benchmarks compatible while checking the current format."""
     version = int.from_bytes(package[4:8], "little")
     formats = {0x534d0300: (b"SMA2", 80), 0x534d0400: (b"SMA3", 88),
-               0x534d0500: (b"SMA3", 88), 0x534d0600: (b"SMA3", 88)}
+               0x534d0500: (b"SMA3", 88), 0x534d0600: (b"SMA3", 88),
+               0x534d0700: (b"SMA4", 88), 0x534d0800: (b"SMA4", 88)}
     campaign = version >= 0x534d0500
-    space = version == 0x534d0600
+    space = version >= 0x534d0600
+    compact = version == 0x534d0800
     count = 18 if space else 12 if campaign else 4
-    if package[:4] != b"SM64" or version not in formats or package[16] != count or package[17] not in (2, 4):
-        raise RuntimeError("Expected supported package v3/v4, twelve-stage v5 or eighteen-stage v6")
+    if (len(package) < 18 or package[:4] != b"SM64" or version not in formats
+            or package[16] != count or package[17] not in (2, 4)):
+        raise RuntimeError("Expected supported package v3/v4, twelve-stage v5 or eighteen-stage v6/v7/v8")
+    reu_size = 0x100000 if compact else 0x1000000
+    if validate_size and len(package) != reu_size:
+        raise RuntimeError(f"REU package v{version >> 8 & 255} must be exactly {reu_size // (1024 * 1024)} MiB")
+    overlay_offsets = {page: page * 0x10000
+                       for page in (1, 2, 3, 4, 5, 7, 8, 9, 10, 12, 13, *range(18, 31))}
+    if compact:
+        overlay_offsets.update(zip((12, 13, *range(18, 31)),
+            (0x15000, 0x1a000, 0x25000, 0x2a000, 0x35000, 0x3a000,
+             0x55000, 0x5a000, 0x60000, 0x65000, 0x6a000, 0x75000,
+             0x7a000, 0x85000, 0x8a000)))
     magic, descriptors = formats[version]
     return {"version": version, "magic": magic, "descriptors": descriptors,
             "medal": version >= 0x534d0400, "campaign": campaign, "space": space, "count": count,
-            "segment_magic": b"SMS2" if campaign else b"SMS1"}
+            "segment_magic": b"SMS2" if campaign else b"SMS1", "reu_size": reu_size,
+            "music_offset": 0xc0000 if compact else 0x200000 if space else 0x100000,
+            "overlay_offsets": overlay_offsets}
 
 
 def stage_fixture(values, layout, package):
@@ -1257,7 +1310,7 @@ def control_checks(mon, syms, failures, elf, dwarf_tool, output, result):
         edges = [sample for sample in scenario["samples"] if sample["pressed"] & bits]
         if len(edges) != 2:
             raise RuntimeError(f"Double-{label} did not capture two physical press edges")
-        gap = (edges[1]["ms"] - edges[0]["ms"]) & 0xffffffff
+        gap = (edges[1]["ms"] - edges[0]["ms"]) & 0xffff
         scenario["double_tap_gap_ms"] = gap
         if not 250 < gap <= 500:
             raise RuntimeError(f"Double-{label} gesture must exceed 250 ms and stay within 500 ms: {gap}")
@@ -1279,7 +1332,10 @@ def control_checks(mon, syms, failures, elf, dwarf_tool, output, result):
         if released["game"]["controls.bits"] != 0 or drift * direction <= 0:
             raise RuntimeError(f"Double-{label} has no physical dodge displacement after release")
         previous = active
-        for _ in range(8):
+        # Each frame verifies the countdown against the elapsed simulation
+        # ticks; faster frames carry fewer ticks, so allow enough of them for
+        # the roll (up to 25 ticks) and its cooldown to run out.
+        for _ in range(32):
             elapsed = (released["game"]["ticks"] - previous["game"]["ticks"]) & 0xffff
             if released["game"]["roll_ticks"] != max(0, previous["game"]["roll_ticks"] - elapsed):
                 raise RuntimeError(f"Double-{label} roll did not expire at its simulation-tick deadline")
@@ -1299,6 +1355,138 @@ def control_checks(mon, syms, failures, elf, dwarf_tool, output, result):
     result["passed"] = True
 
 
+def pause_checks(mon, syms, failures, elf, dwarf_tool, output, result):
+    """Check paused input disposal and resume rebasing through the native loop."""
+    layout = dwarf_game_layout(elf, dwarf_tool, syms, output, controls=True)
+    description = subprocess.check_output(
+        [str(dwarf_tool), "--name=Controls", "--show-children", str(elf)], text=True)
+    controls = dwarf_members(description, "Controls")
+    pending = ("shot_pending", "bomb_pending", "roll_pending", "start_pending")
+    armed = ("fire_armed", "left_armed", "right_armed")
+    for name in (*pending, *armed, "cached_charge"):
+        kind = "i8" if name == "roll_pending" else "u8" if name == "cached_charge" else "bool"
+        if controls.get(name, {}).get("type") != kind:
+            raise RuntimeError(f"Unsupported pause-check Controls::{name}")
+        layout["fields"][f"controls.{name}"] = dict(controls[name], size=1,
+            offset=layout["fields"]["controls"]["offset"] + controls[name]["offset"])
+    if layout["fields"].get("shot_cooldown", {}).get("type") != "u8":
+        raise RuntimeError("Pause checks require the shot cooldown byte")
+    layout["fields"]["shot_cooldown"]["size"] = 1
+    pause = resident_symbol(syms, "PAUSED")[1]
+    tail = resident_symbol(syms, "INPUT_TAIL")[1]
+    last_bits = resident_symbol(syms, "LAST_BITS")[1]
+    clock = resident_symbol(syms, "CLOCK_MS")[1]
+    sample = layout["input_sample"]
+    result.update(passed=False, monitor_assisted=True, excluded_from_timing=True, layout=layout,
+                  scope="ELF-derived PAUSED toggles and a seeded final paused-render input ring; physical joystick input otherwise. Tests simulation/input behavior, not keyboard scanning.",
+                  state_patches=[], frames=[])
+    mon.command("delete")
+    for address in failures:
+        mon.command(f"break exec {address:04x}")
+
+    def write(label, address, raw):
+        mon.command("bank ram")
+        before = mon.read(address, len(raw))
+        for offset in range(0, len(raw), 16):
+            mon.command(f"> {address + offset:04x} " + " ".join(f"{byte:02x}" for byte in raw[offset:offset + 16]))
+        if mon.read(address, len(raw)) != bytes(raw):
+            raise RuntimeError(f"Pause fixture write failed: {label}")
+        mon.command("bank cpu")
+        result["state_patches"].append(dict(label=label, address=address,
+                                            before=before.hex(), after=bytes(raw).hex()))
+
+    observed = ("ticks", "rail_ticks", "mode", "bombs", "roll_ticks", "roll_cooldown",
+                "shot_cooldown", "player.x", "player.y", "controls.bits",
+                *(f"controls.{name}" for name in (*pending, *armed, "cached_charge")))
+
+    def observe(label):
+        mon.run_until(syms["frame_complete"], failures)
+        frame = counters(mon, syms)
+        mon.command("bank ram")
+        frame.update(label=label, game=read_game_state(mon, layout, observed), paused=mon.integer(pause, 1),
+                     stack_guards={name: mon.integer(syms[name], 1)
+                                   for name in ("__stack_bottom", "__irq_stack_bottom")})
+        mon.command("bank cpu")
+        result["frames"].append(frame)
+        if (frame["test_input"] != 255 or frame["game"]["mode"] != layout["modes"]["Playing"]
+                or frame["input_overflows"] or frame["frame_dropped"]
+                or frame.get("music_underruns", 0) or any(v != 0xa5 for v in frame["stack_guards"].values())):
+            raise RuntimeError("Pause check lost gameplay, input, music, geometry, or a stack guard")
+        return frame
+
+    def clean(frame, baseline, frozen=False):
+        game = frame["game"]
+        if game["bombs"] != baseline["game"]["bombs"] or game["roll_ticks"]:
+            raise RuntimeError("Paused input spent a bomb or started a roll")
+        if any(game[f"controls.{name}"] for name in (*pending, *armed)):
+            raise RuntimeError("Paused input retained a pending gesture or armed tap")
+        if frozen and (game["ticks"], game["rail_ticks"]) != (baseline["game"]["ticks"], baseline["game"]["rail_ticks"]):
+            raise RuntimeError("Paused or first resumed frame advanced simulation time")
+
+    mon.command("jpdb 1 $1f")
+    for _ in range(5):
+        baseline = observe("neutral-setup")
+    write("pause", pause, b"\x01")
+    clean(observe("paused"), baseline, frozen=True)
+    for bits in (16, 0, 16, 0, 4, 0, 4, 0, 8, 0, 8, 0):
+        mon.command(f"jpdb 1 ${31 ^ bits:02x}")
+        clean(observe(f"paused-input-{bits}"), baseline, frozen=True)
+    start_ticks = result["frames"][-1]["audio_ticks"]
+    for _ in range(40):
+        paused = observe("paused-released-wait")
+        clean(paused, baseline, frozen=True)
+        if (paused["audio_ticks"] - start_ticks) & 0xffff >= 30:
+            break
+    else:
+        raise RuntimeError("Paused release did not outlast the double-tap window")
+    result["released_pause_audio_ticks"] = (paused["audio_ticks"] - start_ticks) & 0xffff
+    result["paused_capture"] = capture(mon, syms, output, "pause-input-disposal")
+
+    # At frame_complete SIM has already returned. Seed fresh queued edges as
+    # though they arrived during that final paused render; the resume path
+    # must discard them even though PAUSED is now false and they are due.
+    head = mon.integer(sample["head_address"], 1)
+    ms = mon.integer(clock)
+    write("final-paused-tail", tail, bytes([head]))
+    for index, bits in enumerate((20, 0, 20, 0)):
+        raw = bytearray(sample["size"])
+        for name, value in (("ms", ms), ("bits", bits), ("pressed", bits)):
+            field = sample["fields"][name]
+            raw[field["offset"]:field["offset"] + field["size"]] = value.to_bytes(field["size"], "little")
+        write("final-paused-sample", sample["address"] + ((head + index) & 63) * sample["size"], raw)
+    write("final-paused-head", sample["head_address"], bytes([(head + 4) & 63]))
+    write("final-paused-held", last_bits, b"\x00")
+    write("resume", pause, b"\x00")
+    clean(observe("first-resumed-frame"), baseline, frozen=True)
+    for _ in range(3):
+        resumed = observe("resumed-neutral")
+        clean(resumed, baseline)
+    if resumed["game"]["ticks"] == baseline["game"]["ticks"]:
+        raise RuntimeError("Simulation did not resume after rebasing its deadline")
+
+    # A held stick/fire state survives the synchronization without becoming
+    # a fresh gesture. Ordinary motion and the existing autofire resume.
+    write("pause-held-input", pause, b"\x01")
+    mon.command("jpdb 1 $07")  # RIGHT | FIRE.
+    for _ in range(2):
+        held = observe("paused-held-right-fire")
+        clean(held, resumed, frozen=True)
+    if held["game"]["controls.bits"] != 24:
+        raise RuntimeError("Paused synchronization did not retain the held joystick state")
+    write("resume-held-input", pause, b"\x00")
+    clean(observe("first-resumed-held-frame"), held, frozen=True)
+    running = [observe("resumed-held-right-fire") for _ in range(5)]
+    if (running[-1]["game"]["player.x"] <= held["game"]["player.x"]
+            or not any(frame["game"]["shot_cooldown"] for frame in running)):
+        raise RuntimeError("Held movement or autofire did not resume")
+    for frame in running:
+        clean(frame, held)
+    mon.command("jpdb 1 $1f")
+    observe("pause-checks-finished")
+    result["passed"] = True
+    print("PAUSE: paused gestures discarded, final-render queue drained, held controls resumed", flush=True)
+
+
 def weapon_checks(mon, syms, failures, elf, dwarf_tool, output, result, video, package=None):
     """Seed encounter fixtures; exercise damage, charging and FIRE through game code."""
     layout = dwarf_game_layout(elf, dwarf_tool, syms, output, controls=True)
@@ -1314,11 +1502,26 @@ def weapon_checks(mon, syms, failures, elf, dwarf_tool, output, result, video, p
         structs[name] = {"size": int(size[1], 0), "fields": dwarf_members(description, name)}
 
     fields = layout["fields"]
-    for name in ("invulnerability", "hit_flash_ticks", "spawn_cursor", "spawn_segment", "bank", "kills", "bomb_kills"):
+    for name in ("invulnerability", "hit_flash_ticks", "spawn_cursor", "spawn_segment", "kills", "bomb_kills", "missile_rng"):
         field = fields.get(name)
         if not field or field["type"] not in scalar_sizes:
             raise RuntimeError(f"Unsupported weapon-fixture Game::{name}")
         field["size"] = scalar_sizes[field["type"]]
+    # Level the ship: the former `bank` byte, or the whole flight record
+    # (fractions, velocities, bank and pitch) of the assisted flight model.
+    if "flight" in fields:
+        description = subprocess.check_output(
+            [str(dwarf_tool), "--name=Flight", "--show-children", str(elf)], text=True)
+        size = re.search(r"DW_AT_byte_size\s+\((0x[0-9a-fA-F]+|\d+)\)", description)
+        if size is None or fields["flight"]["type"] != "havoc::game::flight::Flight":
+            raise RuntimeError("Unsupported weapon-fixture Game::flight")
+        fields["flight"]["size"] = int(size[1], 0)
+        level = "flight"
+    elif fields.get("bank", {}).get("type") == "i8":
+        fields["bank"]["size"] = 1
+        level = "bank"
+    else:
+        raise RuntimeError("Unsupported weapon-fixture Game::bank")
     charge = structs["Controls"]["fields"].get("cached_charge")
     if charge is None or charge["type"] != "u8":
         raise RuntimeError("Missing Controls::cached_charge byte")
@@ -1344,6 +1547,13 @@ def weapon_checks(mon, syms, failures, elf, dwarf_tool, output, result, video, p
                 raise RuntimeError("Unsupported Vec3 component type")
             array["fields"][f"pos.{axis}"] = dict(component,
                 offset=array["fields"]["pos"]["offset"] + component["offset"])
+    missile_targets = fields.get("missile_targets")
+    if not missile_targets or missile_targets["type"] != f"u8[{arrays['shots']['count'] // 2}]":
+        raise RuntimeError("Unsupported packed Game::missile_targets array type")
+    lock_address = layout["address"] + missile_targets["offset"]
+    lock_bytes = arrays["shots"]["count"] // 2
+    if lock_address + lock_bytes > syms["__game_state_end"]:
+        raise RuntimeError("Weapon fixture missile locks exceed reserved Game state")
     renderer = structs["Renderer"]
     renderer["address"] = resident_symbol(syms, "RENDERER")[1]
     triangle = structs["Triangle"]
@@ -1387,6 +1597,8 @@ def weapon_checks(mon, syms, failures, elf, dwarf_tool, output, result, video, p
         for name in clear:
             array = arrays[name]
             write_bytes(scenario, name, array["address"], bytes(array["size"] * array["count"]))
+        if "actors" in clear or "shots" in clear:
+            write_bytes(scenario, "missile_targets", lock_address, bytes(lock_bytes))
         mon.command("bank cpu")
 
     def seed_element(scenario, name, index, values):
@@ -1431,7 +1643,7 @@ def weapon_checks(mon, syms, failures, elf, dwarf_tool, output, result, video, p
     observed_fields = ("mode", "ticks", "rail_ticks", "player.x", "player.y", "player.z", "shield",
                        "invulnerability", "hit_flash_ticks", "score", "kills", "bomb_kills", "bombs",
                        "boss_started", "boss_defeated", "boss_left", "boss_right", "boss_core",
-                       "controls.bits", "controls.cached_charge")
+                       "controls.bits", "controls.cached_charge", "missile_rng")
 
     def observe(scenario, geometry=False):
         commands = None
@@ -1445,6 +1657,9 @@ def weapon_checks(mon, syms, failures, elf, dwarf_tool, output, result, video, p
         mon.command("bank ram")
         frame["game"] = read_game_state(mon, layout, observed_fields)
         frame["actors"], frame["shots"] = read_array("actors"), read_array("shots")
+        locks = mon.read(lock_address, lock_bytes)
+        frame["missile_targets"] = [locks[index // 2] >> (4 * (index & 1)) & 15
+                                    for index in range(arrays["shots"]["count"])]
         frame["pickups"] = read_array("pickups")
         frame["stack_guards"] = {name: mon.integer(syms[name], 1)
                                  for name in ("__stack_bottom", "__irq_stack_bottom")}
@@ -1475,7 +1690,7 @@ def weapon_checks(mon, syms, failures, elf, dwarf_tool, output, result, video, p
     observe(setup)
     observe(setup)
     seed(setup, {"rail_ticks": 0, "spawn_segment": 0, "spawn_cursor": 255,
-                 "player.x": 0, "player.y": 0, "bank": 0, "shield": 100, "score": 0, "kills": 0, "bomb_kills": 0,
+                 "player.x": 0, "player.y": 0, level: 0, "shield": 100, "score": 0, "kills": 0, "bomb_kills": 0,
                  "roll_ticks": 0, "roll_cooldown": 0, "invulnerability": 0,
                  "boss_started": 0, "boss_defeated": 0}, clear=("actors", "shots", "pickups", "explosions"))
 
@@ -1601,13 +1816,54 @@ def weapon_checks(mon, syms, failures, elf, dwarf_tool, output, result, video, p
     impact["impact_capture"] = capture(mon, syms, output, "weapons-missile-impact")
     finish(impact)
 
+    # Each seed's first LFSR step selects a different member of the same pair.
+    # Keep the fixtures well ahead: a rendered frame can contain several
+    # simulation ticks, including the missile's first acquisition.
+    for random_seed, expected_target in ((0x20, 1), (0x40, 2)):
+        locked = {"name": f"homing-missile-random-lock-{expected_target}",
+                  "random_seed": random_seed, "expected_target": expected_target}
+        result["scenarios"].append(locked)
+        await_charge(locked)
+        seed(locked, {"missile_rng": random_seed},
+             clear=("actors", "shots", "pickups", "explosions"))
+        for index, x, z in ((0, -180, 2000), (1, 180, 2200)):
+            seed_element(locked, "actors", index, {"kind": 3, "hp": 4, "flags": 0, "age": 0,
+                         "origin_x": x, "origin_y": 20, "pos.x": x, "pos.y": 20, "pos.z": z})
+        launched, slot = launch(locked)
+        if (launched["missile_targets"][slot] != expected_target
+                or launched["game"]["missile_rng"] != random_seed >> 1):
+            raise RuntimeError("Physical missile launch did not select the seeded random actor")
+        selected, competitor = expected_target - 1, 2 - expected_target
+        closer_z = launched["shots"][slot]["pos.z"] + 1000
+        if closer_z >= launched["actors"][selected]["pos.z"]:
+            raise RuntimeError("Random-lock fixture no longer has room for a closer competitor")
+        seed_element(locked, "actors", competitor, {"pos.z": closer_z})
+        retained = observe(locked)
+        if (retained["shots"][slot]["kind"] != 3
+                or retained["missile_targets"][slot] != expected_target
+                or retained["game"]["missile_rng"] != launched["game"]["missile_rng"]):
+            raise RuntimeError("Missile changed a valid lock or consumed randomness for a closer competitor")
+        # Leave the stored target ID intact so the native update must reject it.
+        seed_element(locked, "actors", selected, {"kind": 0, "hp": 0})
+        reacquired = observe(locked)
+        if (reacquired["shots"][slot]["kind"] != 3
+                or reacquired["missile_targets"][slot] != competitor + 1
+                or reacquired["game"]["missile_rng"] != retained["game"]["missile_rng"]):
+            raise RuntimeError("Missile failed to reacquire the remaining actor without a random draw")
+        locked["shot_slot"] = slot
+        locked["reacquired_target"] = competitor + 1
+        finish(locked)
+
     missing = {"name": "homing-missile-without-target"}
     result["scenarios"].append(missing)
     await_charge(missing)
     seed(missing, clear=("actors", "shots", "pickups", "explosions"))
     previous, slot = launch(missing)
     initial_score = previous["game"]["score"]
-    for _ in range(12):
+    # The missile covers about 70 simulation ticks before the bound; faster
+    # frames simulate fewer ticks each, so allow the observation a generous
+    # frame budget (the trajectory is still checked every frame).
+    for _ in range(24):
         shot = previous["shots"][slot]
         if shot["kind"] != 3 or any(shot[field] != 0 for field in ("pos.x", "pos.y", "dx", "dy")):
             raise RuntimeError("A targetless missile did not retain a straight trajectory")
@@ -1664,7 +1920,7 @@ def weapon_checks(mon, syms, failures, elf, dwarf_tool, output, result, video, p
         for bits in (16, 0, 16, 0):
             pulse_fire(scenario, bits)
         edges = [sample for sample in scenario["samples"][start:] if sample["pressed"] & 16]
-        if len(edges) != 2 or not 0 < (edges[1]["ms"] - edges[0]["ms"]) & 0xffffffff <= 500:
+        if len(edges) != 2 or not 0 < (edges[1]["ms"] - edges[0]["ms"]) & 0xffff <= 500:
             raise RuntimeError("Bomb requires two real FIRE edges within the double-tap window")
 
     def observe_effect(scenario):
@@ -1687,10 +1943,11 @@ def weapon_checks(mon, syms, failures, elf, dwarf_tool, output, result, video, p
                 return state
         raise RuntimeError("Bomb effect did not reach its expected countdown state within 120 IRQs")
 
-    def verify_bomb_trace(scenario, trace_path, expected_triggers, initial_bank):
+    def verify_bomb_trace(scenario, trace_path, expected_triggers):
         mon.command("log off")  # Flush complete records before parsing.
-        events = stores(trace_path, {effect["address"]: 0})
-        remaining, applied, bank, publications = 0, (0, 3, 0), initial_bank, 0
+        # FRAME_SERIAL increments with INC, so its address must be tracked.
+        events = stores(trace_path, {effect["address"]: 0, syms["FRAME_SERIAL"]: 0})
+        remaining, applied, publications = 0, (0, 3, 0), 0
         triggers, durations, phases = [], [], set()
         changing_between_frames = shaken_publications = 0
         previous_motion = None
@@ -1715,32 +1972,32 @@ def weapon_checks(mon, syms, failures, elf, dwarf_tool, output, result, video, p
                     previous_motion = (publications, applied[:2])
             elif address == 0xd011:
                 if value != 0x38 | applied[1]:
-                    raise RuntimeError("Raster/publication changed bomb Y scroll, bitmap/display mode, or IRQ compare bit")
+                    raise RuntimeError("Raster/frame completion changed bomb Y scroll, bitmap/display mode, or IRQ compare bit")
             elif address == 0xd020:
                 if value != applied[2]:
                     raise RuntimeError("Bomb border differs from its white/yellow/orange/red/black phase")
-            elif address == syms["FRONT_BANK"]:
-                if value not in (2, 3) or value == bank:
-                    raise RuntimeError("Bomb effect interrupted alternating bitmap publication")
-                bank, publications = value, publications + 1
+            elif address == syms["FRAME_SERIAL"]:
+                # Each completed frame increments the serial once; the single
+                # visible bank is updated in place while the shake runs.
+                publications += 1
                 shaken_publications += applied[:2] != (0, 3)
         if len(triggers) != expected_triggers or remaining != 0 or applied != (0, 3, 0):
             raise RuntimeError("Bomb trigger count or final neutral display state is incorrect")
         if expected_triggers:
             if (len(durations) != 1 or abs(durations[0] - 640) > 20 + video_ms
                     or phases != set(range(16)) or not changing_between_frames or not shaken_publications):
-                raise RuntimeError("Bomb duration, complete shake phases, between-frame motion, or active bank publication failed")
+                raise RuntimeError("Bomb duration, complete shake phases, between-frame motion, or active frame completion failed")
         elif phases or durations:
             raise RuntimeError("Empty-inventory double FIRE activated bomb presentation")
         scenario["presentation"] = {"trace": str(trace_path), "triggers": len(triggers),
             "completed_duration_ms": durations, "duration_tolerance_ms": 20 + video_ms,
-            "shake_phases": sorted(phases), "motion_changes_between_publications": changing_between_frames,
-            "shaken_bank_publications": shaken_publications, "final_scroll_and_border": applied}
+            "shake_phases": sorted(phases), "motion_changes_between_frames": changing_between_frames,
+            "shaken_frame_completions": shaken_publications, "final_scroll_and_border": applied}
 
     mon.command("log off")
     for address in (0xd011, 0xd016, 0xd020):
         mon.command(f"trace store {address:04x} if @cpu:$01 == $35")
-    for address in (effect["address"], syms["FRONT_BANK"]):
+    for address in (effect["address"], syms["FRAME_SERIAL"]):
         mon.command(f"trace store {address:04x}")
     for name, inventory, retrigger in (("bomb-display-impulse", 1, False),
                                         ("bomb-display-retrigger", 2, True),
@@ -1751,7 +2008,6 @@ def weapon_checks(mon, syms, failures, elf, dwarf_tool, output, result, video, p
         pulse_fire(scenario, 0, 35)
         observe(scenario)
         seed(scenario, {"bombs": inventory}, clear=("actors", "shots", "pickups", "explosions"))
-        initial_bank = mon.integer(syms["FRONT_BANK"], 1)
         if mon.integer(effect["address"], 1) != 0:
             raise RuntimeError("Bomb scenario did not start with a neutral presentation")
         trace_path = output / f"weapons-{name}-monitor.log"
@@ -1774,7 +2030,7 @@ def weapon_checks(mon, syms, failures, elf, dwarf_tool, output, result, video, p
         final = observe(scenario)
         if final["game"]["bombs"] != 0:
             raise RuntimeError("Physical bomb gesture did not spend the expected inventory")
-        verify_bomb_trace(scenario, trace_path, 2 if retrigger else int(inventory > 0), initial_bank)
+        verify_bomb_trace(scenario, trace_path, 2 if retrigger else int(inventory > 0))
         scenario["expired_capture"] = capture(mon, syms, output, f"weapons-{name}-expired")
         finish(scenario)
 
@@ -1918,17 +2174,26 @@ def music_checks(mon, syms, failures, elf, reu, dwarf_tool, output, result, sid_
     fields["menu_ticks"]["size"] = 2
     audio_description = subprocess.check_output(
         [str(dwarf_tool), "--name=AudioEngine", "--show-children", str(elf)], text=True)
-    register_field = dwarf_members(audio_description, "AudioEngine").get("registers")
+    members = dwarf_members(audio_description, "AudioEngine")
+    register_field = members.get("registers")
     audio_size = re.search(r"DW_AT_byte_size\s+\((0x[0-9a-fA-F]+|\d+)\)", audio_description)
-    if (not register_field or register_field["type"] not in
-            (f"[[u8; 25]; {sid_count}]", f"u8[{sid_count}]")
-            or not audio_size or register_field["offset"] + sid_count * 25 > int(audio_size[1], 0)):
+    # Shadow rows are 32 bytes (one shift shared with the hardware offset);
+    # the historical engine used 25-byte rows. DWARF prints the nested array
+    # as `u8[N]`, so take the row stride from the following member's offset.
+    # The audit mirrors only the 25 real registers of each row.
+    following = members.get("effects")
+    register_stride = ((following["offset"] - register_field["offset"]) // sid_count
+                       if register_field and following and following["offset"] > register_field["offset"] else 0)
+    if (not register_field or register_stride not in (25, 32)
+            or register_field["type"] not in (f"[[u8; {register_stride}]; {sid_count}]", f"u8[{sid_count}]")
+            or not audio_size or register_field["offset"] + sid_count * register_stride > int(audio_size[1], 0)):
         raise RuntimeError("Pitch audit requires the exact native AudioEngine register-cache layout")
     register_address = resident_symbol(syms, "AUDIO")[1] + register_field["offset"]
     data = reu.read_bytes()
     format = package_model_layout(data)
-    score_offset, header_size, magic, cue_count = ((0x200000, 256, b"SMU3", 21)
-        if format["space"] else (0x100000, 128, b"SMU2", 13))
+    score_offset = format["music_offset"]
+    header_size, magic, cue_count = ((256, b"SMU3", 21)
+        if format["space"] else (128, b"SMU2", 13))
     header = data[score_offset:score_offset + header_size]
     if header[:4] != magic or header[4] != sid_count or header[6] != cue_count:
         raise RuntimeError("Music checks require the matching complete score bank")
@@ -2038,7 +2303,7 @@ def music_checks(mon, syms, failures, elf, reu, dwarf_tool, output, result, sid_
             raise RuntimeError(f"{name} did not begin on its opening page")
         start_cycles = mon.registers()["bus_cycles"]
         mon.command("bank ram")
-        initial_registers = mon.read(register_address, sid_count * 25)
+        initial_registers = mon.read(register_address, sid_count * register_stride)
         mon.command("bank cpu")
         previous_page, wraps = 0, 0
         seen = {0}
@@ -2095,7 +2360,7 @@ def music_checks(mon, syms, failures, elf, reu, dwarf_tool, output, result, sid_
                                   +row*len(music_voices)+lane]) > 1}
         scenario["pitch_audit"] = music_pitch_audit(
             [event for event in events if start_cycles <= event["bus_cycles"] < end_cycles],
-            [initial_registers[sid * 25:(sid + 1) * 25] for sid in range(sid_count)],
+            [initial_registers[sid * register_stride:sid * register_stride + 25] for sid in range(sid_count)],
             music_voices, authored_notes, bus_hz)
         if sid_count == 2 and any(0xd440 <= event["address"] <= 0xd478 for event in events):
             raise RuntimeError("Two-SID music wrote to an enhancement SID address")
@@ -2126,6 +2391,8 @@ def main():
                         help="after timing, seed section boundaries and results modes through ELF/DWARF-derived monitor writes")
     parser.add_argument("--control-checks", action="store_true",
                         help="after timing, verify Up climbs, Down dives, and lateral dodges with IRQ-synchronized physical joystick input")
+    parser.add_argument("--pause-checks", action="store_true",
+                        help="after timing, verify paused-input disposal and resume rebasing with monitor-assisted pause toggles")
     parser.add_argument("--weapon-checks", action="store_true",
                         help="after timing, verify damage flashes, homing missiles and raster-clocked bomb shake/flash with physical joystick input")
     parser.add_argument("--attract-checks", action="store_true",
@@ -2135,7 +2402,7 @@ def main():
     parser.add_argument("--music-cues", type=int, nargs="+", metavar="CUE",
                         help="with --music-checks, limit full-loop checks to these cue IDs; default is every packaged cue")
     parser.add_argument("--llvm-dwarfdump", type=Path,
-                        help="DWARF reader for optional streaming/control/weapon checks; defaults beside --llvm-nm")
+                        help="DWARF reader for optional streaming/control/pause/weapon checks; defaults beside --llvm-nm")
     parser.add_argument("--out-dir", type=Path)
     parser.add_argument("--frames", type=int, default=8)
     parser.add_argument("--timeout", type=float, default=45)
@@ -2155,11 +2422,9 @@ def main():
         for path in (args.vice, args.roms, args.llvm_nm, prg, reu, elf):
             if not path.exists():
                 raise RuntimeError(f"Required path is missing: {path}")
-        if reu.stat().st_size != 16 * 1024 * 1024:
-            raise RuntimeError("REU package must be exactly 16 MiB")
-        sid_count = reu.read_bytes()[17]
-        if sid_count not in (2, 4):
-            raise RuntimeError("REU package must identify its two- or four-SID profile")
+        package_image = reu.read_bytes()
+        package_format = package_model_layout(package_image, validate_size=True)
+        sid_count = package_image[17]
         syms = symbols(elf, args.llvm_nm)
         failures = {address: name for name, address in syms.items()
                     if ("havoc_c64" in name and "4fail" in name) or name == "rust_begin_unwind"}
@@ -2180,7 +2445,7 @@ def main():
         # directories instead and specify all test resources on the CLI.
         command = [str(args.vice.resolve()), "-directory", str(args.roms.resolve()), "+logtofile", "+logcolorize",
                    "-"+args.video, "-warp", "+sound", "-jamaction", "5", "-autostartprgmode", "1",
-                   "-reu", "-reusize", "16384", "-reuimage", str(reu), "+reuimagerw", "-sidextra", str(sid_count-1), "-sid2address", "0xd420",
+                   "-reu", "-reusize", str(package_format["reu_size"] // 1024), "-reuimage", str(reu), "+reuimagerw", "-sidextra", str(sid_count-1), "-sid2address", "0xd420",
                    "-joydev1", "0", "-joydev2", "0", "-controlport1device", "iosim", "-controlport2device", "iosim",
                    "-remotemonitor", "-remotemonitoraddress", f"127.0.0.1:{port}",
                    "-initbreak", "0x080d", "-moncommands", str(startup), "-autostart", str(prg)]
@@ -2225,13 +2490,17 @@ def main():
         if args.title_reference:
             expected = args.title_reference.read_bytes()
             actual = (output / "title-native.bin").read_bytes()
-            if len(expected) != 10000:
-                raise RuntimeError("Title reference must contain exactly 10,000 bytes")
-            differences = sum(a != b for a, b in zip(actual, expected))
+            if len(expected) not in (10000, 10001):
+                raise RuntimeError("Title reference must contain 10,000 bytes plus an optional background byte")
+            # Compare what the screen shows: slot order and unused slots may
+            # differ between the host pack and the native cell writer.
+            expected_pixels = decoded_pixels(expected[:10000], expected[10000] if len(expected) > 10000 else 0)
+            actual_pixels = decoded_pixels(actual, report["title"]["capture"]["background"])
+            differences = sum(a != b for a, b in zip(actual_pixels, expected_pixels))
             report["title"]["reference"] = {"path": str(args.title_reference.resolve()),
-                                             "bytes_different": differences}
+                                             "pixels_different": differences}
             if differences:
-                raise RuntimeError(f"Native title differs from host reference in {differences} bytes")
+                raise RuntimeError(f"Native title differs from host reference in {differences} pixels")
         # Capture real CPU stores while I/O is selected, excluding the renderer
         # RAM living beneath $D000. Tracepoints do not stop the emulated CPU.
         for sid in range(sid_count):
@@ -2295,6 +2564,11 @@ def main():
             control_checks(mon, syms, failures, elf,
                            args.llvm_dwarfdump or args.llvm_nm.with_name("llvm-dwarfdump"),
                            output, report["control_checks"])
+        if args.pause_checks:
+            report["pause_checks"] = {}
+            pause_checks(mon, syms, failures, elf,
+                         args.llvm_dwarfdump or args.llvm_nm.with_name("llvm-dwarfdump"),
+                         output, report["pause_checks"])
         if args.weapon_checks:
             report["weapon_checks"] = {"full_boss_health": report["full_boss_health"]}
             weapon_checks(mon, syms, failures, elf,
@@ -2326,7 +2600,7 @@ def main():
         if mon is not None:
             try:
                 debug = mon.command("r") + mon.command("bt")
-                for address, length in ((0, 64), (0x100, 256), (0x7200, 64), (0xc400, 64),
+                for address, length in ((0, 64), (0x100, 256), (0x7500, 64), (0xc400, 64),
                                         (0x7600, 32), (0x3000, 32), (0x8400, 32)):
                     debug += mon.command(f"m {address:04x} {address+length-1:04x}")
                 (output / "failure-monitor.txt").write_text(debug)

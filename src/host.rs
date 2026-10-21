@@ -409,7 +409,7 @@ pub fn common_bank() -> [u8; COMMON_SIZE] {
 pub fn model_bank(level: u8) -> [u8; MODEL_SIZE] {
     assert!(level < SEGMENT_COUNT);
     let mut b = [0; MODEL_SIZE];
-    b[..4].copy_from_slice(b"SMA3");
+    b[..4].copy_from_slice(b"SMA4");
     b[4] = MODEL_COUNT;
     b[5] = level;
     let info = stage_info(level);
@@ -425,14 +425,24 @@ pub fn model_bank(level: u8) -> [u8; MODEL_SIZE] {
     } else {
         0
     };
+    // Boss stages reserve mesh slot three for the boss side units, which keep
+    // the boss enlargement; every other enemy slot bakes at the smaller scale.
+    let enemy_scale = |id: u8, value: i16| {
+        if id == CARRIER || (id == TURRET && info.boss_kind != 0) {
+            value * BOSS_SCALE
+        } else {
+            enemy_scaled(value)
+        }
+    };
     for slot in 0..3 {
         let at = ENEMY_SPECS_OFFSET + slot * ENEMY_SPEC_SIZE;
         b[at] = hp[slot];
         let center_y = if slot == 2 && profile != 1 { 10 } else { 0 };
         let pivot_y = if slot == 2 { ground_pivot_y } else { 0 };
-        b[at + 1] = (pivot_y + (center_y - pivot_y) * ENEMY_SCALE) as u8;
-        b[at + 2] = (19 * ENEMY_SCALE) as u8;
-        b[at + 3] = (18 * ENEMY_SCALE) as u8;
+        let id = FIGHTER + slot as u8;
+        b[at + 1] = (pivot_y + enemy_scale(id, center_y - pivot_y)) as u8;
+        b[at + 2] = enemy_scale(id, 19) as u8;
+        b[at + 3] = enemy_scale(id, 18) as u8;
         put16(&mut b, at + 4, if slot == 2 { 250 } else { 100 });
         b[at + 6] = speed[slot];
         b[at + 7] = u8::from(slot == 1 && profile != 2);
@@ -636,20 +646,25 @@ pub fn model_bank(level: u8) -> [u8; MODEL_SIZE] {
     for id in FIGHTER..=CARRIER {
         let pivot_y = if id == TURRET { ground_pivot_y } else { 0 };
         for vertex in &mut models[id as usize].0 {
-            vertex[0] *= ENEMY_SCALE;
-            vertex[1] = pivot_y + (vertex[1] - pivot_y) * ENEMY_SCALE;
-            vertex[2] *= ENEMY_SCALE;
+            vertex[0] = enemy_scale(id, vertex[0]);
+            vertex[1] = pivot_y + enemy_scale(id, vertex[1] - pivot_y);
+            vertex[2] = enemy_scale(id, vertex[2]);
         }
     }
     for (id, (vertices, faces)) in models.iter().enumerate() {
         let d = 16 + id * 8;
+        let shift = mesh_shift(vertices);
         put16(&mut b, d, cursor as u16);
         b[d + 2] = vertices.len() as u8;
         b[d + 3] = faces.len() as u8;
+        b[d + 6] = shift;
+        // The solid medallion has consistently outward-facing triangles;
+        // culling its concealed faces also avoids painter-order artifacts.
+        b[d + 7] = if id == MEDAL as usize { MESH_ONE_SIDED } else { 0 };
         for vertex in vertices {
             for v in vertex {
-                put16(&mut b, cursor, *v as u16);
-                cursor += 2;
+                b[cursor] = quantize_coordinate(*v, shift) as u8;
+                cursor += 1;
             }
         }
         put16(&mut b, d + 4, cursor as u16);
@@ -664,6 +679,43 @@ pub fn model_bank(level: u8) -> [u8; MODEL_SIZE] {
 }
 
 type Model = (Vec<[i16; 3]>, Vec<[u8; 4]>);
+
+/// Round half away from zero so mirrored vertices stay exactly symmetric.
+pub fn quantize_coordinate(value: i16, shift: u8) -> i8 {
+    let magnitude = value.unsigned_abs() as u32;
+    let rounded = if shift == 0 {
+        magnitude
+    } else {
+        (magnitude + (1 << (shift - 1))) >> shift
+    };
+    assert!(rounded <= 127, "coordinate {value} does not fit shift {shift}");
+    if value < 0 {
+        -(rounded as i8)
+    } else {
+        rounded as i8
+    }
+}
+
+/// The smallest shift under which every coordinate of the mesh fits an `i8`.
+/// Integer meshes within ±127 keep shift 0 and are stored exactly.
+pub fn mesh_shift(vertices: &[[i16; 3]]) -> u8 {
+    let largest = vertices
+        .iter()
+        .flat_map(|v| v.iter().map(|c| c.unsigned_abs() as u32))
+        .max()
+        .unwrap_or(0);
+    for shift in 0..=MAX_MESH_SHIFT {
+        let rounded = if shift == 0 {
+            largest
+        } else {
+            (largest + (1 << (shift - 1))) >> shift
+        };
+        if rounded <= 127 {
+            return shift;
+        }
+    }
+    panic!("mesh extent {largest} exceeds the largest supported shift");
+}
 
 fn customize_stage_models(info: StageInfo, models: &mut [Model]) {
     match info.theme {
@@ -1607,7 +1659,7 @@ pub fn bake(out: &Path) -> Result<(), Box<dyn std::error::Error>> {
             include_str!("../config/havoc.cfg")
         },
     )?;
-    let mut report = format!("H.A.V.O.C. package {PACKAGE_ID:08X}\n16 MiB REU; common {COMMON_OFFSET:06X} (3072 bytes; 2048 resident model bytes); eighteen checked 2048-byte stage model banks at {MODEL_BANKS_OFFSET:06X}; 64-byte model directory at {MODEL_DIRECTORY_OFFSET:06X}; eighteen 2048-byte segments at {SEGMENTS_OFFSET:06X}, each with a checksummed 512-byte runtime prefix (up to 62 encounters)\nEighteen 75-second stages, seventeen 8-second crossings: 24:46 scheduled gameplay plus victory reveal. Five bosses: Gorge Warden, Citadel Heart, Carrier, Dreadnought, Gate Guardian.\nFour enemy movement families with distinct terrestrial and orbital meshes; authored three-dimensional debris fields and an orbital ascent.\n{} SIDs: {} music voices + 2 effects voices. {} original cues; {} bytes of paged score data at {MUSIC_OFFSET:06X}.\nOriginal models and music; no external ROMs or samples.\n", music::SID_COUNT, music::MUSIC_VOICES, music::CUE_COUNT, score.len());
+    let mut report = format!("H.A.V.O.C. package {PACKAGE_ID:08X}\n1 MiB REU; common {COMMON_OFFSET:06X} (3072 bytes; 2048 resident model bytes); eighteen checked 2048-byte stage model banks at {MODEL_BANKS_OFFSET:06X}; 64-byte model directory at {MODEL_DIRECTORY_OFFSET:06X}; eighteen 2048-byte segments at {SEGMENTS_OFFSET:06X}, each with a checksummed 512-byte runtime prefix (up to 62 encounters)\nEighteen 75-second stages, seventeen 8-second crossings: 24:46 scheduled gameplay plus victory reveal. Five bosses: Gorge Warden, Citadel Heart, Carrier, Dreadnought, Gate Guardian.\nFour enemy movement families with distinct terrestrial and orbital meshes; authored three-dimensional debris fields and an orbital ascent.\n{} SIDs: {} music voices + 2 effects voices. {} original cues; {} bytes of paged score data at {MUSIC_OFFSET:06X}.\nOriginal models and music; no external ROMs or samples.\n", music::SID_COUNT, music::MUSIC_VOICES, music::CUE_COUNT, score.len());
     for (index, design) in CAMPAIGN.iter().enumerate() {
         report.push_str(&format!(
             "{:02}. {}: theme {}, enemy profile {}, boss {}, music {}\n",
@@ -1629,7 +1681,7 @@ pub fn bake(out: &Path) -> Result<(), Box<dyn std::error::Error>> {
 }
 pub fn check_package(reu: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
     if reu.len() != REU_SIZE as usize {
-        return Err("REU must be exactly16MiB".into());
+        return Err(format!("REU must contain exactly {REU_SIZE} bytes (1 MiB)").into());
     }
     validate_header(reu).map_err(|e| format!("package header: {e:?}"))?;
     let common = &reu[COMMON_OFFSET as usize..COMMON_OFFSET as usize + COMMON_SIZE];

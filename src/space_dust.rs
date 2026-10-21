@@ -1,7 +1,6 @@
 //! Harmless, one-pixel forward-motion cues behind space-scene geometry.
 
 use crate::game::Mode;
-use crate::render::BAND_PIXELS;
 
 pub const SPECK_COUNT: usize = 8;
 pub const COLOR: u8 = 12;
@@ -67,14 +66,12 @@ impl SpaceDustFrame {
     /// Called after clearing, before triangles, so even black geometry occludes.
     #[inline(never)]
     #[cfg_attr(target_arch = "mos", link_section = ".phase.pixels_aux")]
-    pub(crate) fn draw_band(&self, band: u8, pixels: &mut [u8; BAND_PIXELS]) {
+    pub(crate) fn draw_band(&self, band: u8, canvas: &mut impl crate::render::Canvas) {
         for &(x, y) in &self.positions {
             if y >> 3 == band {
                 // Only prepare() can create positions. A matching valid band
-                // proves y<200 and x<160; one store is exactly one logical pixel.
-                unsafe {
-                    *pixels.get_unchecked_mut((y as usize & 7) * 160 + x as usize) = COLOR;
-                }
+                // proves y<200 and x<160; one plot is exactly one logical pixel.
+                canvas.plot((y & 7) as usize, x as usize, COLOR);
             }
         }
     }

@@ -5,6 +5,757 @@ VICE build used by `tools/vice-smoke.py`. These are emulator measurements, not
 claims about physical C64 Ultimate frame rates. The package is read-only during
 measurement; its PRG, REU, and ELF hashes are recorded and checked afterward.
 
+Current package ID `$534D0800` uses a 1 MiB REU image for both sound profiles,
+with music at `$0C0000-$0FFFFF` and code overlays packed into the lower banks.
+Recorded measurements below retain their original package layouts and hashes;
+earlier 16 MiB results do not measure the relocated loader. Use the configuration
+and REU capacity matching the package when reproducing a historical run.
+
+## Guarded single-framebuffer publication: 2026-10-21
+
+PIXELS now prepares each complete band before publishing any of its bytes.
+`fast_cell_stage` consumes the coverage/HUD-slot/overflow tables as a 400-byte
+staging buffer, preserving the preceding palette inputs for spilled cells.
+The new `publish_staged_band` copies those bytes only outside the target
+band's raster exclusion interval. It waits with IRQs enabled and masks only
+the final coherent raster recheck and fixed copy. The interval is
+`[40 + 8*band, 64 + 8*band)`, covering all Y-scroll positions and timing
+margins; it does not wait for v-sync. Global background changes remain
+progressive, as documented in the hardware guide.
+
+The final publisher is 308 bytes, with eight-byte bitmap loops and four-cell
+attribute loops. PIXELS grows from 15,117 to 15,419 bytes; its 637-byte helper
+tail and total checksummed composition remain unchanged. There is no new
+framebuffer allocation. Coverage must be cleared after staging, so its cost
+is included in frame measurements. The benchmark's geometry checkpoint now
+uses ordinary resident code to keep the four-SID instrumented constants within
+their existing limit.
+
+Validation includes both host feature suites, 16,366 native cell/staging
+checks, 256 quantizer bands, 1,076 assembled publisher cases (57 observed
+raster-rollover retries), and both production layouts/overlay audits. The
+publisher model charges an extra bus cycle for every VIC read and color
+store: its conservative masked bound is 8,473 CPU-cycle units, or 2.102 PAL
+lines, against a seven-line requirement. This is a model bound, not a
+physical-machine measurement. Native benchmark traces independently require
+25 complete copies per frame and measure the successful masked guard through
+the final visible store, including any coherent-read retry.
+
+All four production SID/video combinations pass the controls, weapons and
+streaming suites (67 scenarios each). After the loop unroll, all four pass
+another 20 weapon scenarios and exact title comparison; there are no music
+underruns. Reports are in `target/scanout/smoke-*` and
+`target/scanout/final-smoke-*`. The final 18-case NTSC matrix, with three CIA
+phases per case, has identical bitmap/screen/color bytes, geometry and game
+state against the unchanged `s2-pkg` baseline. Mean FPS ratio is 0.9672, with
+0.944 ms of polling and 2.142 ms of copy/scheduling work per frame. Its longest
+successful protected operation is 81 bus cycles (0.079 ms, 1.25 NTSC lines).
+The 12-case four-SID NTSC matrix also meets this bound. These are calibrated
+emulator figures; physical scan-out acceptance remains outstanding.
+
+The complete PAL matrix passes all correctness checks: 572 cases, three CIA
+phases each (1,716 samples), and 42,900 protected commits, with exact native,
+game-state and geometry hashes against `s2-pal`. The aggregate report
+`target/scanout/full-pal-report.json` retains the 271 completed cases from an
+interrupted sequential run and three passed parallel shards; it verifies the
+complete key set, identical package hashes and all per-sample guards. Its
+summary is `target/scanout/full-pal-summary.json`.
+
+Mean frame time is 115.453 -> 119.104 ms (+3.16%); the mean matched-case FPS
+ratio is 0.96886. Summed phase work is 49.425 -> 53.660 ms, including 0.693 ms
+polling and 2.208 ms copying/scheduling per frame. Staging averages 4.024 ms
+against the former 4.087 ms finish; raster time is 22.020 -> 22.575 ms,
+including the additional coverage clears. The longest successful protected
+operation is 84 bus cycles (0.085 ms, 1.33 PAL lines), with one observed final
+guard retry and maximum audio lateness of 1.191 ms. The opening real-time
+sample changes from 9.692 to 9.343 FPS.
+
+Correctness passes do not waive the existing performance warning: four cases
+exceed its 5% FPS-loss threshold. They are `bridge-11-100` and `bridge-16-0`,
+both at ten simulation ticks with cold and retained palettes. The largest
+loss is 5.66% FPS (6.00% more frame time). These are recorded separately in
+the aggregate as the cost of the chosen publication strategy.
+
+## The sky as the VIC background: 2026-10-21
+
+A census of the cells that spill into the pixel form (session tool
+`spill_census.py`, a patched `cells.S` logging every spill) showed what they had
+in common: the band's clear colour sat in slot 1 of nearly every one of them.
+Terrain is painted far to near, so a cell crossed by several terrain spans
+passes through "sky + three terrain colours" while its sky pixels are still
+waiting to be overdrawn; the fourth colour forces the spill although the cell
+ends with three. Lowlands spilled 44 cells per frame, the missiles frame 59,
+the carrier 57 — about 5–7 ms each (expansion 2.1 k cycles, pixel-form rows
+140 each, the quantizer 3.8 k).
+
+The VIC's global background register is the natural fourth slot, and no
+geometry triangle in any fixture uses black: PIXELS now writes the frame's
+clear colour to `$D021` and code 0 means "the clear colour". The cell writer
+stores slot *keys* (colour XOR the clear colour), so the clear colour is key 0
+like a free slot and every zero test in the span fast paths is unchanged — the
+raster and the HUD entries XOR once per span, the finish XORs the attribute
+nibbles back (a free slot shows the clear colour), the spill expands slot 0 to
+the clear colour, and `fast_pack_cell` takes the background from the same
+zero-page byte (code 0, never a slot, the nearest-colour fallback). Black HUD
+panels become ordinary slot colours in their three bands, where they replace
+the sky slot one for one. The unused band packer (`fast_pack_band` and its
+`$7700` sampling table) went with it: PIXELS 15,495 → 15,117 bytes. The host
+reference (`cells.rs`, `pack_cell` with a background argument) mirrors the
+representation; `tests/cells.rs` checks the cell band against the classic pixel
+path over 925 bands of real frames with their sky colours (identical pixels;
+427 spills instead of about 1,600). `tools/test-cells-kernel.py` (16,306
+checks) and `tools/test-pack-kernel.py` (256 bands, with backgrounds) pass.
+
+Pixels change only where a cell used to be quantized: the quick PAL matrix
+shows 0–29 changed pixels per frame (none on the black-background boss stage),
+geometry and game state identical everywhere, the cells in question now showing
+all their colours exactly (`tools/compare-benchmarks.py`,
+`target/bench/bg-quick-diff`). Work on the quick matrix: Lowlands 41.3 → 37.0
+ms, missiles 68.3 → 62.5, carrier 55.0 → 51.9, title 55.8 → 52.6, dreadnought
+unchanged. Full matrices (`target/bench/bg-pal`, `bg-ntsc`, difference reports
+in `bg-pal-diff` / `bg-ntsc-diff`): 572 cases each, geometry and game state
+identical in every case, 10.3 changed pixels per frame on average (at most 51,
+240 frames unchanged), work 50.4 → 49.1 ms (PAL) and 50.3 → 48.9 (NTSC), raster
+22.7 → 21.7, pack 4.4 → 4.0, canyon frames −11 %, total 115.5 → 113.8, opening
+real-time sample 9.23 → 9.58 FPS; in `mos-sim` the Lowlands frame's PIXELS
+23.5 → 19.4 ms (cell writes 662 → 470 cycles per span, finish 14.4 k → 10.4 k
+per band), the missiles frame 43.7 → 37.5, the carrier 31.0 → 27.5. Both smoke
+suites pass, and the host title snapshot now matches the native title capture
+pixel for pixel through the background-aware decoder (`--title-reference`).
+Frozen as `opt-baseline-v5-pal` / `-ntsc` / `-pkg`; later steps are
+pixel-identical against v5. Native captures carry `$D021` as byte 10,000, and
+the host snapshot writes the same byte, so every decoder shows code 0 in the
+frame's background colour.
+
+## Phase F: the flight model, and the 16-bit audit: 2026-10-21
+
+The player now flies havoc2's assisted model in Q8 fixed point at the 50 Hz
+tick (`src/game/flight.rs`, native body `fast_flight_step` in
+`target-c64/asm/flight.S`, resident): the stick commands a target velocity
+(3.0 units per tick sideways, 2.75 vertically, a 2.5 push in the roll's
+direction while the hull spins), the velocity follows it by 3/32 per tick
+(213 ms time constant), a soft wall `v ≤ (edge + 7 − q) >> 3` eases the ship
+into the former ±100 × ±65 hard limits without ever crossing them, the hull
+banks with −16 × its lateral acceleration (±28°, so it rolls into a turn,
+levels while sliding and rolls back while braking) and pitches with the
+commanded climb (±15°); both angles lag by an eighth per tick. All deltas use
+the error's magnitude, so left and right are mirrored within a unit and every
+state settles exactly (`tools/test-flight-kernel.py`: 147,850 steps identical
+to the C transcription of the host reference). The kernel is 638 bytes and
+1.9 k cycles per tick (0.03 ms; 0.15 ms per frame at five ticks) and replaced
+the 493-byte compiled `move_player`; the resident Q8 multiply and bounded
+division kernels moved to the `$9900` table page (20 bytes spare there) to
+make room. The mesh rotation's identity shortcut still applies whenever the
+ship is level, which it is exactly whenever it has settled.
+
+The audit of 32-bit arithmetic then removed every `u32`/`i32` from the target
+build (details in [hardware.md](hardware.md#build-and-verification)): a 16-bit
+millisecond clock with window clamps and paused-frame sampling, the
+section-local HUD distance, 16-bit HUD bars, victory easing, wildlife slope
+and music-kernel offsets. `__udivsi3` (380 bytes), `__divsi3` (219) and
+`__mulsi3` (103) are no longer linked; `computed_charge` 202 → 105 bytes,
+`Game::hud` 533 → 309, the IRQ body 532 → 488. Resident code: 10,018 →
+8,759 bytes (1,453 bytes free before `$3000`); SIM prefix 13,731 → 13,542
+(largest profile 16,655 of 16,896); PIXELS prefix 15,438 → 15,291; `Game`
+622 → 621 bytes with the ten-byte flight record included. The score stays
+32-bit (boss bonuses alone pass 65,535 in a full run; its adds and digit
+conversion link no helpers).
+
+Measurement note: a parallel session landed the per-cue music kernels, the
+scan-out publish markers and the 1 MiB REU layout in the same tree while this
+work was in progress, so the `s2`/`v5` matrices are no longer like-for-like
+baselines (their packages predate the missile-lock change too: `Game` 609
+bytes, no `missile_targets`). A quick PAL matrix of the combined tree
+(`target/bench/f1-quick-pal`) keeps every idle fixture's geometry and pixel
+hash equal to `s2` except `missiles` (whose missiles are steered by the newer
+lock logic); its +11 % of work is the music kernels' IRQ time and the new
+`copy`/`wait` publish accounting, not the flight step (SIM slices moved by
+≤ 0.4 ms at ten ticks, `title` meshes unchanged at 1.33 ms). The next full
+PAL/NTSC matrix of this tree becomes the baseline for later steps.
+
+## SIM: the shot collision kernel: 2026-10-21
+
+`Game::update_shots` tested every moved player shot and missile against the
+twelve actor slots with compiled code: a descriptor lookup, the `fast_swept_z`
+call and the outlined `actor_center_y` and `close_xy` for each live slot, about
+400 cycles per pair, so a fight with ten shots in flight spent 40–50 k cycles
+per tick on misses. The scan is now `fast_shot_scan` (`target-c64/asm/shots.S`),
+the native body of `Game::shot_target`: it takes its arguments in registers,
+keeps its state in caller-saved zero page, tests the lateral distance before
+selecting a radius (a slot more than 255 units to the side costs about 70
+cycles), then the depth sweep and the centred vertical distance with the
+release build's wrapping arithmetic, and returns the first hit slot in slot
+order; the Rust keeps the hit's consequences. `tools/test-shots-kernel.py`
+compares it with a C transcription of the host loop over 56,564 scenes (every
+edge of every kind class's hit volume, both sweep directions, slot-order ties,
+wrapping corners, random descriptors). In `mos-sim` a shot costs 0.7 k cycles
+against twelve empty slots, 1.6 k against twelve distant live slots and 2.6 k
+against twelve within 256 units. `update_shots` shrank 2,481 → 2,197 bytes and
+the kernel adds 441, so the largest SIM profile keeps 528 bytes of room.
+
+Quick PAL matrix against the v5 run: every native, pixel, geometry and game
+hash identical; the missiles fixture's SIM slice 21.7 → 16.8 ms at ten ticks
+(work 81.0 → 76.3), the mean SIM slice 3.8 → 3.4 ms, other fixtures within
+noise. Full PAL matrix (`target/bench/s2-pal`, `--pixel-identity` against
+`opt-baseline-v5-pal`): 572 cases, no comparison failure, every hash identical,
+work 49.1 → 49.0 ms, SIM 3.9 → 3.7, missiles −6.3 %, opening real-time sample
+9.58 → 9.69 FPS. The NTSC matrix, smoke suites and the s2 baseline freeze are
+still to run.
+
+## SIM: the missile guidance kernel: 2026-10-21
+
+The missiles fixture spent 29 ms of its 95 ms frame in SIM because
+`missile_target` (compiled Rust, 1,466 bytes) scans every actor slot for every
+live missile on every catch-up tick — about 38 k cycles per missile per tick.
+`target-c64/asm/missile.S` (`fast_steer_missile`) is the native body of
+`Game::steer_missile`: the search in the host's stable order (slots, left
+turret, right turret, core), then `missile_velocity` per axis with the release
+build's wrapping 16-bit product (two quarter-square partials), a bounded
+twelve-round subtraction for the truncating quotient and the ±1 steering step.
+It takes a 19-byte argument record and uses GEOMETRY's `$9140–$917F` scratch,
+idle during SIM. 1,024 bytes of assembly replace about 1,600 bytes of Rust: the
+shared SIM image shrank 13,678 → 13,098 bytes and the largest profile now has
+671 bytes of room (it had 105). The kernel costs 1.1 k cycles with no live
+slot, 4.8 k with six, 6.7 k with twelve and an active boss.
+`tools/test-missile-kernel.py` compares it with a C transcription of the host
+functions over 3,494 scenes (the host tests' scenarios, the error-clamp and
+depth extremes, random scenes with wrapping coordinates), checking the steered
+velocity, the chosen target and its closing speed. Writing it exposed two tool
+gaps, both fixed: the branch audit could not see a wrapped branch whose target
+fell before its section start (objdump prints `beq -$31`, which the pattern did
+not match), and the assembler's `<`/`>` operators on a negative constant give
+the bytes of its magnitude, so negative immediates are now written as bytes.
+
+PAL and NTSC fixed matrices (`target/bench/s1-pal`, `s1-ntsc`), 572 cases each,
+decoded pixels and game state identical to the v4 baselines: work 50.3 → 50.4 /
+50.3 ms (the kernel touches only frames with missiles in flight), total
+116.2 → 115.5 on both (the smaller SIM image saves 0.8 ms of transfer), opening
+real-time sample 9.23 FPS.
+The missiles fixture's tick-10 frame: SIM 28.9 → 21.7 ms, work 94.5 → 86.9 ms;
+the remaining SIM time is `update_shots`'s per-shot collision scan, the next SIM
+candidate. (Fixtures run ten 20-ms ticks in the measured frame; a real 90-ms
+frame runs four or five, so their SIM slice is about twice what play pays.)
+Frozen as `opt-baseline-s1-pal` / `-ntsc` / `-pkg`; both smoke suites pass;
+deployed to the card.
+
+## 2x on work: order-table sort, prep fast path, walker, clip kernel: 2026-10-21
+
+Replaying captured command lists through the PIXELS kernels in `mos-sim`
+(`files/frame_cycles.py` in the session workspace splits a frame into
+preparation, clear, raster and finish; `files/cell_paths.py` counts the cell
+writer's path events) showed where the raster time really went: edge
+preparation cost 10.6 k cycles per triangle (three 32-bit divisions and a
+shift-add multiply per edge — 7 ms on Lowlands, 31 ms on the 182-triangle
+citadel frame), a span cost 740–890 cycles (first use of a colour went through
+the general path at about 220 cycles; the 0.6 % of cells that overflow into
+the pixel form cost about 270 per row plus a 3.3 k expansion), and the walker
+about 460 per painted row. The replay was 5–7 k cycles per scenery record,
+of which the projection-cache lookup was 720 per corner (the arithmetic hash
+alone 346) and a near-clipped record about 20 k in compiled Rust.
+
+- `target-c64/asm/sort.S` no longer moves commands: a two-pass 8-bit radix
+  sort writes the sorted order (one command index per position) to `$7600`,
+  the raster heads moved to `$EF20-$FF1F`, and `scenery_last`'s three
+  command reversals became a logical scan order (foreground segment first).
+  1,800 → ≈ 230 cycles per command; the reorder slice (0.6–2.3 ms) is gone.
+- `preparation.S` takes a fast path for edges with dy ≤ 255 and |dx| ≤ 255
+  (nearly all): a 24-bit restoring division by the 8-bit dy with leading-zero
+  skip, the row-centre fraction `16384/dy` from a 512-byte table when the
+  start row is on screen, two quarter-square products. Positions are stored
+  with +32767 so the walker reads a row's column from the high word.
+  10.6 k → 4.9 k cycles per triangle.
+- `raster.S` was rewritten around that: a band's rows split into the segment
+  before the middle row and the segment from it (no per-row middle test),
+  one loop per orientation (no per-row left/right swap), steps in zero page
+  `$D0-$E0` (the compiler's zero-page region is empty; `check-layout.py`
+  asserts it stays so), a walk-only loop for unpainted bands, no head
+  write-back from a triangle's last band.
+- `cells.S`: every fast path takes a free palette slot inline; a spilled
+  cell's palette is poisoned (`$FF`) so the loops need no overflow test;
+  whole-row pixel paths and a table-driven expansion for overflowed cells;
+  unrolled clears.
+- `emit.S`: `fast_clip_triangle` is the renderer's `GeometrySink::triangle`
+  in assembly (classification, Sutherland–Hodgman against z = 8 with the
+  bounded division and quarter-square partials, emission of the polygon);
+  the command depth third uses `85 h + (h + l)/3` with a thirds table instead
+  of a division; the cache lookup indexes by a byte mix of the six coordinate
+  bytes (720 → ≈ 300 cycles per corner; a host census over 54 frames showed
+  misses already equal to the distinct vertices, so a larger cache would not
+  have helped).
+- Harnesses: `tools/test-sort-kernel.py` (416 sorts, with and without
+  segments, through the Rust entry), `tools/test-clip-kernel.py` (1,584
+  triangles), `tools/test-raster-prep.py` (biased expectations),
+  `tools/test-cells-kernel.py` (biased heads, relocated band state), emit,
+  mesh, pack, projection, multiply and preparation-ABI checks all pass. The
+  smoke suite's targetless-missile check now allows 24 frames instead of 12:
+  faster frames simulate fewer ticks each.
+
+PAL fixed matrix, two-SID, 572 cases, three samples, decoded pixels
+identical to `opt-baseline-v3-pal` in every case:
+
+| Slice (mean, ms) | Phase G baseline | Cell writer (v3) | Order sort + walker (`walk-pal`) | + clip, segments, pixel paths (`clip2-pal`) | v4 (`v4-pal`) |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Total frame | 191.1 | 135.8 | 123.1 | 117.7 | **116.2** (1.64x) |
+| Work (no overlay transfers) | 119.9 | 69.8 | 55.7 | 51.8 | **50.3** (2.38x; median 50.0) |
+| GEOMETRY work | 41.0 | 17.1 | 15.0 | 11.8 | 10.8 |
+| Raster (prep, clear, walk, cell writes) | 36.0 | 35.9 | 23.9 | 23.2 | 22.6 |
+| Band finish (pack) | 30.1 | 4.4 | 4.5 | 4.5 | 4.5 |
+| HUD | 2.6 | 3.2 | 3.2 | 3.2 | 3.3 |
+| Opening real-time sample | 6.12 FPS | 7.91 FPS | 8.63 FPS | 9.08 FPS | 9.22 FPS |
+
+Work per frame (tick 10): Lowlands 41 ms, base 44, bridge 46 (about 22–24 FPS
+on the machine, where the frame time is the work time), carrier 55, the
+dreadnought boss 65, the full citadel 81; the missiles fixture 95, of which 29
+is SIM (`missile_target` scans every actor for every live missile in compiled
+Rust — the next SIM kernel). The 90th percentile of the matrix is 69 ms. The NTSC matrix (`target/bench/v4-ntsc`) is pixel-identical
+to `opt-baseline-v3-ntsc`: work 69.7 → 50.3 ms (total 135.9 → 116.2, real-time
+8.21 → 9.57 FPS). In `mos-sim` the Lowlands
+frame's PIXELS now costs 23.5 ms (was 35.8 at the start of this step):
+preparation 3.4, clear 1.4, walk and spans 4.6, cell writes 8.6, finish 5.6.
+Frozen as `target/bench/opt-baseline-v4-pal` / `-ntsc` with the package in
+`opt-baseline-v4-pkg`; both smoke suites pass; deployed to the card.
+
+## The cell writer: spans paint cells, the pack disappears: 2026-10-20
+
+A host census of 55 frames (`src/cells.rs` prototype; see the previous section)
+showed that 81% of the 1,000 cells of a frame end with at most one nonblack
+colour and only 0.5% need quantisation, while the pack spent about 1,600
+cycles per cell reading 32 pixels and ranking a histogram, because overdraw
+marks most cells "partial". PIXELS therefore no longer paints pixels:
+
+- `target-c64/asm/cells.S` (the native body of `havoc::cells::CellBand`) writes
+  two-bit colour codes straight into a row-major 8×40 table of cell bytes
+  (`$9200`), while a three-slot palette per cell (`$9480`) hands out the
+  hardware colours on first use; black is always code 0. A slot whose colour
+  no longer appears in any of the cell's eight rows is recycled (one table
+  lookup per row); a cell asked for a genuine fourth colour is expanded into
+  the pixel band at `$8C00` and painted per pixel from then on, with the
+  classic rules. Terrain-clear coverage is a parallel nibble table (`$9340`);
+  exterior terrain skips covered pixels; HUD ink marks its slot so expanded
+  pixels carry the quantizer's priority bit.
+- The raster hands every span to `cell_rows`: the first and last cells merge
+  through mask tables, interior cells run a per-mode loop (about 39 cycles
+  per cell, against 32 for the old four-pixel fill). The HUD, text, bars and
+  ambient dust draw through the same `Canvas` trait (`span`, `plot`, `glyph`)
+  on the host and the target, so one Rust implementation serves the classic
+  pixel band (host reference), the host cell band and the kernels.
+- `fast_cell_finish` transposes the 320 code bytes into the visible bitmap,
+  writes the 80 attribute bytes from the palettes and sends only overflowed
+  cells (about 21 per frame after recycling, 40-75 in terrain stages) through
+  the per-pixel quantizer, now exposed as `fast_pack_cell`. `fast_cell_clear`
+  replaces the 1,280-byte band clear with 520 bytes (the coverage table only
+  when a terrain-clear span dirtied it).
+- Exactness: decoded pixels are identical to the classic pipeline; attribute
+  bytes differ in slot order (first use instead of frequency ranking, no
+  preceding-frame retention), so comparisons decode the frame
+  (`tools/bench-native.py --pixel-identity`, `native_pixels_sha256`).
+  `tools/test-cells-kernel.py` checks the kernels, the raster hand-off and
+  `fast_pack_cell` against a C transcription of the reference over 16,333
+  state checks (random bands, 256 exported triangles over 25 bands, layered
+  scenes); the host prototype is pixel-identical to the classic pipeline on
+  every band of the 55 census frames, HUD included.
+- Two tooling consequences: `tools/branch-audit.py` now re-assembles each
+  source with line information and compares every branch's label with its
+  encoded target (the object-only audit could not see a wrapped branch to a
+  same-section label; this one caught a −147-byte branch in the new kernel
+  and finds nothing else in 367 branches), and the kernel harnesses relocate
+  every fixed scratch address (`-Wa,-defsym`) and assert that their image ends
+  below the kernel state.
+
+PAL fixed matrix, two-SID, 572 cases, three samples (`target/bench/cells-pal`,
+frozen as `target/bench/opt-baseline-v3-pal` with its package in
+`opt-baseline-v3-pkg`), decoded pixels identical to `opt-baseline-v2-pal` in
+every case:
+
+| Slice (mean, ms) | Phase G baseline | Precision step (v2) | GEOMETRY kernels | Cell writer (v3) |
+| --- | ---: | ---: | ---: | ---: |
+| Total frame | 191.1 | 165.6 | 149.2 | **135.8** (1.41x) |
+| Work (no overlay transfers) | 119.9 | 98.8 | 84.1 | **69.8** (1.72x) |
+| GEOMETRY work | 41.0 | 31.8 | 17.1 | 17.1 |
+| Raster (now including the cell writes) | 36.0 | 30.0 | 30.1 | 35.9 |
+| Pack (now the band finish) | 30.1 | 24.9 | 24.9 | 4.4 |
+| HUD | 2.6 | 2.9 | 2.9 | 3.2 |
+| Opening real-time sample | 6.12 FPS | 6.63 FPS | 7.12 FPS | 7.91 FPS |
+
+The Lowlands opening frame is 56 ms of work (goal: 50 for 20 FPS on the
+machine); the 182-triangle citadel scene 114 ms, now raster-bound. The NTSC
+matrix (`target/bench/cells-ntsc`, frozen as `opt-baseline-v3-ntsc`) is the
+same picture: 572/572 pixel-identical to `opt-baseline-v2-ntsc`, total
+165.8 → 135.9 ms, work 98.9 → 69.7 ms. In
+`mos-sim` the row walker costs about 225 cycles per row (two Q16 edge steps,
+clamps, pointer stepping) plus 140 per triangle band, and a span about 250
+plus 39 per interior cell; the raster is where the next step goes. PIXELS is
+14,063 of 16,160 bytes; the pack's band driver and row-sampled paths remain
+only for `tools/test-pack-kernel.py`.
+
+The PAL two-SID smoke suite (control, weapon and streaming checks,
+`target/cells/smoke-2sid-pal-final`) and the NTSC four-SID suite (control and
+weapon checks, `target/cells/smoke-4sid-ntsc-final`) pass; the roll check now
+allows the countdown enough frames at the new frame rate. Both host test
+suites (two- and four-SID features) pass; the build was deployed to the card.
+
+## GEOMETRY in assembly: emit, replay and mesh kernels: 2026-10-20
+
+Three kernels in `target-c64/asm/emit.S` replace the compiled per-triangle
+chain (`SceneBudget::triangle` → `camera_point` ×3 → `Renderer::triangle` →
+`project_triangle` → `project` ×3, about 8-9 k cycles of glue per face):
+
+- `fast_emit_triangle` is `project_triangle` for the resident renderer: the
+  three corners through the 64-entry projection cache (misses call
+  `fast_project` in place), area and orientation culling, the screen-edge
+  rejections, the 256-command capacity with saturating drops, the exact
+  `(z0+z1+z2)/3` depth and the 16-byte command. `tools/test-emit-kernel.py`
+  checks 3,184 emissions byte for byte.
+- `fast_replay_scenery` consumes the staged scenery records in place (sky
+  parallax applied to STATIC_SKY records as it goes) and stops at the first
+  record that needs near clipping, which Rust clips and resumes after, so the
+  stable sort still sees the authored order.
+- `fast_emit_mesh` is the scene sink's mesh path (`SceneBudget::mesh`): every
+  vertex of an instance is rotated once by `fast_rotate_vertex`, translated
+  with saturating adds and lowered by the chase camera into a 16-byte record at
+  `$E000 + 16·index` (the raster tails live there but are idle until PIXELS);
+  faces then index the records, take the scene budget in order, project each
+  corner on first use and enter the shared emission tail, while a face that
+  straddles the near plane is handed back with its indices and colour so the
+  caller clips it through the classic path. `tools/test-mesh-kernel.py`
+  checks 160 random meshes (3,366 vertex records, 796 commands, 567 clipped
+  hand-backs) against a C transcription of the Rust reference, including
+  i16 saturation, budget exhaustion and the command capacity. A ten-vertex,
+  seventeen-face enemy costs about 67 k cycles (`mos-sim`): 1,900 per vertex
+  for the rotation and translation, 1,090 per projected vertex, about 1,500
+  per visible face; the Rust chain was about 125 k.
+
+PAL fixed matrix, two-SID, 572 cases, three samples (`target/bench/mesh-pal`),
+byte-identical to `opt-baseline-v2-pal` in every case:
+
+| Slice (mean, ms) | Phase G baseline | Precision step (v2) | Emit + replay + mesh kernels |
+| --- | ---: | ---: | ---: |
+| Total frame | 191.1 | 165.6 | **149.2** (1.28x) |
+| Work (no overlay transfers) | 119.9 | 98.8 | **84.1** (1.43x) |
+| GEOMETRY work | 41.0 | 31.8 | 17.1 |
+| Raster | 36.0 | 30.0 | 30.1 |
+| Pack | 30.1 | 24.9 | 24.9 |
+| Opening real-time sample | 6.12 FPS | 6.63 FPS | 7.12 FPS |
+
+GEOMETRY is 15,112 of 16,896 bytes (the Rust mesh chain left with it). The
+same matrix on NTSC for the precision step (`opt-baseline-v2-ntsc`): total
+192.5 → 165.8 ms, work 119.9 → 98.9 ms.
+
+Where the work goes now (Lowlands, ms): raster 22, pack 26, GEOMETRY 11
+(scenery replay 6.4, meshes 2.5, sort 1.6), HUD/SIM/SCENERY 10. A host census
+of 55 frames (`src/cells.rs` prototype) shows why the pack is next: 81% of the
+1,000 cells end the frame with at most one nonblack colour, 18% with two or
+three and 0.5% need quantisation, yet overdraw marks most cells "partial" so
+the pack reads 32 pixels and builds a histogram for them. Writing two-bit codes
+straight from the spans into per-cell bitmap bytes (first-use palettes, dead
+slots recycled, a fourth colour spilling the cell to the per-pixel quantizer)
+is pixel-identical on every band of those frames and replaces the pack with a
+320-byte transpose; that is the next step.
+
+## Hardware frame rate, i8 meshes and the projection kernel: 2026-10-20
+
+### What the real machine says
+
+The space-bar/F frame-rate readout on a physical C64 Ultimate shows **8-10 FPS**
+in the opening Lowlands flight, against 6.1-6.6 FPS for the same screens in
+the calibrated emulator. The hardware probe (`dist/hwprobe/hwprobe.prg`), run
+at stock speed because the turbo configuration was not active, measured REU
+transfers at 1,169 µs/KiB — bus speed, slightly slower than the emulator's
+1,034 — and ordinary RAM and I/O stores at CPU speed. A 100-125 ms hardware
+frame therefore cannot contain the 60-68 ms of bus-speed overlay transfers the
+emulator charges: on the C64 Ultimate the REU DMA scales with the turbo clock,
+and **the hardware frame is, to first order, the work time** that the reports
+record as `phase_work_bus_cycles`. From here every comparison lists both the
+emulator's total frame and the work time; the goal of doubling the frame rate
+is a work-time goal (about 50 ms per frame for 20 FPS).
+
+### The precision step
+
+This is the one content change of the optimisation programme that moves
+pixels, taken deliberately so that everything after it can be held byte-exact
+again:
+
+- Model banks are `SMA4` (package `$534D0700`): vertices are `i8` x, y, z in
+  units of `1 << shift` with the shift (0-3) and a one-sided flag in the two
+  spare descriptor bytes (`assets.rs`, `host.rs`). Every regular enemy, the
+  player, the pickups and the medal are exact at shift 0; the ordinary slot-4
+  hulls are exact at shift 1 (their doubled coordinates are even); only the
+  Dreadnought and the Gate Guardian round to 4-unit steps (shift 2).
+- Mesh rotation is a 3×3 Q8 matrix composed once per instance
+  (`fast_mesh_matrix`, entries clamped to ±256) and applied by
+  `fast_rotate_vertex` as nine quarter-square products with zero entries
+  skipped; the former pair sequence rounded each stage separately. Half-size
+  debris uses one extra shift instead of a Q8 pre-scale.
+- Projection is `80·x/z` and `133·y/z` as one 16×16 product per axis: z is
+  normalised to 128..255 with a signed exponent, `PROJECT_X`/`PROJECT_Y` hold
+  `scale·32768/d` (128 entries each, the same 512 bytes `RECIPROCAL` used),
+  and `>> (15 + e)` restores the scale; y is negated before the shift so both
+  axes round the way they always did. The quantisation is 0.003% against the
+  former 0.2%, and the former `|y| ≤ 30000` guard is unnecessary.
+  `fast_project` (`target-c64/asm/project.S`) is the native body: 1,900 cycles
+  in `mos-sim` against 4,383 for the same formula compiled and about 5,250 for
+  the previous Rust projection; `tools/test-projection-kernel.py` checks
+  183,900 points including z ≤ 0 and every clamp corner.
+
+PAL fixed matrix, two-SID, 572 cases, three samples (`target/bench/precision-pal`,
+frozen as `target/bench/opt-baseline-v2-pal` with its package in
+`opt-baseline-v2-pkg`), against the Phase G baseline and the previous step:
+
+| Slice (mean, ms) | Phase G baseline | Previous step (`p4a-pal`) | Precision step |
+| --- | ---: | ---: | ---: |
+| Total frame | 191.1 | 171.9 | **165.6** (1.15x) |
+| Work (no overlay transfers) | 119.9 | 105.5 | **98.8** (1.21x) |
+| GEOMETRY work | 41.0 | 38.5 | 31.8 |
+| Raster | 36.0 | 30.1 | 30.0 |
+| Pack | 30.1 | 24.9 | 24.9 |
+| Opening real-time sample | 6.12 FPS | 6.30 FPS | 6.63 FPS |
+
+Pixels differ from the Phase G baseline in every case, by construction.
+`tools/compare-benchmarks.py` (`target/bench/precision-pal-diff`) classifies
+the changes: a mean of 77 and at most 853 of the 32,000 visible pixels per
+frame move, almost all along triangle edges (coordinate deltas are 0 or 1 in
+38,620 of 41,712 sampled corner comparisons; the larger deltas belong to
+off-screen or near-plane vertices, where one model unit is ten pixels). The
+"nonlocal" count — pixels whose new colour was not in the old 3×3
+neighbourhood — has a median of 0 and a 90th percentile of 6 per play frame,
+with 19 in the worst boss scene; the Victory medal reaches 257-286 because its
+rotation now rounds once and several of its 116 grazing faces flip in or out.
+Twenty-two cases gain or lose one such sliver. The difference images confirm
+thin edge outlines and nothing structural.
+
+Also in this build, without any pixel impact on the matrix: SPACE pauses the
+flight (a PAUSED caption while the simulation deadline follows the clock), F
+toggles the readout, and taking damage runs a 240 ms two-pixel jolt with an
+80 ms red border through the bomb impulse sequencer. The key scan accepts a
+column only when it also reads high with no row selected, which is what keeps
+the calibrated emulator's `iosim` control-port device (it drives `$DC01` bits
+5-7 low) from switching the readout on inside every capture.
+
+Two tooling notes: `tools/branch-audit.py` now runs from `target-c64/build.rs`
+on every assembled object, so a wrapped conditional branch fails the build
+instead of producing a plausible package (it caught two more during this
+step); and `tools/test-campaign-tools.py` lost two references to the retired
+sky-cache fixture sequence.
+
+Validation of this state: 164 library, 3 host-binary and 133 integration
+tests per SID profile; both packages pass the layout, overlay-reference and
+package audits; the PAL two-SID smoke suite with control, weapon and streaming
+checks passes (`target/precision/smoke-2sid-pal`); the raster, pack, multiply/
+matrix/rotation and projection kernel harnesses pass.
+
+## PIXELS kernels and the Q8 multiply: 2026-10-20
+
+Phase 3 of the optimization plan rewrites the hot PIXELS paths in assembly
+without changing a pixel. All figures are two-SID PAL, 572 fixed-matrix cases
+against `target/bench/opt-baseline-pal/report.json`; native bitmap, screen and
+color bytes are identical to the baseline in every case of every run below.
+
+| Step | Change | Mean frame | Raster | Pack |
+| --- | --- | ---: | ---: | ---: |
+| Phase G baseline | | 191.1 ms | 36.4 ms | 31.4 ms |
+| Phase 1 | single framebuffer | 186.3 ms | 36.4 ms | 31.4 ms |
+| 3a-3c (`target/bench/p3a-pal`) | zero-page edge stepping with inline clamps, span fill eight stores per pass, absolute-indexed band clear | 180.7 ms | 30.6 ms | 31.5 ms |
+| 3d-3e (`target/bench/p3e-pal`) | assembly band dispatcher, partial-cell table and row-sampled packing | 174.5 ms | 30.0 ms | 24.9 ms |
+
+Cumulative speedup 1.095x (cold cases 1.107x, retained 1.084x); the opening
+real-time sample reads 6.30 FPS against the baseline's 6.12 and Phase 1's 5.86;
+no case regresses beyond the 5% matched-work bound any more. Crossings gain the
+most (`bridge-16-306` 0.815x), the busiest enemy scenes the least (1.01-1.02x
+for `enemies-storm/crystal/citadel` retained, which had cached sky bands before).
+
+What the kernels do (`target-c64/asm/raster.S`, `pack.S`):
+
+- The row walker copies each triangle's Q16 edge positions into zero page
+  (`rc12-rc19`) and their steps into private scratch, clamps both edges inline
+  and writes the positions back on exit, so a row costs about 84 cycles of
+  stepping instead of 170 through `(zp),y` pointers. Kernel-only cycles over the
+  1,024 exported fixtures: 35.0 M to 28.3 M (`tools/test-raster-kernel.py`
+  still passes all 25,600 band calls and 48 visibility cases).
+- `fast_clear_band` fills the fixed band at `$8C00` with five absolute-indexed
+  stores per step (about 6 cycles per byte against 13 for the pointer loop) and
+  zeroes the partial-cell table.
+- `fast_raster_band` walks a band's ordered 32-byte mask in assembly, deriving
+  each triangle's head (`$D000 + 16 i`) and tail (`$E000 + 12 i`) from its
+  index; the Rust loop that marshalled a Job per triangle is gone, which also
+  made the PIXELS prefix 175 bytes smaller.
+- The 160-byte partial-cell table at `$7700` records cells containing a span
+  end, a dust speck or HUD ink. Unmarked cells hold one byte per row, so the
+  packer compares one pixel per row, histograms four identical pixels per row and
+  emits one pattern lookup per row: 524 against 1,131 cycles for a uniform cell
+  and 3,156 against 4,856 for a three-color row-uniform cell in `mos-sim`.
+  `tools/test-pack-kernel.py` now places the band at `$8C00` with the minimal
+  correct marking and checks 216 bands, including 48 new row-uniform fixtures,
+  byte for byte against the Rust reference. Overdraw keeps the in-game marking
+  conservative (a live title frame leaves 12-40 cells per band unmarked in the
+  open bands and none in text or terrain bands), which is why the pack gain is
+  6.5 ms rather than the 11 ms a minimal marking would give.
+- Raster tails and masks moved from `$6000-$6F1F` to the free `$E000-$EF1F`, so
+  the PIXELS prefix may grow to `$6F1F`; it is 12,660 bytes.
+
+Two tooling lessons are recorded in the plan: the llvm-mos assembler wraps an
+out-of-range conditional branch silently (a 126-byte `beq` produced a package
+that skipped triangles and looked fast; every benchmark now requires hash
+identity before its timing counts), and a `bpl` loop cannot count down through
+indices of 128 or more.
+
+The exact Q8 multiply (`target-c64/asm/multiply.S`, `tools/test-multiply-kernel.py`)
+replaces the resident `mul_q8`'s sign-extended `__mulsi3` call with
+quarter-square partial products from a 1 KiB table BOOT builds at `$C000`, and
+`fast_rotate_vertex` performs `PreparedRotation::apply`'s exact pair sequence in
+one call. Both match their references over 108,226 products and 24,000 vertex
+rotations, GEOMETRY shrinks from 16,860 to 16,748 bytes, and the fixed matrix
+stays byte-identical. In the full matrix (`target/bench/p4a-pal`, zero
+comparison failures) the mean falls to 171.9 ms (1.112x cumulative, cold 1.124x,
+retained 1.100x) and GEOMETRY work from 40.6 to 38.5 ms, almost entirely in the
+victory scenes whose rotating medal is multiply-bound (`victory-start`
+267.8 to 188.1 ms, `victory-hold` 240.9 to 190.4). Play scenes did not move
+(`carrier` 173.8 ms before and after, `enemies-citadel-full` 241.7): their
+GEOMETRY cost sits in projection's 32-bit products and variable shifts and in
+the sink chain, which is where Phase 4 continues. The opaque kernel calls also
+cost code size at every `mul_q8` call site, because the compiler can no longer
+see which registers the callee leaves alone: SCENERY grew from 13,388 to 13,688
+bytes and resident headroom is 344 bytes (332 four-SID).
+
+Remaining profile (final build, PAL mean 171.9 ms): overlay transfers 66.4 ms,
+GEOMETRY work 38.5, raster 30.0, pack 24.9, HUD 2.9, SIM 3.9, SCENERY 4.5.
+
+Validation of this state: 161 library, 3 host-binary and 133 integration tests
+per SID profile; both packages pass the layout, overlay-reference and package
+audits; the PAL two-SID and NTSC four-SID smoke suites pass in
+`target/phase4/smoke-*`; the raster, pack and multiply kernel harnesses pass.
+Physical hardware acceptance of these changes remains outstanding.
+
+## Single framebuffer, frame-rate readout and sky parallax: 2026-10-20
+
+The renderer now draws into one VIC bank. `draw_pixels` rasterizes each band
+and packs it in place into the visible bitmap, screen and live color RAM
+(`render::pack_band_in_place`), so the back bank, the color shadow, the
+publication raster wait and the whole sky-band cache (`SkyCache`,
+`static_sky_bands`, `fast_static_sky_bands`, `prepare_sky`) are gone; every
+band is repainted every frame. Freed RAM: `$9100-$94FF`, `$C000-$C3FF` and
+`$E000-$FFF9`. Resident headroom grows from 164 to 503 bytes (491 four-SID),
+tables shrink from 1,777 to 1,525 bytes, PIXELS from 12,180 to 11,810 bytes
+including the new readout, and SCENERY from 13,605 to 13,388 bytes; GEOMETRY
+is 16,860 of 16,896 bytes after the parallax replay below.
+
+The space bar toggles a frame-rate readout in tenths beside the boss panel,
+measured in PIXELS over windows of at least fifty audio ticks; it is off at
+startup, so no capture below includes it.
+
+Fixed matrix, two-SID PAL, 572 cases (143 fixtures, ticks 0/10, cold/retained),
+three samples each, in `target/bench/p1-single-fb-pal-v2/report.json` against
+the frozen Phase G baseline `target/bench/opt-baseline-pal/report.json`:
+
+| Scope | Baseline | Single framebuffer | Ratio |
+| --- | ---: | ---: | ---: |
+| All 572 cases, mean | 191.1 ms | 186.3 ms | 0.975 (1.026x) |
+| 286 cold-palette cases | 193.3 ms | 186.4 ms | 0.964 |
+| 286 retained-palette cases | 189.0 ms | 186.1 ms | 0.985 |
+| Best: `bridge-16-306` (publication wait removed) | 138.2 ms | 123.4 ms | 0.893 |
+| Worst: `enemies-crystal/0/retained` (sky cache removed) | 160.4 ms | 175.5 ms | 1.094 |
+| Opening real-time sample (title into Lowlands) | 6.12 FPS | 5.86 FPS | |
+
+Native bitmap, screen and color bytes are identical to the baseline in all 572
+cases, including every retained case: in-place packing reads each cell's
+previous bytes before writing it, exactly as the two-bank path saw them. The
+23 comparison failures the report lists are retained-palette terrestrial cases
+slower than the 5% matched-work bound; every one of them previously reused
+cached sky bands (Lowlands retained 11 of 25), which the single-framebuffer
+decision deliberately gives up in favor of redrawing the sky each frame. The
+publication wait and the per-frame color copy account for the gains, largest in
+crossings that used to land on the 20 ms raster sawtooth.
+
+A seeding defect in `tools/bench-native.py` was found and fixed on the way: the
+cold-palette zero fill addressed `$D800` while the monitor was in `bank ram`,
+which writes the RAM under I/O, so color RAM kept the previous case's palette
+slots and the first comparison run showed slot-only byte differences in every
+case (and palette-overflow cells resolved differently in 94 of them). The fill
+now uses `bank io` and verifies the low nibbles; the earlier run is kept in
+`target/bench/p1-single-fb-pal/` for reference and the corrected cold check in
+`target/bench/p1-coldcheck-pal/`.
+
+Sky parallax: backdrop faces and the orbital starfield keep the `STATIC_SKY`
+flag through crossings, and GEOMETRY shifts flagged records by the ship's
+sideways offset and half its height as it replays staged scenery
+(`Renderer::project_scenery`, `Game::sky_parallax`); the host reference applies
+the same shift before its sink. Applying the offsets inside the SCENERY
+overlay instead cost 268 bytes of argument plumbing alone and overflowed it;
+the replay form costs about 150 GEOMETRY bytes, recovered by dropping an
+unreachable `STATIC_SKY` branch from `SceneBudget` and the saturating camera
+subtraction (mesh translation already saturates). Every fixed-matrix fixture
+pins the ship at the origin, so the matrix is unaffected and the Phase G
+baseline remains the reference for the kernel work; the parallax package's own
+PAL matrix is recorded in `target/bench/parallax-pal/report.json`.
+
+Validation: 161 library, 3 host-binary and 133 integration tests per SID
+profile (the sky-cache suite is gone; `tests/packing.rs` keeps the packer
+tests), 149 library tests without default features and the gameplay suite;
+both packages pass the layout, overlay-reference and package audits; PAL
+two-SID and NTSC four-SID smoke suites in `target/parallax/smoke-*`.
+
+## Gameplay content before the optimization baseline: 2026-10-20
+
+Three content changes precede the renderer optimization work, so the frozen
+performance baseline must be built from this source rather than the earlier
+orbital release: regular enemies bake at three halves of their authored size
+while bosses keep doubling (`assets::enemy_scaled`, `assets::BOSS_SCALE`),
+actors and pickups fly through the camera instead of vanishing in front of it
+(`game::ACTOR_RETIRE_Z`, near plane moved from 32 to 8 units), and the bomb
+pickup is the HUD's rimmed 4:3 rectangle. These are gameplay and image changes:
+fixed-fixture pixels and game-state hashes intentionally differ from every
+earlier report, and no timing claim is made for them.
+
+Validation: 160 library, 3 host-binary and 137 integration tests pass per SID
+profile, plus 148 library and 14 gameplay tests without host tools. Both shipping
+packages pass the layout, overlay-reference and package checks; GEOMETRY grows
+from 16,680 to 16,848 of 16,896 bytes (the rectangle, the second rim shape and
+the exact near-depth projection guard), PIXELS and SIM are unchanged. The
+rebuilt two-SID PAL package passes 67 control, weapon and streaming scenarios and
+the four-SID NTSC package 32 control, weapon and attract scenarios in
+`target/phase-g/final-smoke-{2sid-pal,4sid-ntsc}/report.json`. Host-rendered
+fly-past frames in `target/phase-g/flypast/` show a fighter and a diver sweeping
+through the near corners at z 48, 30, 16 and 8 without a visible clip edge.
+Physical hardware acceptance of these changes remains outstanding.
+
+## Hardware timing probe: 2026-10-20
+
+`scripts/build-probe.sh` builds `dist/hwprobe/hwprobe.prg`, a standalone
+program (`tools/hwprobe/`) that times the operations bounding the game's frame
+with CIA 1 as a 1 MHz clock and prints microseconds to the text screen. Import
+the game's `havoc.cfg` first, then run the PRG; it issues the game's exact turbo
+request (`$D031 = $8F`) after a stock-speed reference loop. The REU stash test
+writes 1 KiB into the image's unreserved padding at `$0BFC00` in current builds,
+so a loaded `havoc.reu` stays valid. The historical 16 MiB probe used `$FFFC00`;
+the measurements below retain that original layout. The probe never returns to
+BASIC; reset to exit.
+
+The calibrated emulator reports the model that every fixed-matrix figure in this
+document rests on, PAL:
+
+| Measurement | Emulator | Meaning |
+| --- | ---: | --- |
+| CPU loop, stock (329,229 nominal cycles) | 348,627 us | 0.94 MHz with badline stalls |
+| CPU loop, turbo | 5,151 us | 63.9x |
+| REU fetch 64 x 1 KiB | 66,184 us | 1,034 us/KiB, about one byte per bus cycle |
+| REU stash 64 x 1 KiB | 66,184 us | same |
+| 1,024 `STA $D800,X` | 183 us | color RAM is not bus-synchronized here |
+| 1,024 `STA $D020` / `LDA $D012` | 1,031 us | one bus cycle per VIC access |
+| 1,024 `STA $6000,X` | 167 us | ordinary RAM at turbo speed |
+| Copy 8 KiB, to `$6000` or under I/O at `$D000` | 1,808 us | 114,688 nominal cycles at turbo speed |
+
+An ordinary frame transfers about 59 KiB of code and data, which this model
+prices at 60 ms of a 160-200 ms frame. The first physical run (2026-10-20),
+made with the stock-speed configuration still active (the turbo register read
+back `$8F` but the CPU loop measured 329,320 µs, so the "turbo" lines are
+stock-speed figures): REU fetch 74,846 µs / 1,169 µs/KiB, REU stash 75,054 µs /
+1,172 µs/KiB, 1,024 `STA $D800,X` 11,393 µs, 1,024 `STA $D020` 9,346 µs,
+1,024 `LDA $D012` 9,344 µs, 1,024 `STA $6000,X` 10,370 µs, 8 KiB copies
+115,380-115,390 µs. The REU therefore moves one byte per bus cycle at stock
+speed, as in the emulator. Combined with the 8-10 FPS the in-game readout
+shows on the same machine in turbo mode, the overlay transfers cannot cost
+bus time there: the C64 Ultimate's DMA follows the turbo clock. A turbo-mode
+probe run (import `havoc.cfg` first) remains to be recorded.
+
 ## Recorded production validation: 2026-10-18
 
 The visual-refresh production builds pass 264 host tests per SID profile,
@@ -735,7 +1486,9 @@ For a quick harness check, use `--samples 3` or `--samples 1`, select fixtures w
 records package/emulator/driver hashes, arguments, layouts, and fixture data.
 
 Physical hardware validation remains separate: use the same verified PRG/REU/CFG
-on the C64 Ultimate with 64 MHz mode, 16 MB REU, and dual SIDs at `$D400/$D420`.
+on the C64 Ultimate with 64 MHz mode, the package's matching REU capacity
+(16 MB for this historical build; 1 MB for current builds), and dual SIDs at
+`$D400/$D420`.
 Record PAL/NTSC, firmware version, frame-rate observations, and audible continuity
 under the dense scene. The VICE model does not establish the hardware's exact DMA
 or interrupt timing.
@@ -1098,3 +1851,24 @@ statistics are in
 `target/offplanet-validation/expansion-validation-summary.json`. Generated
 packages, reports, captures and logs are not committed. Timing is measured in
 calibrated VICE; physical C64 Ultimate acceptance remains separate.
+
+## 1 MiB REU layout (2026-10-21)
+
+The compact `$534D0800` package keeps all models, encounters and score bytes
+unchanged while relocating code and music into a 1 MiB image. An isolated
+same-source 16 MiB baseline restores the original REU addresses and loader;
+both builds retain the same benchmark-only segment-checksum placement.
+The copied sources and adaptations are recorded in
+`target/reu-1m/baseline-source-manifest.json`.
+
+All eighteen four-SID PAL comparison cases pass with identical decoded game
+state, ordered geometry and native pixels. Cases cover title, lowlands,
+carrier, section loading, terrestrial and ascent crossings, orbital enemies,
+the gate boss and victory, with zero or ten simulation ticks and cold palettes.
+Frame-time differences range from -0.209% to +0.177%; the largest increase is
+0.183 ms in lowlands with ten ticks. The relocated scenery loader adds 48
+transferred code bytes per sampled frame. These calibrated VICE results use
+one sample per case and do not establish physical-hardware timing.
+`target/reu-1m/performance-summary.json` links the complete baseline and compact
+reports. Both production and instrumented sound profiles pass the existing RAM
+and overlay limits; no limits were enlarged for the smaller REU.

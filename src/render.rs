@@ -7,9 +7,12 @@
 //! (the player and authored ground enemies). Exterior terrain cannot erase it;
 //! ordinary foreground still paints normally and retains the bit.
 
+#[cfg(not(target_arch = "mos"))]
 use crate::projection::project;
 use crate::space_dust::SpaceDustFrame;
-use crate::{GeometrySink, Vec3, TWO_SIDED};
+#[cfg(not(target_arch = "mos"))]
+use crate::TWO_SIDED;
+use crate::{GeometrySink, Vec3};
 
 mod sort;
 
@@ -20,16 +23,16 @@ pub const BAND_PIXELS: usize = WIDTH * BAND_HEIGHT;
 pub const TRIANGLE_CAPACITY: usize = 256;
 pub const SCENERY_CAPACITY: usize = 96;
 const SCENERY_OFFSET: usize = 2176;
-pub const NEAR: i16 = 32;
+/// The clipping plane sits almost on the lens: a vertex is on-screen only when
+/// |x| < z and |y| < 0.75 z, so geometry can be cut visibly only inside the
+/// tiny z < NEAR pyramid. Passing ships leave the screen edges before they are
+/// clipped, and every actor, terrain and scenery coordinate still projects
+/// inside the +/-8191 clamp at this depth.
+pub const NEAR: i16 = 8;
 pub const HUD_INK: u8 = 0x80;
-const TERRAIN_CLEAR_INK: u8 = 0x40;
+pub(crate) const TERRAIN_CLEAR_INK: u8 = 0x40;
+#[cfg(not(target_arch = "mos"))]
 const POSITIVE_AREA: u8 = 4;
-// An indexed byte avoids a variable-width bit test on the 6502. The cave uses
-// global black plus three nonblack backdrop colors, which also fit each cell.
-const STATIC_SKY_COLORS: [bool; 16] = [
-    true, false, false, false, true, false, true, false, true, false, false, true, false, false,
-    false, false,
-];
 
 #[derive(Clone, Copy)]
 #[repr(C)]
@@ -57,6 +60,28 @@ const _: () = {
     // cannot catch the following unread record in the shared allocation.
     assert!(SCENERY_CAPACITY * (32 - 20) <= SCENERY_OFFSET);
 };
+
+/// The sky parallax: a slight camera pan toward the ship moves the far
+/// backdrop (STATIC_SKY faces) opposite to its movement, nearer clouds more
+/// than the horizon by perspective. Authored coordinates and the bounded
+/// offsets cannot overflow. The host reference; `fast_replay_scenery` drifts
+/// the staged records in place on the target.
+#[cfg(not(target_arch = "mos"))]
+#[inline(always)]
+pub(crate) fn drift_sky(points: &mut [Vec3; 3], flags: u8, parallax_x: i16, parallax_y: i16) {
+    if flags & crate::game::STATIC_SKY != 0 {
+        drift_points(points, parallax_x, parallax_y);
+    }
+}
+
+#[cfg(not(target_arch = "mos"))]
+#[inline(never)]
+fn drift_points(points: &mut [Vec3; 3], parallax_x: i16, parallax_y: i16) {
+    for point in points {
+        point.x -= parallax_x;
+        point.y -= parallax_y;
+    }
+}
 
 pub struct SceneryStage<'a> {
     renderer: &'a mut Renderer,
@@ -142,6 +167,14 @@ impl Renderer {
         self.dropped = 0;
         self.clear_color = clear_color & 15;
         self.padding = 0;
+        #[cfg(target_arch = "mos")]
+        sort::set_segments(0, 0);
+    }
+
+    /// The frame's clear colour: the VIC background every band starts from.
+    #[inline(always)]
+    pub fn clear_color(&self) -> u8 {
+        self.clear_color
     }
 
     /// The victory overlay darkens the completed battlefield before adding
@@ -167,23 +200,41 @@ impl Renderer {
     }
 
     /// Consume staged records before foreground can reuse their command bytes.
+    /// Backdrop records (STATIC_SKY) receive the sky parallax here, so staging
+    /// stays free of per-frame camera state.
     #[inline(never)]
     #[cfg_attr(target_arch = "mos", link_section = ".phase.geometry")]
-    pub fn project_scenery(&mut self, count: u8) -> u16 {
+    pub fn project_scenery(&mut self, count: u8, parallax_x: i16, parallax_y: i16) -> u16 {
         assert!(count as usize <= SCENERY_CAPACITY);
         assert_eq!(self.triangle_count, 0, "project scenery before foreground");
-        for index in 0..count as usize {
-            // Copy the complete input before triangle() mutates the allocation.
-            // After k inputs the output is at most32*k bytes and the next input
-            // begins at2176+20*k; the compile-time bound proves non-overlap.
-            let record = unsafe {
-                self.triangles
-                    .as_ptr()
-                    .cast::<u8>()
-                    .add(SCENERY_OFFSET + index * 20)
-                    .cast::<SceneryTriangle>()
-                    .read_unaligned()
-            };
+        #[cfg(target_arch = "mos")]
+        {
+            extern "C" {
+                fn fast_replay_scenery(start: u8, count: u8, parallax_x: i16, parallax_y: i16) -> u8;
+            }
+            let mut index = 0;
+            while index < count {
+                // SAFETY: the kernel consumes the staged records of this
+                // resident renderer in order and stops at the first one that
+                // needs near clipping, which it has already drifted.
+                index = unsafe { fast_replay_scenery(index, count, parallax_x, parallax_y) };
+                if index < count {
+                    let record = self.scenery_record(index);
+                    self.triangle(
+                        record.points[0],
+                        record.points[1],
+                        record.points[2],
+                        record.color,
+                        record.flags,
+                    );
+                    index += 1;
+                }
+            }
+        }
+        #[cfg(not(target_arch = "mos"))]
+        for index in 0..count {
+            let mut record = self.scenery_record(index);
+            drift_sky(&mut record.points, record.flags, parallax_x, parallax_y);
             self.triangle(
                 record.points[0],
                 record.points[1],
@@ -195,7 +246,25 @@ impl Renderer {
         self.triangle_count
     }
 
+    /// Copy one staged record out before triangle() may reuse its bytes.
+    /// After k inputs the output is at most 32*k bytes and the next input
+    /// begins at 2176 + 20*k; the compile-time bound proves non-overlap.
+    #[inline(always)]
+    fn scenery_record(&self, index: u8) -> SceneryTriangle {
+        unsafe {
+            self.triangles
+                .as_ptr()
+                .cast::<u8>()
+                .add(SCENERY_OFFSET + index as usize * 20)
+                .cast::<SceneryTriangle>()
+                .read_unaligned()
+        }
+    }
+
     /// Restore foreground-first authoring order before the stable depth sort.
+    /// The host rotates the commands; the target only records the two
+    /// segment boundaries, which the sort kernel scans in logical order
+    /// (foreground, then scenery, then anything added later).
     #[inline(never)]
     #[cfg_attr(target_arch = "mos", link_section = ".phase.geometry")]
     pub fn scenery_last(&mut self, prefix: u16) {
@@ -203,13 +272,21 @@ impl Renderer {
         if prefix == 0 || prefix == self.triangle_count {
             return;
         }
-        self.reverse_commands(0, prefix);
-        self.reverse_commands(prefix, self.triangle_count);
-        self.reverse_commands(0, self.triangle_count);
+        #[cfg(target_arch = "mos")]
+        {
+            // prefix < count <= 256: the pivot is stored modulo 256 (0 = 256).
+            sort::set_segments(prefix as u8, self.triangle_count as u8);
+        }
+        #[cfg(not(target_arch = "mos"))]
+        {
+            self.reverse_commands(0, prefix);
+            self.reverse_commands(prefix, self.triangle_count);
+            self.reverse_commands(0, self.triangle_count);
+        }
     }
 
     #[inline(never)]
-    #[cfg_attr(target_arch = "mos", link_section = ".phase.geometry")]
+    #[cfg(not(target_arch = "mos"))]
     fn reverse_commands(&mut self, mut first: u16, mut end: u16) {
         while first < end {
             end -= 1;
@@ -244,66 +321,16 @@ impl Renderer {
         sort::depth_sort(&mut self.triangles[..self.triangle_count as usize]);
     }
 
-    /// Bands containing only a section's fixed 14 backdrop facets and sky. Bounds
-    /// are deliberately conservative: even a hidden foreground face invalidates
-    /// every band it intersects. Call before the raster pass consumes commands.
-    #[inline(never)]
-    #[cfg_attr(target_arch = "mos", link_section = ".phase.geometry")]
-    pub fn static_sky_bands(&self) -> u32 {
-        if !STATIC_SKY_COLORS[(self.clear_color & 15) as usize]
-            || self.padding != 0
-            || self.dropped != 0
-        {
-            return 0;
-        }
-        #[cfg(target_arch = "mos")]
-        unsafe {
-            extern "C" {
-                fn fast_static_sky_bands(commands: *const Triangle, count: u16) -> u32;
-            }
-            // The native scan reads only current 16-byte commands and uses the
-            // same conservative clamped bounds as the host reference below.
-            return fast_static_sky_bands(self.triangles.as_ptr(), self.triangle_count);
-        }
-        #[cfg(not(target_arch = "mos"))]
-        {
-            let mut backdrop_faces = 0u16;
-            let mut bands = 0x01ff_ffffu32;
-            for triangle in &self.triangles[..self.triangle_count as usize] {
-                if triangle.reserved & crate::game::STATIC_SKY != 0 {
-                    backdrop_faces += 1;
-                } else {
-                    let top = triangle.y[0]
-                        .min(triangle.y[1])
-                        .min(triangle.y[2])
-                        .clamp(0, 200) as u8;
-                    let bottom = triangle.y[0]
-                        .max(triangle.y[1])
-                        .max(triangle.y[2])
-                        .clamp(0, 200) as u8;
-                    if top < bottom {
-                        let first = top / 8;
-                        let end = (bottom + 7) / 8;
-                        let covered = (0x01ff_ffffu32 >> (25 - (end - first))) << first;
-                        bands &= !covered;
-                    }
-                }
-            }
-            if backdrop_faces == 14 {
-                bands
-            } else {
-                0
-            }
-        }
-    }
-
+    #[cfg(not(target_arch = "mos"))]
     #[inline(always)]
     pub fn render_band(&self, band: u8, pixels: &mut [u8; BAND_PIXELS]) {
         self.render_band_with_ambient(band, pixels, None);
     }
 
+    /// Host reference of the classic band: one byte per pixel, to be
+    /// quantized by `pack_band`.
+    #[cfg(not(target_arch = "mos"))]
     #[inline(never)]
-    #[cfg_attr(target_arch = "mos", link_section = ".phase.pixels")]
     pub fn render_band_with_ambient(
         &self,
         band: u8,
@@ -323,6 +350,32 @@ impl Renderer {
             let (mut head, tail) = prepare_triangle(triangle);
             seek_row(&mut head, &tail, band * 8);
             raster_rows_reference(&mut head, &tail, band * 8, pixels, true, &mut coverage_seen);
+        }
+    }
+
+    /// Host reference of the cell-direct pass: the same geometry walk as
+    /// `render_band_with_ambient`, painting spans into a `CellBand`.
+    #[cfg(not(target_arch = "mos"))]
+    pub fn render_band_cells(
+        &self,
+        band: u8,
+        cells: &mut crate::cells::CellBand,
+        ambient: Option<&SpaceDustFrame>,
+    ) {
+        assert_eq!(self.padding, 0, "raster pass consumed geometry commands");
+        cells.clear(self.clear_color);
+        if band >= 25 {
+            return;
+        }
+        if let Some(ambient) = ambient {
+            ambient.draw_band(band, cells);
+        }
+        for triangle in &self.triangles[..self.triangle_count as usize] {
+            let (mut head, tail) = prepare_triangle(triangle);
+            seek_row(&mut head, &tail, band * 8);
+            raster_rows(&mut head, &tail, band * 8, |row, first, end, color_flags| {
+                cells.geometry_span(row, first, end, color_flags);
+            });
         }
     }
 
@@ -347,12 +400,13 @@ impl Renderer {
         for index in 0..pass.renderer.triangle_count as usize {
             #[cfg(target_arch = "mos")]
             let tail = unsafe {
-                // The old command must be read before its bytes become heads.
-                // All-bit-pattern integer records are valid in phase scratch.
-                let triangle = pass.renderer.triangles[index];
+                // The commands stay in emission order; the depth sort wrote
+                // the sorted order's command index for every position. Heads
+                // and tails are separate fixed arrays, so nothing aliases.
+                let source = *(SORT_ORDER as *const u8).add(index) as usize;
                 let head = pass.head_ptr(index);
                 let tail = pass.tails_mut().as_mut_ptr().add(index);
-                prepare_triangle_into(&triangle, &mut *head, &mut *tail);
+                prepare_triangle_into(&pass.renderer.triangles[source], &mut *head, &mut *tail);
                 *tail
             };
             #[cfg(not(target_arch = "mos"))]
@@ -374,8 +428,16 @@ impl Renderer {
         Some(pass)
     }
 
+    /// Project, cull and record one triangle whose corners all lie at or
+    /// behind the near plane: the host reference of `fast_emit_triangle`.
+    #[cfg(not(target_arch = "mos"))]
+    #[inline(always)]
+    fn emit_unclipped(&mut self, a: Vec3, b: Vec3, c: Vec3, color: u8, flags: u8) {
+        self.project_triangle(a, b, c, color, flags);
+    }
+
+    #[cfg(not(target_arch = "mos"))]
     #[inline(never)]
-    #[cfg_attr(target_arch = "mos", link_section = ".phase.geometry")]
     fn project_triangle(&mut self, a: Vec3, b: Vec3, c: Vec3, color: u8, flags: u8) {
         let mut triangle = Triangle::EMPTY;
         let (ax, ay) = project(a);
@@ -417,8 +479,30 @@ impl GeometrySink for Renderer {
     #[cfg_attr(target_arch = "mos", link_section = ".phase.geometry")]
     fn triangle(&mut self, a: Vec3, b: Vec3, c: Vec3, color: u8, flags: u8) {
         assert_eq!(self.padding, 0, "begin a new frame before geometry");
+        #[cfg(target_arch = "mos")]
+        {
+            extern "C" {
+                fn fast_clip_triangle(points: *const [Vec3; 3], color: u8, flags: u8);
+            }
+            let points = [a, b, c];
+            // SAFETY: the kernel performs exactly this function's near-plane
+            // classification, clipping and emission on the resident RENDERER
+            // (the only Renderer the target constructs) through
+            // fast_emit_triangle and GEOMETRY's projection cache.
+            unsafe { fast_clip_triangle(&points, color, flags) };
+        }
+        #[cfg(not(target_arch = "mos"))]
+        self.triangle_reference(a, b, c, color, flags);
+    }
+}
+
+impl Renderer {
+    /// The host reference of the sink: near-plane classification, Sutherland–
+    /// Hodgman clipping against z = NEAR and projection of the pieces.
+    #[cfg(not(target_arch = "mos"))]
+    fn triangle_reference(&mut self, a: Vec3, b: Vec3, c: Vec3, color: u8, flags: u8) {
         if a.z >= NEAR && b.z >= NEAR && c.z >= NEAR {
-            self.project_triangle(a, b, c, color, flags);
+            self.emit_unclipped(a, b, c, color, flags);
             return;
         }
         if a.z < NEAR && b.z < NEAR && c.z < NEAR {
@@ -443,15 +527,15 @@ impl GeometrySink for Renderer {
         if len < 3 {
             return;
         }
-        self.project_triangle(polygon[0], polygon[1], polygon[2], color, flags);
+        self.emit_unclipped(polygon[0], polygon[1], polygon[2], color, flags);
         if len == 4 {
-            self.project_triangle(polygon[0], polygon[2], polygon[3], color, flags);
+            self.emit_unclipped(polygon[0], polygon[2], polygon[3], color, flags);
         }
     }
 }
 
 #[inline(never)]
-#[cfg_attr(target_arch = "mos", link_section = ".phase.geometry")]
+#[cfg(not(target_arch = "mos"))]
 fn near_intersection(a: Vec3, b: Vec3) -> Vec3 {
     // Both owners of a shared edge must round the same intersection, even
     // when their winding traverses that edge in opposite directions.
@@ -484,6 +568,7 @@ struct RasterTail {
     bottom: u8,
     color_flags: u8,
 }
+#[cfg(not(target_arch = "mos"))]
 impl RasterTail {
     const EMPTY: Self = Self {
         lower_x: 0,
@@ -499,8 +584,9 @@ const _: [(); 12] = [(); core::mem::size_of::<RasterTail>()];
 const _: [(); 8] = [(); core::mem::offset_of!(RasterTail, top)];
 const _: [(); 11] = [(); core::mem::offset_of!(RasterTail, color_flags)];
 
-/// Native storage is phase-owned: heads consume $D000-$DFFF commands, tails
-/// occupy $6000-$6BFF, and ordered band masks occupy $6C00-$6F1F.
+/// Native storage is phase-owned: the depth sort's order table at $7600 maps
+/// sorted positions to the commands left in emission order at $D000, heads
+/// occupy $EF20-$FF1F, tails $E000-$EBFF, and ordered band masks $EC00-$EF1F.
 pub struct RasterPass<'a> {
     renderer: &'a mut Renderer,
     next_band: u8,
@@ -509,12 +595,16 @@ pub struct RasterPass<'a> {
     #[cfg(not(target_arch = "mos"))]
     masks: [[u8; 32]; 25],
 }
+#[cfg(target_arch = "mos")]
+const SORT_ORDER: usize = 0x7600;
+#[cfg(target_arch = "mos")]
+const RASTER_HEADS: usize = 0xef20;
 impl RasterPass<'_> {
     #[inline(always)]
     fn tails_mut(&mut self) -> &mut [RasterTail; TRIANGLE_CAPACITY] {
         #[cfg(target_arch = "mos")]
         unsafe {
-            &mut *(0x6000 as *mut [RasterTail; TRIANGLE_CAPACITY])
+            &mut *(0xe000 as *mut [RasterTail; TRIANGLE_CAPACITY])
         }
         #[cfg(not(target_arch = "mos"))]
         {
@@ -525,20 +615,29 @@ impl RasterPass<'_> {
     fn masks_mut(&mut self) -> &mut [[u8; 32]; 25] {
         #[cfg(target_arch = "mos")]
         unsafe {
-            &mut *(0x6c00 as *mut [[u8; 32]; 25])
+            &mut *(0xec00 as *mut [[u8; 32]; 25])
         }
         #[cfg(not(target_arch = "mos"))]
         {
             &mut self.masks
         }
     }
+    /// The persistent head of sorted position `index`: a fixed array on the
+    /// target, the (sorted) command's own bytes on the host.
     #[inline(always)]
     fn head_ptr(&mut self, index: usize) -> *mut RasterHead {
-        self.renderer
-            .triangles
-            .as_mut_ptr()
-            .wrapping_add(index)
-            .cast()
+        #[cfg(target_arch = "mos")]
+        {
+            (RASTER_HEADS + index * 16) as *mut RasterHead
+        }
+        #[cfg(not(target_arch = "mos"))]
+        {
+            self.renderer
+                .triangles
+                .as_mut_ptr()
+                .wrapping_add(index)
+                .cast()
+        }
     }
     #[cfg(not(target_arch = "mos"))]
     #[inline(always)]
@@ -575,43 +674,47 @@ impl RasterPass<'_> {
         }
         #[cfg(not(target_arch = "mos"))]
         let mut coverage_seen = false;
-        if paint_scene {
-            fill_color(pixels, self.renderer.clear_color);
-            if let Some(ambient) = ambient {
-                ambient.draw_band(band, pixels);
+        #[cfg(target_arch = "mos")]
+        {
+            // The cell writer starts every band from its clear colour: a
+            // band the HUD replaces still needs fresh palettes and flags.
+            let mut cells = crate::cells::NativeCells;
+            cells.clear(self.renderer.clear_color);
+            if paint_scene {
+                if let Some(ambient) = ambient {
+                    ambient.draw_band(band, &mut cells);
+                }
+            }
+            extern "C" {
+                fn fast_raster_band(mask: *const u8, pixels: *mut u8, band_y: u8, paint: u8);
+            }
+            // SAFETY: the kernel derives each marked triangle's persistent
+            // head ($EF20 + 16 i) and prepared tail ($E000 + 12 i) from its
+            // sorted position and paints through the cell writer; `pixels`
+            // is the fixed band at $8C00 that overflowed cells expand into.
+            unsafe {
+                fast_raster_band(
+                    self.masks_mut()[band as usize].as_ptr(),
+                    pixels.as_mut_ptr(),
+                    band * 8,
+                    paint_scene as u8,
+                );
             }
         }
-        for byte in 0..32usize {
-            let mut mask = self.masks_mut()[band as usize][byte];
-            let mut bit = 0;
-            while mask != 0 {
-                if mask & 1 != 0 {
-                    let index = byte * 8 + bit;
-                    #[cfg(target_arch = "mos")]
-                    unsafe {
-                        #[repr(C)]
-                        struct Job {
-                            head: *mut RasterHead,
-                            tail: *const RasterTail,
-                            pixels: *mut u8,
-                            band_y: u8,
-                            paint: u8,
-                        }
-                        const _: [(); 8] = [(); core::mem::size_of::<Job>()];
-                        extern "C" {
-                            fn fast_raster_rows(job: *const Job);
-                        }
-                        let job = Job {
-                            head: self.head_ptr(index),
-                            tail: self.tails_mut().as_ptr().add(index),
-                            pixels: pixels.as_mut_ptr(),
-                            band_y: band * 8,
-                            paint: paint_scene as u8,
-                        };
-                        fast_raster_rows(&job);
-                    }
-                    #[cfg(not(target_arch = "mos"))]
-                    {
+        #[cfg(not(target_arch = "mos"))]
+        {
+            if paint_scene {
+                fill_color(pixels, self.renderer.clear_color);
+                if let Some(ambient) = ambient {
+                    ambient.draw_band(band, pixels);
+                }
+            }
+            for byte in 0..32usize {
+                let mut mask = self.masks_mut()[band as usize][byte];
+                let mut bit = 0;
+                while mask != 0 {
+                    if mask & 1 != 0 {
+                        let index = byte * 8 + bit;
                         let mut head = unsafe { self.head_ptr(index).read_unaligned() };
                         let tail = self.tails[index];
                         raster_rows_reference(
@@ -624,9 +727,9 @@ impl RasterPass<'_> {
                         );
                         self.write_head(index, head);
                     }
+                    mask >>= 1;
+                    bit += 1;
                 }
-                mask >>= 1;
-                bit += 1;
             }
         }
         Some(band)
@@ -653,6 +756,7 @@ fn prepare_edge(ax: i16, ay: i16, bx: i16, by: i16) -> (i32, i32) {
     )
 }
 
+#[cfg(not(target_arch = "mos"))]
 fn prepare_triangle(triangle: &Triangle) -> (RasterHead, RasterTail) {
     let mut head = RasterHead {
         long_x: 0,
@@ -742,6 +846,7 @@ fn sort_pair(a: &mut Point2, b: &mut Point2) -> u8 {
     }
 }
 
+#[cfg(not(target_arch = "mos"))]
 fn seek_row(head: &mut RasterHead, tail: &RasterTail, row: u8) {
     let row = row.max(tail.top).min(tail.bottom);
     head.long_x += head.long_step * (row - tail.top) as i32;
@@ -753,13 +858,14 @@ fn seek_row(head: &mut RasterHead, tail: &RasterTail, row: u8) {
     }
 }
 
-fn raster_rows_reference(
+/// Walk a triangle's rows within one band, reporting every nonempty span as
+/// (band row, first, end, color_flags) in top-to-bottom order.
+#[cfg(not(target_arch = "mos"))]
+fn raster_rows(
     head: &mut RasterHead,
     tail: &RasterTail,
     band_y: u8,
-    pixels: &mut [u8; BAND_PIXELS],
-    paint: bool,
-    coverage_seen: &mut bool,
+    mut paint: impl FnMut(usize, usize, usize, u8),
 ) {
     for y in tail.top.max(band_y)..tail.bottom.min(band_y + 8) {
         if y == tail.middle {
@@ -773,32 +879,49 @@ fn raster_rows_reference(
         };
         let first = ((left + 32767) >> 16).clamp(0, WIDTH as i32) as usize;
         let end = ((right + 32767) >> 16).clamp(0, WIDTH as i32) as usize;
-        if paint && first < end {
-            let offset = (y - band_y) as usize * WIDTH;
-            let span = &mut pixels[offset + first..offset + end];
-            let color = tail.color_flags & 15;
-            if tail.color_flags & crate::TERRAIN_CLEAR_GEOMETRY != 0 {
-                *coverage_seen = true;
-                span.fill(color | TERRAIN_CLEAR_INK);
-            } else if !*coverage_seen {
-                span.fill(color);
-            } else if tail.color_flags & crate::EXTERIOR_TERRAIN != 0 {
-                for pixel in span {
-                    if *pixel & TERRAIN_CLEAR_INK == 0 {
-                        *pixel = color;
-                    }
-                }
-            } else {
-                // Keep coverage when a nearer object replaces protected geometry.
-                // A later terrain command must not erase that object either.
-                for pixel in span {
-                    *pixel = (*pixel & TERRAIN_CLEAR_INK) | color;
-                }
-            }
+        if first < end {
+            paint((y - band_y) as usize, first, end, tail.color_flags);
         }
         head.long_x += head.long_step;
         head.short_x += head.short_step;
     }
+}
+
+#[cfg(not(target_arch = "mos"))]
+fn raster_rows_reference(
+    head: &mut RasterHead,
+    tail: &RasterTail,
+    band_y: u8,
+    pixels: &mut [u8; BAND_PIXELS],
+    paint: bool,
+    coverage_seen: &mut bool,
+) {
+    raster_rows(head, tail, band_y, |row, first, end, color_flags| {
+        if !paint {
+            return;
+        }
+        let offset = row * WIDTH;
+        let span = &mut pixels[offset + first..offset + end];
+        let color = color_flags & 15;
+        if color_flags & crate::TERRAIN_CLEAR_GEOMETRY != 0 {
+            *coverage_seen = true;
+            span.fill(color | TERRAIN_CLEAR_INK);
+        } else if !*coverage_seen {
+            span.fill(color);
+        } else if color_flags & crate::EXTERIOR_TERRAIN != 0 {
+            for pixel in span {
+                if *pixel & TERRAIN_CLEAR_INK == 0 {
+                    *pixel = color;
+                }
+            }
+        } else {
+            // Keep coverage when a nearer object replaces protected geometry.
+            // A later terrain command must not erase that object either.
+            for pixel in span {
+                *pixel = (*pixel & TERRAIN_CLEAR_INK) | color;
+            }
+        }
+    });
 }
 
 /// Approximate VIC-II palette for host previews and quantization distances.
@@ -842,8 +965,9 @@ const fn color_distances() -> [[u16; 16]; 16] {
 #[cfg_attr(target_arch = "mos", used)]
 static COLOR_DISTANCE: [[u16; 16]; 16] = color_distances();
 
-/// Convert one 160x8 band into forty VIC-II multicolor cells. Global color is
-/// black. Each cell supplies screen high/low nibbles and one color RAM nibble.
+/// Convert one 160x8 band into forty VIC-II multicolor cells. The global
+/// background (`$D021`) shows the frame's clear colour; each cell supplies
+/// screen high/low nibbles and one color RAM nibble for its other colours.
 /// Output bitmap bytes are cell-major, matching the native VIC bitmap layout.
 #[inline(never)]
 #[cfg(not(target_arch = "mos"))]
@@ -851,11 +975,45 @@ pub fn pack_band(
     pixels: &[u8; BAND_PIXELS],
     previous_screen: &[u8; 40],
     previous_color: &[u8; 40],
+    background: u8,
     bitmap: &mut [u8; 320],
     screen: &mut [u8; 40],
     colors: &mut [u8; 40],
 ) {
     for cell in 0..40 {
+        let (cell_bitmap, cell_screen, cell_color) = pack_cell(
+            pixels,
+            cell,
+            [
+                previous_screen[cell] >> 4,
+                previous_screen[cell] & 15,
+                previous_color[cell] & 15,
+            ],
+            background,
+        );
+        bitmap[cell * 8..cell * 8 + 8].copy_from_slice(&cell_bitmap);
+        screen[cell] = cell_screen;
+        colors[cell] = cell_color;
+    }
+}
+
+/// Quantize one cell of a pixel band: the per-pixel reference the cell-direct
+/// rasterizer falls back to for cells with more than three colours besides the
+/// background. `old` holds the cell's preceding-frame slot colors (screen
+/// high, screen low, color RAM); `background` is the frame's clear colour,
+/// which code 0 shows and which therefore needs no slot. Unused slots hold the
+/// background colour. Returns the eight bitmap bytes, screen byte and color
+/// nibble.
+#[cfg(not(target_arch = "mos"))]
+pub fn pack_cell(
+    pixels: &[u8; BAND_PIXELS],
+    cell: usize,
+    old: [u8; 3],
+    background: u8,
+) -> ([u8; 8], u8, u8) {
+    let background = background & 15;
+    let mut bitmap = [0u8; 8];
+    {
         let mut counts = [0u8; 16];
         let mut hud = 0u16;
         let mut present = 0u16;
@@ -869,16 +1027,11 @@ pub fn pack_band(
                 }
             }
         }
-        let old = [
-            previous_screen[cell] >> 4,
-            previous_screen[cell] & 15,
-            previous_color[cell] & 15,
-        ];
         // Large stretches of sky, hull, and terrain need no quantization.
         if present & present.wrapping_sub(1) == 0 {
             let color = pixels[cell * 4] & 15;
             let mut slot = 0;
-            if color != 0 {
+            if color != background {
                 slot = 1;
                 for i in 0..3 {
                     if old[i] == color {
@@ -887,22 +1040,22 @@ pub fn pack_band(
                     }
                 }
             }
-            fill_color(&mut bitmap[cell * 8..cell * 8 + 8], slot as u8 * 0x55);
-            screen[cell] = match slot {
-                1 => color << 4,
-                2 => color,
-                _ => 0,
-            };
-            colors[cell] = if slot == 3 { color } else { 0 };
-            continue;
+            bitmap.fill(slot as u8 * 0x55);
+            let mut palette = [background; 4];
+            palette[slot] = color;
+            return (bitmap, (palette[1] << 4) | palette[2], palette[3]);
         }
-        let mut selected = [0u8; 3];
+        // The background marks "no colour" below: it is never selected.
+        let mut selected = [background; 3];
         let mut selected_bits = 0u16;
         for chosen in &mut selected {
-            let mut best = 0;
+            let mut best = background;
             let mut best_score = 0;
-            for color in 1..16 {
-                if counts[color] == 0 || selected_bits & (1 << color) != 0 {
+            for color in 0..16 {
+                if color == background as usize
+                    || counts[color] == 0
+                    || selected_bits & (1 << color) != 0
+                {
                     continue;
                 }
                 let score = counts[color] as u16 * 4
@@ -914,26 +1067,25 @@ pub fn pack_band(
                 }
             }
             *chosen = best;
-            selected_bits |= 1 << best;
+            if best != background {
+                selected_bits |= 1 << best;
+            }
         }
         // Retain palette slots when a preceding-frame color is still selected.
-        let mut palette = [0u8; 4];
+        let mut palette = [background; 4];
         let mut assigned = 0u16;
         for slot in 0..3 {
-            if old[slot] != 0
-                && selected_bits & (1 << old[slot]) != 0
-                && assigned & (1 << old[slot]) == 0
-            {
+            if selected_bits & (1 << old[slot]) != 0 && assigned & (1 << old[slot]) == 0 {
                 palette[slot + 1] = old[slot];
                 assigned |= 1 << old[slot];
             }
         }
         for chosen in selected {
-            if chosen == 0 || assigned & (1 << chosen) != 0 {
+            if chosen == background || assigned & (1 << chosen) != 0 {
                 continue;
             }
             for slot in &mut palette[1..] {
-                if *slot == 0 {
+                if *slot == background {
                     *slot = chosen;
                     assigned |= 1 << chosen;
                     break;
@@ -941,11 +1093,11 @@ pub fn pack_band(
             }
         }
         let mut map = [0u8; 16];
-        for color in 1..16 {
-            if counts[color] == 0 {
+        for color in 0..16 {
+            if color == background as usize || counts[color] == 0 {
                 continue;
             }
-            let mut best_distance = COLOR_DISTANCE[color][0];
+            let mut best_distance = COLOR_DISTANCE[color][background as usize];
             for slot in 1..4 {
                 let distance = COLOR_DISTANCE[color][palette[slot] as usize];
                 if distance < best_distance {
@@ -954,60 +1106,77 @@ pub fn pack_band(
                 }
             }
         }
-        for row in 0..8 {
+        for (row, byte) in bitmap.iter_mut().enumerate() {
             let mut packed = 0;
             for column in 0..4 {
                 packed =
                     (packed << 2) | map[(pixels[row * WIDTH + cell * 4 + column] & 15) as usize];
             }
-            bitmap[cell * 8 + row] = packed;
+            *byte = packed;
         }
-        screen[cell] = (palette[1] << 4) | palette[2];
-        colors[cell] = palette[3];
+        (bitmap, (palette[1] << 4) | palette[2], palette[3])
     }
 }
 
-/// Assembly implements the same cell palette policy; host tests retain the
-/// Rust reference so emulator output can be compared byte for byte.
-#[cfg(target_arch = "mos")]
-#[inline(never)]
-#[link_section = ".phase.pixels"]
-pub fn pack_band(
-    pixels: &[u8; BAND_PIXELS],
-    previous_screen: &[u8; 40],
-    previous_color: &[u8; 40],
-    bitmap: &mut [u8; 320],
-    screen: &mut [u8; 40],
-    colors: &mut [u8; 40],
-) {
-    extern "C" {
-        fn fast_pack_band(
-            pixels: *const u8,
-            previous_screen: *const u8,
-            previous_color: *const u8,
-            bitmap: *mut u8,
-            screen: *mut u8,
-            colors: *mut u8,
-        );
+/// A band-local drawing surface: eight rows of 160 pixels. Colours carry the
+/// VIC colour in bits 0-3 and `HUD_INK` in bit 7 (priority ink for the
+/// quantizer). The classic pixel band, the cell-direct band and the native
+/// cell kernels all implement it, so HUD and text code is written once.
+pub trait Canvas {
+    /// Paint `[first, end)` of band row `row`.
+    fn span(&mut self, row: usize, first: usize, end: usize, color: u8);
+    /// Paint one pixel.
+    fn plot(&mut self, row: usize, x: usize, color: u8);
+    /// Paint a 3x5 glyph whose top-left pixel is (`x`, `row`); all five rows
+    /// and three columns lie inside the band.
+    fn glyph(&mut self, row: usize, x: usize, rows: &[u8; 5], color: u8) {
+        for (dy, &bits) in rows.iter().enumerate() {
+            if bits & 4 != 0 {
+                self.plot(row + dy, x, color);
+            }
+            if bits & 2 != 0 {
+                self.plot(row + dy, x + 1, color);
+            }
+            if bits & 1 != 0 {
+                self.plot(row + dy, x + 2, color);
+            }
+        }
     }
-    // SAFETY: the statically sized references provide all six complete buffers;
-    // the kernel accesses only their documented bounds and private $77A0 scratch.
-    unsafe {
-        fast_pack_band(
-            pixels.as_ptr(),
-            previous_screen.as_ptr(),
-            previous_color.as_ptr(),
-            bitmap.as_mut_ptr(),
-            screen.as_mut_ptr(),
-            colors.as_mut_ptr(),
-        );
+}
+
+/// The classic pixel band: one byte per pixel, quantized by `pack_band`.
+#[cfg(not(target_arch = "mos"))]
+impl Canvas for [u8; BAND_PIXELS] {
+    #[inline(always)]
+    fn span(&mut self, row: usize, first: usize, end: usize, color: u8) {
+        fill_color(&mut self[row * WIDTH + first..row * WIDTH + end], color);
+    }
+    #[inline(always)]
+    fn plot(&mut self, row: usize, x: usize, color: u8) {
+        self[row * WIDTH + x] = color;
+    }
+    #[inline(always)]
+    fn glyph(&mut self, row: usize, x: usize, rows: &[u8; 5], color: u8) {
+        let mut offset = row * WIDTH + x;
+        for &bits in rows {
+            if bits & 4 != 0 {
+                self[offset] = color;
+            }
+            if bits & 2 != 0 {
+                self[offset + 1] = color;
+            }
+            if bits & 1 != 0 {
+                self[offset + 2] = color;
+            }
+            offset += WIDTH;
+        }
     }
 }
 
 /// Draw a compact 3x5 uppercase/digit font, with a one-pixel advance gap.
 #[inline(never)]
 #[cfg_attr(target_arch = "mos", link_section = ".phase.pixels")]
-pub fn draw_text(band: u8, pixels: &mut [u8; BAND_PIXELS], x: i16, y: i16, text: &[u8], color: u8) {
+pub fn draw_text(band: u8, canvas: &mut impl Canvas, x: i16, y: i16, text: &[u8], color: u8) {
     let row = y.wrapping_sub(band as i16 * 8);
     if band >= 25
         || row as u16 > 3
@@ -1015,59 +1184,26 @@ pub fn draw_text(band: u8, pixels: &mut [u8; BAND_PIXELS], x: i16, y: i16, text:
         || x > WIDTH as i16 - 3
         || text.len() > (WIDTH + 1 - x as usize) / 4
     {
-        draw_text_scaled(band, pixels, x, y, text, color, 1);
+        draw_text_scaled(band, canvas, x, y, text, color, 1);
         return;
     }
     // Most cockpit labels fit wholly within one band. Check their bounds once
     // instead of repeating scaled-text clipping for every glyph pixel.
     let ink = (color & 15) | HUD_INK;
-    let mut start = row as usize * WIDTH + x as usize;
+    let mut cursor = x as usize;
     for &character in text {
-        #[cfg(target_arch = "mos")]
-        {
-            extern "C" {
-                fn fast_glyph(destination: *mut u8, rows: *const u8, ink: u8);
-            }
-            // SAFETY: the band/text guards prove the complete 3x5 glyph fits;
-            // the kernel reads five font bytes and writes only its set pixels.
-            unsafe {
-                fast_glyph(
-                    pixels.as_mut_ptr().add(start),
-                    glyph(character).as_ptr(),
-                    ink,
-                )
-            };
-        }
-        #[cfg(not(target_arch = "mos"))]
-        {
-            let mut offset = start;
-            for &bits in glyph(character) {
-                // SAFETY: row is 0..=3, every glyph has five rows, and the text-width
-                // guard keeps all three columns of every glyph within 0..WIDTH.
-                unsafe {
-                    if bits & 4 != 0 {
-                        *pixels.get_unchecked_mut(offset) = ink;
-                    }
-                    if bits & 2 != 0 {
-                        *pixels.get_unchecked_mut(offset + 1) = ink;
-                    }
-                    if bits & 1 != 0 {
-                        *pixels.get_unchecked_mut(offset + 2) = ink;
-                    }
-                }
-                offset += WIDTH;
-            }
-        }
-        start += 4;
+        canvas.glyph(row as usize, cursor, glyph(character), ink);
+        cursor += 4;
     }
 }
 
 /// Integer scaling for title lettering; ordinary HUD text uses scale one.
+/// Each lit glyph pixel becomes a `scale`-wide span on `scale` rows.
 #[inline(never)]
 #[cfg_attr(target_arch = "mos", link_section = ".phase.pixels")]
 pub fn draw_text_scaled(
     band: u8,
-    pixels: &mut [u8; BAND_PIXELS],
+    canvas: &mut impl Canvas,
     x: i16,
     y: i16,
     text: &[u8],
@@ -1079,6 +1215,7 @@ pub fn draw_text_scaled(
     if band >= 25 || y >= band_y + 8 || y.saturating_add(5 * scale) <= band_y {
         return;
     }
+    let ink = (color & 15) | HUD_INK;
     let mut cursor = x;
     for &character in text {
         let glyph = glyph(character);
@@ -1092,12 +1229,10 @@ pub fn draw_text_scaled(
                 let mut glyph_x = cursor;
                 for mask in [4, 2, 1] {
                     if bits & mask != 0 {
-                        for dx in 0..scale {
-                            let screen_x = glyph_x.saturating_add(dx);
-                            if screen_x >= 0 && screen_x < WIDTH as i16 {
-                                pixels[(screen_y - band_y) as usize * WIDTH + screen_x as usize] =
-                                    (color & 15) | HUD_INK;
-                            }
+                        let first = glyph_x.clamp(0, WIDTH as i16) as usize;
+                        let end = glyph_x.saturating_add(scale).clamp(0, WIDTH as i16) as usize;
+                        if first < end {
+                            canvas.span((screen_y - band_y) as usize, first, end, ink);
                         }
                     }
                     glyph_x = glyph_x.saturating_add(scale);
@@ -1117,7 +1252,7 @@ pub fn draw_text_scaled(
 #[cfg_attr(target_arch = "mos", link_section = ".phase.pixels")]
 pub fn draw_bar(
     band: u8,
-    pixels: &mut [u8; BAND_PIXELS],
+    canvas: &mut impl Canvas,
     x: i16,
     y: i16,
     width: u8,
@@ -1130,10 +1265,13 @@ pub fn draw_bar(
     if band >= 25 || y >= band_y + 8 || y.saturating_add(height as i16) <= band_y {
         return;
     }
+    // Sixteen-bit arithmetic: every caller keeps width × maximum below 65,536
+    // (bars are at most 60 pixels over values of at most 255).
+    debug_assert!(width as u32 * maximum as u32 <= u16::MAX as u32);
     let fill = if maximum == 0 {
         0
     } else {
-        crate::math::div_u32(width as u32 * value.min(maximum) as u32, maximum as u32) as i16
+        (width as u16 * value.min(maximum) / maximum) as i16
     };
     let left = x.clamp(0, WIDTH as i16) as usize;
     let right = x.saturating_add(width as i16).clamp(0, WIDTH as i16) as usize;
@@ -1145,34 +1283,20 @@ pub fn draw_bar(
         if row < band_y || row >= band_y + 8 {
             continue;
         }
-        let offset = (row - band_y) as usize * WIDTH;
-        fill_color(
-            &mut pixels[offset + left..offset + split],
-            color & 15 | HUD_INK,
-        );
-        fill_color(&mut pixels[offset + split..offset + right], 11);
+        let band_row = (row - band_y) as usize;
+        if left < split {
+            canvas.span(band_row, left, split, color & 15 | HUD_INK);
+        }
+        if split < right {
+            canvas.span(band_row, split, right, 11);
+        }
     }
 }
 
-/// Target assembly preserves the raw pixel byte, including the HUD-priority bit.
-/// Chunking also permits this helper to clear a complete 1,280-byte band safely.
-#[inline(never)]
-#[cfg_attr(target_arch = "mos", link_section = ".phase.pixels")]
+/// Fill a pixel slice; the classic pixel band is host-only now that the
+/// target paints cells directly.
+#[cfg(not(target_arch = "mos"))]
 pub(crate) fn fill_color(pixels: &mut [u8], color: u8) {
-    #[cfg(target_arch = "mos")]
-    {
-        extern "C" {
-            fn fast_fill_span(destination: *mut u8, count: u8, color: u8);
-        }
-        for chunk in pixels.chunks_mut(255) {
-            // SAFETY: every chunk is writable, non-overlapping, and at most 255
-            // bytes; the assembly kernel implements this exact C ABI.
-            unsafe {
-                fast_fill_span(chunk.as_mut_ptr(), chunk.len() as u8, color);
-            }
-        }
-    }
-    #[cfg(not(target_arch = "mos"))]
     pixels.fill(color);
 }
 
@@ -1282,7 +1406,11 @@ mod tests {
     }
     fn clipped_scenery(sink: &mut impl GeometrySink, index: u8) {
         sink.triangle(
-            Vec3 { x: 0, y: 12, z: 16 },
+            Vec3 {
+                x: 0,
+                y: 12,
+                z: NEAR / 2,
+            },
             Vec3 {
                 x: -12,
                 y: -12,
@@ -1328,7 +1456,7 @@ mod tests {
                 stage.count()
             };
             assert_eq!(raw_count, count);
-            let prefix = staged.project_scenery(raw_count);
+            let prefix = staged.project_scenery(raw_count, 0, 0);
             assert_eq!(prefix, count as u16 * 2, "every staged input splits");
             for index in 0..64 {
                 tied_foreground(&mut staged, index);
@@ -1368,11 +1496,51 @@ mod tests {
         };
         assert_eq!(count, SCENERY_CAPACITY as u8);
         assert_eq!(renderer.dropped, 1);
-        assert_eq!(renderer.project_scenery(count), 192);
+        assert_eq!(renderer.project_scenery(count, 0, 0), 192);
         // Starting another frame retires both the commands and overflow state.
         renderer.begin(6);
         assert_eq!(renderer.dropped, 0);
         assert_eq!(renderer.scenery_stage().count(), 0);
+    }
+    #[test]
+    fn replayed_scenery_drifts_only_backdrop_records_by_the_sky_parallax() {
+        use crate::game::STATIC_SKY;
+        let far = |x: i16, y: i16| Vec3 { x, y, z: 2350 };
+        let command = |renderer: &Renderer, index: usize| {
+            let t = &renderer.triangles[index];
+            (t.x, t.y, t.depth, t.color, t.reserved)
+        };
+        let mut plain = None;
+        for (dx, dy) in [(0, 0), (100, 32), (-100, -32), (37, -5)] {
+            let mut direct = Renderer::new();
+            let mut staged = Renderer::new();
+            direct.begin(6);
+            staged.begin(6);
+            {
+                let mut stage = staged.scenery_stage();
+                stage.triangle(far(-800, 300), far(800, 300), far(0, 900), 14, TWO_SIDED | STATIC_SKY);
+                stage.triangle(far(-800, -300), far(800, -300), far(0, 200), 5, TWO_SIDED);
+                assert_eq!(stage.count(), 2);
+            }
+            direct.triangle(
+                far(-800 - dx, 300 - dy),
+                far(800 - dx, 300 - dy),
+                far(-dx, 900 - dy),
+                14,
+                TWO_SIDED | STATIC_SKY,
+            );
+            direct.triangle(far(-800, -300), far(800, -300), far(0, 200), 5, TWO_SIDED);
+            assert_eq!(staged.project_scenery(2, dx, dy), 2);
+            direct.finish();
+            staged.finish();
+            for index in 0..2 {
+                assert_eq!(command(&direct, index), command(&staged, index), "parallax {dx},{dy}");
+            }
+            let reference = *plain.get_or_insert((command(&staged, 0), command(&staged, 1)));
+            // Backdrop moves against the pan; ordinary scenery never moves.
+            assert_eq!(command(&staged, 0) == reference.0, (dx, dy) == (0, 0));
+            assert_eq!(command(&staged, 1), reference.1);
+        }
     }
     #[test]
     #[should_panic]
@@ -1490,7 +1658,7 @@ mod tests {
                 Vec3 {
                     x: -16,
                     y: -16,
-                    z: 16,
+                    z: NEAR / 2,
                 },
                 Vec3 { x: 0, y: 16, z: 64 },
                 Vec3 {
@@ -1527,6 +1695,7 @@ mod tests {
                 input,
                 &[0x12; 40],
                 &[3; 40],
+                0,
                 &mut bitmap,
                 &mut screen,
                 &mut colors,

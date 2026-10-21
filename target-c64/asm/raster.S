@@ -1,9 +1,19 @@
 ; Persistent Q16 two-edge row walker. C ABI: job pointer in rc2/3.
-; Job: head pointer, tail pointer, pixels pointer, u8 band_y, u8 paint.
+; Job: head pointer, tail pointer, pixels pointer (unused), u8 band_y, u8 paint.
 ; Head16: i32 long_x,long_step,short_x,short_step.
 ; Tail12: i32 lower_x,lower_step; u8 top,middle,bottom,color_flags.
 ; flags bit4: long is left. Caller owns sequential bands and ordered masks.
-; rc2..13 and $77A0-$77AB are volatile; IRQ never accesses private scratch.
+; Native positions carry +32767 (fast_prepare_triangle adds it once), so a
+; row's column is the high word of the position: no rounding add per row.
+; The head is copied into zero page ($D0-$DF), stepped there and written back
+; on exit (except from the triangle's last band, which no later band reads):
+; the long step never changes and the short step only once the lower
+; edge replaced it. The rows of a band split into the segment before the
+; middle row and the segment from it, so no row tests for the middle; a
+; painted row clamps both columns from the high words and hands the span to
+; the cell writer, whose CODES/COVER row pointers (rc8-rc11) step with the rows.
+; fast_raster_band drives the core for a whole band from its ordered mask.
+; rc2..19, $D0-$E7 and $77A0-$77B9 are volatile; IRQ never accesses them.
 ; $77AB is reset once per band, then retains whether a terrain-clear span was painted.
 ; Tail bit5 marks terrain-clear geometry; bit6 marks exterior terrain. Pixel bit6
 ; retains protected coverage through later ordinary foreground writes.
@@ -17,20 +27,46 @@
 .zeropage __rc9
 .zeropage __rc10
 .zeropage __rc11
-.zeropage __rc12
-.zeropage __rc13
-.set RR_BAND, $77a0
-.set RR_PAINT, $77a1
-.set RR_ROW, $77a2
-.set RR_END, $77a3
-.set RR_COLOR, $77a4
-.set RR_MIDDLE, $77a5
-.set RR_FLAGS, $77a6
-.set RR_FIRST, $77a7
-.set RR_LAST, $77a8
-.set RR_BOUND, $77a9
-.set RR_OFFSET, $77aa
-.set RR_PLAYER_SEEN, $77ab
+; Row-walker scratch (the mos-sim harness relocates the base).
+.ifndef RR_SCRATCH
+.set RR_SCRATCH, $77a0
+.endif
+.set RR_BAND, RR_SCRATCH+0
+.set RR_PAINT, RR_SCRATCH+1
+.set RR_ROW, RR_SCRATCH+2
+.set RR_END, RR_SCRATCH+3
+.set RR_MIDDLE, RR_SCRATCH+5
+.set RR_FLAGS, RR_SCRATCH+6
+.set RR_PLAYER_SEEN, RR_SCRATCH+11
+.set RR_LOWERED, RR_SCRATCH+20
+.set RR_INDEX, RR_SCRATCH+21
+.set RR_MASK_BYTE, RR_SCRATCH+22
+.set RR_MASK_BITS, RR_SCRATCH+23
+; Persistent raster heads: sixteen bytes per sorted position, after the band
+; masks (the mos-sim harness relocates the base).
+.ifndef RASTER_HEADS
+.set RASTER_HEADS, $ef20
+.endif
+; The walker's zero page (PIXELS only; the compiler's zero-page region $22-$EF
+; is empty, which check-layout.py asserts): the head's four Q16 values in head
+; order, then the rows left in the current segment.
+.set RW_LONG, $d0
+.set RW_LONGSTEP, $d4
+.set RW_SHORT, $d8
+.set RW_SHORTSTEP, $dc
+.set RW_ROWS, $e0
+; Inputs of the cell writer (cells.S, zero page): band row, span bounds,
+; colour and its key (colour XOR the band's clear colour), HUD flag and paint
+; mode; the span section hands every painted span to cell_rows after
+; cell_row_pointers selected the row.
+.set CS_ROW, $f0
+.set CS_FIRST, $f1
+.set CS_END, $f2
+.set CS_COLOR, $f3
+.set CS_HUD, $f4
+.set CS_MODE, $f5
+.set CS_KEY, $fe
+.set CS_CLEAR, $ff
 
 .section .phase.pixels.raster,"ax",@progbits
 .globl fast_raster_rows
@@ -47,22 +83,19 @@ fast_raster_rows:
     iny
     lda (__rc2),y
     sta __rc7
-    iny
-    lda (__rc2),y
-    sta __rc8
-    iny
-    lda (__rc2),y
-    sta __rc9
-    iny
+    ldy #6
     lda (__rc2),y
     sta RR_BAND
+    iny
+    lda (__rc2),y
+    sta RR_PAINT
+    ; Core: head rc4/5, tail rc6/7, RR_BAND and RR_PAINT.
+.Lrr_core:
+    lda RR_BAND
     sta RR_ROW
     clc
     adc #8
     sta RR_END
-    iny
-    lda (__rc2),y
-    sta RR_PAINT
     ldy #8
     lda (__rc6),y
     cmp RR_ROW
@@ -87,384 +120,430 @@ fast_raster_rows:
     lda (__rc6),y
     sta RR_FLAGS
     and #15
-    sta RR_COLOR
+    sta CS_COLOR
+    eor CS_CLEAR
+    sta CS_KEY
+    ; The cell writer's inputs that hold for the whole triangle band: colour
+    ; (and its key: colour XOR the clear colour), no HUD ink, and the paint
+    ; mode (terrain-clear geometry paints and covers; exterior terrain skips
+    ; covered pixels once a clear span was painted in this band — which only
+    ; a clear triangle can change, so it is fixed here).
+    lda #0
+    sta CS_HUD
+    sta CS_MODE
+    lda RR_FLAGS
+    and #$20
+    beq .Lrr_mode_ordinary
+    lda #1
+    sta CS_MODE
+    bne .Lrr_mode_set
+.Lrr_mode_ordinary:
+    lda RR_PLAYER_SEEN
+    beq .Lrr_mode_set
+    lda RR_FLAGS
+    and #$40
+    beq .Lrr_mode_set
+    lda #2
+    sta CS_MODE
+.Lrr_mode_set:
+    ; The cell writer's row and its CODES/COVER pointers (cells.S tables).
     sec
     lda RR_ROW
     sbc RR_BAND
-    tax
-    beq .Lrr_row
-.Lrr_initial_row:
-    clc
-    lda __rc8
-    adc #160
-    sta __rc8
-    bcc .Lrr_initial_no_carry
-    inc __rc9
-.Lrr_initial_no_carry:
-    dex
-    bne .Lrr_initial_row
-.Lrr_row:
-    lda RR_ROW
-    cmp RR_MIDDLE
-    bne .Lrr_span
-    clc
-    lda __rc4
-    adc #8
-    sta __rc12
-    lda __rc5
-    adc #0
-    sta __rc13
-    ldy #7
+    sta CS_ROW
+    jsr cell_row_pointers
+    ; Bring the head into zero page.
+    ldy #0
+    lda (__rc4),y
+    sta RW_LONG
+    iny
+    lda (__rc4),y
+    sta RW_LONG+1
+    iny
+    lda (__rc4),y
+    sta RW_LONG+2
+    iny
+    lda (__rc4),y
+    sta RW_LONG+3
+    iny
+    lda (__rc4),y
+    sta RW_LONGSTEP
+    iny
+    lda (__rc4),y
+    sta RW_LONGSTEP+1
+    iny
+    lda (__rc4),y
+    sta RW_LONGSTEP+2
+    iny
+    lda (__rc4),y
+    sta RW_LONGSTEP+3
+    iny
+    lda (__rc4),y
+    sta RW_SHORT
+    iny
+    lda (__rc4),y
+    sta RW_SHORT+1
+    iny
+    lda (__rc4),y
+    sta RW_SHORT+2
+    iny
+    lda (__rc4),y
+    sta RW_SHORT+3
+    iny
+    lda (__rc4),y
+    sta RW_SHORTSTEP
+    iny
+    lda (__rc4),y
+    sta RW_SHORTSTEP+1
+    iny
+    lda (__rc4),y
+    sta RW_SHORTSTEP+2
+    iny
+    lda (__rc4),y
+    sta RW_SHORTSTEP+3
+    lda #0
+    sta RR_LOWERED
+    ; Segments: the rows before the middle row, then the rows from it. The
+    ; lower edge replaces the short edge exactly when the middle row lies in
+    ; this band's rows (a middle row above them was replaced in an earlier band).
+    lda RR_MIDDLE
+    cmp RR_ROW
+    bcc .Lrr_single
+    cmp RR_END
+    bcs .Lrr_single
+    sec
+    sbc RR_ROW
+    beq .Lrr_lower
+    sta RW_ROWS
+    jsr .Lrr_segment
 .Lrr_lower:
+    ldy #0
     lda (__rc6),y
-    sta (__rc12),y
-    dey
-    bpl .Lrr_lower
-.Lrr_span:
+    sta RW_SHORT
+    iny
+    lda (__rc6),y
+    sta RW_SHORT+1
+    iny
+    lda (__rc6),y
+    sta RW_SHORT+2
+    iny
+    lda (__rc6),y
+    sta RW_SHORT+3
+    iny
+    lda (__rc6),y
+    sta RW_SHORTSTEP
+    iny
+    lda (__rc6),y
+    sta RW_SHORTSTEP+1
+    iny
+    lda (__rc6),y
+    sta RW_SHORTSTEP+2
+    iny
+    lda (__rc6),y
+    sta RW_SHORTSTEP+3
+    sty RR_LOWERED
+    sec
+    lda RR_END
+    sbc RR_MIDDLE
+    sta RW_ROWS
+    jsr .Lrr_segment
+    jmp .Lrr_exit
+.Lrr_single:
+    sec
+    lda RR_END
+    sbc RR_ROW
+    sta RW_ROWS
+    jsr .Lrr_segment
+.Lrr_exit:
+    ; Persist the stepped positions unless this band held the triangle's
+    ; last row (no later band reads the head); the long step is unchanged.
+    ldy #10
+    lda (__rc6),y
+    cmp RR_END
+    beq .Lrr_done
+    ldy #0
+    lda RW_LONG
+    sta (__rc4),y
+    iny
+    lda RW_LONG+1
+    sta (__rc4),y
+    iny
+    lda RW_LONG+2
+    sta (__rc4),y
+    iny
+    lda RW_LONG+3
+    sta (__rc4),y
+    ldy #8
+    lda RW_SHORT
+    sta (__rc4),y
+    iny
+    lda RW_SHORT+1
+    sta (__rc4),y
+    iny
+    lda RW_SHORT+2
+    sta (__rc4),y
+    iny
+    lda RW_SHORT+3
+    sta (__rc4),y
+    lda RR_LOWERED
+    beq .Lrr_done
+    iny
+    lda RW_SHORTSTEP
+    sta (__rc4),y
+    iny
+    lda RW_SHORTSTEP+1
+    sta (__rc4),y
+    iny
+    lda RW_SHORTSTEP+2
+    sta (__rc4),y
+    iny
+    lda RW_SHORTSTEP+3
+    sta (__rc4),y
+.Lrr_done:
+    rts
+
+; Walk RW_ROWS (>= 1) rows: unpainted bands only advance the edges; painted
+; bands take the loop whose left edge matches the orientation flag.
+.Lrr_segment:
     lda RR_PAINT
-    bne .Lrr_paint
-    jmp .Lrr_advance
-.Lrr_paint:
+    beq .Lrr_walk_only
     lda RR_FLAGS
     and #16
     beq .Lrr_short_left
-    ldy #0
-    lda #8
-    bne .Lrr_bounds
+    jmp .Lrr_rows_long_left
 .Lrr_short_left:
-    ldy #8
-    lda #0
-.Lrr_bounds:
-    sta RR_OFFSET
-    jsr .Lrr_clamp
-    sta RR_FIRST
-    ldy RR_OFFSET
-    jsr .Lrr_clamp
-    sta RR_LAST
-    sec
-    sbc RR_FIRST
-    beq .Lrr_advance
-    bcc .Lrr_advance
-    tay
+    jmp .Lrr_rows_short_left
+.Lrr_walk_only:
     clc
-    lda __rc8
-    adc RR_FIRST
-    sta __rc10
-    lda __rc9
-    adc #0
-    sta __rc11
-    ; The span is painted and nonempty. No earlier branch may mark a band.
-    lda RR_FLAGS
-    and #$20
-    beq .Lrr_ordinary
-    lda #1
-    sta RR_PLAYER_SEEN
-    lda RR_COLOR
-    ora #$40
-    jmp .Lrr_fill
-.Lrr_ordinary:
-    lda RR_PLAYER_SEEN
-    beq .Lrr_plain
-    lda RR_FLAGS
-    and #$40
-    bne .Lrr_terrain
-.Lrr_preserve:
-    dey
-    lda (__rc10),y
-    and #$40
-    ora RR_COLOR
-    sta (__rc10),y
-    cpy #0
-    bne .Lrr_preserve
-    jmp .Lrr_advance
-.Lrr_terrain:
-    dey
-    lda (__rc10),y
-    and #$40
-    bne .Lrr_protected
-    lda RR_COLOR
-    sta (__rc10),y
-.Lrr_protected:
-    cpy #0
-    bne .Lrr_terrain
-    jmp .Lrr_advance
-.Lrr_plain:
-    lda RR_COLOR
-.Lrr_fill:
-    dey
-    sta (__rc10),y
-    ; STA preserves the DEY flags, including widths128..160.
-    bne .Lrr_fill
-.Lrr_advance:
+    lda RW_LONG
+    adc RW_LONGSTEP
+    sta RW_LONG
+    lda RW_LONG+1
+    adc RW_LONGSTEP+1
+    sta RW_LONG+1
+    lda RW_LONG+2
+    adc RW_LONGSTEP+2
+    sta RW_LONG+2
+    lda RW_LONG+3
+    adc RW_LONGSTEP+3
+    sta RW_LONG+3
     clc
-    ldy #4
-    lda (__rc4),y
-    ldy #0
-    adc (__rc4),y
-    sta (__rc4),y
-    ldy #5
-    lda (__rc4),y
-    ldy #1
-    adc (__rc4),y
-    sta (__rc4),y
-    ldy #6
-    lda (__rc4),y
-    ldy #2
-    adc (__rc4),y
-    sta (__rc4),y
-    ldy #7
-    lda (__rc4),y
-    ldy #3
-    adc (__rc4),y
-    sta (__rc4),y
-    clc
-    ldy #12
-    lda (__rc4),y
-    ldy #8
-    adc (__rc4),y
-    sta (__rc4),y
-    ldy #13
-    lda (__rc4),y
-    ldy #9
-    adc (__rc4),y
-    sta (__rc4),y
-    ldy #14
-    lda (__rc4),y
-    ldy #10
-    adc (__rc4),y
-    sta (__rc4),y
-    ldy #15
-    lda (__rc4),y
-    ldy #11
-    adc (__rc4),y
-    sta (__rc4),y
-    inc RR_ROW
-    lda RR_ROW
-    cmp RR_END
-    bne .Lrr_more
-    rts
-.Lrr_more:
-    clc
-    lda __rc8
-    adc #160
-    sta __rc8
-    bcc .Lrr_no_carry
-    inc __rc9
-.Lrr_no_carry:
-    jmp .Lrr_row
-.Lrr_clamp:
-    clc
-    lda (__rc4),y
-    adc #255
-    iny
-    lda (__rc4),y
-    adc #127
-    iny
-    lda (__rc4),y
-    adc #0
-    sta RR_BOUND
-    iny
-    lda (__rc4),y
-    adc #0
-    bmi .Lrr_zero
-    bne .Lrr_width
-    lda RR_BOUND
-    cmp #160
-    bcs .Lrr_width
-    rts
-.Lrr_zero:
-    lda #0
-    rts
-.Lrr_width:
-    lda #160
+    lda RW_SHORT
+    adc RW_SHORTSTEP
+    sta RW_SHORT
+    lda RW_SHORT+1
+    adc RW_SHORTSTEP+1
+    sta RW_SHORT+1
+    lda RW_SHORT+2
+    adc RW_SHORTSTEP+2
+    sta RW_SHORT+2
+    lda RW_SHORT+3
+    adc RW_SHORTSTEP+3
+    sta RW_SHORT+3
+    dec RW_ROWS
+    bne .Lrr_walk_only
     rts
 
-; Conservative static-background bounds. C ABI commands rc2/3, count A/X;
-; result low word A/X and high word rc2/3. Renderer checks clear/state/drop.
-; Count can be256; byte loop counters deliberately wrap only in that case.
-.set SK_COUNT, $77a0
-.set SK_LOOP, $77a1
-.set SK_STATIC, $77a2
-.set SK_MASK, $77a4
-.set SK_MIN, $77a8
-.set SK_MAX, $77a9
-.set SK_END, $77aa
-.set SK_BIT, $77ab
-.set SK_TEMP, $77ac
-.set SK_BAND, $77ad
-.section .tables.static_sky,"ax",@progbits
-.globl fast_static_sky_bands
-fast_static_sky_bands:
-    sta SK_COUNT
-    cpx #0
-    bne .Lsky_begin
-    cmp #0
-    bne .Lsky_begin
-    jmp .Lsky_none
-.Lsky_begin:
-    lda __rc2
-    sta __rc4
-    lda __rc3
-    sta __rc5
+; One painted row loop per orientation. A row clamps the left and right
+; columns from the biased positions' high words (0..160), hands a nonempty
+; span [first, end) to cell_rows, advances both edges and steps the cell
+; writer's row (the COVER row only matters to the terrain modes).
+.macro RASTER_ROWS name, left, lstep, right, rstep
+.Lrr_rows_\name:
+    lda \left+3
+    bmi .Lrr_left_zero_\name
+    bne .Lrr_skip_\name
+    lda \left+2
+    cmp #160
+    bcs .Lrr_skip_\name
+    bcc .Lrr_left_ok_\name
+.Lrr_left_zero_\name:
     lda #0
-    sta SK_LOOP
-    sta SK_STATIC
-    lda #255
-    sta SK_MASK
-    sta SK_MASK+1
-    sta SK_MASK+2
+.Lrr_left_ok_\name:
+    sta CS_FIRST
+    lda \right+3
+    bmi .Lrr_skip_\name
+    bne .Lrr_right_full_\name
+    lda \right+2
+    cmp #160
+    bcc .Lrr_right_ok_\name
+.Lrr_right_full_\name:
+    lda #160
+.Lrr_right_ok_\name:
+    cmp CS_FIRST
+    bcc .Lrr_skip_\name
+    beq .Lrr_skip_\name
+    sta CS_END
+    ; A painted, nonempty terrain-clear span marks the band (mode 1 only).
+    lda CS_MODE
+    lsr
+    bcc .Lrr_cells_\name
     lda #1
-    sta SK_MASK+3
-.Lsky_triangle:
-    ldy #15
-    lda (__rc4),y
-    and #2
-    beq .Lsky_bounds
-    inc SK_STATIC
-    jmp .Lsky_next
-.Lsky_bounds:
-    lda #200
-    sta SK_MIN
+    sta RR_PLAYER_SEEN
+.Lrr_cells_\name:
+    jsr cell_rows
+.Lrr_skip_\name:
+    clc
+    lda \left
+    adc \lstep
+    sta \left
+    lda \left+1
+    adc \lstep+1
+    sta \left+1
+    lda \left+2
+    adc \lstep+2
+    sta \left+2
+    lda \left+3
+    adc \lstep+3
+    sta \left+3
+    clc
+    lda \right
+    adc \rstep
+    sta \right
+    lda \right+1
+    adc \rstep+1
+    sta \right+1
+    lda \right+2
+    adc \rstep+2
+    sta \right+2
+    lda \right+3
+    adc \rstep+3
+    sta \right+3
+    ; next band row: the cell writer's CODES and COVER rows are 40 bytes on
+    ; (stepped after the segment's last row too, harmlessly: every triangle
+    ; band derives the pointers afresh, and the second segment continues)
+    inc CS_ROW
+    lda __rc8
+    clc
+    adc #40
+    sta __rc8
+    bcc .Lrr_codes_row_\name
+    inc __rc9
+.Lrr_codes_row_\name:
+    lda CS_MODE
+    beq .Lrr_count_\name
+    lda __rc10
+    clc
+    adc #40
+    sta __rc10
+    bcc .Lrr_count_\name
+    inc __rc11
+.Lrr_count_\name:
+    dec RW_ROWS
+    beq .Lrr_rows_done_\name
+    jmp .Lrr_rows_\name
+.Lrr_rows_done_\name:
+    rts
+.endm
+RASTER_ROWS long_left, RW_LONG, RW_LONGSTEP, RW_SHORT, RW_SHORTSTEP
+RASTER_ROWS short_left, RW_SHORT, RW_SHORTSTEP, RW_LONG, RW_LONGSTEP
+
+; void fast_raster_band(const uint8_t *mask, uint8_t *pixels, uint8_t band_y,
+;                       uint8_t paint)
+; C ABI: mask rc2/3, pixels rc4/5 (unused: the cell writer owns the fixed
+; pixel band), band_y A, paint X. Walks every triangle whose bit is set in
+; the band's ordered 32-byte mask, in index order, with its persistent head
+; at RASTER_HEADS + 16 i and prepared tail at $E000 + 12 i.
+; Replaces the per-triangle Job marshalling of the Rust band loop.
+.globl fast_raster_band
+fast_raster_band:
+    sta RR_BAND
+    stx RR_PAINT
     lda #0
-    sta SK_MAX
-    ldy #6
-.Lsky_vertex:
-    jsr .Lsky_clamp_y
-    cmp SK_MIN
-    bcs .Lsky_minimum
-    sta SK_MIN
-.Lsky_minimum:
-    cmp SK_MAX
-    bcc .Lsky_maximum
-    sta SK_MAX
-.Lsky_maximum:
-    iny
-    cpy #12
-    bne .Lsky_vertex
-    lda SK_MIN
-    cmp SK_MAX
-    bcs .Lsky_next
-    lsr
-    lsr
-    lsr
-    sta SK_BAND
-    lda SK_MAX
+    sta RR_INDEX
+    sta RR_MASK_BYTE
+.Lrb_byte:
+    ldy RR_MASK_BYTE
+    lda (__rc2),y
+    bne .Lrb_have_bits
+    ; Eight unused indices.
     clc
-    adc #7
-    lsr
-    lsr
-    lsr
-    sta SK_END
-.Lsky_clear_band:
-    lda SK_BAND
-    and #7
-    tax
-    lda .Lsky_bits,x
-    sta SK_BIT
-    lda SK_BAND
-    lsr
-    lsr
-    lsr
-    tax
-    lda SK_MASK,x
-    and SK_BIT
-    sta SK_MASK,x
-    inc SK_BAND
-    lda SK_BAND
-    cmp SK_END
-    bcc .Lsky_clear_band
-.Lsky_next:
+    lda RR_INDEX
+    adc #8
+    sta RR_INDEX
+    jmp .Lrb_next_byte
+.Lrb_have_bits:
+    sta RR_MASK_BITS
+.Lrb_bit:
+    lsr RR_MASK_BITS
+    bcs .Lrb_triangle
+    lda RR_MASK_BITS
+    beq .Lrb_rest_clear
+    ; Bits remain, so this bit was below seven and the index stays in the byte.
+    inc RR_INDEX
+    bne .Lrb_bit
+.Lrb_rest_clear:
+    ; No further bits in this byte: continue at the next byte's first index.
+    lda RR_INDEX
+    ora #7
     clc
-    lda __rc4
-    adc #16
+    adc #1
+    sta RR_INDEX
+    jmp .Lrb_next_byte
+.Lrb_triangle:
+    ; head = RASTER_HEADS + 16 i (the heads follow the masks at $EF20)
+    lda RR_INDEX
+    lsr
+    lsr
+    lsr
+    lsr
+    sta __rc5
+    lda RR_INDEX
+    and #15
+    asl
+    asl
+    asl
+    asl
+    clc
+    adc #<RASTER_HEADS
     sta __rc4
-    bcc .Lsky_pointer
-    inc __rc5
-.Lsky_pointer:
-    inc SK_LOOP
-    lda SK_LOOP
-    cmp SK_COUNT
-    beq .Lsky_done
-    jmp .Lsky_triangle
-.Lsky_done:
-    lda SK_STATIC
-    cmp #14
-    bne .Lsky_none
-    lda SK_MASK+2
-    sta __rc2
-    lda SK_MASK+3
-    sta __rc3
-    lda SK_MASK
-    ldx SK_MASK+1
-    rts
-.Lsky_none:
-    lda #0
-    tax
-    sta __rc2
-    sta __rc3
-    rts
-.Lsky_clamp_y:
-    lda (__rc4),y
-    sta SK_TEMP
-    iny
-    lda (__rc4),y
-    bmi .Lsky_zero
-    bne .Lsky_height
-    lda SK_TEMP
-    cmp #200
-    bcs .Lsky_height
-    rts
-.Lsky_zero:
-    lda #0
-    rts
-.Lsky_height:
-    lda #200
-    rts
-.Lsky_bits:
-    .byte $fe,$fd,$fb,$f7,$ef,$df,$bf,$7f
-.section .phase.pixels.glyph,"ax",@progbits
-.globl fast_glyph
-.type fast_glyph,@function
-; Bounded 3x5 HUD glyph. C ABI: destination rc2/3, rows rc4/5, ink A.
-; Caller proves all five 160-byte-stride rows and three columns are writable.
-; Only caller-saved rc2/3, rc6/7 and A/X/Y are clobbered; no static scratch.
-fast_glyph:
-    sta __rc6
-    ldx #0
-.Lglyph_row:
-    txa
-    tay
-    lda (__rc4),y
+    lda __rc5
+    adc #>RASTER_HEADS
+    sta __rc5
+    ; tail = $E000 + 12 i = $E000 + 8 i + 4 i
+    lda RR_INDEX
+    lsr
+    lsr
+    lsr
+    lsr
+    lsr
     sta __rc7
-    ldy #0
-    and #4
-    beq .Lglyph_middle
-    lda __rc6
-    sta (__rc2),y
-.Lglyph_middle:
-    iny
-    lda __rc7
-    and #2
-    beq .Lglyph_right
-    lda __rc6
-    sta (__rc2),y
-.Lglyph_right:
-    iny
-    lda __rc7
-    and #1
-    beq .Lglyph_next
-    lda __rc6
-    sta (__rc2),y
-.Lglyph_next:
+    lda RR_INDEX
+    asl
+    asl
+    asl
+    sta __rc6
+    lda RR_INDEX
+    lsr
+    lsr
+    lsr
+    lsr
+    lsr
+    lsr
     clc
-    lda __rc2
-    adc #160
-    sta __rc2
-    bcc .Lglyph_advance
-    inc __rc3
-.Lglyph_advance:
-    inx
-    cpx #5
-    bne .Lglyph_row
+    adc __rc7
+    sta __rc7
+    lda RR_INDEX
+    asl
+    asl
+    clc
+    adc __rc6
+    sta __rc6
+    lda __rc7
+    adc #$e0
+    sta __rc7
+    jsr .Lrr_core
+    lda RR_MASK_BITS
+    bne .Lrb_more_bits
+    jmp .Lrb_rest_clear
+.Lrb_more_bits:
+    inc RR_INDEX
+    jmp .Lrb_bit
+.Lrb_next_byte:
+    inc RR_MASK_BYTE
+    lda RR_MASK_BYTE
+    cmp #32
+    beq .Lrb_done
+    jmp .Lrb_byte
+.Lrb_done:
     rts
-.size fast_glyph, .-fast_glyph

@@ -266,7 +266,7 @@ def audit(path):
             and symbols["__phase_pixels_aux_load"].address == 0x43F20
             and symbols["__phase_pixels_prefix_size"].address == phases[".phase.pixels"].size
             and phases[".phase.pixels"].address == 0x3000
-            and phases[".phase.pixels"].size <= 0x3000
+            and phases[".phase.pixels"].size <= 0x3F20
             and symbols["__phase_pixels_size"].address == 0x3F20 + pixels_auxiliary.size,
             "PIXELS helper section disagrees with its ownership boundaries")
     require("encounter_step" in symbols and "__phase_sim_base_end" in symbols, "missing opaque encounter ABI boundary")
@@ -340,6 +340,7 @@ def audit(path):
     graph = defaultdict(set)
     errors = []
     partial_tail_calls = Counter()
+    kernel_references = 0
     enemy_calls = 0
     scenery_calls = 0
     alternate_calls = Counter()
@@ -398,10 +399,16 @@ def audit(path):
             and len(loader_calls["havoc_c64::dma"]) == len(loader_calls["havoc_c64::load_phase"]) == 1
             and loader_calls["havoc_c64::dma"][0] < loader_calls["havoc_c64::load_phase"][0],
             "SIM helper loader must reload its complete helpers before loading each SIM profile")
+    pixels_loader_sequence = [name for _, name in sorted(pixels_loader_calls)]
     require(sorted(pixels_prefix_refs) == [4, 5] and sorted(pixels_loader_refs) == [4, 5]
-            and [name for _, name in sorted(pixels_loader_calls)] == ["io_on", "havoc_c64::dma", "io_off"],
+            and pixels_loader_sequence[:3] == ["io_on", "havoc_c64::dma", "io_off"]
+            and pixels_loader_sequence.count("havoc_c64::dma") == 1,
             "PIXELS helper loader must bank I/O in, reload helpers, then restore raster access")
-    pixels_reload_end = max(address for address, _ in pixels_loader_calls)
+    # Packing each band into live color RAM exposes I/O again; every later
+    # exposure must be closed before the next band's raster heads are touched.
+    require(pixels_loader_sequence[3:] == ["io_on", "io_off"] * (len(pixels_loader_sequence[3:]) // 2),
+            "PIXELS band packing must pair every I/O exposure with a restore")
+    pixels_reload_end = sorted(pixels_loader_calls)[2][0]
     require(all(address > pixels_reload_end for address in pixels_entry_tail_refs),
             "PIXELS entry references helpers before reloading them")
     # LLVM places switch tables in resident .rodata and drops their local
@@ -484,6 +491,22 @@ def audit(path):
         destination = symbol.address + addend
         caller = elf.function_at(source.index, address) if source.executable else None
         callee = elf.function_at(target.index, destination) if target.executable else None
+        if source.name.startswith(".music.kernel.") or target.name.startswith(".music.kernel."):
+            # Per-song kernels execute from the resident slot inside the IRQ:
+            # they may reference only themselves or resident code and data,
+            # never an overlay or another kernel image. Nothing references a
+            # kernel section directly; the IRQ enters through the absolute
+            # music_kernel_tick alias once the foreground has copied an image.
+            origin = caller.name if caller else f"{source.name}:${address:04X}"
+            if source.name != target.name and (target.name.startswith(".music.kernel.")
+                                               or target.name in phases or target.name == STARTUP_SECTION
+                                               or source.name in phases or not source.executable):
+                errors.append(f"music kernel boundary violated: {origin} -> {target.name}:${destination:04X}")
+            else:
+                kernel_references += 1
+            if caller and callee:
+                graph[caller].add(callee)
+            continue
         earth_tail = source.name in (".phase.scenery.wildlife", ".phase.scenery.transport",
                                      ".phase.scenery.meteors")
         if (target.index == scenery_phase.index and destination >= terrain_end
@@ -609,6 +632,8 @@ def audit(path):
     print("PIXELS helpers: $6F20-$71FF; prefix-only calls, reloaded with I/O mapped before raster access")
     print("Victory ABI: one terminal SIM and one medal GEOMETRY call; matching alternate tails")
     print(f"IRQ relocation graph: {len(reached)} functions, all resident")
+    kernel_sections = [section for section in elf.sections if section.name.startswith(".music.kernel.") and section.size]
+    print(f"Music kernels: {len(kernel_sections)} slot images; {kernel_references} references, all to resident code or data")
     print("Startup: ROMs disabled before BSS; only BSS clear, data copy, main are called")
     print("Startup checks: one main call before BOOT; no phase or IRQ references into retired workspace")
 

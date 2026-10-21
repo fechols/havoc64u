@@ -1292,3 +1292,539 @@ fn lost_wing_ties_preserve_the_eighteen_tick_note_and_breath_spacing() {
         assert_eq!(player.underruns(), 0);
     }
 }
+
+#[cfg(feature = "music-kernels")]
+mod kernels {
+    use super::*;
+    use havoc::audio::kernels::has_kernel;
+    use havoc::music::FILTER_OFFSET;
+
+    /// One self-looping page for `cue`; `setup` writes events and instruments.
+    fn build(cue: MusicState, ticks: u8, filter: u8, setup: impl Fn(&mut [u8; PAGE_SIZE])) -> [u8; PAGE_SIZE] {
+        let mut bytes = page(cue, 0, 0, ticks);
+        bytes[FILTER_OFFSET] = filter;
+        setup(&mut bytes);
+        seal(&mut bytes);
+        bytes
+    }
+
+    fn put(bytes: &mut [u8; PAGE_SIZE], row: usize, voice: usize, event: u8) {
+        bytes[EVENT_OFFSET + row * MUSIC_VOICES + voice] = event;
+    }
+
+    fn hold(bytes: &mut [u8; PAGE_SIZE], voice: usize, from: usize, to: usize) {
+        for row in from..to {
+            put(bytes, row, voice, 1);
+        }
+    }
+
+    /// Reset, load the slot like the foreground, publish `scene` and pass the
+    /// cue-change gap, so the next tick writes row zero.
+    fn start(cue: MusicState, scene: &[u8; PAGE_SIZE]) -> (AudioEngine, Bus) {
+        let mut player = AudioEngine::new(VideoStandard::Pal);
+        let mut bus = Bus::default();
+        player.reset(&mut bus);
+        player.set_music(cue);
+        assert_eq!(player.kernel_request(), Some(cue));
+        player.accept_kernel(cue, has_kernel(cue));
+        let request = player.page_request().unwrap();
+        player.publish_page(request, scene).unwrap();
+        player.tick(&mut bus, scene);
+        assert!(!player.kernel_runs(), "no row has been written yet");
+        bus.writes.clear();
+        (player, bus)
+    }
+
+    fn frequency(bus: &Bus, voice: usize) -> u16 {
+        let (sid, base) = if voice < 4 {
+            (voice & 1, (voice >> 1) * 7)
+        } else {
+            (2 + (voice - 4) / 3, (voice - 4) % 3 * 7)
+        };
+        u16::from_le_bytes([bus.registers[sid][base], bus.registers[sid][base + 1]])
+    }
+
+    #[test]
+    fn slot_protocol_loads_per_cue_and_only_runs_for_the_playing_cue() {
+        let scene = build(MusicState::Title, 5, 0x60, |bytes| {
+            put(bytes, 0, 1, 60);
+            hold(bytes, 1, 1, PAGE_ROWS);
+        });
+        let (mut player, mut bus) = start(MusicState::Title, &scene);
+        player.tick(&mut bus, &scene);
+        assert!(player.kernel_runs());
+        player.invalidate_kernel();
+        assert!(!player.kernel_runs());
+        player.accept_kernel(MusicState::Title, true);
+        assert!(player.kernel_runs());
+        player.set_music(MusicState::Lowlands);
+        assert_eq!(player.kernel_request(), Some(MusicState::Lowlands));
+        // The old cue keeps sounding until its successor is published, but the
+        // slot now belongs to the new cue and must not colour the old tail.
+        player.accept_kernel(MusicState::Lowlands, true);
+        assert!(!player.kernel_runs());
+        assert_eq!(player.kernel_request(), None);
+        assert!(!has_kernel(MusicState::Defeat));
+        assert!(has_kernel(MusicState::GateGuardian));
+        let mut silent = AudioEngine::new(VideoStandard::Pal);
+        silent.silence(&mut bus);
+        assert_eq!(silent.kernel_request(), None);
+    }
+
+    #[cfg(feature = "host-tools")]
+    #[test]
+    fn typed_snapshot_restores_active_state_and_preserves_the_image_layout() {
+        let scene = build(MusicState::Canyon, 5, 0x70, |bytes| {
+            put(bytes, 0, 0, 40);
+            put(bytes, 0, 1, 64);
+            hold(bytes, 1, 1, PAGE_ROWS);
+        });
+        let (mut player, mut bus) = start(MusicState::Canyon, &scene);
+        player.queue(AudioEvent {
+            effect: Effect::Bomb,
+            pan: 0,
+        });
+        for _ in 0..3 {
+            player.tick(&mut bus, &scene);
+        }
+        assert!(player.kernel_runs());
+        assert_ne!(bus.registers[0][22], 0x80);
+        assert_ne!(bus.registers[0][18] & 1, 0, "an effect is active");
+        player
+            .publish_page(player.page_request().unwrap(), &scene)
+            .unwrap();
+        player.queue(AudioEvent {
+            effect: Effect::Pickup,
+            pan: 64,
+        });
+        let snapshot = player.snapshot();
+        let image = player.image().to_vec();
+        let mut restored = AudioEngine::new(VideoStandard::Ntsc);
+        restored.restore(&snapshot);
+        assert_eq!(restored.image(), &image[..]);
+        assert_eq!(restored.current_cue(), MusicState::Canyon);
+        assert_eq!(restored.current_page(), 0);
+        assert_eq!(
+            restored.page_request(),
+            None,
+            "the queued page is retained"
+        );
+
+        // Mutating the source cannot change the captured state. Restoring it
+        // preserves subsequent modulation, active effects and queued events.
+        player.silence(&mut Bus::default());
+        player.set_music(MusicState::Defeat);
+        assert_ne!(player.image(), &image[..]);
+        player.restore(&snapshot);
+        assert_eq!(player.image(), &image[..]);
+        let mut restored_bus = Bus {
+            registers: bus.registers,
+            writes: Vec::new(),
+        };
+        for _ in 0..12 {
+            bus.writes.clear();
+            restored_bus.writes.clear();
+            player.tick(&mut bus, &scene);
+            restored.tick(&mut restored_bus, &scene);
+            assert_eq!(player.image(), restored.image());
+            assert_eq!(bus.writes, restored_bus.writes);
+            assert_eq!(bus.registers, restored_bus.registers);
+        }
+        // Fields are two bytes of counters plus byte-sized data only, so the
+        // host image is also the byte-aligned MOS image, with no padding.
+        let payload = 2 + PAGE_SIZE + 32 * SID_COUNT + 10 + 8 + 16 + 4 + 3 + 5;
+        assert_eq!(image.len(), payload);
+        assert_eq!(image.len(), if SID_COUNT == 2 { 208 } else { 400 });
+    }
+
+    #[test]
+    fn defeat_restores_the_filter_only_when_its_opening_becomes_active() {
+        let title = build(MusicState::Title, 5, 0x60, |bytes| {
+            put(bytes, 0, 1, 60);
+            hold(bytes, 1, 1, PAGE_ROWS);
+        });
+        let defeat = build(MusicState::Defeat, 5, 0, |bytes| {
+            put(bytes, 0, 1, 64);
+            hold(bytes, 1, 1, PAGE_ROWS);
+        });
+        let (mut player, mut bus) = start(MusicState::Title, &title);
+        for _ in 0..40 {
+            player.tick(&mut bus, &title);
+        }
+        assert!(bus.registers.iter().all(|sid| sid[22] == 0x60));
+        player.set_music(MusicState::Defeat);
+        player.accept_kernel(MusicState::Defeat, false);
+        bus.writes.clear();
+        for _ in 0..5 {
+            player.tick(&mut bus, &title);
+            assert_eq!(player.current_cue(), MusicState::Title);
+            assert!(bus.registers.iter().all(|sid| sid[22] == 0x60));
+        }
+        assert!(bus.writes.iter().all(|&(_, reg, _)| reg != 22));
+
+        player
+            .publish_page(player.page_request().unwrap(), &defeat)
+            .unwrap();
+        assert_eq!(player.current_cue(), MusicState::Title);
+        assert!(bus.registers.iter().all(|sid| sid[22] == 0x60));
+        bus.writes.clear();
+        player.tick(&mut bus, &defeat);
+        assert_eq!(player.current_cue(), MusicState::Defeat);
+        assert!(!player.kernel_runs());
+        assert_eq!(
+            bus.registers[1][4] & 1,
+            0,
+            "the cue-change tick stays gate-low"
+        );
+        let cutoff_writes: Vec<_> = bus
+            .writes
+            .iter()
+            .copied()
+            .filter(|&(_, reg, _)| reg == 22)
+            .collect();
+        assert_eq!(
+            cutoff_writes,
+            (0..SID_COUNT)
+                .map(|sid| (sid as u8, 22, 0x80))
+                .collect::<Vec<_>>()
+        );
+        assert!(bus.writes.iter().all(|&(_, reg, _)| reg != 23 && reg != 24));
+
+        bus.writes.clear();
+        for _ in 0..PAGE_ROWS * 5 * 3 {
+            if let Some(request) = player.page_request() {
+                player.publish_page(request, &defeat).unwrap();
+            }
+            player.tick(&mut bus, &defeat);
+            assert!(bus.registers.iter().all(|sid| sid[22] == 0x80));
+        }
+        assert_eq!(player.underruns(), 0);
+        assert!(bus.writes.iter().all(|&(_, reg, _)| reg != 22));
+    }
+
+    #[cfg(feature = "host-tools")]
+    #[test]
+    fn authored_asteroid_belt_to_defeat_keeps_the_baseline_for_a_complete_loop() {
+        use havoc::{music, soundtrack};
+
+        fn refill(player: &mut AudioEngine, bank: &[u8], next: &mut [u8; PAGE_SIZE]) {
+            if let Some(request) = player.page_request() {
+                let info = music::cue_info(
+                    &bank[..music::BANK_HEADER_SIZE],
+                    request.cue as u8,
+                )
+                .unwrap();
+                let at = info.offset as usize + request.page as usize * PAGE_SIZE;
+                next.copy_from_slice(&bank[at..at + PAGE_SIZE]);
+                player.publish_page(request, next).unwrap();
+            }
+        }
+
+        let bank = soundtrack::score_bank();
+        let mut player = AudioEngine::new(VideoStandard::Pal);
+        let mut bus = Bus::default();
+        let mut next = [0; PAGE_SIZE];
+        player.reset(&mut bus);
+        player.set_music(MusicState::AsteroidBelt);
+        player.accept_kernel(MusicState::AsteroidBelt, true);
+        for tick in 0..1850 {
+            if tick % 10 == 0 {
+                refill(&mut player, &bank, &mut next);
+            }
+            player.tick(&mut bus, &next);
+        }
+        assert_eq!(player.current_cue(), MusicState::AsteroidBelt);
+        assert!(bus.registers.iter().all(|sid| sid[22] != 0x80));
+        assert_eq!(player.underruns(), 0);
+
+        player.set_music(MusicState::Defeat);
+        player.accept_kernel(MusicState::Defeat, false);
+        refill(&mut player, &bank, &mut next);
+        player.tick(&mut bus, &next); // Consume Defeat's opening gate-low tick.
+        assert_eq!(player.current_cue(), MusicState::Defeat);
+        assert!(bus.registers.iter().all(|sid| sid[22] == 0x80));
+
+        let info = music::cue_info(
+            &bank[..music::BANK_HEADER_SIZE],
+            MusicState::Defeat as u8,
+        )
+        .unwrap();
+        let page_ticks = PAGE_ROWS * info.row_ticks as usize;
+        let loop_ticks = info.pages as usize * page_ticks;
+        // Service at five frames per second and include the next loop's first
+        // row, proving the actual score completes and wraps without underruns.
+        for tick in 0..=loop_ticks {
+            if tick % 10 == 0 {
+                refill(&mut player, &bank, &mut next);
+            }
+            player.tick(&mut bus, &next);
+            assert_eq!(player.current_cue(), MusicState::Defeat);
+            assert_eq!(
+                player.current_page() as usize,
+                (tick / page_ticks) % info.pages as usize,
+            );
+            assert!(bus.registers.iter().all(|sid| sid[22] == 0x80));
+            assert_eq!(player.underruns(), 0);
+        }
+        assert_eq!(player.current_page(), 0);
+    }
+
+    #[test]
+    fn modulated_cue_loops_keep_their_filter_cutoff() {
+        let scene = build(MusicState::Title, 5, 0x60, |bytes| {
+            put(bytes, 0, 1, 60);
+            hold(bytes, 1, 1, PAGE_ROWS);
+        });
+        let (mut player, mut bus) = start(MusicState::Title, &scene);
+        for tick in 0..PAGE_ROWS * 5 * 3 {
+            if let Some(request) = player.page_request() {
+                player.publish_page(request, &scene).unwrap();
+            }
+            player.tick(&mut bus, &scene);
+            if tick >= 31 {
+                assert!(
+                    bus.registers.iter().all(|sid| sid[22] == 0x60),
+                    "tick {tick}"
+                );
+            }
+        }
+        assert_eq!(player.underruns(), 0);
+    }
+
+    #[test]
+    fn glide_kernel_walks_the_cutoff_to_each_target_and_holds_at_zero() {
+        let scene = build(MusicState::Title, 5, 0x60, |bytes| {
+            put(bytes, 0, 1, 60);
+            hold(bytes, 1, 1, PAGE_ROWS);
+        });
+        let (mut player, mut bus) = start(MusicState::Title, &scene);
+        let mut previous = 0x80u8;
+        for tick in 0..40 {
+            player.tick(&mut bus, &scene);
+            let cutoff = bus.registers[0][22];
+            assert_eq!(cutoff, previous.saturating_sub(1).max(0x60), "tick {tick}");
+            assert!(bus.registers.iter().all(|sid| sid[22] == cutoff), "every chip follows");
+            previous = cutoff;
+        }
+        assert_eq!(bus.registers[0][22], 0x60);
+        let held = build(MusicState::Title, 5, 0, |bytes| put(bytes, 0, 1, 60));
+        let (mut player, mut bus) = start(MusicState::Title, &held);
+        for _ in 0..30 {
+            player.tick(&mut bus, &held);
+        }
+        assert_eq!(bus.registers[0][22], 0x80, "a zero target leaves the filter alone");
+    }
+
+    #[test]
+    fn wah_kernel_throws_the_cutoff_open_on_bass_attacks_and_lets_it_fall() {
+        let scene = build(MusicState::Canyon, 5, 0x70, |bytes| {
+            put(bytes, 0, 0, 40);
+            put(bytes, 4, 0, 40);
+            put(bytes, 0, 1, 64);
+            hold(bytes, 1, 1, PAGE_ROWS);
+        });
+        let (mut player, mut bus) = start(MusicState::Canyon, &scene);
+        player.tick(&mut bus, &scene);
+        assert_eq!(bus.registers[0][22], 0x70 + 0x30, "the attack opens the filter");
+        let mut cutoffs = Vec::new();
+        for _ in 0..19 {
+            player.tick(&mut bus, &scene);
+            cutoffs.push(bus.registers[0][22]);
+        }
+        assert!(cutoffs.windows(2).all(|w| w[1] <= w[0]), "{cutoffs:?}");
+        assert_eq!(cutoffs[cutoffs.len() - 1], 0x70, "{cutoffs:?}");
+        assert!(cutoffs[..3].iter().all(|&c| c > 0x80), "it falls, not drops: {cutoffs:?}");
+        player.tick(&mut bus, &scene);
+        assert_eq!(bus.registers[0][22], 0xa0, "row four's attack opens it again");
+    }
+
+    #[test]
+    fn double_time_kernel_flutters_between_consecutive_authored_arpeggio_notes() {
+        let scene = build(MusicState::CrystalCurrent, 6, 0xa0, |bytes| {
+            put(bytes, 0, 1, 72);
+            hold(bytes, 1, 1, PAGE_ROWS);
+            for (row, pitch) in [(0, 60), (1, 64), (2, 67), (4, 72)] {
+                put(bytes, row, 3, pitch);
+            }
+        });
+        let (mut player, mut bus) = start(MusicState::CrystalCurrent, &scene);
+        let pal = |note| note_frequency(VideoStandard::Pal, note);
+        let mut pitches = Vec::new();
+        for _ in 0..6 {
+            player.tick(&mut bus, &scene);
+            pitches.push(frequency(&bus, 3));
+        }
+        assert_eq!(pitches, [pal(60), pal(64), pal(60), pal(64), pal(60), pal(64)]);
+        for _ in 0..6 {
+            player.tick(&mut bus, &scene);
+        }
+        // Row two's successor is a rest, so the flutter stops on row two.
+        for _ in 0..6 {
+            player.tick(&mut bus, &scene);
+            assert_eq!(frequency(&bus, 3), pal(67));
+        }
+    }
+
+    #[test]
+    fn drum_kernel_makes_sliding_pulse_kicks_and_falling_snares() {
+        let scene = build(MusicState::AsteroidBelt, 5, 0x90, |bytes| {
+            let at = INSTRUMENT_OFFSET + 2 * 5;
+            bytes[at..at + 5].copy_from_slice(&[0x80, 0x00, 0x08, 0x04, 0x02]);
+            put(bytes, 0, 2, 40);
+            put(bytes, 1, 2, 67);
+            put(bytes, 2, 2, 88);
+            put(bytes, 0, 1, 76);
+            hold(bytes, 1, 1, PAGE_ROWS);
+        });
+        let (mut player, mut bus) = start(MusicState::AsteroidBelt, &scene);
+        let pal = |note| note_frequency(VideoStandard::Pal, note);
+        player.tick(&mut bus, &scene);
+        assert_eq!(bus.registers[0][11], 0x81, "the kick starts as a noise click");
+        assert_eq!(frequency(&bus, 2), pal(40));
+        player.tick(&mut bus, &scene);
+        assert_eq!(bus.registers[0][11], 0x41, "then becomes a gated pulse body");
+        assert_eq!((bus.registers[0][9], bus.registers[0][10]), (0x00, 0x08));
+        let start = frequency(&bus, 2);
+        assert_eq!(start, pal(52));
+        player.tick(&mut bus, &scene);
+        assert_eq!(frequency(&bus, 2), start - (start >> 2), "and slides down");
+        player.tick(&mut bus, &scene);
+        player.tick(&mut bus, &scene);
+        assert_eq!(bus.registers[0][11], 0x40, "released a tick before the snare");
+        player.tick(&mut bus, &scene);
+        assert_eq!(bus.registers[0][11], 0x81, "the snare restores the noise kit");
+        let snare = frequency(&bus, 2);
+        assert_eq!(snare, pal(67));
+        player.tick(&mut bus, &scene);
+        assert_eq!(frequency(&bus, 2), snare - (snare >> 3), "and falls in pitch");
+        for _ in 0..4 {
+            player.tick(&mut bus, &scene);
+        }
+        let hat = frequency(&bus, 2);
+        assert_eq!(hat, pal(88));
+        player.tick(&mut bus, &scene);
+        assert_eq!(frequency(&bus, 2), hat, "hats stay crisp");
+    }
+
+    #[test]
+    fn expression_kernel_delays_its_vibrato_and_glides_into_slurs() {
+        // Lowlands: portamento shift two, ten ticks of delay, depth six.
+        let held = build(MusicState::Lowlands, 6, 0x80, |bytes| {
+            put(bytes, 0, 1, 60);
+            hold(bytes, 1, 1, PAGE_ROWS);
+        });
+        let (mut player, mut bus) = start(MusicState::Lowlands, &held);
+        let pal = |note| note_frequency(VideoStandard::Pal, note);
+        let base = pal(60);
+        // Band zero (below 8192) swings ±64 units at depth zero; Lowlands
+        // halves it. Higher octaves double the swing per band.
+        let swing = (64u16 << (base >> 13)) >> 1;
+        let mut frequencies = Vec::new();
+        for _ in 0..96 {
+            player.tick(&mut bus, &held);
+            frequencies.push(frequency(&bus, 1));
+        }
+        assert!(frequencies[..10].iter().all(|&f| f == base), "{frequencies:?}");
+        let vibrato = &frequencies[10..];
+        assert!(
+            vibrato.iter().all(|&f| f >= base - swing && f <= base + swing),
+            "{vibrato:?}"
+        );
+        assert!(vibrato.iter().any(|&f| f > base + swing / 2), "{vibrato:?}");
+        assert!(vibrato.iter().any(|&f| f < base - swing / 2), "{vibrato:?}");
+        assert_eq!(frequencies[10], base, "the swing starts from the centre");
+        assert!(frequencies[11] > base && frequencies[11] - base <= swing / 8 + 1, "a gentle start");
+
+        let slurred = build(MusicState::Lowlands, 6, 0x80, |bytes| {
+            put(bytes, 0, 1, 60);
+            hold(bytes, 1, 1, 4);
+            put(bytes, 4, 1, 67 | 0x80);
+            hold(bytes, 1, 5, 8);
+            put(bytes, 8, 1, 0);
+        });
+        let (mut player, mut bus) = start(MusicState::Lowlands, &slurred);
+        for _ in 0..24 {
+            player.tick(&mut bus, &slurred);
+        }
+        let target = pal(67);
+        player.tick(&mut bus, &slurred);
+        let first = frequency(&bus, 1);
+        assert!(first < target && first > base, "the slur glides instead of jumping: {first}");
+        let mut last = first;
+        for _ in 0..20 {
+            player.tick(&mut bus, &slurred);
+            let now = frequency(&bus, 1);
+            assert!(now + (target >> 7) >= last, "{now} < {last}: the glide never turns back");
+            last = now;
+        }
+        // The glide has closed to within the vibrato's swing around the target.
+        assert!(last.abs_diff(target) <= (64 << (target >> 13)) >> 1, "{last} vs {target}");
+        for _ in 0..3 {
+            player.tick(&mut bus, &slurred);
+        }
+        let off = frequency(&bus, 1);
+        player.tick(&mut bus, &slurred);
+        assert_eq!(frequency(&bus, 1), off, "a rest stops the expression");
+    }
+
+    #[test]
+    fn shimmer_kernel_sweeps_pulse_widths_and_ignores_saw_leads() {
+        let pulse = build(MusicState::Fortress, 5, 0x80, |bytes| {
+            put(bytes, 0, 1, 72);
+            hold(bytes, 1, 1, PAGE_ROWS);
+        });
+        let (mut player, mut bus) = start(MusicState::Fortress, &pulse);
+        let mut widths = Vec::new();
+        for _ in 0..64 {
+            player.tick(&mut bus, &pulse);
+            widths.push(u16::from_le_bytes([bus.registers[1][2], bus.registers[1][3]]));
+        }
+        let (low, high) = (*widths.iter().min().unwrap(), *widths.iter().max().unwrap());
+        assert!((0x800..=0x810).contains(&low), "{widths:?}");
+        assert!(high > 0x800 + 0x300 && high <= 0x800 + 127 * 8, "{widths:?}");
+        assert!(widths.windows(2).filter(|w| w[0] != w[1]).count() > 40);
+        let saw = build(MusicState::Fortress, 5, 0x80, |bytes| {
+            let at = INSTRUMENT_OFFSET + 5;
+            bytes[at..at + 5].copy_from_slice(&[0x20, 0, 8, 0x02, 0x73]);
+            put(bytes, 0, 1, 72);
+            hold(bytes, 1, 1, PAGE_ROWS);
+        });
+        let (mut player, mut bus) = start(MusicState::Fortress, &saw);
+        for _ in 0..64 {
+            player.tick(&mut bus, &saw);
+            assert_eq!((bus.registers[1][2], bus.registers[1][3]), (0, 8));
+        }
+    }
+
+    #[test]
+    fn kernels_leave_the_reserved_effects_voices_and_volume_alone() {
+        let suite = [
+            MusicState::Title,
+            MusicState::Canyon,
+            MusicState::CrystalCurrent,
+            MusicState::AsteroidBelt,
+            MusicState::OrbitalShipyard,
+            MusicState::JumpGate,
+        ];
+        for cue in suite {
+            let scene = build(cue, 5, 0x70, |bytes| {
+                for voice in 0..MUSIC_VOICES {
+                    put(bytes, 0, voice, 40 + voice as u8 * 4);
+                    put(bytes, 4, voice, 41 + voice as u8 * 4);
+                    hold(bytes, voice, 5, 8);
+                }
+            });
+            let (mut player, mut bus) = start(cue, &scene);
+            for _ in 0..80 {
+                player.tick(&mut bus, &scene);
+            }
+            for (sid, reg, _) in &bus.writes {
+                let reg = *reg as usize;
+                if *sid < 2 {
+                    assert!(!(14..21).contains(&reg), "{cue:?} touched an effects voice");
+                }
+                assert!(reg != 23 && reg != 24, "{cue:?} touched routing or volume");
+            }
+        }
+    }
+}

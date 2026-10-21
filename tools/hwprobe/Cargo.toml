@@ -1,0 +1,19 @@
+[package]
+name = "havoc-hwprobe"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+build = "build.rs"
+
+[workspace]
+
+[dependencies]
+
+[profile.release]
+opt-level = "z"
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+overflow-checks = false
+debug = true
+strip = false

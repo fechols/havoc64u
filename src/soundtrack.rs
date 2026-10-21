@@ -18,10 +18,12 @@ const R: u8 = 0;
 
 /// The first four parts form a complete two-SID arrangement. The other six
 /// parts are optional orchestration, never substitutes for the principal tune.
+/// `filter` is the bar's cutoff target (page byte 9); zero holds the filter.
 #[derive(Clone, Debug)]
 pub struct ScoreBar {
     pub instruments: [[u8; 5]; VOICES],
     pub rows: [[u8; VOICES]; ROWS_PER_BAR],
+    pub filter: u8,
 }
 
 #[derive(Clone, Debug)]
@@ -151,16 +153,266 @@ fn melody(bar: &mut ScoreBar, line: [u8; 8], legato: bool) {
     }
 }
 
+/// Sixteenth-grid lead writing for syncopated pickups and anticipations: the
+/// same `H`/`R` conventions as `melody`, one row per position.
+fn melody16(bar: &mut ScoreBar, line: [u8; 16], legato: bool) {
+    for row in &mut bar.rows {
+        row[1] = R;
+    }
+    let mut previous = 0;
+    for (at, pitch) in line.into_iter().enumerate() {
+        match pitch {
+            R => previous = 0,
+            H => {
+                assert!(
+                    previous != 0,
+                    "a sixteenth tie needs an earlier note in its bar"
+                );
+                bar.rows[at][1] = HOLD;
+            }
+            _ => {
+                note(bar, 1, at, pitch, 1);
+                if legato
+                    && at & 1 == 1
+                    && previous != 0
+                    && (pitch as i16 - previous as i16).abs() <= 2
+                    && pitch != previous
+                {
+                    bar.rows[at][1] |= 0x80;
+                }
+                previous = pitch;
+            }
+        }
+    }
+}
+
+/// Replace one bar's lead with a sixteenth-note hook after the arrangement is
+/// built; the production pass echoes whatever lead is final.
+fn hook16(cue: &mut Cue, bar: usize, line: [u8; 16]) {
+    melody16(&mut cue.bars[bar], line, false);
+}
+
+// Production colours. The echo answers the lead from the opposite UltiSID at
+// roughly a third of its level, a software delay only the four-SID ensemble can
+// afford. Drums are short noise bursts with a real decay instead of clicks; the
+// kick body is a tuned sub-octave pulse thump; crashes ring across four rows.
+// Bells and anvils are triangle voices ring-modulated by their chip's noise
+// oscillator, so the clang follows the hat pitch rather than needing a modulator
+// of its own. Pulse widths grow and shrink across each eight-bar phrase.
+const ECHO: [u8; 5] = [0x40, 0x00, 0x06, 0x02, 0x34];
+const DRUMS: [u8; 5] = [0x80, 0x00, 0x08, 0x04, 0x02];
+const SLOW_DRUMS: [u8; 5] = [0x80, 0x00, 0x08, 0x05, 0x02];
+const KICK_BODY: [u8; 5] = [0x40, 0x00, 0x08, 0x04, 0x04];
+const CRASH: [u8; 5] = [0x80, 0x00, 0x08, 0x09, 0x08];
+const BELL: [u8; 5] = [0x10 | crate::music::RING, 0x00, 0x00, 0x09, 0x05];
+const ANVIL: [u8; 5] = [0x10 | crate::music::RING, 0x00, 0x00, 0x03, 0x03];
+const PULSE_STEPS: [u16; 8] = [0, 0x80, 0x100, 0x180, 0x200, 0x180, 0x100, 0x80];
+const ROLL: [(usize, u8); 4] = [(12, 64), (13, 66), (14, 68), (15, 70)];
+
+/// A one-row chromatic leading tone into the next bar's bass: Tel's basslines
+/// walk into each chord change instead of jumping cold. Row fifteen is free in
+/// every bass rhythm and the next bar always re-attacks on row zero.
+fn approach(bar: &mut ScoreBar, harmony: Chord, next: Chord) {
+    if next.bass == harmony.bass {
+        return;
+    }
+    let pitch = if next.bass > harmony.bass {
+        next.bass - 1
+    } else {
+        next.bass + 1
+    };
+    note(bar, 0, 15, pitch, 1);
+}
+
+/// Widen a pulse instrument towards the middle of its phrase and back. Non-pulse
+/// waveforms ignore the width, so saw and triangle leads are left alone.
+fn step_pulse(instrument: &mut [u8; 5], bar: usize) {
+    if instrument[0] & 0xf0 != 0x40 {
+        return;
+    }
+    let width = (u16::from(instrument[2]) << 8 | u16::from(instrument[1])) + PULSE_STEPS[bar % 8];
+    let width = width.min(0xe00);
+    instrument[1] = width as u8;
+    instrument[2] = (width >> 8) as u8;
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Colour {
+    None,
+    Bell,
+    Anvil,
+}
+
+/// Per-cue production applied after the notes are arranged.
+#[derive(Clone, Copy)]
+struct Style {
+    /// Voice six echoes the lead a dotted eighth (or an eighth) later.
+    echo: bool,
+    /// Pulse-width phrase stepping on the lead as well as the bass.
+    lead_pulse: bool,
+    /// Electronic drive: string crescendos, the pre-reprise breakdown, section
+    /// crashes and phrase-end rolls, and the full filter programme.
+    drive: bool,
+    /// Industrial second eight: alternate closed and open filter bars.
+    wah: bool,
+    colour: Colour,
+}
+
+const GENTLE: Style = Style {
+    echo: false,
+    lead_pulse: false,
+    drive: false,
+    wah: false,
+    colour: Colour::None,
+};
+
+const fn drive(wah: bool, colour: Colour) -> Style {
+    Style {
+        echo: true,
+        lead_pulse: true,
+        drive: true,
+        wah,
+        colour,
+    }
+}
+
+/// The bar's filter cutoff target. Electronic cues open through the first
+/// eight, pump or sustain through the second, sink through the middle eight
+/// into the breakdown and snap open at the reprise. Orchestral cues breathe
+/// gently around the boot cutoff; the ascent opens continuously.
+fn sweep(style: Style, bar: usize, bars: usize) -> u8 {
+    let section = bar / 8;
+    let local = (bar % 8) as u8;
+    if bars == 5 {
+        return 0x40 + bar as u8 * 0x28;
+    }
+    if !style.drive {
+        return 0x70 + (section as u8 % 4) * 0x08 + (local / 4) * 0x08;
+    }
+    let last = bars / 8 - 1;
+    if section == 0 {
+        0x50 + local * 0x10
+    } else if section == last {
+        if local == 0 {
+            0xd0
+        } else {
+            0xb0 + (local & 1) * 0x10
+        }
+    } else if section == last - 1 {
+        0x90 - local * 0x0c
+    } else if style.wah {
+        if local & 1 == 0 {
+            0x70
+        } else {
+            0xb8
+        }
+    } else {
+        0xa0 + (local & 1) * 0x18
+    }
+}
+
+/// Apply a cue's production: echo, pulse stepping, dynamics, crashes and
+/// rolls, ring-modulated colours and the filter programme. Everything here
+/// keeps every voice's row-zero attack rule so instruments may change per bar.
+fn finish(cue: &mut Cue, style: Style) {
+    let bars = cue.bars.len();
+    let delay = if cue.row_ticks > 5 { 2 } else { 3 };
+    if style.echo {
+        let lead: Vec<u8> = cue
+            .bars
+            .iter()
+            .flat_map(|bar| bar.rows.iter().map(|row| row[1]))
+            .collect();
+        let total = lead.len();
+        for (index, bar) in cue.bars.iter_mut().enumerate() {
+            bar.instruments[6] = ECHO;
+            for row in 0..ROWS_PER_BAR {
+                let at = index * ROWS_PER_BAR + row;
+                // The opening page must start clean, so the echo of the final
+                // phrase does not wrap into the first rows of the loop.
+                bar.rows[row][6] = if at < delay {
+                    R
+                } else {
+                    lead[(at + total - delay) % total]
+                };
+            }
+        }
+    }
+    for (index, bar) in cue.bars.iter_mut().enumerate() {
+        let section = index / 8;
+        let local = index % 8;
+        step_pulse(&mut bar.instruments[0], index);
+        if style.lead_pulse {
+            step_pulse(&mut bar.instruments[1], index);
+        }
+        bar.filter = sweep(style, index, bars);
+        match style.colour {
+            Colour::Bell => bar.instruments[7] = BELL,
+            Colour::Anvil => {
+                bar.instruments[7] = ANVIL;
+                for row in &mut bar.rows {
+                    row[7] = R;
+                }
+                for at in [4, 12] {
+                    note(bar, 7, at, 93, 1);
+                    if bar.rows[at][9] > HOLD && bar.rows[at][9] & 0x80 == 0 {
+                        bar.rows[at][9] = 76;
+                    }
+                }
+            }
+            Colour::None => {}
+        }
+        if !style.drive {
+            if bars >= 24 && section == bars / 8 - 1 {
+                for voice in 4..6 {
+                    bar.instruments[voice][4] += 0x10;
+                }
+            }
+            continue;
+        }
+        if bars == 32 && section & 1 == 1 {
+            // The second and final eights swell from their first bar.
+            for voice in 4..6 {
+                let sustain = (bar.instruments[voice][4] >> 4) + (local as u8) / 2;
+                bar.instruments[voice][4] = (sustain << 4) | (bar.instruments[voice][4] & 0x0f);
+            }
+        }
+        if bars == 32 && (index == 22 || index == 23) {
+            // Drums, bass, lead and echo alone before the reprise.
+            for row in &mut bar.rows {
+                for voice in [3, 4, 5, 7] {
+                    row[voice] = R;
+                }
+            }
+        }
+        if local == 0 {
+            bar.instruments[9] = CRASH;
+            for row in &mut bar.rows {
+                row[9] = R;
+            }
+            note(bar, 9, 0, 80, 4);
+        } else if local == 7 && bar.instruments[2][0] != 0x80 {
+            // Cues whose core percussion is melodic roll on the accent voice.
+            for (at, pitch) in ROLL {
+                note(bar, 9, at, pitch, 1);
+            }
+        }
+    }
+}
+
 fn arrange(
     harmony: Chord,
+    next: Chord,
     lead: [u8; 8],
     texture: Texture,
     bar_index: usize,
     section: usize,
+    drive: bool,
 ) -> ScoreBar {
     let mut bar = ScoreBar {
         instruments: INSTRUMENTS,
         rows: [[0; VOICES]; ROWS_PER_BAR],
+        filter: 0,
     };
     let [root, third, fifth] = harmony.tones;
     let bass_fifth = if fifth >= 60 { fifth - 24 } else { fifth - 12 };
@@ -213,6 +465,9 @@ fn arrange(
         }
         note(&mut bar, 2, 0, third, 6);
         note(&mut bar, 2, 8, fifth, 6);
+    }
+    if drive {
+        approach(&mut bar, harmony, next);
     }
 
     let arpeggio = if bar_index & 1 == 0 {
@@ -301,17 +556,22 @@ fn composed(
     texture: Texture,
     harmonies: &[[Chord; 8]],
     melodies: &[[[u8; 8]; 8]],
+    drive: bool,
 ) -> Cue {
     assert_eq!(harmonies.len(), melodies.len());
-    let mut bars = Vec::with_capacity(harmonies.len() * 8);
+    let total = harmonies.len() * 8;
+    let mut bars = Vec::with_capacity(total);
     for (section, (harmony, melody)) in harmonies.iter().zip(melodies).enumerate() {
         for local in 0..8 {
+            let following = (section * 8 + local + 1) % total;
             bars.push(arrange(
                 harmony[local],
+                harmonies[following / 8][following % 8],
                 melody[local],
                 texture,
                 section * 8 + local,
                 section,
+                drive,
             ));
         }
     }
@@ -378,6 +638,7 @@ fn title() -> Cue {
         Texture::Overture,
         &harmony,
         &lead,
+        false,
     )
 }
 
@@ -432,7 +693,7 @@ fn lowland() -> Cue {
             [76, H, H, H, 71, H, 64, R],
         ],
     ];
-    composed("The Wide Horizon", 6, Texture::Flight, &harmony, &lead)
+    composed("The Wide Horizon", 6, Texture::Flight, &harmony, &lead, false)
 }
 
 fn canyon() -> Cue {
@@ -498,7 +759,7 @@ fn canyon() -> Cue {
             [71, H, 66, H, 63, H, H, R],
         ],
     ];
-    composed("Stone and Thunder", 5, Texture::Canyon, &harmony, &lead)
+    composed("Stone and Thunder", 5, Texture::Canyon, &harmony, &lead, false)
 }
 
 fn fortress() -> Cue {
@@ -564,7 +825,7 @@ fn fortress() -> Cue {
             [75, H, 71, H, 66, H, 63, R],
         ],
     ];
-    composed("Citadel in Flames", 5, Texture::Fortress, &harmony, &lead)
+    composed("Citadel in Flames", 5, Texture::Fortress, &harmony, &lead, false)
 }
 
 fn carrier() -> Cue {
@@ -641,7 +902,7 @@ fn carrier() -> Cue {
             [83, H, 79, H, 74, H, 71, R],
         ],
     ];
-    composed("Against the Iron Sky", 5, Texture::Carrier, &harmony, &lead)
+    composed("Against the Iron Sky", 5, Texture::Carrier, &harmony, &lead, false)
 }
 
 fn victory() -> Cue {
@@ -684,7 +945,7 @@ fn victory() -> Cue {
             [76, H, H, H, H, H, R, R],
         ],
     ];
-    let mut cue = composed("Homeward, at Last", 7, Texture::Homeward, &harmony, &lead);
+    let mut cue = composed("Homeward, at Last", 7, Texture::Homeward, &harmony, &lead, false);
     // The final tonic actually rests before the opening returns; all ensemble
     // parts respect the cadence rather than rattling through a silent lead.
     for row in &mut cue.bars.last_mut().unwrap().rows[12..] {
@@ -744,7 +1005,7 @@ fn crystal_current() -> Cue {
             [78, H, 74, H, 69, H, H, R],
         ],
     ];
-    composed("Crystal Current", 6, Texture::Crystal, &harmony, &lead)
+    composed("Crystal Current", 6, Texture::Crystal, &harmony, &lead, true)
 }
 
 fn ashes_and_steel() -> Cue {
@@ -798,7 +1059,7 @@ fn ashes_and_steel() -> Cue {
             [81, H, 76, H, 72, H, 69, R],
         ],
     ];
-    composed("Ashes and Steel", 6, Texture::Forge, &harmony, &lead)
+    composed("Ashes and Steel", 6, Texture::Forge, &harmony, &lead, true)
 }
 
 fn tempest_drive() -> Cue {
@@ -852,7 +1113,7 @@ fn tempest_drive() -> Cue {
             [78, H, H, H, 73, H, 69, R],
         ],
     ];
-    composed("Tempest Drive", 6, Texture::Tempest, &harmony, &lead)
+    composed("Tempest Drive", 6, Texture::Tempest, &harmony, &lead, true)
 }
 
 fn gorge_warden() -> Cue {
@@ -906,7 +1167,7 @@ fn gorge_warden() -> Cue {
             [72, H, 67, H, 63, H, 60, R],
         ],
     ];
-    composed("Gorge Warden", 5, Texture::Siege, &harmony, &lead)
+    composed("Gorge Warden", 5, Texture::Siege, &harmony, &lead, true)
 }
 
 fn citadel_heart() -> Cue {
@@ -960,18 +1221,19 @@ fn citadel_heart() -> Cue {
             [73, H, 76, H, 80, H, 73, R],
         ],
     ];
-    composed("Citadel Heart", 5, Texture::Reactor, &harmony, &lead)
+    composed("Citadel Heart", 5, Texture::Reactor, &harmony, &lead, true)
 }
 
 fn carrier_overdrive() -> Cue {
     // E-minor pursuit trades with a C-minor threat, then resolves into the
-    // brighter G-major bridge. The finale combines new melodic answers rather
-    // than duplicating either the existing carrier cue or an earlier section.
+    // brighter G-major bridge, whose last bar pivots onto C-sharp seven. The
+    // finale lifts the pursuit a whole tone into F-sharp minor with new
+    // descending answers, then steps down through B seven back into the loop.
     let harmony = [
         [EM, C, D, B7, EM, G, AM, B7],
         [CM, AB, EF, G7, FM, CM, DS, G7],
-        [G, D, EM, C, AM, G, FSS, B7],
-        [EM, C, G, D, AM, EM, B7, EM],
+        [G, D, EM, C, AM, G, FSS, CS7],
+        [FSM, D, A, E, BM, FSM, CS7, B7],
     ];
     let lead = [
         [
@@ -1002,20 +1264,20 @@ fn carrier_overdrive() -> Cue {
             [76, H, 72, H, 69, H, 67, 64],
             [74, H, 79, H, 83, H, 81, 79],
             [78, H, 74, 72, 69, H, 66, H],
-            [75, H, H, H, 71, H, 66, R],
+            [77, H, H, H, 73, H, 68, R],
         ],
         [
-            [88, 86, 83, H, 79, H, 76, 79],
-            [84, H, 88, 86, 84, H, 79, 76],
-            [86, 83, 79, H, 74, H, 71, 74],
-            [81, H, 78, 74, 69, H, 74, 78],
-            [84, 81, 76, H, 72, H, 69, 72],
-            [83, H, 79, 76, 71, H, 67, 71],
-            [78, 75, 71, H, 69, 66, 63, 66],
-            [76, H, 71, H, 67, H, 64, R],
+            [90, 88, 85, H, 81, H, 78, 81],
+            [86, H, 90, 88, 86, H, 81, 78],
+            [88, 85, 81, H, 76, H, 73, 76],
+            [83, H, 80, 76, 71, H, 76, 80],
+            [86, 83, 78, H, 74, H, 71, 74],
+            [85, H, 81, 78, 73, H, 69, 73],
+            [80, 77, 73, H, 71, 68, 65, 68],
+            [78, H, 75, H, 69, H, 66, R],
         ],
     ];
-    composed("Carrier Overdrive", 5, Texture::Overdrive, &harmony, &lead)
+    composed("Carrier Overdrive", 5, Texture::Overdrive, &harmony, &lead, true)
 }
 
 // Every sounding four-voice tuple from the existing 46.08-second Lost Wing,
@@ -1102,6 +1364,7 @@ fn defeat() -> Cue {
         let mut bar = ScoreBar {
             instruments,
             rows: [[0; VOICES]; ROWS_PER_BAR],
+            filter: 0,
         };
         for (beat, pitches) in notes.iter().enumerate() {
             for (voice, &pitch) in pitches.iter().enumerate() {
@@ -1148,13 +1411,18 @@ enum SpaceTexture {
 // adds harmony and answering lines. No effects voice is borrowed for drums.
 fn arrange_space(
     harmony: Chord,
+    next: Chord,
     lead: [u8; 8],
     texture: SpaceTexture,
     index: usize,
     section: usize,
 ) -> ScoreBar {
-    let mut bar = arrange(harmony, lead, Texture::Crystal, index, section);
+    let mut bar = arrange(harmony, next, lead, Texture::Crystal, index, section, false);
     let spacious = section == 2;
+    let slow = matches!(
+        texture,
+        SpaceTexture::Moon | SpaceTexture::Graveyard | SpaceTexture::Gate
+    );
     bar.instruments[0] = [0x40, 0x00, 0x03, 0x02, 0x42];
     bar.instruments[1] = match texture {
         SpaceTexture::Asteroids => [0x40, 0x80, 0x01, 0x02, 0x83],
@@ -1166,10 +1434,12 @@ fn arrange_space(
         SpaceTexture::Ascent => [0x40, 0x80, 0x04, 0x03, 0x84],
         SpaceTexture::Guardian => [0x40, 0x00, 0x01, 0x02, 0x83],
     };
-    bar.instruments[2] = [0x80, 0x00, 0x08, 0x01, 0x12];
+    bar.instruments[2] = if slow { SLOW_DRUMS } else { DRUMS };
+    bar.instruments[8] = KICK_BODY;
     for row in &mut bar.rows {
         row[0] = R;
         row[2] = R;
+        row[8] = R;
     }
     let rhythm = match texture {
         SpaceTexture::Asteroids | SpaceTexture::Gate | SpaceTexture::Ascent => [0, 3, 8, 11],
@@ -1186,6 +1456,7 @@ fn arrange_space(
         };
         note(&mut bar, 0, at, pitch, if spacious { 3 } else { 2 });
     }
+    approach(&mut bar, harmony, next);
     // Low noise attacks reinforce the pulse bass; high short attacks are hats,
     // and lower backbeats make snares. The contrasting middle eight breathes.
     for (at, pitch) in [
@@ -1202,10 +1473,21 @@ fn arrange_space(
             note(&mut bar, 2, at, pitch, 1);
         }
     }
-    if index % 8 == 7 && !spacious {
-        for (at, pitch) in [(13, 76), (15, 82)] {
-            note(&mut bar, 2, at, pitch, 1);
+    // Each snare slurs down a fifth on the next sixteenth: the falling-noise
+    // thwack of a SID snare, kept inside one envelope by the legato.
+    for at in [4, 12] {
+        bar.rows[at + 1][2] = (bar.rows[at][2] - 7) | 0x80;
+    }
+    if index % 8 == 7 {
+        // A rising sixteenth roll leads every phrase, and the loop, onward.
+        for (at, pitch) in ROLL {
+            bar.rows[at][2] = pitch;
         }
+    }
+    // A tuned sub-octave thump under each kick gives the noise click a body.
+    let thump = harmony.bass.saturating_sub(12).max(24);
+    for at in [0, 8] {
+        note(&mut bar, 8, at, thump, 1);
     }
     if index & 1 != 0 {
         for (beat, pitch) in harmony.tones.into_iter().enumerate() {
@@ -1225,8 +1507,10 @@ fn space_composed(
     let mut bars = Vec::with_capacity(32);
     for section in 0..4 {
         for local in 0..8 {
+            let following = (section * 8 + local + 1) % 32;
             bars.push(arrange_space(
                 harmony[section][local],
+                harmony[following / 8][following % 8],
                 lead[section][local],
                 texture,
                 section * 8 + local,
@@ -1242,9 +1526,10 @@ fn space_composed(
 }
 
 fn asteroid_belt() -> Cue {
-    // E-minor skipping hook, an answering descent, open C-major middle eight,
-    // then a varied high return whose dominant drops cleanly into the loop.
-    space_composed(
+    // E-minor skipping hook with sixteenth-note anticipations, an answering
+    // descent, open C-major middle eight, then the return lifted a whole tone
+    // into F-sharp minor, stepping down through C-sharp and B seven to loop.
+    let mut cue = space_composed(
         "Slingshot Through the Belt",
         5,
         SpaceTexture::Asteroids,
@@ -1252,7 +1537,7 @@ fn asteroid_belt() -> Cue {
             [EM, C, G, D, EM, AM, FSS, B7],
             [EM, G, AM, C, D, EM, C, B7],
             [C, G, D, EM, AM, C, D, B7],
-            [EM, C, G, D, AM, EM, FSS, B7],
+            [FSM, D, A, E, BM, D, CS7, B7],
         ],
         [
             [
@@ -1286,17 +1571,21 @@ fn asteroid_belt() -> Cue {
                 [75, H, H, H, 71, H, 66, R],
             ],
             [
-                [83, 79, H, 86, 83, H, 81, 79],
-                [84, 79, H, 76, 72, H, 76, 79],
-                [83, H, 79, 74, 71, 74, 79, H],
-                [81, H, 78, 74, 69, H, 74, R],
-                [81, 79, 76, H, 72, H, 69, 72],
-                [79, 76, 71, H, 67, 64, 67, 71],
-                [78, 74, 72, H, 69, 66, 69, 72],
-                [75, H, 78, 75, 71, H, 66, R],
+                [85, 81, H, 88, 85, H, 83, 81],
+                [86, 81, H, 78, 74, H, 78, 81],
+                [85, H, 81, 76, 73, 76, 81, H],
+                [83, H, 80, 76, 71, H, 76, R],
+                [83, 81, 78, H, 74, H, 71, 74],
+                [81, 78, 74, H, 69, 66, 69, 74],
+                [80, 77, 73, H, 71, 68, 71, 73],
+                [78, H, 75, 78, 81, H, 75, R],
             ],
         ],
-    )
+    );
+    hook16(&mut cue, 0, [76, H, 71, H, H, 79, H, H, 76, H, H, 79, 74, H, 71, 74]);
+    hook16(&mut cue, 1, [72, H, 67, H, H, 76, H, 79, H, H, H, 76, H, H, R, R]);
+    hook16(&mut cue, 4, [76, H, 71, H, H, 79, H, 83, H, H, H, 81, H, 79, H, 81]);
+    cue
 }
 
 fn shattered_moon() -> Cue {
@@ -1415,9 +1704,10 @@ fn ship_graveyard() -> Cue {
 }
 
 fn orbital_shipyard() -> Cue {
-    // A-minor work-song rhythm over short industrial bass stabs. The opening
-    // jumps down a sixth; the return turns it upward without recycling a span.
-    space_composed(
+    // A-minor work-song rhythm over short industrial bass stabs, with
+    // sixteenth-note pickups in the opening. The return is lifted a whole tone
+    // into B minor and ends on E major, the dominant that drops into the loop.
+    let mut cue = space_composed(
         "Rivets in Orbit",
         5,
         SpaceTexture::Shipyard,
@@ -1425,7 +1715,7 @@ fn orbital_shipyard() -> Cue {
             [AM, F, C, G, AM, D, FSS, B7],
             [AM, EM, F, C, D, AM, FSS, B7],
             [C, G, F, AM, C, D, G, B7],
-            [AM, F, C, G, D, AM, FSS, B7],
+            [BM, G, D, A, EM, BM, G, E],
         ],
         [
             [
@@ -1459,17 +1749,21 @@ fn orbital_shipyard() -> Cue {
                 [75, H, 71, H, 66, H, H, R],
             ],
             [
-                [81, 84, H, 88, 84, H, 81, 76],
-                [81, 77, H, 72, 69, H, 72, 77],
-                [84, 79, H, 76, 72, 76, 79, H],
-                [83, 79, H, 74, 71, H, 74, R],
-                [81, 78, 74, H, 69, 74, 78, H],
-                [81, 79, 76, H, 72, H, 69, 72],
-                [78, H, 74, 72, 69, 66, 69, H],
-                [75, 78, 83, H, 78, 75, 71, R],
+                [83, 74, H, 78, 81, H, 78, 74],
+                [79, 71, H, 74, 71, H, 67, R],
+                [81, 74, H, 78, 81, 78, 74, H],
+                [80, 73, H, 76, 73, H, 69, 73],
+                [83, 79, H, 76, 71, 76, 79, H],
+                [86, 83, H, 78, 74, H, 78, 83],
+                [83, 79, 74, H, 71, H, 67, 71],
+                [80, H, 76, 80, 83, H, 80, R],
             ],
         ],
-    )
+    );
+    hook16(&mut cue, 0, [81, H, 72, H, H, 76, H, H, 72, H, H, 69, H, 72, H, 76]);
+    hook16(&mut cue, 1, [77, H, 69, H, H, 72, H, H, 69, H, 65, H, H, R, R, R]);
+    hook16(&mut cue, 2, [79, H, 72, H, H, 76, H, 79, H, H, 76, H, 72, H, 76, H]);
+    cue
 }
 
 fn space_carrier() -> Cue {
@@ -1603,6 +1897,7 @@ fn ascent() -> Cue {
         .map(|index| {
             arrange_space(
                 harmony[index],
+                harmony[(index + 1) % 5],
                 lead[index],
                 SpaceTexture::Ascent,
                 index,
@@ -1618,9 +1913,10 @@ fn ascent() -> Cue {
 }
 
 fn gate_guardian() -> Cue {
-    // Urgent E-minor asymmetric hook, chromatic dominant answer, a lyrical
-    // final-flight recollection and a rewritten ascent into the last attack.
-    space_composed(
+    // Urgent E-minor asymmetric hook with sixteenth-note anticipations, a
+    // chromatic dominant answer, a lyrical final-flight recollection and a
+    // rewritten ascent into the last attack.
+    let mut cue = space_composed(
         "The Last Sentinel",
         5,
         SpaceTexture::Guardian,
@@ -1672,13 +1968,41 @@ fn gate_guardian() -> Cue {
                 [75, H, 78, 83, 78, H, 75, R],
             ],
         ],
-    )
+    );
+    hook16(&mut cue, 0, [76, H, 79, H, H, 78, H, H, 76, H, H, 71, H, 75, H, 74]);
+    hook16(&mut cue, 1, [76, H, 79, H, H, 84, H, 83, H, H, 79, H, 76, H, R, R]);
+    hook16(&mut cue, 4, [83, H, 79, H, 76, H, H, 71, H, H, 76, H, 79, H, 83, H]);
+    cue
+}
+
+/// Per-cue production. Lost Wing keeps its untouched elegy; the orchestral
+/// originals breathe gently with a stepped bass; the electronic and orbital
+/// cues get the full drive, with industrial textures pumping the filter and
+/// two cues each of ring-modulated bells and anvils.
+fn production(cue: usize) -> Option<Style> {
+    use crate::audio::MusicState as M;
+    let state = M::from_cue(cue as u8)?;
+    Some(match state {
+        M::Defeat => return None,
+        M::Title | M::Lowlands | M::Canyon | M::Fortress | M::Carrier | M::Victory => GENTLE,
+        M::AshesAndSteel | M::OrbitalShipyard => drive(true, Colour::Anvil),
+        M::ShatteredMoon | M::JumpGate => drive(false, Colour::Bell),
+        M::GorgeWarden | M::CitadelHeart | M::SpaceCarrier | M::GateGuardian => {
+            drive(true, Colour::None)
+        }
+        M::CrystalCurrent
+        | M::TempestDrive
+        | M::CarrierOverdrive
+        | M::AsteroidBelt
+        | M::ShipGraveyard
+        | M::Ascent => drive(false, Colour::None),
+    })
 }
 
 /// Stable runtime cue order: original thirteen, six space worlds, ascent, boss.
 /// This always returns all ten authored parts, independently of build profile.
 pub fn cues() -> Vec<Cue> {
-    vec![
+    let mut suite = vec![
         title(),
         lowland(),
         canyon(),
@@ -1700,7 +2024,13 @@ pub fn cues() -> Vec<Cue> {
         jump_gate(),
         ascent(),
         gate_guardian(),
-    ]
+    ];
+    for (index, cue) in suite.iter_mut().enumerate() {
+        if let Some(style) = production(index) {
+            finish(cue, style);
+        }
+    }
+    suite
 }
 
 /// Encode the same composition for the selected two- or four-SID executable.
@@ -1726,6 +2056,7 @@ pub fn score_bank() -> Vec<u8> {
             page[6] = ((bar_index + 1) % cue.bars.len()) as u8;
             page[7] = cue.row_ticks;
             page[8] = MUSIC_VOICES as u8;
+            page[music::FILTER_OFFSET] = bar.filter;
             for voice in 0..MUSIC_VOICES {
                 let at = INSTRUMENT_OFFSET + voice * 5;
                 page[at..at + 5].copy_from_slice(&bar.instruments[voice]);

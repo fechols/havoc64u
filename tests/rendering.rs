@@ -1,4 +1,4 @@
-use havoc::render::{draw_bar, draw_text, pack_band, Renderer, HUD_INK};
+use havoc::render::{draw_bar, draw_text, pack_band, Renderer, HUD_INK, NEAR};
 use havoc::{GeometrySink, Vec3, TWO_SIDED};
 
 #[allow(dead_code)]
@@ -61,9 +61,14 @@ fn adjacent_triangles_cover_rectangle_without_cracks_or_spill() {
 fn near_plane_clips_and_backfaces_are_culled() {
     let mut renderer = Renderer::new();
     renderer.begin(0);
-    renderer.triangle(v(-16, -16, 16), v(0, 16, 64), v(16, -16, 64), 2, 0);
+    // One vertex behind the plane leaves a quad: two clipped commands.
+    renderer.triangle(v(-16, -16, NEAR / 2), v(0, 16, 64), v(16, -16, 64), 2, 0);
     assert_eq!(renderer.triangle_count, 2);
     assert!(frame(&renderer).contains(&2));
+    renderer.begin(0);
+    // Two vertices behind the plane leave a single clipped command.
+    renderer.triangle(v(-16, -16, NEAR / 2), v(0, 16, 64), v(16, -16, NEAR / 2), 2, 0);
+    assert_eq!(renderer.triangle_count, 1);
     renderer.begin(0);
     renderer.triangle(v(-32, -32, 128), v(32, -32, 128), v(0, 32, 128), 2, 0);
     assert_eq!(renderer.triangle_count, 0);
@@ -76,7 +81,7 @@ fn near_plane_clips_and_backfaces_are_culled() {
     );
     assert_eq!(renderer.triangle_count, 1);
     renderer.begin(0);
-    renderer.triangle(v(-20, -20, 0), v(0, 20, 10), v(20, -20, 31), 2, TWO_SIDED);
+    renderer.triangle(v(-20, -20, 0), v(0, 20, NEAR / 2), v(20, -20, NEAR - 1), 2, TWO_SIDED);
     renderer.triangle(v(0, 0, 128), v(0, 0, 128), v(0, 0, 128), 2, TWO_SIDED);
     assert_eq!(renderer.triangle_count, 0);
 }
@@ -152,6 +157,7 @@ fn native_cell_packing_preserves_every_color_when_it_fits() {
         &pixels,
         &[0; 40],
         &[0; 40],
+        0,
         &mut bitmap,
         &mut screen,
         &mut colors,
@@ -164,6 +170,7 @@ fn native_cell_packing_preserves_every_color_when_it_fits() {
         &pixels,
         &previous_screen,
         &previous_colors,
+        0,
         &mut bitmap,
         &mut screen,
         &mut colors,
@@ -199,6 +206,7 @@ fn palette_overflow_protects_hud_and_keeps_retained_slots() {
         &pixels,
         &old_screen,
         &old_color,
+        0,
         &mut bitmap,
         &mut screen,
         &mut colors,
@@ -238,20 +246,20 @@ fn cached_mesh_transforms_match_direct_reference_emissions() {
     }
     for vertex_count in [4u8, 40] {
         let mut bytes = baked_assets::model_bank(0);
-        let face_offset = MODEL_DATA_OFFSET + vertex_count as usize * 6;
+        let face_offset = MODEL_DATA_OFFSET + vertex_count as usize * 3;
         for id in 0..MODEL_COUNT as usize {
             let at = 16 + id * 8;
             bytes[at..at + 2].copy_from_slice(&(MODEL_DATA_OFFSET as u16).to_le_bytes());
             bytes[at + 2] = vertex_count;
             bytes[at + 3] = 2;
             bytes[at + 4..at + 6].copy_from_slice(&(face_offset as u16).to_le_bytes());
+            bytes[at + 6] = 1;
+            bytes[at + 7] = 0;
         }
         for i in 0..vertex_count as usize {
-            let point = [i as i16 * 3 - 20, i as i16 - 15, 12 - i as i16];
+            let point = [i as i8 * 3 - 20, i as i8 - 15, 12 - i as i8];
             for axis in 0..3 {
-                bytes[MODEL_DATA_OFFSET + i * 6 + axis * 2
-                    ..MODEL_DATA_OFFSET + 2 + i * 6 + axis * 2]
-                    .copy_from_slice(&point[axis].to_le_bytes());
+                bytes[MODEL_DATA_OFFSET + i * 3 + axis] = point[axis] as u8;
             }
         }
         bytes[face_offset..face_offset + 8].copy_from_slice(&[
@@ -265,16 +273,13 @@ fn cached_mesh_transforms_match_direct_reference_emissions() {
             7,
         ]);
         let bank = AssetBank::new(&bytes).unwrap();
-        for (yaw, pitch, roll, scale) in [(0, 0, 0, 256), (128, 0, 0, 256), (23, 51, 209, 192)] {
+        for (yaw, pitch, roll, half) in [(0, 0, 0, false), (128, 0, 0, false), (23, 51, 209, true)]
+        {
             let position = v(70, -40, 700);
+            let matrix = math::RotationMatrix::new(yaw, pitch, roll);
+            let shift = 8 - bank.shift(0) + half as u8;
             let direct = |index| {
-                let point = bank.vertex(0, index);
-                let scaled = v(
-                    math::mul_q8(point.x, scale),
-                    math::mul_q8(point.y, scale),
-                    math::mul_q8(point.z, scale),
-                );
-                let rotated = math::rotate(scaled, yaw, pitch, roll);
+                let rotated = matrix.apply(bank.vertex_bytes(0, index), shift);
                 v(
                     rotated.x.saturating_add(position.x),
                     rotated.y.saturating_add(position.y),
@@ -282,7 +287,7 @@ fn cached_mesh_transforms_match_direct_reference_emissions() {
                 )
             };
             let mut actual = Capture::default();
-            emit_mesh(&mut actual, &bank, 0, position, yaw, pitch, roll, scale);
+            emit_mesh(&mut actual, &bank, 0, position, yaw, pitch, roll, half);
             let expected: Vec<_> = (0..2)
                 .map(|face| {
                     let (indices, color) = bank.face(0, face);

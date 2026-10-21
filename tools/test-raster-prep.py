@@ -84,7 +84,8 @@ def expected(x, y, color, flags):
         step = abs(dx * 65536) // dy
         if dx < 0:
             step = -step
-        return ax * 65536 + dx * t * 2, step
+        # The native position carries the walker's +32767 row-centre bias.
+        return ax * 65536 + dx * t * 2 + 32767, step
 
     orientation = (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])
     return struct.pack(
@@ -104,8 +105,12 @@ struct Fixture { uint8_t triangle[16],prepared[28]; };
 #include "fixtures.h"
 static uint8_t input[304],saved_input[304],head[304],tail[304],want_head[304],want_tail[304];
 static const uint8_t offsets[]={0,1,127,255};
+#define QLO ((uint8_t*)0xc000)
+#define QHI ((uint8_t*)0xc200)
 int main(void) {
   uint16_t cases=0;
+  /* the quarter-square table of the resident multiply, as BOOT builds it */
+  { uint16_t square=0; for(uint16_t n=0;n<512;n++){QLO[n]=(uint8_t)square;QHI[n]=(uint8_t)(square>>8);square=(uint16_t)(square+((n+1)>>1));} }
   for(uint16_t f=0;f<sizeof(fixtures)/sizeof(fixtures[0]);f++)
     for(uint8_t alignment=0;alignment<4;alignment++)
       for(uint8_t direct=0;direct<2;direct++)
@@ -183,7 +188,8 @@ const POSITIVE_AREA:u8=4;
         executable = BUILD / f"check-{base // 256}"
         subprocess.run([
             SDK / "mos-sim-clang", "-Os", "-mlto-zp=0", BUILD / "check.c", BUILD / "prepare.a",
-            ROOT / "target-c64/asm/division.S", ROOT / "target-c64/asm/preparation.S", "-o", executable,
+            ROOT / "target-c64/asm/division.S", ROOT / "target-c64/asm/preparation.S",
+            ROOT / "target-c64/asm/multiply.S", "-o", executable,
         ], check=True)
         result = subprocess.run([SDK / "mos-sim", "--cycles", executable], text=True, capture_output=True, timeout=60)
         print(f"Batch {base // 256}: {result.stdout.strip()} {result.stderr.strip()}", flush=True)
@@ -199,7 +205,9 @@ const POSITIVE_AREA:u8=4;
         "extracted_helpers_sha256": hashlib.sha256(items.encode()).hexdigest(),
         "math_source_sha256": hashlib.sha256((ROOT / "src/math.rs").read_bytes()).hexdigest(),
         "division_assembly_sha256": hashlib.sha256((ROOT / "target-c64/asm/division.S").read_bytes()).hexdigest(),
+        "multiply_assembly_sha256": hashlib.sha256((ROOT / "target-c64/asm/multiply.S").read_bytes()).hexdigest(),
         "preparation_assembly_sha256": hashlib.sha256((ROOT / "target-c64/asm/preparation.S").read_bytes()).hexdigest(),
+        "position_bias": 32767,
         "fixtures_sha256": hashlib.sha256(b"".join(a + b for a, b in cases)).hexdigest(),
         "cpu": "LLVM-MOS 6502 simulator", "cycles_include_harness": True, "output": outputs,
     }

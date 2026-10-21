@@ -5,6 +5,7 @@ const QUARTER: [i16; 65] = [
     220, 223, 226, 229, 231, 234, 237, 239, 241, 243, 245, 247, 248, 250, 251, 252, 253, 254, 255,
     255, 256, 256, 256,
 ];
+#[inline(never)]
 pub fn sin8(a: u8) -> i16 {
     let q = a >> 6;
     let p = (a & 63) as usize;
@@ -16,89 +17,131 @@ pub fn sin8(a: u8) -> i16 {
     }
 }
 // Keep this small, phase-independent arithmetic helper resident so the
-// geometry overlay retains room for the expanded game-state layout.
+// geometry overlay retains room for the expanded game-state layout. The
+// native body is the quarter-square kernel, exact to the reference below.
 #[inline(never)]
 pub fn mul_q8(a: i16, b: i16) -> i16 {
-    ((a as i32 * b as i32) >> 8) as i16
-}
-#[inline(never)]
-#[cfg_attr(target_arch = "mos", link_section = ".phase.geometry")]
-pub fn rotate(mut v: Vec3, yaw: u8, pitch: u8, roll: u8) -> Vec3 {
-    if yaw != 0 {
-        let (s, c) = (sin8(yaw), sin8(yaw.wrapping_add(64)));
-        let x = mul_q8(v.x, c) + mul_q8(v.z, s);
-        v.z = mul_q8(v.z, c) - mul_q8(v.x, s);
-        v.x = x;
+    #[cfg(target_arch = "mos")]
+    {
+        extern "C" {
+            fn fast_mul_q8(a: i16, b: i16) -> i16;
+        }
+        // SAFETY: BOOT fills the quarter-square table before any phase runs;
+        // the kernel touches only caller-saved registers.
+        unsafe { fast_mul_q8(a, b) }
     }
-    if pitch != 0 {
-        let (s, c) = (sin8(pitch), sin8(pitch.wrapping_add(64)));
-        let y = mul_q8(v.y, c) - mul_q8(v.z, s);
-        v.z = mul_q8(v.y, s) + mul_q8(v.z, c);
-        v.y = y;
+    #[cfg(not(target_arch = "mos"))]
+    {
+        ((a as i32 * b as i32) >> 8) as i16
     }
-    if roll != 0 {
-        let (s, c) = (sin8(roll), sin8(roll.wrapping_add(64)));
-        let x = mul_q8(v.x, c) - mul_q8(v.y, s);
-        v.y = mul_q8(v.x, s) + mul_q8(v.y, c);
-        v.x = x;
-    }
-    v
 }
 
-/// Trigonometry shared by every vertex of one mesh. Keep the original sequence
-/// of Q8 products: combining these rotations into a matrix changes rounding.
-pub(crate) struct PreparedRotation {
-    axes: [[i16; 2]; 3],
-    active: u8,
+/// Rotation shared by every vertex of one mesh: yaw, pitch and roll are
+/// combined once into a row-major 3×3 Q8 matrix, so each vertex costs nine
+/// products and a single rounding. Entries are clamped to ±256 (rounding can
+/// otherwise reach 257 near the axes), which lets the native kernel treat the
+/// high byte of an entry as a sign-or-one flag.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(C)]
+pub struct RotationMatrix {
+    pub m: [[i16; 3]; 3],
 }
 
-impl PreparedRotation {
+impl RotationMatrix {
+    /// Sine/cosine pairs for yaw, pitch and roll, in the kernel's input order.
     #[inline(never)]
     #[cfg_attr(target_arch = "mos", link_section = ".phase.geometry")]
-    pub(crate) fn new(yaw: u8, pitch: u8, roll: u8) -> Self {
-        Self {
-            axes: [
-                rotation_axis(yaw),
-                rotation_axis(pitch),
-                rotation_axis(roll),
+    pub fn new(yaw: u8, pitch: u8, roll: u8) -> Self {
+        // Six out-of-line sin8 calls: iterator forms and inlined lookups both
+        // compiled to several hundred bytes more on the target.
+        let sincos = [
+            sin8(yaw),
+            sin8(yaw.wrapping_add(64)),
+            sin8(pitch),
+            sin8(pitch.wrapping_add(64)),
+            sin8(roll),
+            sin8(roll.wrapping_add(64)),
+        ];
+        #[cfg(target_arch = "mos")]
+        {
+            extern "C" {
+                fn fast_mesh_matrix(sincos: *const [i16; 6], out: *mut [[i16; 3]; 3]);
+            }
+            let mut m = [[0i16; 3]; 3];
+            // SAFETY: the kernel performs exactly `compose` with the resident
+            // product core; BOOT built its multiply table. It uses the free
+            // scratch at $9100 that no interrupt touches.
+            unsafe { fast_mesh_matrix(&sincos, &mut m) };
+            Self { m }
+        }
+        #[cfg(not(target_arch = "mos"))]
+        {
+            Self::compose(&sincos)
+        }
+    }
+
+    /// The reference composition: `M = R_roll · R_pitch · R_yaw` with the pair
+    /// rotations the game always used — yaw on (z, x), pitch on (y, z), roll on
+    /// (x, y) — each product rounded like `mul_q8`, then clamped to ±256.
+    pub fn compose(s: &[i16; 6]) -> Self {
+        let [sy, cy, sp, cp, sr, cr] = *s;
+        let t1 = mul_q8(sp, sy);
+        let t2 = mul_q8(sp, cy);
+        let m = [
+            [
+                mul_q8(cr, cy).wrapping_sub(mul_q8(sr, t1)),
+                mul_q8(sr, cp).wrapping_neg(),
+                mul_q8(cr, sy).wrapping_add(mul_q8(sr, t2)),
             ],
-            active: (yaw != 0) as u8 | (((pitch != 0) as u8) << 1) | (((roll != 0) as u8) << 2),
+            [
+                mul_q8(sr, cy).wrapping_add(mul_q8(cr, t1)),
+                mul_q8(cr, cp),
+                mul_q8(sr, sy).wrapping_sub(mul_q8(cr, t2)),
+            ],
+            [mul_q8(cp, sy).wrapping_neg(), mul_q8(sp, 256), mul_q8(cp, cy)],
+        ];
+        Self {
+            m: m.map(|row| row.map(|entry| entry.clamp(-256, 256))),
         }
     }
 
+    /// Rotate a stored `i8` vertex: `out_i = (Σ_j m[i][j]·v_j) >> shift`, where
+    /// `shift` is 8 minus the mesh's coordinate shift (plus one for half-size
+    /// instances), so the result is in model units. Sums stay below 2^17.
     #[inline(never)]
     #[cfg_attr(target_arch = "mos", link_section = ".phase.geometry")]
-    pub(crate) fn apply(&self, mut v: Vec3) -> Vec3 {
-        if self.active & 1 != 0 {
-            // Swapping yaw's coordinates shares the exact same pair rotation
-            // as pitch/roll without negating a Q8 product before rounding.
-            (v.z, v.x) = rotate_pair(v.z, v.x, &self.axes[0]);
+    pub fn apply(&self, v: [i8; 3], shift: u8) -> Vec3 {
+        #[cfg(target_arch = "mos")]
+        {
+            extern "C" {
+                fn fast_rotate_vertex(
+                    vertex: *const [i8; 3],
+                    matrix: *const [[i16; 3]; 3],
+                    out: *mut Vec3,
+                    shift: u8,
+                );
+            }
+            let mut out = Vec3 { x: 0, y: 0, z: 0 };
+            // SAFETY: the kernel performs exactly the host arithmetic below on
+            // the repr(C) matrix and vertex; BOOT built its multiply table.
+            unsafe { fast_rotate_vertex(&v, &self.m, &mut out, shift) };
+            out
         }
-        if self.active & 2 != 0 {
-            (v.y, v.z) = rotate_pair(v.y, v.z, &self.axes[1]);
+        #[cfg(not(target_arch = "mos"))]
+        {
+            let dot = |row: &[i16; 3]| -> i16 {
+                let sum = row[0] as i32 * v[0] as i32
+                    + row[1] as i32 * v[1] as i32
+                    + row[2] as i32 * v[2] as i32;
+                (sum >> shift) as i16
+            };
+            Vec3 {
+                x: dot(&self.m[0]),
+                y: dot(&self.m[1]),
+                z: dot(&self.m[2]),
+            }
         }
-        if self.active & 4 != 0 {
-            (v.x, v.y) = rotate_pair(v.x, v.y, &self.axes[2]);
-        }
-        v
     }
-}
-
-#[inline(never)]
-#[cfg_attr(target_arch = "mos", link_section = ".phase.geometry")]
-fn rotation_axis(angle: u8) -> [i16; 2] {
-    if angle == 0 {
-        [0, 256]
-    } else {
-        [sin8(angle), sin8(angle.wrapping_add(64))]
-    }
-}
-
-#[inline(never)]
-#[cfg_attr(target_arch = "mos", link_section = ".phase.geometry")]
-fn rotate_pair(a: i16, b: i16, axis: &[i16; 2]) -> (i16, i16) {
-    let [s, c] = *axis;
-    (mul_q8(a, c) - mul_q8(b, s), mul_q8(a, s) + mul_q8(b, c))
 }
 
 /// Quotient-only division uses the compact LLVM-MOS SDK runtime on the target.

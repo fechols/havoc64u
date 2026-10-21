@@ -86,6 +86,8 @@ static const int16_t triangles[4][8]={
   {81,80,80,-8191,-8190,8191,100,0x040f},
   {20,80,130,-100,-50,-1,100,0x0002}};
 int main(void) {
+  /* the quarter-square table of the resident multiply, as BOOT builds it */
+  { uint16_t square=0; for(uint16_t n=0;n<512;n++){((uint8_t*)0xc000)[n]=(uint8_t)square;((uint8_t*)0xc200)[n]=(uint8_t)(square>>8);square=(uint16_t)(square+((n+1)>>1));} }
   for(uint16_t seed=0;seed<256;seed++) for(uint8_t f=0;f<4;f++) {
     int16_t input[10];uint8_t head[18],tail[14];
     input[0]=(int16_t)0xc3c3;input[9]=(int16_t)0x3c3c;
@@ -111,7 +113,7 @@ def main():
     executable = BUILD / "check"
     subprocess.run([SDK / "mos-sim-clang", "-Os", "-mlto-zp=0", BUILD / "check.c",
                     BUILD / "wrapper.S", ROOT / "target-c64/asm/preparation.S",
-                    ROOT / "target-c64/asm/division.S", "-o", executable], check=True)
+                    ROOT / "target-c64/asm/division.S", ROOT / "target-c64/asm/multiply.S", "-o", executable], check=True)
     result = subprocess.run([SDK / "mos-sim", "--cycles", executable], text=True, capture_output=True, timeout=60)
     if result.returncode or "PASS 1024" not in result.stdout:
         raise RuntimeError(result.stdout + result.stderr)

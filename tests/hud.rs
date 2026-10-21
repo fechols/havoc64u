@@ -55,6 +55,44 @@ fn frame(hud_state: &Hud, frame: u16) -> Vec<u8> {
 }
 
 #[test]
+fn fps_readout_formats_tenths_right_of_the_boss_panel_in_band_one_only() {
+    for (tenths, text) in [
+        (0, b" 0.0 FPS"),
+        (62, b" 6.2 FPS"),
+        (123, b"12.3 FPS"),
+        (999, b"99.9 FPS"),
+        (65535, b"99.9 FPS"),
+    ] {
+        let mut actual = [6; 1280];
+        hud::draw_fps(1, &mut actual, tenths);
+        let mut expected = [6; 1280];
+        draw_text(1, &mut expected, 128, 9, text, 1);
+        assert_eq!(actual, expected, "tenths {tenths}");
+        assert!(actual != [6; 1280]);
+        // Only columns beside the boss panel (x >= 126) may change.
+        for row in 0..8 {
+            assert!(actual[row * 160..row * 160 + 126].iter().all(|&p| p == 6));
+        }
+    }
+    for band in (0..25).filter(|&band| band != 1) {
+        let mut untouched = [6; 1280];
+        hud::draw_fps(band, &mut untouched, 62);
+        assert_eq!(untouched, [6; 1280], "band {band}");
+    }
+    // The readout survives the boss panel and the cockpit's HUD precedence.
+    let mut hud_state = state(Mode::Playing);
+    hud_state.boss_shield = 50;
+    let mut pixels = [6; 1280];
+    hud::draw(1, &mut pixels, &hud_state, 0);
+    hud::draw_fps(1, &mut pixels, 62);
+    let mut reference = [6; 1280];
+    hud::draw(1, &mut reference, &hud_state, 0);
+    draw_text(1, &mut reference, 128, 9, b" 6.2 FPS", 1);
+    assert_eq!(pixels, reference);
+    assert!(pixels.iter().any(|&p| p == (HUD_INK | 1)));
+}
+
+#[test]
 fn cockpit_leaves_playfield_untouched_and_displays_resource_levels() {
     let pixels = frame(&state(Mode::Playing), 0);
     assert!(pixels[8 * 160..185 * 160].iter().all(|&p| p == 6));
@@ -162,6 +200,8 @@ fn scenic_flight_retains_cockpit_without_obscuring_the_landscape() {
     assert!(transit[8 * 160..184 * 160].iter().all(|&pixel| pixel == 6));
     status.mode = Mode::Playing;
     status.section = 1;
+    // The incoming section starts its own distance count at zero.
+    status.distance = 0;
     let arrived = frame(&status, 0);
     assert!(arrived[29 * 160..51 * 160]
         .iter()
@@ -211,7 +251,7 @@ fn all_eighteen_sector_numbers_and_five_boss_labels_remain_distinct() {
     for stage in 0..SEGMENT_COUNT {
         let mut status = state(Mode::Playing);
         status.section = stage;
-        status.distance = stage as u32 * havoc::assets::SEGMENT_DISTANCE;
+        status.distance = 0;
         let image = frame(&status, 0);
         let number = image[33 * 160..38 * 160].to_vec();
         assert!(
@@ -300,7 +340,7 @@ fn attract_labels_identify_each_map_without_cockpit_or_boss_panels() {
     for section in 0..SEGMENT_COUNT {
         let mut status = state(Mode::Attract);
         status.section = section;
-        status.distance = section as u32 * 30_000;
+        status.distance = 0;
         status.boss_shield = 100;
         let pixels = frame(&status, 0);
         let mut expected = [6; 1280];
@@ -346,6 +386,7 @@ fn every_level_top_strip_survives_native_packing_and_previous_cell_palettes() {
                     &pixels,
                     &[old_screen; 40],
                     &[old_color; 40],
+                    0,
                     &mut bitmap,
                     &mut screen,
                     &mut color,
@@ -386,6 +427,7 @@ fn every_mode_survives_native_bitmap_packing_with_readable_ink() {
                 &pixels,
                 &[0; 40],
                 &[0; 40],
+                0,
                 &mut bitmap,
                 &mut screen,
                 &mut color,

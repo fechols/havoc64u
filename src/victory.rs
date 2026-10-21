@@ -34,7 +34,8 @@ pub fn fade_color(color: u8, ticks: u16) -> u8 {
 #[cfg_attr(target_arch = "mos", link_section = ".phase.victory")]
 pub fn emit(sink: &mut impl GeometrySink, bank: &AssetBank<'_>, ticks: u16, animation: u16) {
     let remaining = REVEAL_TICKS - ticks.min(REVEAL_TICKS);
-    let remaining_q8 = ((remaining as u32 * 256) / REVEAL_TICKS as u32) as i16;
+    // remaining × 256 / 400 in 16-bit arithmetic: the same quotient.
+    let remaining_q8 = (remaining * 64 / (REVEAL_TICKS / 4)) as i16;
     let eased = math::mul_q8(remaining_q8, remaining_q8);
     let depth = 102 + math::mul_q8(922, eased);
     let idle = ticks >= REVEAL_TICKS;
@@ -66,6 +67,6 @@ pub fn emit(sink: &mut impl GeometrySink, bank: &AssetBank<'_>, ticks: u16, anim
         yaw as u8,
         pitch as u8,
         roll as u8,
-        256,
+        false,
     );
 }

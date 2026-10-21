@@ -7,6 +7,10 @@ command -v mos-c64-clang >/dev/null || { echo 'Install LLVM-MOS SDK v22.5.0; see
 rustup run mos rustc --version
 cargo +stable test --all-targets
 cargo +stable test --all-targets --features four-sid
+# The target enables per-song music kernels by default; exercise the host
+# dispatch and kernel unit tests for both sound profiles as well.
+cargo +stable test --all-targets --features music-kernels
+cargo +stable test --all-targets --features "four-sid music-kernels"
 for profile in 2sid 4sid; do
     features=()
     output=dist

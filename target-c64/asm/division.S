@@ -2,7 +2,9 @@
 ; Preconditions: denominator != 0 and numerator / denominator < 65536.
 ; MOS C ABI numerator: A,X,rc2,rc3; denominator: rc4,rc5; result: A,X.
 ; Only volatile rc2..7 are touched. No static scratch or software stack used.
-.section .text.fast_bounded_division,"ax",@progbits
+; Resident in the $9900 table page with the sort kernel, keeping $0801-$2FFF
+; for compiled code.
+.section .tables.fast_bounded_division,"ax",@progbits
 .globl fast_bounded_division
 .type fast_bounded_division,@function
 fast_bounded_division:

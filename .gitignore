@@ -1,6 +1,7 @@
 /target
 /target-c64/target
 /target-c64/target-*
+/tools/hwprobe/target
 /dist
 /__pycache__
 /tools/__pycache__

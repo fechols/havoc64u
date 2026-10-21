@@ -30,7 +30,7 @@ fn orbital_debris_is_bomb_destructible_but_cannot_farm_enemy_rewards() {
         assert_eq!((game.actors[0].hp, game.actors[1].hp), (2, 255));
         assert_eq!(actor_center_sim(&game.actors[0], &bank).y, 0);
         assert_eq!(
-            game.missile_target(Vec3 { x: 0, y: 0, z: 180 }, &bank)
+            game.missile_target(Vec3 { x: 0, y: 0, z: 180 }, &mut 0, &bank)
                 .unwrap()
                 .0
                 .x,
@@ -138,12 +138,20 @@ fn ascent_pitch_levels_out_without_changing_the_controls() {
     set_rail(&mut game, 12 * SECTION_TICKS as u32);
     for (tick, expected) in [(0, 0), (100, 236), (300, 236), (350, 246), (399, 0)] {
         game.transition_ticks = tick;
-        assert_eq!(game.ascent_pitch(), expected);
+        assert_eq!(game.player_pitch(), expected);
     }
     game.controls.bits = RIGHT | UP;
     game.transition_ticks = 200;
-    game.move_player();
-    assert_eq!((game.player.x, game.player.y), (3, 3));
+    for _ in 0..10 {
+        game.move_player();
+    }
+    assert!(game.player.x > 0 && game.player.y > 0);
+    // The climb's nose-up pitch adds to the authored ascent.
+    assert!(game.flight.pitch < 0);
+    assert_eq!(
+        game.player_pitch(),
+        236u8.wrapping_add((game.flight.pitch >> 8) as u8)
+    );
 }
 
 impl Game {
@@ -200,6 +208,39 @@ fn planar_effects_preserve_ordered_vertices_colors_and_flags() {
                 let mut actual = Capture::default();
                 shield_pickup(&mut actual, p);
                 assert_eq!(actual.0, expected);
+                // The bomb pickup is the HUD icon's 4:3 rectangle with the
+                // shield's rim rule, wound like the diamond and split along
+                // the top-left/bottom-right diagonal.
+                let mut expected = std::vec::Vec::new();
+                for ((rx, ry), color) in [((16, 12), if z > 600 { 7 } else { 15 }), ((13, 9), 7)] {
+                    let upper_left = Vec3 {
+                        x: x - rx,
+                        y: y + ry,
+                        z,
+                    };
+                    let upper_right = Vec3 {
+                        x: x + rx,
+                        y: y + ry,
+                        z,
+                    };
+                    let lower_right = Vec3 {
+                        x: x + rx,
+                        y: y - ry,
+                        z,
+                    };
+                    let lower_left = Vec3 {
+                        x: x - rx,
+                        y: y - ry,
+                        z,
+                    };
+                    expected.extend_from_slice(&[
+                        ([upper_left, upper_right, lower_right], color, TWO_SIDED),
+                        ([upper_left, lower_right, lower_left], color, TWO_SIDED),
+                    ]);
+                }
+                let mut actual = Capture::default();
+                bomb_pickup(&mut actual, p);
+                assert_eq!(actual.0, expected);
             }
         }
     }
@@ -212,7 +253,7 @@ const fn test_bank_bytes(level: u8) -> [u8; assets::COMMON_SIZE] {
     data[0] = b'S';
     data[1] = b'M';
     data[2] = b'A';
-    data[3] = b'3';
+    data[3] = b'4';
     data[4] = assets::MODEL_COUNT;
     data[5] = level;
     let info = assets::STAGE_INFOS[level as usize];
@@ -225,13 +266,23 @@ const fn test_bank_bytes(level: u8) -> [u8; assets::COMMON_SIZE] {
     while kind < 3 {
         let at = assets::ENEMY_SPECS_OFFSET + kind * 8;
         data[at] = health[profile as usize][kind];
+        // Slot three is a boss side unit in boss stages and keeps that scale.
+        let boss_part = kind == 2 && info.boss_kind != 0;
         data[at + 1] = if kind == 2 && info.boss_kind == 0 && profile != 1 {
-            (18 * assets::ENEMY_SCALE - 8) as u8
+            (assets::enemy_scaled(18) - 8) as u8
         } else {
             0
         };
-        data[at + 2] = (19 * assets::ENEMY_SCALE) as u8;
-        data[at + 3] = (18 * assets::ENEMY_SCALE) as u8;
+        data[at + 2] = if boss_part {
+            (19 * assets::BOSS_SCALE) as u8
+        } else {
+            assets::enemy_scaled(19) as u8
+        };
+        data[at + 3] = if boss_part {
+            (18 * assets::BOSS_SCALE) as u8
+        } else {
+            assets::enemy_scaled(18) as u8
+        };
         data[at + 4] = if kind == 2 { 250 } else { 100 };
         data[at + 6] = speeds[profile as usize][kind];
         data[at + 7] = if kind == 1 && profile != 2 { 1 } else { 0 };
@@ -243,12 +294,12 @@ const fn test_bank_bytes(level: u8) -> [u8; assets::COMMON_SIZE] {
         data[at] = assets::MODEL_DATA_OFFSET as u8;
         data[at + 2] = 3;
         data[at + 3] = 1;
-        data[at + 4] = (assets::MODEL_DATA_OFFSET + 18) as u8;
+        data[at + 4] = (assets::MODEL_DATA_OFFSET + 9) as u8;
         mesh += 1;
     }
-    data[assets::MODEL_DATA_OFFSET + 19] = 1;
-    data[assets::MODEL_DATA_OFFSET + 20] = 2;
-    data[assets::MODEL_DATA_OFFSET + 21] = 15;
+    data[assets::MODEL_DATA_OFFSET + 10] = 1;
+    data[assets::MODEL_DATA_OFFSET + 11] = 2;
+    data[assets::MODEL_DATA_OFFSET + 12] = 15;
     data
 }
 fn test_bank(level: u8) -> AssetBank<'static> {
@@ -434,11 +485,12 @@ fn set_rail(game: &mut Game, ticks: impl TryInto<u32>) {
     game.stage_ticks = (ticks - game.stage_id as u32 * SECTION_TICKS as u32) as u16;
     game.stage_info = assets::preview_stage_info(game.stage_id);
 }
+/// Samples at a millisecond instant; wider values wrap like the 16-bit clock.
 fn sample(game: &mut Game, bits: u8, ms: u32) {
     game.sample_input(InputSample {
         bits,
         pressed: 0,
-        ms,
+        ms: ms as u16,
     });
 }
 fn queue_roll(game: &mut Game, direction: u8) {
@@ -470,7 +522,7 @@ fn scenic_bridges_add_exactly_eight_seconds_and_keep_the_outgoing_checkpoint() {
         game.tick(&segment, &test_bank(game.segment_index()));
         for elapsed in 0..TRANSITION_TICKS {
             assert_eq!(game.transition_progress(), Some((outgoing, elapsed)));
-            assert_eq!(game.hud().distance, boundary as u32 * 8);
+            assert_eq!(game.hud().distance, SECTION_TICKS * 8);
             assert_eq!(game.segment_index(), outgoing);
             assert_eq!(
                 game.music_state(),
@@ -587,7 +639,7 @@ fn bridge_entry_removes_hostiles_before_live_bombs_and_keeps_player_projectiles(
     assert_eq!(game.shots[1].pos.z, 432);
     assert_eq!(game.shots[1].kind, 3);
     assert_eq!(
-        game.missile_target(game.player, &test_bank(game.segment_index())),
+        game.missile_target(game.player, &mut 0, &test_bank(game.segment_index())),
         None
     );
     assert_eq!((game.shield, game.score, game.bombs), (100, 0, 2));
@@ -634,7 +686,7 @@ fn all_controls_and_double_taps_behave_identically_across_both_bridge_seams() {
                 &test_bank(reference.segment_index()),
             );
             assert_eq!(game.player, reference.player);
-            assert_eq!(game.bank, reference.bank);
+            assert_eq!(game.flight, reference.flight);
             assert_eq!(game.roll_ticks, reference.roll_ticks);
             assert_eq!(game.bombs, reference.bombs);
             assert_eq!(
@@ -1154,7 +1206,7 @@ fn clouds_remain_in_the_sky_behind_scenery_with_shared_facet_edges() {
     }
 }
 #[test]
-fn backdrop_screen_geometry_is_fixed_within_each_section_across_camera_modes() {
+fn backdrop_screen_geometry_follows_only_the_sky_parallax_across_camera_modes() {
     struct SkyCapture {
         faces: [([Vec3; 3], u8); 14],
         count: usize,
@@ -1188,9 +1240,28 @@ fn backdrop_screen_geometry_is_fixed_within_each_section_across_camera_modes() {
                 let mut game = Game::new();
                 game.mode = mode;
                 game.player.y = player_y;
+                game.player.x = if player_y < 0 { -100 } else { 100 };
                 set_rail(&mut game, ticks);
                 let theme = game.stage_info.theme;
-                let expected = core::array::from_fn(|face| backdrop_face(theme, face as u8));
+                // The chase camera never moves the backdrop; only the slight
+                // parallax drift does, and the title and map tour have none.
+                let [dx, dy] = game.sky_parallax();
+                if matches!(mode, Mode::Title | Mode::Attract) {
+                    assert_eq!([dx, dy], [0, 0]);
+                } else {
+                    assert_eq!([dx, dy], [game.player.x, player_y >> 1]);
+                }
+                let expected: [_; 14] = core::array::from_fn(|face| {
+                    let (points, color) = backdrop_face(theme, face as u8);
+                    (
+                        points.map(|point| Vec3 {
+                            x: point.x - dx,
+                            y: point.y - dy,
+                            z: point.z,
+                        }),
+                        color,
+                    )
+                });
                 let segment_bytes = empty_segment(game.segment_index());
                 let segment = Segment::new(&segment_bytes).unwrap();
                 let mut capture = SkyCapture {
@@ -1294,11 +1365,6 @@ fn section_themes_are_distinct_compact_and_keep_all_backdrop_facets_cacheable() 
             renderer.triangle_count, 14,
             "theme {theme} lost a projected backdrop facet"
         );
-        assert_eq!(
-            renderer.static_sky_bands(),
-            0x01ff_ffff,
-            "theme {theme} must accept every unobstructed backdrop band"
-        );
         renderer.finish();
         for band in 0..25 {
             let mut pixels = [0; crate::render::BAND_PIXELS];
@@ -1312,7 +1378,7 @@ fn section_themes_are_distinct_compact_and_keep_all_backdrop_facets_cacheable() 
                 }
                 assert!(
                     (colors & !1).count_ones() <= 3,
-                    "cache palette overflow: theme {theme}, band {band}, cell {cell}"
+                    "backdrop palette overflow: theme {theme}, band {band}, cell {cell}"
                 );
             }
         }
@@ -1321,13 +1387,6 @@ fn section_themes_are_distinct_compact_and_keep_all_backdrop_facets_cacheable() 
         renderer.begin(game.sky_color());
         game.render(&mut renderer, &bank, &segment);
         assert_eq!(renderer.dropped, 0);
-        // At this opening camera position, canyon walls conservatively
-        // cover every band; the other terrains leave upper sky reusable.
-        assert_eq!(
-            renderer.static_sky_bands() == 0,
-            theme == 1,
-            "theme {theme} has unexpected foreground coverage"
-        );
     }
     assert!(
         core::mem::size_of_val(&SKY_COLORS)
@@ -1338,6 +1397,69 @@ fn section_themes_are_distinct_compact_and_keep_all_backdrop_facets_cacheable() 
             + core::mem::size_of_val(&CLOUD_OUTLINES)
             <= 600
     );
+}
+#[test]
+fn backdrop_drifts_opposite_to_the_ship_while_terrain_and_title_stay_fixed() {
+    #[derive(Default)]
+    struct Capture(std::vec::Vec<([Vec3; 3], u8, u8)>);
+    impl GeometrySink for Capture {
+        fn triangle(&mut self, a: Vec3, b: Vec3, c: Vec3, color: u8, flags: u8) {
+            self.0.push(([a, b, c], color, flags));
+        }
+    }
+    for stage in [0u8, 2, 6, 12] {
+        let bytes = mission_segment(stage);
+        let segment = Segment::new(&bytes).unwrap();
+        // Sideways movement alone: the camera is unchanged, so terrain and
+        // scenery must be identical while every backdrop face shifts left.
+        let mut centered = Game::preview_at_for_test(stage);
+        let mut moved = Game::preview_at_for_test(stage);
+        centered.player.y = -64;
+        moved.player.x = 100;
+        moved.player.y = -64;
+        assert_eq!(centered.sky_parallax(), [0, -32]);
+        assert_eq!(moved.sky_parallax(), [100, -32]);
+        let mut before = Capture::default();
+        centered.render_scenery(&mut before, &segment);
+        let mut after = Capture::default();
+        moved.render_scenery(&mut after, &segment);
+        assert_eq!(before.0.len(), after.0.len());
+        let mut drifted = 0;
+        for (old, new) in before.0.iter().zip(&after.0) {
+            assert_eq!((old.1, old.2), (new.1, new.2));
+            let backdrop = old.2 & STATIC_SKY != 0;
+            for (a, b) in old.0.iter().zip(&new.0) {
+                if backdrop {
+                    assert_eq!((b.x, b.y, b.z), (a.x - 100, a.y, a.z), "stage {stage}");
+                } else {
+                    assert_eq!(a, b, "stage {stage}: terrain or scenery drifted");
+                }
+            }
+            drifted += usize::from(backdrop);
+        }
+        assert!(drifted >= 10, "stage {stage} has no drifting backdrop");
+        // Climbing lowers the backdrop (the camera also rises, moving terrain).
+        let level = Game::preview_at_for_test(stage);
+        let mut climbing = Game::preview_at_for_test(stage);
+        climbing.player.y = 64;
+        let mut before = Capture::default();
+        level.render_scenery(&mut before, &segment);
+        let mut after = Capture::default();
+        climbing.render_scenery(&mut after, &segment);
+        for (old, new) in before.0.iter().zip(&after.0) {
+            if old.2 & STATIC_SKY != 0 {
+                for (a, b) in old.0.iter().zip(&new.0) {
+                    assert_eq!((b.x, b.y, b.z), (a.x, a.y - 32, a.z), "stage {stage}");
+                }
+            }
+        }
+    }
+    let mut title = Game::new();
+    title.player.x = 100;
+    assert_eq!(title.sky_parallax(), [0, 0]);
+    title.reset_scene(Mode::Attract, 0, 0);
+    title.player.x = 100;
+    assert_eq!(title.sky_parallax(), [0, 0]);
 }
 #[test]
 fn lowered_horizons_overlap_terrain_at_every_scroll_phase_and_camera_extreme() {
@@ -1362,11 +1484,15 @@ fn lowered_horizons_overlap_terrain_at_every_scroll_phase_and_camera_extreme() {
         if theme == 4 {
             continue;
         }
-        for camera_y in [
-            0,
-            chase_camera_y(Mode::Playing, -65),
-            40,
-            chase_camera_y(Mode::Playing, 65),
+        // Title framing at camera 0 without drift, then the playing camera at
+        // the ship's vertical extremes with the matching backdrop drift
+        // (sky_parallax): a climbing camera lowers the backdrop, a diving one
+        // raises it toward the terrain.
+        for (camera_y, parallax_y) in [
+            (0, 0),
+            (chase_camera_y(Mode::Playing, -65), -65 >> 1),
+            (40, 0),
+            (chase_camera_y(Mode::Playing, 65), 65 >> 1),
         ] {
             let mut horizon = crate::render::Renderer::new();
             for face in 0..5 {
@@ -1378,6 +1504,10 @@ fn lowered_horizons_overlap_terrain_at_every_scroll_phase_and_camera_extreme() {
                 assert!(points
                     .iter()
                     .all(|point| point.z == 2350 && point.y >= -544 - BACKDROP_CAMERA_Y));
+                let points = points.map(|point| Vec3 {
+                    y: point.y - parallax_y,
+                    ..point
+                });
                 horizon.triangle(points[0], points[1], points[2], 1, TWO_SIDED);
             }
             let horizon_bottom = occupied_rows(&horizon, true);
@@ -1545,7 +1675,8 @@ fn attract_has_no_player_collisions_or_pickup_collection() {
     assert_eq!((g.shield, g.bombs, g.lives, g.score), (30, 0, 3, 0));
     assert!(g.explosions.iter().all(|e| e.ticks == 0));
     assert!(g.pop_audio().is_none());
-    for _ in 0..30 {
+    // Everything flies past the camera and retires behind the near plane.
+    for _ in 0..40 {
         g.update_actors(&test_bank(g.segment_index()));
         g.update_shots(&test_bank(g.segment_index()));
         g.update_pickups();
@@ -1574,7 +1705,7 @@ fn attract_section_cuts_clear_encounters_boss_audio_and_gestures() {
     };
     g.boss_started = true;
     g.boss_left = 0;
-    g.controls.now = 0xffff_fff0;
+    g.controls.now = 0xfff0;
     g.controls.fire_armed = true;
     g.controls.shot_pending = true;
     g.controls.roll_pending = -1;
@@ -1600,7 +1731,7 @@ fn attract_section_cuts_clear_encounters_boss_audio_and_gestures() {
     assert!(g.explosions.iter().all(|e| e.ticks == 0));
     assert!(!g.boss_started);
     assert_eq!((g.boss_left, g.boss_right, g.boss_core), (40, 40, 120));
-    assert_eq!(g.controls.now, 0xffff_fff0);
+    assert_eq!(g.controls.now, 0xfff0);
     assert_eq!(g.controls.released_at, g.controls.now);
     assert!(!g.controls.fire_armed);
     assert!(!g.controls.shot_pending);
@@ -1663,6 +1794,8 @@ fn compact_reset_matches_every_constructor_field_without_comparing_padding() {
         damage: 4,
         kind: 3,
     });
+    game.missile_targets.fill(0xff);
+    game.missile_rng = 0x37;
     game.pickups.fill(Pickup {
         pos: game.player,
         kind: 2,
@@ -1691,7 +1824,8 @@ fn compact_reset_matches_every_constructor_field_without_comparing_padding() {
     game.roll_cooldown = 33;
     game.roll_direction = -1;
     game.respawn_ticks = 12;
-    game.bank = -20;
+    game.flight.bank = -20 * 256;
+    game.flight.vel = [300, -40];
     game.boss_z = 680;
     game.boss_left = 0;
     game.boss_right = 0;
@@ -1733,7 +1867,7 @@ fn victory_freezes_the_run_and_consumes_inputs_through_all_four_hundred_ticks() 
     let frozen = (
         game.player,
         game.stage_ticks,
-        game.bank,
+        game.flight,
         game.roll_ticks,
         game.boss_z,
         game.scenery_ticks(),
@@ -1758,7 +1892,7 @@ fn victory_freezes_the_run_and_consumes_inputs_through_all_four_hundred_ticks() 
             (
                 game.player,
                 game.stage_ticks,
-                game.bank,
+                game.flight,
                 game.roll_ticks,
                 game.boss_z,
                 game.scenery_ticks(),
@@ -1808,7 +1942,7 @@ fn victory_world_keeps_only_the_frozen_ship_and_scenery_until_blackout() {
     set_rail(&mut game, MISSION_TICKS);
     game.player.x = -65;
     game.player.y = 42;
-    game.bank = -20;
+    game.flight.bank = -20 * 256;
     game.boss_started = true;
     game.actors[0] = enemy(1, 0, 0, 700);
     game.shots[0] = Shot {
@@ -1870,10 +2004,11 @@ fn victory_host_and_native_staging_match_through_fade_reveal_and_idle() {
         staged.begin(crate::scenery::sky_color(15, None));
         let raw_count = {
             let mut stage = staged.scenery_stage();
-            game.render_scenery(&mut stage, &segment);
+            game.stage_scenery(&mut stage, &segment);
             stage.count()
         };
-        let prefix = staged.project_scenery(raw_count);
+        let [dx, dy] = game.sky_parallax();
+        let prefix = staged.project_scenery(raw_count, dx, dy);
         game.render_foreground(&mut staged, &bank, 174.min(233 - raw_count as u16));
         staged.scenery_last(prefix);
         staged.fade_scene(game.victory_ticks());
@@ -1916,38 +2051,51 @@ fn swept_projectile_hits_between_endpoints() {
 fn joystick_vertical_axis_follows_direction_and_opposing_inputs_cancel() {
     let bytes = empty_segment(0);
     let segment = Segment::new(&bytes).unwrap();
-    for (bits, expected_y) in [(UP, 3), (DOWN, -3), (UP | DOWN, 0)] {
+    let mut reached = [0i16; 3];
+    for (slot, bits) in [UP, DOWN, UP | DOWN].into_iter().enumerate() {
         let mut g = running();
         sample(&mut g, bits, 20);
-        g.tick(&segment, &test_bank(g.segment_index()));
-        assert_eq!(g.player.y, expected_y);
+        for _ in 0..20 {
+            g.tick(&segment, &test_bank(g.segment_index()));
+        }
+        reached[slot] = g.player.y;
+        assert_eq!(g.player.x, 0);
     }
+    assert!(reached[0] > 20, "a held stick reaches cruising climb: {reached:?}");
+    assert!((reached[0] + reached[1]).abs() <= 1, "mirrored axes: {reached:?}");
+    assert_eq!(reached[2], 0);
 }
 #[test]
-fn released_roll_moves_immediately_fifty_units_and_does_not_snap_back() {
+fn released_roll_pushes_the_ship_sideways_and_does_not_snap_back() {
     let bytes = empty_segment(0);
     let segment = Segment::new(&bytes).unwrap();
     for (direction, sign) in [(LEFT, -1), (RIGHT, 1)] {
         let mut g = running();
         queue_roll(&mut g, direction);
+        let mut previous = 0;
         for tick in 1..=25 {
             g.tick(&segment, &test_bank(g.segment_index()));
-            if let Some(distance) = match tick {
-                1 => Some(6),
-                5 => Some(30),
-                10 => Some(45),
-                15 | 25 => Some(50),
-                _ => None,
-            } {
-                assert_eq!(g.player.x, sign * distance, "roll tick {tick}");
-            }
             assert_eq!(g.roll_ticks, 26 - tick);
-            assert_eq!(g.bank, 0, "dodge velocity must not change steering bank");
+            // The push accelerates the ship for the whole spin.
+            assert!(g.player.x * sign >= previous, "roll tick {tick}");
+            previous = g.player.x * sign;
+            assert!(g.flight.vel[0] * sign > 0);
         }
-        for _ in 0..30 {
+        assert!((30..=50).contains(&previous), "spin displacement {previous}");
+        let mut settled = None;
+        for _ in 0..100 {
             g.tick(&segment, &test_bank(g.segment_index()));
-            assert_eq!(g.player.x, sign * 50);
+            assert!(g.player.x * sign >= previous, "no snap back");
+            previous = g.player.x * sign;
+            if g.flight.vel[0] == 0 && settled.is_none() {
+                settled = Some(previous);
+            }
         }
+        // The coast after the spin roughly doubles the displacement, then the
+        // ship rests exactly, level, without drifting.
+        assert_eq!(settled, Some(previous));
+        assert!((50..=70).contains(&previous), "settled displacement {previous}");
+        assert_eq!((g.flight.vel, g.flight.bank, g.flight.pitch), ([0, 0], 0, 0));
         assert_eq!(g.roll_ticks, 0);
         assert_eq!(g.roll_cooldown, 0);
     }
@@ -1959,30 +2107,46 @@ fn dodge_keeps_horizontal_vertical_and_fire_controls_live() {
     let mut g = running();
     queue_roll(&mut g, RIGHT);
     sample(&mut g, RIGHT | UP | FIRE, 240);
-    g.tick(&segment, &test_bank(g.segment_index()));
-    assert_eq!(g.player.x, 9);
-    assert_eq!(g.player.y, 3);
-    assert_eq!(g.shots[0].kind, 1);
-    assert_eq!(g.shots[0].pos.x, 9, "fire uses the displaced position");
-    assert_eq!(g.shots[0].pos.y, 3);
-    assert_eq!(g.bank, -2);
-
-    sample(&mut g, LEFT | DOWN | FIRE, 260);
-    g.tick(&segment, &test_bank(g.segment_index()));
-    assert_eq!(g.player.x, 12, "opposite steering brakes the first burst");
-    assert_eq!(g.player.y, 0);
-    assert_eq!(g.bank, 0, "bank follows steering, not dodge velocity");
-    for _ in 0..8 {
+    for _ in 0..10 {
         g.tick(&segment, &test_bank(g.segment_index()));
     }
-    assert_eq!(g.roll_ticks, 16);
-    assert_eq!(g.player.x, 21);
-    assert!(g.shots.iter().filter(|shot| shot.kind == 1).count() >= 2);
-    g.tick(&segment, &test_bank(g.segment_index()));
-    assert_eq!(
-        g.player.x, 19,
-        "opposite steering reverses the tapering tail"
-    );
+    assert!(g.player.x > 10, "stick and push add up: {}", g.player.x);
+    assert!(g.player.y > 5);
+    let shots: std::vec::Vec<_> = g.shots.iter().filter(|shot| shot.kind == 1).collect();
+    assert!(shots.len() >= 2);
+    assert!(shots.iter().all(|shot| shot.pos.x >= 0 && shot.pos.x <= g.player.x));
+    assert!(shots.iter().any(|shot| shot.pos.x > 0), "fire uses the displaced position");
+    assert!(g.flight.bank < 0, "banked into the turn");
+    assert!(g.flight.pitch < 0, "nose up while climbing");
+    let (x, vx) = (g.player.x, g.flight.vel[0]);
+
+    sample(&mut g, LEFT | DOWN | FIRE, 460);
+    for _ in 0..10 {
+        g.tick(&segment, &test_bank(g.segment_index()));
+    }
+    assert_eq!(g.roll_ticks, 6);
+    assert!(g.player.x > x, "momentum carries the ship on");
+    assert!(g.flight.vel[0] < vx, "opposite steering brakes the push");
+    assert!(g.flight.vel[1] < 0, "the vertical axis reverses");
+    assert!(g.flight.bank > 0, "banks against the braking");
+    assert!(g.flight.pitch > 0);
+}
+#[test]
+fn a_right_roll_spins_the_same_way_as_a_right_bank() {
+    let bytes = empty_segment(0);
+    let segment = Segment::new(&bytes).unwrap();
+    for (direction, sign) in [(LEFT, -1i16), (RIGHT, 1)] {
+        let mut g = running();
+        queue_roll(&mut g, direction);
+        for _ in 0..5 {
+            g.tick(&segment, &test_bank(g.segment_index()));
+        }
+        // Negative mesh angles lower the right wing: a right roll's spin and
+        // its bank into the push both read negative, a left roll's positive.
+        let angle = g.player_appearance() as u8 as i8 as i16;
+        assert!(angle * sign < 0, "roll angle {angle} for direction {sign}");
+        assert!((g.flight.bank >> 8) * sign < 0);
+    }
 }
 #[test]
 fn dodge_and_steering_share_the_arena_limits() {
@@ -1994,24 +2158,53 @@ fn dodge_and_steering_share_the_arena_limits() {
         g.player.y = 64;
         queue_roll(&mut g, direction);
         sample(&mut g, direction | UP, 240);
-        for _ in 0..25 {
+        for _ in 0..60 {
             g.tick(&segment, &test_bank(g.segment_index()));
-            assert_eq!(g.player.x, sign * 100);
-            assert_eq!(g.player.y, 65);
+            assert!(g.player.x * sign <= 100 && g.player.y <= 65);
         }
+        // The soft wall settles the ship exactly on the former hard limits.
+        assert_eq!((g.player.x, g.player.y), (sign * 100, 65));
+        assert_eq!(g.flight.frac, [0, 0]);
+        assert_eq!(g.flight.vel, [0, 0]);
     }
+}
+#[test]
+fn flight_state_outside_the_arena_returns_inside_without_a_jump() {
+    let bytes = empty_segment(0);
+    let segment = Segment::new(&bytes).unwrap();
+    let mut g = running();
+    g.player.x = 100;
+    g.player.y = -66;
+    g.flight.frac = [200, 90];
+    for _ in 0..80 {
+        g.tick(&segment, &test_bank(g.segment_index()));
+        assert!(g.player.x <= 100 && g.player.y >= -66);
+        assert!(g.flight.vel[0] <= 0 && g.flight.vel[1] >= 0);
+    }
+    // The wall pushes the ship back in and its momentum coasts a unit further.
+    assert!((98..=100).contains(&g.player.x), "{}", g.player.x);
+    assert!((-65..=-63).contains(&g.player.y), "{}", g.player.y);
+    assert_eq!(g.flight.vel, [0, 0]);
 }
 #[test]
 fn sidestep_avoids_old_lane_scenery_but_can_hit_the_new_lane() {
     let bytes = empty_segment(0);
     let segment = Segment::new(&bytes).unwrap();
-    for (rolling, obstacle_x, expected_shield) in [(false, 0, 70), (true, 0, 100), (true, 45, 70)] {
+    // Where the push has carried the ship when the rock arrives.
+    let mut probe = running();
+    queue_roll(&mut probe, RIGHT);
+    for _ in 0..30 {
+        probe.tick(&segment, &test_bank(probe.segment_index()));
+    }
+    let lane = probe.player.x;
+    assert!(lane > 35, "the sidestep clears a rock's radius: {lane}");
+    for (rolling, obstacle_x, expected_shield) in [(false, 0, 70), (true, 0, 100), (true, lane, 70)] {
         let mut g = running();
         g.actors[0] = Actor {
             pos: Vec3 {
                 x: obstacle_x,
                 y: -20,
-                z: PLAYER_Z + SPEED * 10 + 31,
+                z: PLAYER_Z + SPEED * 30 + 31,
             },
             kind: assets::ROCK,
             hp: 255,
@@ -2020,7 +2213,7 @@ fn sidestep_avoids_old_lane_scenery_but_can_hit_the_new_lane() {
         if rolling {
             queue_roll(&mut g, RIGHT);
         }
-        for _ in 0..10 {
+        for _ in 0..30 {
             g.tick(&segment, &test_bank(g.segment_index()));
         }
         assert_eq!(g.shield, expected_shield);
@@ -2061,7 +2254,7 @@ fn respawn_uses_section_checkpoint_and_retains_score() {
         g.tick(&segment, &test_bank(g.segment_index()));
     }
     assert_eq!(g.mode, Mode::Playing);
-    assert_eq!(g.hud().distance, 60000);
+    assert_eq!((g.hud().section, g.hud().distance), (2, 0));
     assert_eq!(g.shield, 100);
     assert_eq!(g.score, 1234);
 }
@@ -2338,6 +2531,41 @@ fn presentation_resets_and_bombs_keep_only_the_latest_request() {
     assert_eq!(g.take_presentation_event(), PresentationEvent::None);
 }
 #[test]
+fn player_damage_requests_a_hit_impulse_that_bombs_outrank_and_resets_replace() {
+    let mut g = running();
+    // The run reset itself requests the usual Reset first.
+    assert_eq!(g.take_presentation_event(), PresentationEvent::Reset);
+    g.invulnerability = 0;
+    g.damage_player(10);
+    assert_eq!(g.shield, 90);
+    assert_eq!(g.take_presentation_event(), PresentationEvent::Hit);
+    assert_eq!(g.take_presentation_event(), PresentationEvent::None);
+    // Immune hits request nothing.
+    g.damage_player(10);
+    assert_eq!(g.shield, 90);
+    assert_eq!(g.take_presentation_event(), PresentationEvent::None);
+    // A bomb in the same catch-up window keeps its bigger shake.
+    g.bomb(&test_bank(g.segment_index()));
+    g.invulnerability = 0;
+    g.damage_player(10);
+    assert_eq!(g.take_presentation_event(), PresentationEvent::Bomb);
+    // A hit followed by a bomb reports the bomb; a reset replaces either.
+    g.invulnerability = 0;
+    g.damage_player(10);
+    g.bomb(&test_bank(g.segment_index()));
+    assert_eq!(g.take_presentation_event(), PresentationEvent::Bomb);
+    g.invulnerability = 0;
+    g.damage_player(10);
+    g.respawn();
+    assert_eq!(g.take_presentation_event(), PresentationEvent::Reset);
+    // Outside play nothing is requested.
+    g.reset_scene(Mode::Title, 0, 0);
+    let _ = g.take_presentation_event();
+    g.invulnerability = 0;
+    g.damage_player(10);
+    assert_eq!(g.take_presentation_event(), PresentationEvent::None);
+}
+#[test]
 fn every_fifth_projectile_kill_adds_a_bomb_up_to_three_without_banking_overflow() {
     let mut g = running();
     g.bombs = 0;
@@ -2516,13 +2744,164 @@ fn bomb_reward_progress_survives_respawn_and_kill_total_wrap_but_resets_with_run
     }
 }
 #[test]
+fn paused_gestures_do_not_trigger_actions_after_neutral_resume() {
+    let bytes = empty_segment(0);
+    let segment = Segment::new(&bytes).unwrap();
+    let bank = test_bank(0);
+    for direction in [LEFT, RIGHT] {
+        let mut g = running();
+        let player = g.player;
+        // Also discard queued actions captured immediately before the pause.
+        sample(&mut g, FIRE | direction, 60);
+        sample(&mut g, 0, 80);
+        sample(&mut g, FIRE | direction, 100);
+        assert!(g.controls.bomb_pending);
+        assert_ne!(g.controls.roll_pending, 0);
+        for (bits, ms) in [
+            (0, 120),
+            (FIRE | direction, 200),
+            (0, 220),
+            (FIRE | direction, 300),
+            (0, 320),
+            (0, 3000),
+        ] {
+            g.sample_paused_input(bits, ms);
+        }
+        sample(&mut g, 0, 3020);
+        g.tick(&segment, &bank);
+        assert!(g.shots.iter().all(|shot| shot.kind == 0));
+        assert_eq!((g.bombs, g.roll_ticks, g.roll_cooldown), (3, 0, 0));
+        assert_eq!(g.player, player);
+        assert_eq!(g.audio_len, 0);
+    }
+    // Fire while paused must not become a delayed title-screen start.
+    let mut title = Game::new();
+    title.sample_paused_input(FIRE, 100);
+    title.sample_paused_input(0, 120);
+    sample(&mut title, 0, 3000);
+    title.tick(&segment, &bank);
+    assert_eq!(title.mode, Mode::Title);
+    assert!(!title.menu_activity);
+}
+
+#[test]
+fn taps_cannot_bridge_pause_and_later_double_taps_work() {
+    let bytes = empty_segment(0);
+    let segment = Segment::new(&bytes).unwrap();
+    let bank = test_bank(0);
+    for bits in [FIRE, LEFT, RIGHT] {
+        for first_tap_paused in [false, true] {
+            let mut g = running();
+            if first_tap_paused {
+                g.sample_paused_input(bits, 100);
+            } else {
+                sample(&mut g, bits, 100);
+                g.tick(&segment, &bank);
+            }
+            g.sample_paused_input(0, 120);
+            sample(&mut g, bits, 200);
+            g.tick(&segment, &bank);
+            assert_eq!(g.bombs, 3, "a fire tap cannot pair across pause");
+            assert_eq!(g.roll_ticks, 0, "a direction tap cannot pair across pause");
+            sample(&mut g, 0, 220);
+            sample(&mut g, bits, 300);
+            g.tick(&segment, &bank);
+            if bits == FIRE {
+                assert_eq!(g.bombs, 2, "two resumed fire taps still drop a bomb");
+            } else {
+                assert_eq!(g.roll_ticks, 25);
+                assert_eq!(g.roll_direction, if bits == LEFT { -1 } else { 1 });
+            }
+        }
+    }
+}
+
+#[test]
+fn held_steering_and_autofire_resume_without_replaying_a_paused_edge() {
+    let bytes = empty_segment(0);
+    let segment = Segment::new(&bytes).unwrap();
+    let bank = test_bank(0);
+    let mut g = running();
+    g.sample_paused_input(0, 2000);
+    assert_eq!(g.hud().charge, 255);
+    g.sample_paused_input(FIRE | RIGHT | UP, 2020);
+    g.sample_paused_input(FIRE | RIGHT | UP, 3000);
+    sample(&mut g, FIRE | RIGHT | UP, 3020);
+    g.tick(&segment, &bank);
+    assert!(g.flight.vel[0] > 0 && g.flight.vel[1] > 0);
+    assert_eq!(g.shots.iter().filter(|shot| shot.kind != 0).count(), 1);
+    assert_eq!((g.shots[0].kind, g.shots[0].damage), (1, 1));
+    assert_eq!((g.bombs, g.roll_ticks, g.hud().charge), (3, 0, 0));
+}
+
+#[test]
+fn paused_charge_tracks_release_through_clock_wrap_and_fires_after_resume() {
+    let bytes = empty_segment(0);
+    let segment = Segment::new(&bytes).unwrap();
+    let bank = test_bank(0);
+    let mut g = running();
+    let release = u16::MAX as u32 - 1490;
+    g.sample_paused_input(FIRE, (release - 20) as u16);
+    g.sample_paused_input(0, release as u16);
+    for elapsed in (20..=70_000u32).step_by(20) {
+        g.sample_paused_input(0, (release + elapsed) as u16);
+        let expected = if elapsed <= 1000 {
+            0
+        } else if elapsed >= 2000 {
+            255
+        } else {
+            ((elapsed - 1000) * 51 / 200) as u8
+        };
+        assert_eq!(g.hud().charge, expected, "paused for {elapsed} ms");
+    }
+    sample(&mut g, FIRE, release + 70_020);
+    g.tick(&segment, &bank);
+    assert_eq!(g.shots.iter().filter(|shot| shot.kind != 0).count(), 1);
+    assert_eq!((g.shots[0].kind, g.shots[0].damage), (3, 4));
+    assert_eq!(g.bombs, 3);
+}
+
+#[test]
 fn charge_uses_elapsed_milliseconds_and_wraps_safely() {
     let mut g = running();
-    sample(&mut g, FIRE, u32::MAX - 1500);
-    sample(&mut g, 0, u32::MAX - 1490);
+    sample(&mut g, FIRE, u16::MAX as u32 - 1500);
+    sample(&mut g, 0, u16::MAX as u32 - 1490);
     sample(&mut g, 0, 509);
     assert_eq!(g.hud().charge, 255);
     sample(&mut g, FIRE, 510);
+    assert_eq!(g.controls.shot_charge, 255);
+}
+#[test]
+fn remembered_instants_survive_the_clock_wrapping_many_times() {
+    // Twenty minutes of idle sampling (over eighteen clock wraps): the charge
+    // stays saturated and a single old tap never pairs with a new one.
+    let mut g = running();
+    sample(&mut g, FIRE, 100);
+    sample(&mut g, 0, 120);
+    sample(&mut g, RIGHT, 300);
+    sample(&mut g, 0, 320);
+    let mut ms = 320u32;
+    while ms < 20 * 60 * 1000 {
+        ms += 100;
+        sample(&mut g, 0, ms);
+        let elapsed = ms - 120;
+        let expected = if elapsed <= 1000 {
+            0
+        } else if elapsed >= 2000 {
+            255
+        } else {
+            ((elapsed - 1000) * 51 / 200) as u8
+        };
+        assert_eq!(g.hud().charge, expected, "at {ms}");
+    }
+    assert!(!g.controls.right_armed && !g.controls.fire_armed);
+    sample(&mut g, RIGHT, ms + 20);
+    assert_eq!(g.controls.roll_pending, 0, "a tap twenty minutes later is a first tap");
+    sample(&mut g, 0, ms + 40);
+    sample(&mut g, RIGHT, ms + 60);
+    assert_eq!(g.controls.roll_pending, 1, "the second tap within the window rolls");
+    sample(&mut g, FIRE, ms + 80);
+    assert!(!g.controls.bomb_pending, "an ancient fire tap is not half of a double tap");
     assert_eq!(g.controls.shot_charge, 255);
 }
 #[test]
@@ -2616,30 +2995,145 @@ fn enemy(kind: u8, x: i16, y: i16, z: i16) -> Actor {
     }
 }
 #[test]
-fn missile_selects_nearest_ahead_then_lateral_distance_and_stable_slot() {
+fn missile_random_acquisition_covers_every_candidate_count_without_bias() {
+    let origin = Vec3 { x: 0, y: 0, z: 200 };
+    let bank = test_bank(0);
+    // The core is exposed only after both turrets die, so fourteen is the
+    // largest possible candidate set: twelve actors and two boss turrets.
+    for count in 0..=ACTORS + 2 {
+        let mut g = running();
+        for index in 0..count.min(ACTORS) {
+            g.actors[index] = enemy(assets::FIGHTER, index as i16 * 10, 0, 900);
+        }
+        g.boss_started = count > ACTORS;
+        g.boss_left = u8::from(count > ACTORS);
+        g.boss_right = u8::from(count > ACTORS + 1);
+        g.boss_core = 0;
+        let seed = g.missile_rng;
+        if count == 0 {
+            let mut lock = 15;
+            assert_eq!(g.missile_target(origin, &mut lock, &bank), None);
+            assert_eq!((lock, g.missile_rng), (0, seed));
+            continue;
+        }
+        let mut selections = [0; ACTORS + 3];
+        for _ in 0..16 * count {
+            let mut lock = 0;
+            let (target, _) = g.missile_target(origin, &mut lock, &bank).unwrap();
+            assert!((1..=count as u8).contains(&lock));
+            selections[lock as usize - 1] += 1;
+            if lock as usize <= ACTORS {
+                assert_eq!(
+                    target,
+                    actor_center_sim(&g.actors[lock as usize - 1], &bank)
+                );
+            } else {
+                assert_eq!(target.x, if lock == 13 { -130 } else { 130 });
+            }
+        }
+        assert!(selections[..count].iter().all(|selected| *selected == 16));
+        if count == 1 {
+            assert_eq!(g.missile_rng, seed, "one candidate needs no random draw");
+        }
+    }
+}
+#[test]
+fn missile_random_acquisition_is_reproducible_for_every_nonzero_seed() {
+    let origin = Vec3 { x: 0, y: 0, z: 200 };
+    let bank = test_bank(0);
+    let mut seen = [false; 3];
+    for seed in 1..=u8::MAX {
+        let mut g = running();
+        for index in 0..3 {
+            g.actors[index] = enemy(assets::FIGHTER, index as i16 * 30, 0, 700);
+        }
+        g.missile_rng = seed;
+        let mut replay = running();
+        replay.actors = g.actors;
+        replay.missile_rng = seed;
+        let mut lock = 0;
+        let mut replay_lock = 0;
+        for _ in 0..12 {
+            let target = g.missile_target(origin, &mut lock, &bank);
+            assert_eq!(
+                target,
+                replay.missile_target(origin, &mut replay_lock, &bank)
+            );
+            assert_eq!((lock, g.missile_rng), (replay_lock, replay.missile_rng));
+            assert!((1..=3).contains(&lock));
+            seen[lock as usize - 1] = true;
+            lock = 0;
+            replay_lock = 0;
+        }
+    }
+    assert_eq!(seen, [true; 3]);
+}
+#[test]
+fn missile_keeps_its_random_lock_when_closer_targets_appear() {
     let mut g = running();
+    let bank = test_bank(0);
+    let origin = Vec3 { x: 0, y: 0, z: 200 };
+    g.actors[0] = enemy(assets::FIGHTER, 0, 0, 300);
+    g.actors[1] = enemy(assets::DIVER, -80, 0, 1600);
+    g.actors[2] = enemy(assets::FIGHTER, 40, 0, 700);
+    let mut lock = 0;
+    assert_eq!(
+        g.missile_target(origin, &mut lock, &bank),
+        Some((g.actors[1].pos, 44))
+    );
+    assert_eq!((lock, g.missile_rng), (2, 0x26));
+    g.actors[0].pos.z = 201;
+    g.actors[2].pos.x = 0;
+    g.actors[1].pos = Vec3 {
+        x: 70,
+        y: -20,
+        z: 1500,
+    };
+    g.actors[1].approach_speed = 14;
+    assert_eq!(
+        g.missile_target(origin, &mut lock, &bank),
+        Some((g.actors[1].pos, 46))
+    );
+    assert_eq!(
+        (lock, g.missile_rng),
+        (2, 0x26),
+        "a valid lock consumes no randomness"
+    );
+}
+#[test]
+fn missile_candidates_exclude_empty_dead_passed_and_indestructible_actors() {
+    let mut g = Game::preview_at_for_test(12);
+    let bank = test_bank(12);
     let origin = Vec3 { x: 0, y: 0, z: 200 };
     g.actors[0] = enemy(assets::ROCK, 0, 0, 300);
-    g.actors[1] = enemy(assets::FIGHTER, 0, 0, 190);
-    g.actors[2] = enemy(assets::DIVER, 0, 0, 400);
-    g.actors[2].hp = 0;
-    g.actors[3] = enemy(assets::FIGHTER, 0, 0, 800);
-    g.actors[4] = enemy(assets::DIVER, -40, 0, 700);
-    g.actors[5] = enemy(assets::DIVER, 40, 0, 700);
-    assert_eq!(
-        g.missile_target(origin, &test_bank(g.segment_index())),
-        Some((g.actors[4].pos, 44))
-    );
-    g.actors[5].pos.x = 39;
-    assert_eq!(
-        g.missile_target(origin, &test_bank(g.segment_index())),
-        Some((g.actors[5].pos, 44))
-    );
-    g.actors[5] = enemy(assets::TURRET, 0, -28, 600);
-    assert_eq!(
-        g.missile_target(origin, &test_bank(g.segment_index())),
-        Some((Vec3 { x: 0, y: 0, z: 600 }, 40))
-    );
+    g.actors[0].hp = 255;
+    g.actors[1] = enemy(assets::BUILDING, 0, 0, 300);
+    g.actors[1].hp = 255;
+    g.actors[2] = enemy(assets::FIGHTER, 0, 0, 199);
+    g.actors[3] = enemy(assets::FIGHTER, 0, 0, 200);
+    g.actors[4] = enemy(assets::FIGHTER, 0, 0, 400);
+    g.actors[4].hp = 0;
+    g.actors[5] = enemy(0, 0, 0, 500);
+    g.actors[5].flags = assets::SMALL_DEBRIS;
+    g.actors[6] = enemy(assets::ROCK, 70, -10, 800);
+    g.actors[6].flags = assets::SMALL_DEBRIS;
+    g.actors[6].hp = 2;
+    for invalid_lock in 0..=6 {
+        let mut lock = invalid_lock;
+        assert_eq!(
+            g.missile_target(origin, &mut lock, &bank),
+            Some((
+                Vec3 {
+                    x: 70,
+                    y: 0,
+                    z: 800
+                },
+                40
+            ))
+        );
+        assert_eq!(lock, 7);
+        assert_eq!(g.missile_rng, 0xA5);
+    }
 }
 #[test]
 fn missile_reacquires_after_death_slot_reuse_and_passing_and_coasts_without_targets() {
@@ -2650,20 +3144,25 @@ fn missile_reacquires_after_death_slot_reuse_and_passing_and_coasts_without_targ
         damage: 4,
         ..Shot::EMPTY
     };
+    let mut lock = 0;
     g.actors[0] = enemy(assets::FIGHTER, 100, 0, 700);
-    g.steer_missile(&mut s, &test_bank(g.segment_index()));
+    g.steer_missile(&mut s, &mut lock, &test_bank(g.segment_index()));
     assert_eq!(s.dx, 1);
+    assert_eq!(lock, 1);
     g.actors[0].kind = 0;
-    g.steer_missile(&mut s, &test_bank(g.segment_index()));
+    g.steer_missile(&mut s, &mut lock, &test_bank(g.segment_index()));
+    assert_eq!(lock, 0);
     assert_eq!(
         s.dx, 0,
         "lost target reduces steering without stale references"
     );
     g.actors[0] = enemy(assets::FIGHTER, -100, 0, 700);
-    g.steer_missile(&mut s, &test_bank(g.segment_index()));
+    g.steer_missile(&mut s, &mut lock, &test_bank(g.segment_index()));
+    assert_eq!(lock, 1);
     assert_eq!(s.dx, -1, "a reused slot is considered at its new position");
     g.actors[0].pos.z = 199;
-    g.steer_missile(&mut s, &test_bank(g.segment_index()));
+    g.steer_missile(&mut s, &mut lock, &test_bank(g.segment_index()));
+    assert_eq!(lock, 0);
     assert_eq!(
         s.dx, 0,
         "the seeker cannot turn back toward a passed target"
@@ -2678,6 +3177,104 @@ fn missile_reacquires_after_death_slot_reuse_and_passing_and_coasts_without_targ
         g.shots[0].kind, 0,
         "unguided missiles expire at the existing range limit"
     );
+    assert_eq!(g.missile_lock(0), 0);
+}
+#[test]
+fn missiles_acquire_on_first_update_and_can_share_the_same_target() {
+    let mut g = running();
+    let bank = test_bank(0);
+    g.actors[0] = enemy(assets::FIGHTER, 70, 0, 1800);
+    g.fire_player(255);
+    assert_eq!(g.missile_lock(0), 0);
+    assert_eq!(g.missile_rng, 0xA5);
+    g.update_shots(&bank);
+    assert_eq!(g.missile_lock(0), 1);
+    g.fire_player(255);
+    assert_eq!((g.missile_lock(0), g.missile_lock(1)), (1, 0));
+    g.update_shots(&bank);
+    assert_eq!((g.missile_lock(0), g.missile_lock(1)), (1, 1));
+    assert_eq!(g.missile_rng, 0xA5);
+}
+#[test]
+fn actor_slot_reuse_invalidates_all_missile_locks_to_its_previous_occupant() {
+    let mut g = running();
+    let bank = test_bank(0);
+    g.actors[0] = enemy(assets::FIGHTER, 80, 0, 1000);
+    g.actors[1] = enemy(assets::DIVER, -80, 0, 1200);
+    for slot in 0..SHOTS {
+        g.set_missile_lock(slot, 1 + (slot % 2) as u8);
+    }
+    g.kill_actor(0, &bank);
+    g.spawn_actor(
+        Spawn {
+            kind: assets::FIGHTER,
+            x: -80,
+            ..Spawn::default()
+        },
+        0,
+        &bank,
+    );
+    assert_eq!(g.actors[0].pos.x, -80);
+    for slot in 0..SHOTS {
+        assert_eq!(g.missile_lock(slot), if slot % 2 == 0 { 0 } else { 2 });
+    }
+    // Invalidating the odd half of every packed byte must preserve its even
+    // neighbor, including both the first and last projectile slots.
+    for slot in (0..SHOTS).step_by(2) {
+        g.set_missile_lock(slot, 15);
+    }
+    g.kill_actor(1, &bank);
+    g.spawn_actor(
+        Spawn {
+            kind: assets::DIVER,
+            ..Spawn::default()
+        },
+        0,
+        &bank,
+    );
+    for slot in 0..SHOTS {
+        assert_eq!(g.missile_lock(slot), if slot % 2 == 0 { 15 } else { 0 });
+    }
+}
+#[test]
+fn missile_lock_clears_on_impact_and_range_expiry() {
+    let bank = test_bank(0);
+    for z in [700, 3000] {
+        let mut g = running();
+        g.actors[0] = enemy(assets::FIGHTER, 0, 0, z);
+        g.shots[0] = Shot {
+            pos: Vec3 {
+                x: 0,
+                y: 0,
+                z: if z == 700 { 668 } else { 2390 },
+            },
+            damage: 4,
+            kind: 3,
+            ..Shot::EMPTY
+        };
+        g.set_missile_lock(0, 1);
+        g.update_shots(&bank);
+        assert_eq!(g.shots[0].kind, 0);
+        assert_eq!(g.missile_lock(0), 0);
+    }
+}
+#[test]
+fn missile_scene_resets_clear_locks_and_respawns_preserve_random_sequence() {
+    let mut g = running();
+    g.missile_targets.fill(0xef);
+    g.missile_rng = 0x37;
+    g.respawn();
+    assert_eq!(g.missile_targets, [0; SHOTS / 2]);
+    assert_eq!(g.missile_rng, 0x37);
+    g.missile_targets.fill(0xef);
+    g.reset_scene(Mode::Attract, 6, 100);
+    assert_eq!(g.missile_targets, [0; SHOTS / 2]);
+    assert_eq!(g.missile_rng, 0xA5);
+    g.missile_targets.fill(0xef);
+    g.missile_rng = 0x49;
+    g.reset_run();
+    assert_eq!(g.missile_targets, [0; SHOTS / 2]);
+    assert_eq!(g.missile_rng, 0xA5);
 }
 #[test]
 fn missile_guidance_reaches_moving_fighters_divers_and_distant_opposite_side_turrets() {
@@ -2723,35 +3320,39 @@ fn missile_boss_targeting_tracks_live_turrets_then_exposed_core() {
     g.boss_started = true;
     g.boss_z = 900;
     let origin = Vec3 { x: 0, y: 0, z: 200 };
+    let mut lock = 0;
     assert_eq!(
-        g.missile_target(origin, &test_bank(g.segment_index())),
+        g.missile_target(origin, &mut lock, &test_bank(g.segment_index())),
         Some((
             Vec3 {
-                x: -130,
+                x: 130,
                 y: 30,
                 z: 830
             },
             40
         ))
     );
-    g.boss_left = 0;
+    assert_eq!(lock, 14);
+    g.boss_right = 0;
     g.boss_z = 680;
     assert_eq!(
-        g.missile_target(origin, &test_bank(g.segment_index())),
+        g.missile_target(origin, &mut lock, &test_bank(g.segment_index())),
         Some((
             Vec3 {
-                x: 130,
+                x: -130,
                 y: 30,
                 z: 610
             },
             32
         ))
     );
-    g.boss_right = 0;
+    assert_eq!(lock, 13);
+    g.boss_left = 0;
     assert_eq!(
-        g.missile_target(origin, &test_bank(g.segment_index())),
+        g.missile_target(origin, &mut lock, &test_bank(g.segment_index())),
         Some((Vec3 { x: 0, y: 0, z: 480 }, 32))
     );
+    assert_eq!(lock, 15);
     g.fire_player(255);
     for _ in 0..20 {
         g.update_shots(&test_bank(g.segment_index()));
@@ -2759,17 +3360,44 @@ fn missile_boss_targeting_tracks_live_turrets_then_exposed_core() {
     assert_eq!(g.boss_core, 116);
     g.boss_defeated = true;
     assert_eq!(
-        g.missile_target(origin, &test_bank(g.segment_index())),
+        g.missile_target(origin, &mut lock, &test_bank(g.segment_index())),
         None
     );
+    assert_eq!(lock, 0);
 }
 #[test]
-fn enlarged_enemy_shot_boxes_cover_their_new_boundaries_in_every_roster() {
+fn missile_rejects_shielded_dead_passed_and_inactive_boss_locks() {
+    let mut g = running();
+    let bank = test_bank(0);
+    let origin = Vec3 { x: 0, y: 0, z: 200 };
+    g.boss_started = true;
+    g.boss_z = 680;
+    let mut lock = 15;
+    assert!(g.missile_target(origin, &mut lock, &bank).is_some());
+    assert_eq!(lock, 14, "a shielded core lock reacquires a live turret");
+    g.boss_left = 0;
+    g.boss_right = 0;
+    g.boss_core = 0;
+    assert_eq!(g.missile_target(origin, &mut lock, &bank), None);
+    assert_eq!(lock, 0);
+    g.boss_core = 120;
+    g.boss_z = origin.z - BOSS_CORE_Z;
+    lock = 15;
+    assert_eq!(g.missile_target(origin, &mut lock, &bank), None);
+    assert_eq!(lock, 0, "targets at the missile depth are no longer ahead");
+    g.boss_z = 680;
+    g.boss_started = false;
+    lock = 15;
+    assert_eq!(g.missile_target(origin, &mut lock, &bank), None);
+    assert_eq!(lock, 0);
+}
+#[test]
+fn enemy_shot_boxes_cover_their_scaled_boundaries_in_every_roster() {
     for level in 0..assets::SEGMENT_COUNT {
         let bank = test_bank(level);
         for kind in 1..=bank.enemy_count() {
             let center_y = bank.enemy(kind).center_y as i16;
-            for (offset, hit) in [(38, true), (39, false), (-38, true), (-39, false)] {
+            for (offset, hit) in [(28, true), (29, false), (-28, true), (-29, false)] {
                 for axis in 0..3 {
                     let mut g = running();
                     g.actors[0] = enemy(kind, 0, -center_y, 700);
@@ -2803,9 +3431,16 @@ fn enlarged_enemy_shot_boxes_cover_their_new_boundaries_in_every_roster() {
     }
 }
 #[test]
-fn enlarged_ram_boxes_include_depth_while_obstacles_keep_their_original_depth() {
-    for (kind, center_y, depth) in [(assets::TURRET, 28, 64), (assets::ROCK, 20, 32)] {
-        for (x, dz, hit) in [(36, depth - 1, true), (37, 0, false), (0, depth, false)] {
+fn scaled_ram_boxes_include_depth_while_obstacles_keep_their_original_depth() {
+    for (kind, center_y, radius, depth) in [
+        (assets::TURRET, 19, 27, assets::enemy_scaled(32)),
+        (assets::ROCK, 20, 36, 32),
+    ] {
+        for (x, dz, hit) in [
+            (radius, depth - 1, true),
+            (radius + 1, 0, false),
+            (0, depth, false),
+        ] {
             let mut g = running();
             g.actors[0] = enemy(kind, x, -center_y, PLAYER_Z + dz + 8);
             g.update_actors(&test_bank(0));
@@ -2818,7 +3453,99 @@ fn enlarged_ram_boxes_include_depth_while_obstacles_keep_their_original_depth() 
     }
 }
 #[test]
-fn enlarged_enemy_proxies_cover_distant_and_budget_limited_rendering() {
+#[cfg(feature = "host-tools")]
+fn actors_fly_through_the_near_plane_until_their_mesh_is_fully_behind_it() {
+    use crate::render::{Renderer, NEAR};
+    for level in [0, 2, 6, 12] {
+        let bank = test_bank(level);
+        for kind in (1..=bank.enemy_count()).chain([assets::ROCK, assets::BUILDING]) {
+            let depths = (0..bank.vertex_count(kind)).map(|index| bank.vertex(kind, index).z);
+            let front = depths.clone().max().unwrap();
+            let back = depths.min().unwrap();
+            assert!(
+                ACTOR_RETIRE_Z + front < NEAR,
+                "level {level} kind {kind} can still be visible when retired"
+            );
+            // Straddling the plane keeps a clipped remainder; fully behind it
+            // the renderer rejects every face until the sim retires the actor.
+            let straddle = NEAR - front + 16;
+            assert!(
+                straddle + back < NEAR,
+                "level {level} kind {kind} fixture does not straddle"
+            );
+            for (z, drawn) in [
+                (80, true),
+                (straddle, true),
+                (NEAR - front - 1, false),
+                (ACTOR_RETIRE_Z, false),
+            ] {
+                let mut g = running();
+                g.actors[0] = enemy(kind, 0, 0, z);
+                let mut renderer = Renderer::new();
+                renderer.begin(0);
+                g.render_combat(
+                    &mut SceneBudget {
+                        sink: &mut renderer,
+                        count: 0,
+                        limit: 174,
+                        camera_y: 0,
+                        color_override: 0,
+                        extra_flags: 0,
+                    },
+                    &bank,
+                );
+                assert_eq!(
+                    renderer.triangle_count > 0,
+                    drawn,
+                    "level {level} kind {kind} at z {z}"
+                );
+            }
+        }
+    }
+}
+#[test]
+fn actors_and_pickups_retire_only_behind_the_near_plane() {
+    use crate::render::NEAR;
+    let bank = test_bank(0);
+    for kind in [assets::FIGHTER, assets::DIVER, assets::TURRET, assets::ROCK] {
+        let mut g = running();
+        // The fastest approach is 14 units per tick, so this actor stays
+        // above the retire depth; the other one is already behind it.
+        g.actors[0] = enemy(kind, 0, 0, ACTOR_RETIRE_Z + 31);
+        g.actors[1] = enemy(kind, 0, 0, ACTOR_RETIRE_Z - 1);
+        g.update_actors(&bank);
+        assert_ne!(
+            g.actors[0].kind, 0,
+            "kind {kind} retired while still drawable"
+        );
+        assert_eq!(
+            g.actors[1].kind, 0,
+            "kind {kind} survived behind the retire depth"
+        );
+        assert_eq!(g.shield, 100);
+    }
+    let mut g = running();
+    g.pickups[0] = Pickup {
+        pos: Vec3 {
+            x: 0,
+            y: 0,
+            z: NEAR + SPEED,
+        },
+        kind: 2,
+    };
+    g.pickups[1] = Pickup {
+        pos: Vec3 {
+            x: 0,
+            y: 0,
+            z: NEAR + SPEED - 1,
+        },
+        kind: 1,
+    };
+    g.update_pickups();
+    assert_eq!((g.pickups[0].kind, g.pickups[1].kind), (2, 0));
+}
+#[test]
+fn scaled_enemy_proxies_cover_distant_and_budget_limited_rendering() {
     #[derive(Default)]
     struct Capture(std::vec::Vec<Vec3>);
     impl GeometrySink for Capture {
@@ -2846,9 +3573,9 @@ fn enlarged_enemy_proxies_cover_distant_and_budget_limited_rendering() {
                 );
                 assert_eq!(capture.0.len(), 6);
                 let radius = match kind {
-                    assets::FIGHTER => 44,
+                    assets::FIGHTER => assets::enemy_scaled(22),
                     assets::ROCK | assets::BUILDING => 18,
-                    _ => 36,
+                    _ => assets::enemy_scaled(18),
                 };
                 let center_y = actor_center(g.actors[0], &bank).y;
                 let xs = capture.0.iter().map(|v| v.x);
@@ -3191,8 +3918,10 @@ fn missile_pool_priority_preserves_charge_and_ordinary_shot_rules() {
         ..Shot::EMPTY
     };
     let mut g = running();
+    g.missile_targets.fill(0xee);
     g.add_shot(missile);
     assert_eq!(g.shots[0].kind, 3);
+    assert_eq!((g.missile_lock(0), g.missile_lock(1)), (0, 14));
     for (i, shot) in g.shots.iter_mut().enumerate() {
         *shot = Shot {
             pos: Vec3 {
@@ -3207,12 +3936,14 @@ fn missile_pool_priority_preserves_charge_and_ordinary_shot_rules() {
     g.shots[2].kind = 2;
     g.add_shot(missile);
     assert_eq!(g.shots[2].kind, 3, "hostiles have first eviction priority");
+    assert_eq!((g.missile_lock(2), g.missile_lock(3)), (0, 14));
     assert_eq!(g.shots[23].kind, 1);
     g.add_shot(missile);
     assert_eq!(
         g.shots[23].kind, 3,
         "then replace the farthest ordinary laser"
     );
+    assert_eq!((g.missile_lock(22), g.missile_lock(23)), (14, 0));
     g.add_shot(Shot {
         kind: 1,
         ..Shot::EMPTY
@@ -3228,11 +3959,13 @@ fn missile_pool_priority_preserves_charge_and_ordinary_shot_rules() {
             ..missile
         };
     }
+    g.missile_targets.fill(0xdd);
     g.add_shot(missile);
     assert_eq!(
         g.shots[23].pos.z, 198,
         "all-missile saturation still fires the charge"
     );
+    assert_eq!((g.missile_lock(22), g.missile_lock(23)), (13, 0));
     g.shots[0].kind = 2;
     g.bomb(&test_bank(g.segment_index()));
     assert_eq!(g.shots[0].kind, 0);
@@ -3328,22 +4061,33 @@ fn full_eighteen_stage_campaign_is_winnable_with_regular_joystick_input() {
                 }
             }
         }
+        // The ship carries momentum: steer on where it will stop (about
+        // eleven ticks of travel), as a pilot leads with the stick.
+        let ahead_x = g.player.x + (g.flight.vel[0] >> 5);
+        let ahead_y = g.player.y + (g.flight.vel[1] >> 5);
         let mut bits = FIRE;
-        if target.x - g.player.x > 3 {
+        if target.x - ahead_x > 3 {
             bits |= RIGHT;
-        } else if target.x - g.player.x < -3 {
+        } else if target.x - ahead_x < -3 {
             bits |= LEFT;
         }
-        if target.y - g.player.y > 3 {
+        if target.y - ahead_y > 3 {
             bits |= UP;
-        } else if target.y - g.player.y < -3 {
+        } else if target.y - ahead_y < -3 {
             bits |= DOWN;
         }
-        // Defensive double taps use the same input path as the hardware.
+        // Defensive double taps use the same input path as the hardware; the
+        // pilot dodges toward the target's side and commits to the roll's
+        // direction while the hull spins, as the velocity model rewards.
+        let dodge = if target.x > g.player.x { RIGHT } else { LEFT };
         match tick % 50 {
             49 | 1 => bits &= !(LEFT | RIGHT),
-            0 | 2 => bits = (bits & !RIGHT) | LEFT,
+            0 | 2 => bits = (bits & !(LEFT | RIGHT)) | dodge,
             _ => {}
+        }
+        if g.roll_ticks > 0 {
+            bits = (bits & !(LEFT | RIGHT))
+                | if g.roll_direction < 0 { LEFT } else { RIGHT };
         }
         if g.boss_started && matches!(tick % 200, 0 | 2) {
             bits &= !FIRE;
@@ -3357,7 +4101,8 @@ fn full_eighteen_stage_campaign_is_winnable_with_regular_joystick_input() {
         assert_ne!(
             g.mode,
             Mode::GameOver,
-            "pilot lost all lives at distance {}",
+            "pilot lost all lives in section {} at {}",
+            g.segment_index(),
             g.hud().distance
         );
         if g.mode == Mode::Victory {
@@ -3372,8 +4117,9 @@ fn full_eighteen_stage_campaign_is_winnable_with_regular_joystick_input() {
         }
     }
     panic!(
-        "mission did not finish: {:?}, distance {}, boss {}/{}/{}, lives {}",
+        "mission did not finish: {:?}, section {} at {}, boss {}/{}/{}, lives {}",
         g.mode,
+        g.segment_index(),
         g.hud().distance,
         g.boss_left,
         g.boss_right,
@@ -3502,10 +4248,10 @@ fn lance_guidance_uses_hold_and_rush_speed_and_fans_keep_one_audio_cue() {
     g.actors[0] = enemy(2, 50, 0, 904);
     g.actors[0].age = 112;
     g.update_actors(&bank);
-    assert_eq!(g.missile_target(g.player, &bank).unwrap().1, 32);
+    assert_eq!(g.missile_target(g.player, &mut 0, &bank).unwrap().1, 32);
     g.actors[0].age = 152;
     g.update_actors(&bank);
-    assert_eq!(g.missile_target(g.player, &bank).unwrap().1, 46);
+    assert_eq!(g.missile_target(g.player, &mut 0, &bank).unwrap().1, 46);
     g.enemy_attack(Vec3 { x: 0, y: 0, z: 900 }, 2);
     let mut velocities = [0; 3];
     for (at, shot) in g.shots.iter().filter(|s| s.kind == 2).enumerate() {
@@ -3539,10 +4285,10 @@ fn model_bank_for_tests() -> [u8; assets::COMMON_SIZE] {
         data[directory..directory + 2].copy_from_slice(&(cursor as u16).to_le_bytes());
         data[directory + 2] = 3;
         data[directory + 3] = if id == 4 { 17 } else { 12 };
-        for vertex in [[-20i16, -10, -5], [20, -10, 5], [0, 20, 0]] {
+        for vertex in [[-20i8, -10, -5], [20, -10, 5], [0, 20, 0]] {
             for axis in vertex {
-                data[cursor..cursor + 2].copy_from_slice(&axis.to_le_bytes());
-                cursor += 2;
+                data[cursor] = axis as u8;
+                cursor += 1;
             }
         }
         data[directory + 4..directory + 6].copy_from_slice(&(cursor as u16).to_le_bytes());
@@ -3777,10 +4523,11 @@ fn real_enemy_rosters_fit_saturated_and_near_scenes_with_identical_staged_pixels
                 staged.begin(g.sky_color());
                 let raw_count = {
                     let mut stage = staged.scenery_stage();
-                    g.render_scenery(&mut stage, &segment);
+                    g.stage_scenery(&mut stage, &segment);
                     stage.count()
                 };
-                let prefix = staged.project_scenery(raw_count);
+                let [dx, dy] = g.sky_parallax();
+                let prefix = staged.project_scenery(raw_count, dx, dy);
                 g.render_foreground(&mut staged, &bank, 174.min(233 - raw_count as u16));
                 staged.scenery_last(prefix);
                 staged.finish();
@@ -3861,12 +4608,13 @@ fn saturated_bridge_weapons_preserve_foreground_and_match_staged_rendering() {
                     staged.begin(game.sky_color());
                     let raw_count = {
                         let mut stage = staged.scenery_stage();
-                        game.render_scenery(&mut stage, &segment);
+                        game.stage_scenery(&mut stage, &segment);
                         stage.count()
                     };
                     let foreground_limit = 174.min(233 - raw_count as u16);
                     assert!(foreground_limit >= essential_faces);
-                    let prefix = staged.project_scenery(raw_count);
+                    let [dx, dy] = game.sky_parallax();
+                    let prefix = staged.project_scenery(raw_count, dx, dy);
                     game.render_foreground(&mut staged, &bank, foreground_limit);
                     staged.scenery_last(prefix);
                     staged.finish();

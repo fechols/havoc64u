@@ -123,7 +123,7 @@ mod terrain_visibility {
                     game.player.y = y;
                     // The same byte consumed by the mesh rotation covers all
                     // orientations, including between the 25 native roll poses.
-                    game.bank = roll as i8;
+                    game.flight.bank = (roll as i8 as i16) << 8;
                     game.ticks = roll as u16;
                     let mut capture = Capture::default();
                     game.render_foreground(&mut capture, &bank, ship_faces(&bank));
@@ -150,7 +150,9 @@ mod terrain_visibility {
                 }
             }
         }
-        assert_eq!((minimum_x, maximum_x, minimum_y), (-136, 137, -102));
+        // Recorded with the composed Q8 matrix rotation; the earlier pair
+        // sequence rounded the mirrored wing tips one unit the other way.
+        assert_eq!((minimum_x, maximum_x, minimum_y), (-137, 136, -102));
     }
 
     fn check_terrain_tags(game: &Game, segment: &Segment<'_>) -> usize {
@@ -318,7 +320,7 @@ mod terrain_visibility {
         set_rail(&mut game, 34);
         game.player.x = 100;
         game.player.y = -65;
-        game.bank = -12;
+        game.flight.bank = -12 * 256;
         let (pixels, covered) = compare_ship(&game, &bank, &segment, false);
         assert_eq!(covered, 0, "terrain covered {covered}/{pixels} ship pixels");
         assert!(
@@ -329,7 +331,7 @@ mod terrain_visibility {
 
     fn set_pose(game: &mut Game, pose: u8) {
         if pose < 3 {
-            game.bank = [-12, 0, 12][pose as usize];
+            game.flight.bank = [-12 * 256, 0, 12 * 256][pose as usize];
         } else {
             game.roll_ticks = [24, 18, 12, 6][(pose - 3) as usize];
             // Quarter-turn samples cover all four orientation quadrants. The

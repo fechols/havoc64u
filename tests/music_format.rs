@@ -33,8 +33,11 @@ fn repaired_checksums_do_not_accept_invalid_page_fields() {
         (5, 1, ScoreError::Bounds),
         (7, 2, ScoreError::Tempo),
         (8, 12, ScoreError::Profile),
-        (9, 1, ScoreError::Bounds),
         (INSTRUMENT_OFFSET, 0x11, ScoreError::Instrument),
+        (INSTRUMENT_OFFSET, 0x18, ScoreError::Instrument),
+        (INSTRUMENT_OFFSET, 0x44, ScoreError::Instrument),
+        (INSTRUMENT_OFFSET, 0x82, ScoreError::Instrument),
+        (INSTRUMENT_OFFSET, 0x30, ScoreError::Instrument),
         (INSTRUMENT_OFFSET + 2, 16, ScoreError::Instrument),
         (EVENT_OFFSET, 2, ScoreError::Note),
         (EVENT_OFFSET, 0x81, ScoreError::Note),
@@ -55,6 +58,30 @@ fn repaired_checksums_do_not_accept_invalid_page_fields() {
         music::validate_page(&corrupt, 0, 0),
         Err(ScoreError::Checksum)
     );
+}
+
+#[test]
+fn filter_targets_and_sync_or_ring_colours_are_valid_page_fields() {
+    let bank = soundtrack::score_bank();
+    let good = &bank[BANK_HEADER_SIZE..BANK_HEADER_SIZE + PAGE_SIZE];
+    for (offset, value) in [
+        (music::FILTER_OFFSET, 1),
+        (music::FILTER_OFFSET, 0x80),
+        (music::FILTER_OFFSET, 0xff),
+        (INSTRUMENT_OFFSET, 0x10 | music::RING),
+        (INSTRUMENT_OFFSET, 0x10 | music::RING | music::SYNC),
+        (INSTRUMENT_OFFSET, 0x20 | music::SYNC),
+        (INSTRUMENT_OFFSET, 0x40 | music::SYNC),
+    ] {
+        let mut page = good.to_vec();
+        page[offset] = value;
+        seal_page(&mut page);
+        assert_eq!(music::validate_page(&page, 0, 0), Ok(()), "{offset}:{value:#x}");
+    }
+    assert!(music::valid_control(0x80));
+    for rejected in [0x00, 0x01, 0x08, 0x12 | 0x08, 0x24, 0x84, 0x86, 0xc0, 0x50] {
+        assert!(!music::valid_control(rejected), "{rejected:#x}");
+    }
 }
 
 #[test]

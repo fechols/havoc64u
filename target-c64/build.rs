@@ -4,6 +4,7 @@ fn main() {
     for source in [
         "build.rs",
         "link.ld",
+        "../tools/branch-audit.py",
         "asm/platform.S",
         "asm/pack.S",
         "asm/memcpy.S",
@@ -12,6 +13,14 @@ fn main() {
         "asm/sort.S",
         "asm/preparation.S",
         "asm/game_math.S",
+        "asm/multiply.S",
+        "asm/project.S",
+        "asm/emit.S",
+        "asm/cells.S",
+        "asm/publish.S",
+        "asm/missile.S",
+        "asm/shots.S",
+        "asm/flight.S",
     ] {
         println!("cargo:rerun-if-changed={source}");
     }
@@ -35,6 +44,14 @@ fn main() {
         "sort",
         "preparation",
         "game_math",
+        "multiply",
+        "project",
+        "emit",
+        "cells",
+        "publish",
+        "missile",
+        "shots",
+        "flight",
     ] {
         let object = output.join(format!("{source}.o"));
         let status = Command::new(&compiler)
@@ -44,6 +61,16 @@ fn main() {
             .status()
             .unwrap_or_else(|error| panic!("cannot run {compiler}: {error}"));
         assert!(status.success(), "assembly of {source}.S failed");
+        // The assembler wraps out-of-range conditional branches silently;
+        // refuse to link a source containing one (the audit re-assembles it
+        // with line information to compare every label with its branch).
+        let audit = Command::new("python3")
+            .arg(directory.join("../tools/branch-audit.py"))
+            .arg(directory.join(format!("asm/{source}.S")))
+            .env("MOS_CLANG", &compiler)
+            .status()
+            .unwrap_or_else(|error| panic!("cannot run the branch audit: {error}"));
+        assert!(audit.success(), "branch audit failed for {source}.S");
         println!("cargo:rustc-link-arg={}", object.display());
     }
 

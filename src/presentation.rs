@@ -20,9 +20,23 @@ const BOMB_SAMPLES: [[u8; 2]; 16] = [
     [2 | (3 << 3), 0],
     [4 << 3, 0],
 ];
+// A player hit: 240 ms of two-pixel kicks with an 80-ms red border flash.
+const HIT_SAMPLES: [[u8; 2]; 6] = [
+    [2 | (4 << 3), 2],
+    [2 << 3, 2],
+    [2 | (3 << 3), 0],
+    [4 << 3, 0],
+    [2 | (3 << 3), 0],
+    [2 << 3, 0],
+];
+const BOMB_TICKS: u8 = 32;
+const HIT_TICKS: u8 = 12;
+const HIT_PROFILE: u8 = 0x80;
 
-/// A 640-ms whole-display impulse, with a single 320-ms border flash.
-/// Only the fixed 50-Hz audio clock advances it; display sampling is read-only.
+/// A whole-display impulse: the 640-ms bomb shake with a single 320-ms warm
+/// border flash, or the 240-ms player-hit shake with a red flash. One byte
+/// holds the remaining ticks and, in bit 7, the hit profile. Only the fixed
+/// 50-Hz audio clock advances it; display sampling is read-only.
 #[derive(Clone, Copy, Default)]
 #[repr(transparent)]
 pub struct BombEffect {
@@ -36,7 +50,15 @@ impl BombEffect {
 
     #[inline(always)]
     pub fn trigger(&mut self) {
-        self.remaining = 32;
+        self.remaining = BOMB_TICKS;
+    }
+
+    /// A bomb shake already in progress outranks a hit; a hit restarts a hit.
+    #[inline(always)]
+    pub fn trigger_hit(&mut self) {
+        if self.remaining == 0 || self.remaining & HIT_PROFILE != 0 {
+            self.remaining = HIT_PROFILE | HIT_TICKS;
+        }
     }
 
     #[inline(always)]
@@ -46,7 +68,12 @@ impl BombEffect {
 
     #[inline(always)]
     pub fn tick(&mut self) {
-        self.remaining = self.remaining.saturating_sub(1);
+        if self.remaining & !HIT_PROFILE != 0 {
+            self.remaining -= 1;
+            if self.remaining & !HIT_PROFILE == 0 {
+                self.remaining = 0;
+            }
+        }
     }
 
     /// Return packed fine scroll followed by the C64 border palette index.
@@ -54,10 +81,13 @@ impl BombEffect {
     pub fn sample(&self) -> [u8; 2] {
         if self.remaining == 0 {
             [3 << 3, 0]
+        } else if self.remaining & HIT_PROFILE != 0 {
+            // The mask proves the bound to the native compiler, as below.
+            HIT_SAMPLES[(((HIT_TICKS - (self.remaining & !HIT_PROFILE)) >> 1) % 6) as usize]
         } else {
             // The mask also proves the bound to the native compiler, avoiding
             // an array bounds-check branch in the resident IRQ path.
-            BOMB_SAMPLES[(((32 - self.remaining) >> 1) & 15) as usize]
+            BOMB_SAMPLES[(((BOMB_TICKS - self.remaining) >> 1) & 15) as usize]
         }
     }
 }
@@ -142,5 +172,46 @@ mod tests {
         assert_eq!(effect.sample(), [24, 0]);
         effect.tick();
         assert_eq!(effect.sample(), [24, 0]);
+    }
+
+    #[test]
+    fn player_hit_is_a_short_two_pixel_shake_with_a_red_flash() {
+        let mut effect = BombEffect::new();
+        effect.trigger_hit();
+        for tick in 0..12 {
+            let [scroll, border] = effect.sample();
+            assert_eq!(border, if tick < 4 { 2 } else { 0 }, "tick {tick}");
+            let x = scroll & 7;
+            let y = (scroll >> 3) as i8 - 3;
+            assert_eq!(x & 1, 0, "preserve multicolor pixel alignment");
+            assert!(x <= 2 && y.abs() <= 1, "tick {tick}: x {x} y {y}");
+            assert_ne!(effect.sample(), [24, 0]);
+            effect.tick();
+        }
+        assert_eq!(effect.sample(), [24, 0]);
+        assert_eq!(effect.remaining, 0);
+        for _ in 0..40 {
+            effect.tick();
+            assert_eq!(effect.sample(), [24, 0]);
+        }
+    }
+
+    #[test]
+    fn a_bomb_shake_outranks_hits_and_a_hit_restarts_a_hit() {
+        let mut effect = BombEffect::new();
+        effect.trigger();
+        let bomb = effect.sample();
+        effect.trigger_hit();
+        assert_eq!(effect.sample(), bomb, "a hit must not cut the bomb shake short");
+        effect.reset();
+        effect.trigger_hit();
+        for _ in 0..8 {
+            effect.tick();
+        }
+        effect.trigger_hit();
+        assert_eq!(effect.remaining & 0x7f, 12);
+        assert_eq!(effect.sample()[1], 2, "the hit flash restarts");
+        effect.trigger();
+        assert_eq!(effect.sample(), bomb, "a bomb replaces a hit");
     }
 }

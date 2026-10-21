@@ -21,7 +21,7 @@ fn frame(
     let status = game.hud();
     let mut dust = SpaceDustFrame::EMPTY;
     let ambient = dust.prepare(status.section, status.mode, game.animation_ticks());
-    let mut output = vec![0; 10_000];
+    let mut output = vec![0; 10_001];
     for band in 0..25u8 {
         let mut pixels = [0; 1280];
         let mut bitmap = [0; 320];
@@ -33,6 +33,7 @@ fn frame(
             &pixels,
             &[0; 40],
             &[0; 40],
+            r.clear_color(),
             &mut bitmap,
             &mut screen,
             &mut color,
@@ -42,9 +43,12 @@ fn frame(
         output[8000 + n * 40..8000 + n * 40 + 40].copy_from_slice(&screen);
         output[9000 + n * 40..9000 + n * 40 + 40].copy_from_slice(&color);
     }
+    // Byte 10,000 is the VIC background ($D021): the frame's clear colour.
+    output[10_000] = r.clear_color();
     (output, r.triangle_count, r.dropped)
 }
 fn ppm(frame: &[u8]) -> Vec<u8> {
+    let background = frame.get(10_000).copied().unwrap_or(0) & 15;
     let mut out = b"P6\n640 480\n255\n".to_vec();
     for py in 0..480 {
         let y = py * 200 / 480;
@@ -54,7 +58,7 @@ fn ppm(frame: &[u8]) -> Vec<u8> {
             let byte = frame[cell * 8 + y % 8];
             let slot = (byte >> (6 - (x % 4) * 2)) & 3;
             let c = match slot {
-                0 => 0,
+                0 => background,
                 1 => frame[8000 + cell] >> 4,
                 2 => frame[8000 + cell] & 15,
                 _ => frame[9000 + cell] & 15,
@@ -107,7 +111,7 @@ fn snapshot(source: Snapshot, out: &Path) -> Result<(), Box<dyn std::error::Erro
                 game.sample_input(InputSample {
                     bits: 0,
                     pressed: 0,
-                    ms: tick * 20,
+                    ms: (tick * 20) as u16,
                 });
                 let segment = Segment::new(&banks[game.segment_index() as usize]).unwrap();
                 let bank = AssetBank::new(&models[game.segment_index() as usize]).unwrap();
@@ -217,11 +221,101 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             );
             Ok(())
         }
+        Some("kernel-fixtures") => kernel_fixtures(Path::new(
+            args.get(2)
+                .map(String::as_str)
+                .unwrap_or("target/kernel-fixtures"),
+        )),
         _ => {
-            println!("H.A.V.O.C. tools\n  bake [directory]\n  check game.reu\n  snapshot <title|0..17> [distance] [output-prefix]\n  snapshot attract <elapsed-ms> [output-prefix]\n  snapshot transition <0..16> <elapsed-ms:0..8000> [output-prefix]\n  snapshot victory <elapsed-ms> [output-prefix]\n  sizes");
+            println!("H.A.V.O.C. tools\n  bake [directory]\n  check game.reu\n  snapshot <title|0..17> [distance] [output-prefix]\n  snapshot attract <elapsed-ms> [output-prefix]\n  snapshot transition <0..16> <elapsed-ms:0..8000> [output-prefix]\n  snapshot victory <elapsed-ms> [output-prefix]\n  sizes\n  kernel-fixtures [directory] (requires --features music-kernels)");
             Ok(())
         }
     }
+}
+
+/// Record per-song kernel fixtures for `tools/test-music-kernel.py`: engine
+/// images before and after one extra kernel call at legitimately reached
+/// transport positions, plus the SID registers that call writes. The
+/// simulator replays the same call on the linked 6502 image and must match.
+#[cfg(feature = "music-kernels")]
+fn kernel_fixtures(out: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    use havoc::audio::{kernels::has_kernel, AudioEngine, MusicState, SidBus, VideoStandard};
+    use havoc::music::{self, BANK_HEADER_SIZE, PAGE_SIZE, SID_COUNT};
+    struct Recorder([u8; 128]);
+    impl Default for Recorder {
+        fn default() -> Self {
+            Self([0; 128])
+        }
+    }
+    impl SidBus for Recorder {
+        fn write(&mut self, sid: u8, reg: u8, value: u8) {
+            self.0[sid as usize * 32 + reg as usize] = value;
+        }
+    }
+    let hex = |bytes: &[u8]| bytes.iter().map(|b| format!("{b:02x}")).collect::<String>();
+    let bank = havoc::soundtrack::score_bank();
+    let mut cases = Vec::new();
+    for cue in 0..music::CUE_COUNT as u8 {
+        let state = MusicState::from_cue(cue).ok_or("cue")?;
+        if !has_kernel(state) {
+            continue;
+        }
+        let info = music::cue_info(&bank[..BANK_HEADER_SIZE], cue).map_err(|e| format!("{e:?}"))?;
+        let mut engine = AudioEngine::new(VideoStandard::Pal);
+        let mut bus = Recorder::default();
+        engine.reset(&mut bus);
+        engine.set_music(state);
+        engine.accept_kernel(state, true);
+        let mut next_page = [0u8; PAGE_SIZE];
+        let page_ticks = 16 * info.row_ticks as usize;
+        let ticks = (info.pages as usize * page_ticks).min(1500);
+        for tick in 0..ticks {
+            if tick % 10 == 0 {
+                if let Some(request) = engine.page_request() {
+                    let at = info.offset as usize + request.page as usize * PAGE_SIZE;
+                    next_page.copy_from_slice(&bank[at..at + PAGE_SIZE]);
+                    engine
+                        .publish_page(request, &next_page)
+                        .map_err(|e| format!("{e:?}"))?;
+                }
+            }
+            engine.tick(&mut bus, &next_page);
+            // Sample across row phases and bar boundaries, including row zero.
+            if tick % 53 == 7 || tick % page_ticks == 1 || tick % page_ticks == page_ticks - 1 {
+                let before = engine.image().to_vec();
+                let snapshot = engine.snapshot();
+                let mut probe = Recorder::default();
+                if engine.run_kernel_once(&mut probe) {
+                    let after = engine.image().to_vec();
+                    cases.push(format!(
+                        "{{\"cue\":{cue},\"tick\":{tick},\"before\":\"{}\",\"after\":\"{}\",\"sid\":\"{}\"}}",
+                        hex(&before),
+                        hex(&after),
+                        hex(&probe.0[..SID_COUNT * 32])
+                    ));
+                    engine.restore(&snapshot);
+                }
+            }
+        }
+    }
+    fs::create_dir_all(out)?;
+    let path = out.join(format!("kernel-fixtures-{}sid.json", SID_COUNT));
+    fs::write(
+        &path,
+        format!(
+            "{{\"sid_count\":{},\"engine_size\":{},\"cases\":[\n{}\n]}}\n",
+            SID_COUNT,
+            std::mem::size_of::<AudioEngine>(),
+            cases.join(",\n")
+        ),
+    )?;
+    println!("Wrote {} kernel fixtures to {}", cases.len(), path.display());
+    Ok(())
+}
+
+#[cfg(not(feature = "music-kernels"))]
+fn kernel_fixtures(_out: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    Err("kernel-fixtures needs `cargo run --features music-kernels`".into())
 }
 fn main() {
     if let Err(error) = run() {
@@ -256,7 +350,7 @@ mod tests {
     fn dma_boundaries() {
         assert_eq!(dma_chunk(0x7fff0, 0x8400, 1024), 16);
         assert_eq!(dma_chunk(0x80000, 0xfff0, 1024), 16);
-        assert_eq!(dma_chunk(0x1000000, 0x8400, 1024), 0);
+        assert_eq!(dma_chunk(0x100000, 0x8400, 1024), 0);
         assert_eq!(dma_chunk(0x10, 0x8400, 0), 0);
     }
 }

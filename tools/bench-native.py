@@ -151,7 +151,9 @@ def fixtures(include_victory=True, campaign=False, space=False, boss_health=None
                     patch[f"shots[{index}].{field}"] = value
             patch["hit_flash_ticks"] = 35
             patch["controls.cached_charge"] = 255
-            patch["controls.released_at"] = (1 << 32) - 2100
+            # Released 2.1 s before the 16-bit millisecond clock wraps to the
+            # fixture's zero: the charge must read as saturated across the wrap.
+            patch["controls.released_at"] = (1 << 16) - 2100
         if name == "full-pools":
             for array, pool_count, fields in (
                 ("actors", 12, {"kind": 3, "hp": 6, "pos.z": 100}),
@@ -244,96 +246,6 @@ def fixtures(include_victory=True, campaign=False, space=False, boss_health=None
     return result
 
 
-def cache_sequence(include_victory=True, campaign=False, space=False, boss_health=None):
-    """Entry/exit histories that can leave stale pixels in either VIC bank."""
-    count = 18 if space else 12 if campaign else 4
-    boss_health = boss_health or dict(boss_left=20, boss_right=20, boss_core=60)
-    all_fixtures = fixtures(include_victory, campaign, space, boss_health)
-    base = next(fixture for fixture in all_fixtures if fixture["name"] == "lowlands")
-
-    def variant(name, patch, **metadata):
-        return dict(base, name=name, patch=dict(base["patch"], **patch), **metadata)
-
-    occluder = variant("sky-occluder", {"actors[0].kind": 1, "actors[0].hp": 6,
-        "actors[0].origin_x": 0, "actors[0].origin_y": 340,
-        "actors[0].pos.x": 0, "actors[0].pos.y": 340, "actors[0].pos.z": 1100})
-    banner = variant("sector-banner", {"rail_ticks": 25})
-    boss = variant("boss-hud", {"boss_started": 1, "boss_z": 680,
-        **boss_health})
-    title = variant("title-transition", {"mode": 0})
-    sequence = [base]*3 + [occluder]*2 + [base]*3 + [banner]*2 + [base]*3 + [boss]*2 + [base]*3 + [title] + [base]*3
-    themes = {section: variant(STAGE_LABELS[section] if campaign else
-                               ("lowlands", "canyon", "base", "carrier")[section],
-                               {"rail_ticks": section*3750+625, "spawn_segment": section})
-              for section in range(count)}
-
-    def theme_frame(section, kind, stable=False):
-        theme = themes[section]
-        return variant(f"theme-{theme['name']}-{kind}",
-                       {"rail_ticks": theme["patch"]["rail_ticks"], "spawn_segment": section},
-                       section=section, theme_check=True, stable_check=stable)
-
-    # Four frames repaint both VIC banks and then demonstrate sustained reuse.
-    for section in (*range(count), 0):
-        sequence.extend(theme_frame(section, "stable", frame == 3) for frame in range(4))
-    # Switch every frame in both directions, including returning to the theme
-    # last present in the back bank. Neither bank may retain that old validity.
-    sequence.extend(theme_frame(section, "rapid") for section in
-                    (*range(1, count), 0, *range(count-1, 0, -1), 0))
-    sequence.extend(theme_frame(0, "recovery", frame == 2) for frame in range(3))
-    # Append so the original occluder/HUD/transition indices remain stable.
-    # Sweep both camera directions while terrain scrolls across row boundaries;
-    # finish with an identical state in both banks to prove reuse recovers.
-    heights = (-65, -48, -32, -16, 0, 16, 32, 48, 65,
-               48, 32, 16, 0, -16, -32, -48, -65)
-    for section in range(count):
-        rail = themes[section]["patch"]["rail_ticks"]
-        for frame, height in enumerate(heights):
-            sequence.append(variant(f"camera-{section}-{frame}",
-                {"rail_ticks": rail + frame*7, "spawn_segment": section,
-                 "player.y": height}, section=section, theme_check=True, camera_check=True))
-        for frame in range(3):
-            sequence.append(variant(f"camera-{section}-recovery-{frame}",
-                {"rail_ticks": rail + (len(heights)-1)*7, "spawn_segment": section,
-                 "player.y": heights[-1]}, section=section, theme_check=True,
-                camera_check=True, stable_check=frame == 2))
-    for section in range(count-1):
-        progress_ticks = (0, 100, 200, 300, 306, 399) if section >= 2 else (0, 100, 200, 300, 399)
-        for progress in progress_ticks:
-            sequence.append(variant(f"bridge-{section}-{progress}",
-                {"mode": 6, "rail_ticks": (section+1)*3750,
-                 "transition_ticks": progress, "spawn_segment": section},
-                section=section, theme_check=True, bridge_check=True))
-        for frame in range(3):
-            sequence.append(theme_frame(section+1, f"bridge-recovery-{frame}", frame == 2))
-    if include_victory:
-        for fixture in all_fixtures:
-            if fixture["name"].startswith("victory-"):
-                # Each cinematic stage must repaint both physical bitmap banks.
-                sequence.extend([dict(fixture, victory_check=True)] * 2)
-        sequence.extend(theme_frame(0, f"victory-recovery-{frame}", frame == 2)
-                        for frame in range(3))
-    if campaign:
-        for fixture in sequence:
-            fixture["patch"]["stage_id"] = fixture["section"]
-    return sequence
-
-
-def cloud_only_bands(bands, geometry):
-    """Reference cloud-only eligibility using the same fixed backdrop geometry."""
-    background = [triangle for triangle in geometry if triangle["reserved"] & 2]
-    horizons = [triangle for triangle in background if triangle["depth"] == 2350]
-    if len(background) != 14 or len(horizons) != 5:
-        raise RuntimeError("Cloud-only reference requires all 14 fixed backdrop triangles")
-    for triangle in horizons:
-        top = max(0, min(200, min(triangle["y"])))
-        bottom = max(0, min(200, max(triangle["y"])))
-        if top < bottom:
-            first, end = top // 8, (bottom + 7) // 8
-            bands &= ~(((1 << (end-first))-1) << first)
-    return bands
-
-
 def dma_events(events, phase_address):
     registers, transfers = {}, []
     phase = 0
@@ -366,6 +278,70 @@ def execution_cycles(text, address):
     return cycles
 
 
+def scanout_commit_profile(text, symbols, cycles_per_line):
+    """Pair every protected commit entry/exit; reject missing or overlong copies."""
+    names = ("publish_guard", "publish_commit", "publish_done")
+    if not any(name in symbols for name in names):
+        return None  # Earlier benchmark packages publish without these labels.
+    if not all(name in symbols for name in names):
+        raise RuntimeError("Scan-out commit trace labels are incomplete")
+    guard, begin, done = (symbols[name] for name in names)
+    if len({guard, begin, done}) != 3:
+        raise RuntimeError("Scan-out commit trace labels share an address")
+    durations, starts, protected_durations, protected_starts = [], [], [], []
+    pending_guard = pending = None
+    attempts = 0
+    previous = -1
+    pattern = r"(?:Trace|trace)\s+(?:on\s+)?exec\s+\$?([0-9a-fA-F]{4})[^\n]*\n([^\n]*)"
+    for match in re.finditer(pattern, text):
+        address = int(match[1], 16)
+        if address not in (guard, begin, done):
+            continue
+        tail = re.search(r"\s(\d+)\s*$", match[2])
+        if tail is None:
+            raise RuntimeError("Scan-out commit trace has no cycle timestamp")
+        cycle = int(tail[1])
+        if cycle < previous:
+            raise RuntimeError("Scan-out commit trace timestamps run backward")
+        previous = cycle
+        if address == guard:
+            if pending is not None:
+                raise RuntimeError("Scan-out commit was rechecked before the preceding copy ended")
+            # A rejected final sample returns to the interruptible wait. Its
+            # next attempt supersedes that guard, but may not discard a copy.
+            pending_guard = cycle
+            attempts += 1
+        elif address == begin:
+            if pending is not None:
+                raise RuntimeError("Scan-out commit began before the preceding copy ended")
+            if pending_guard is None:
+                raise RuntimeError("Scan-out commit began without a protected raster check")
+            pending = cycle
+        else:
+            if pending is None:
+                raise RuntimeError("Scan-out commit ended without a matching entry")
+            starts.append(pending)
+            durations.append(cycle - pending)
+            protected_starts.append(pending_guard)
+            protected_durations.append(cycle - pending_guard)
+            pending_guard = None
+            pending = None
+    if pending_guard is not None or pending is not None or len(durations) != 25:
+        raise RuntimeError(f"Scan-out commit trace must contain 25 complete copies, got {len(durations)}")
+    limit = 7 * cycles_per_line
+    if any(duration <= 0 for duration in durations) or any(duration >= limit for duration in protected_durations):
+        raise RuntimeError(f"Scan-out commit exceeded the seven-scanline bound ({limit} bus cycles): {protected_durations}")
+    return {"copies": len(durations), "start_bus_cycles": starts,
+            "duration_bus_cycles": durations, "max_bus_cycles": max(durations),
+            "max_scanlines": max(durations) / cycles_per_line,
+            "guard_attempts": attempts, "guard_retries": attempts - len(durations),
+            "protected_start_bus_cycles": protected_starts,
+            "protected_duration_bus_cycles": protected_durations,
+            "max_protected_bus_cycles": max(protected_durations),
+            "max_protected_scanlines": max(protected_durations) / cycles_per_line,
+            "limit_bus_cycles_exclusive": limit}
+
+
 def validate_pixels_transfers(transfers, symbols):
     """Prove runtime DMA skips the live edge/mask gap in split PIXELS images."""
     if "__phase_pixels_aux_size" not in symbols:
@@ -388,9 +364,43 @@ def native_bytes(mon, syms):
     bank = mon.integer(syms["FRONT_BANK"], 1)
     bitmap, screen = (0xe000, 0xc000) if bank == 3 else (0xa000, 0x8000)
     mon.command("bank ram")
-    result = mon.read(bitmap, 8000) + mon.read(screen, 1000) + mon.read(0x9100, 1000)
+    result = mon.read(bitmap, 8000) + mon.read(screen, 1000)
+    # Color RAM is written in place; its upper nibble is undefined. Byte
+    # 10,000 is the VIC background ($D021): what code 0 shows.
+    mon.command("bank io")
+    result += bytes(value & 15 for value in mon.read(0xd800, 1000))
+    result += bytes([mon.integer(0xd021, 1) & 15])
     mon.command("bank cpu")
     return result
+
+
+def decoded_pixels(native):
+    """The 32,000 visible pixel colours of a native capture (bitmap, screen,
+    color RAM and, when recorded, the background byte; captures from before
+    the background was recorded showed black there), independent of which
+    hardware slot each cell gives a colour."""
+    bitmap, screen, colors = native[:8000], native[8000:9000], native[9000:10000]
+    background = native[10000] & 15 if len(native) > 10000 else 0
+    pixels = bytearray(32000)
+    for cell in range(1000):
+        base, high, low, extra = cell * 8, screen[cell] >> 4, screen[cell] & 15, colors[cell] & 15
+        row0 = (cell // 40) * 8 * 160 + (cell % 40) * 4
+        for row in range(8):
+            byte = bitmap[base + row]
+            at = row0 + row * 160
+            for column in range(4):
+                code = (byte >> (6 - column * 2)) & 3
+                pixels[at + column] = background if code == 0 else high if code == 1 else low if code == 2 else extra
+    return bytes(pixels)
+
+
+def pixel_digest_of_capture(folder):
+    """Decoded-pixel hash of a case's captured frame (for baselines recorded
+    before the hash existed)."""
+    path = folder / "frame-native.bin"
+    if not path.exists():
+        return None
+    return digest(decoded_pixels(path.read_bytes()))
 
 
 def main():
@@ -407,17 +417,16 @@ def main():
     parser.add_argument("--ticks", default="0,10")
     parser.add_argument("--palettes", default="cold,retained")
     parser.add_argument("--real-time-ticks", type=int, default=400)
-    cache_selection = parser.add_mutually_exclusive_group()
-    cache_selection.add_argument("--skip-cache-checks", action="store_true", help="omit native cache transition A/B replay in quick timing runs")
-    cache_selection.add_argument("--cache-checks-only", action="store_true", help="run only cache transition A/B replay, skipping timing and real-time passes")
-    parser.add_argument("--cloud-only-cache", action="store_true",
-                        help="reference policy: exclude horizon bands from caching without changing geometry or target code; skips real-time pass")
+    # Accepted for older command lines: the game no longer caches sky bands.
+    parser.add_argument("--skip-cache-checks", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--compare", type=Path, help="matching baseline report.json")
+    parser.add_argument("--pixel-identity", action="store_true",
+                        help="compare decoded pixels instead of raw bitmap/attribute bytes (cell slot order may differ)")
     args = parser.parse_args()
     output, package = args.out_dir.resolve(), args.package_dir.resolve()
     output.mkdir(parents=True, exist_ok=True)
     package_image = (package/"havoc.reu").read_bytes()
-    package_format = vice.package_model_layout(package_image)
+    package_format = vice.package_model_layout(package_image, validate_size=True)
     sid_count = package_image[17]
     chosen = [fixture for fixture in fixtures(package_format["medal"], package_format["campaign"], package_format["space"])
               if args.fixtures == "all" or fixture["name"] in args.fixtures.split(",")]
@@ -427,8 +436,7 @@ def main():
         parser.error("invalid fixture, ticks, or palette selection")
     report = {"passed": False, "protocol": "havoc-fixed-frame-v1", "video": args.video,
               "scope": "Fixed semantic workload in calibrated VICE; not physical hardware",
-              "cache_policy": "cloud-only" if args.cloud_only_cache else "full-background",
-              "retained_palette_setup": "Two warmup frames of the identical fixture fill both VIC banks",
+              "retained_palette_setup": "One warmup frame of the identical fixture fills the single visible VIC bank and color RAM",
               "geometry_hash_policy": "Ordered coordinates, colors and depths; renderer-private sky/orientation/terrain flags (0x66) excluded. Raw geometry and full native pixel hashes are recorded separately.",
               "cases": [], "fixtures": chosen, "campaign": package_format["campaign"],
               "stage_count": package_format["count"], "sid_count": sid_count}
@@ -443,8 +451,6 @@ def main():
                       command=sys.argv, driver_checkout_revision=subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip(),
                       driver_checkout_status=subprocess.check_output(["git", "status", "--short"], cwd=ROOT, text=True))
         syms = vice.symbols(elf, args.llvm_nm)
-        if (args.cache_checks_only or args.cloud_only_cache) and "SKY_CACHE" not in syms:
-            raise RuntimeError("Selected cache validation requires a package containing SKY_CACHE")
         for name in ("BENCH_TICKS", "BENCH_RUNTIME", "benchmark_frame_begin", "benchmark_frame_ready", "geometry_complete"):
             if name not in syms:
                 raise RuntimeError(f"Package is not an instrumented benchmark build: missing {name}")
@@ -466,7 +472,7 @@ def main():
         for name in ("config", "cache"):
             (output / name).mkdir(exist_ok=True)
         command = [str(args.vice.resolve()), "-directory", str(args.roms.resolve()), "+logtofile", "+logcolorize", "-"+args.video,
-                   "-warp", "+sound", "-jamaction", "5", "-autostartprgmode", "1", "-reu", "-reusize", "16384",
+                   "-warp", "+sound", "-jamaction", "5", "-autostartprgmode", "1", "-reu", "-reusize", str(package_format["reu_size"] // 1024),
                    "-reuimage", str(reu), "+reuimagerw", "-sidextra", str(sid_count-1), "-sid2address", "0xd420",
                    "-joydev1", "0", "-joydev2", "0", "-controlport1device", "iosim", "-controlport2device", "iosim",
                    "-remotemonitor", "-remotemonitoraddress", f"127.0.0.1:{port}", "-initbreak", "0x080d",
@@ -514,9 +520,7 @@ def main():
         def word(address, value, size=2):
             write(address, int(value).to_bytes(size, "little"))
 
-        if args.cloud_only_cache and args.real_time_ticks and not args.cache_checks_only:
-            report["real_time_skipped"] = "Cloud-only reference applies at fixed-frame geometry stops; use the native policy for ordinary scheduling"
-        if args.real_time_ticks and not args.cache_checks_only and not args.cloud_only_cache:
+        if args.real_time_ticks:
             mon.command("jpdb 1 $0f")
             frames = []
             previous = vice.counters(mon, syms)
@@ -545,6 +549,10 @@ def main():
         if sid_count == 4:
             mon.command("trace store d440 d478 if @cpu:$01 == $35")
         mon.command(f"trace exec {audio_tick_address:04x}")
+        for name in ("publish_guard", "publish_commit", "publish_done"):
+            if name in syms:
+                # These addresses belong to the shared overlay window.
+                mon.command(f"trace exec {syms[name]:04x} if @cpu:${syms['PROF_PHASE']:04x} == $07")
         segment_image = package_image
         baseline = None
         if args.compare:
@@ -560,10 +568,20 @@ def main():
             if not cross_campaign and baseline.get("fixture_sha256") != report["fixture_sha256"]:
                 raise RuntimeError("Baseline fixture identity differs")
             report["comparison"] = {"cross_campaign": cross_campaign,
-                "required_equality": ["geometry_sha256", "native_sha256"] +
+                "required_equality": ["geometry_sha256", "native_pixels_sha256" if args.pixel_identity else "native_sha256"] +
                     ([] if cross_campaign else ["game_sha256"]),
+                "pixel_identity": args.pixel_identity,
                 "game_state_note": "Campaign stage identity fields differ; geometry and complete native pixels remain exact requirements" if cross_campaign else "Identical decoded state required"}
         baseline_cases = {(case["fixture"], case["ticks"], case["palette"]): case for case in baseline["cases"]} if baseline else {}
+        if baseline and args.pixel_identity:
+            # Baselines recorded before the decoded-pixel hash existed still
+            # hold their first sample's capture; hash that.
+            for (name, ticks, palette), case in baseline_cases.items():
+                if case["samples"] and "native_pixels_sha256" not in case["samples"][0]:
+                    recovered = pixel_digest_of_capture(args.compare.parent / f"{name}-{ticks}-{palette}" / "0")
+                    if recovered is None:
+                        raise RuntimeError(f"Baseline {name}/{ticks}/{palette} has neither a pixel hash nor a capture")
+                    case["samples"][0]["native_pixels_sha256"] = recovered
 
         def seed(fixture, ticks, cold, phase):
             mon.command("bank ram")
@@ -607,16 +625,20 @@ def main():
             write(runtime_address, runtime)
             for slot, section in enumerate(sections):
                 write(0x9500+slot*512, segment_image[0x2000+section*2048:0x2200+section*2048])
-            for name, size, value in (("CLOCK_MS", 4, 0), ("INPUT_HEAD", 1, 0), ("INPUT_TAIL", 1, 0), ("LAST_BITS", 1, fixture["input_bits"])):
+            for name, size, value in (("CLOCK_MS", 2, 0), ("INPUT_HEAD", 1, 0), ("INPUT_TAIL", 1, 0), ("LAST_BITS", 1, fixture["input_bits"])):
                 word(vice.resident_symbol(syms, name)[1], value, size)
             for name, size, value in (("AUDIO_TICKS", 2, 0), ("INPUT_OVERFLOWS", 2, 0), ("FRAME_SERIAL", 2, 32),
                                       ("TEST_INPUT", 1, fixture["input_bits"]), ("BENCH_TICKS", 1, ticks)):
                 word(syms[name], value, size)
             if cold:
-                for address in (0x8000, 0xc000, 0x9100):
-                    write(address, bytes(1000))
-                if "SKY_CACHE" in syms:
-                    write(syms["SKY_CACHE"], bytes(8))
+                write(0x8000, bytes(1000))
+                # "bank ram" addresses the RAM under I/O; color RAM needs the
+                # I/O bank. Its upper nibble reads back undefined.
+                mon.command("bank io")
+                mon.command("fill d800 dbe7 00")
+                if any(value & 15 for value in mon.read(0xd800, 1000)):
+                    raise RuntimeError("Color RAM clear failed")
+                mon.command("bank ram")
             mon.command("bank cpu")
             # Force a known first CIA deadline, then restore the ordinary latch.
             # Monitor reads have side effects disabled and consume no CPU time.
@@ -645,19 +667,17 @@ def main():
             return mon.registers()["bus_cycles"] + remaining + 1
 
         def read_geometry():
+            # The depth sort leaves the commands in emission order and writes
+            # the sorted order to __sort_order; report them in sorted order so
+            # the geometry hash is independent of that implementation detail.
             count_offset, _ = layouts.member("Renderer", "triangle_count")
             count = mon.integer(renderer_address+count_offset)
             triangles_offset, _ = layouts.member("Renderer", "triangles")
             triangle_size = layouts.size("Triangle")
-            return [layouts.decode("Triangle", mon.read(renderer_address+triangles_offset+n*triangle_size, triangle_size)) for n in range(count)]
-
-        def apply_cache_policy(geometry, sky_bands):
-            if args.cloud_only_cache and sky_bands:
-                sky_bands = cloud_only_bands(sky_bands, geometry)
-                # Monitor writes consume no emulated CPU cycles. Both policies
-                # run identical geometry/audio code; only cache eligibility differs.
-                word(syms["SKY_BANDS"], sky_bands, 4)
-            return sky_bands
+            order = list(mon.read(syms["__sort_order"], count)) if count else []
+            if sorted(order) != list(range(count)):
+                raise RuntimeError(f"Sorted order at __sort_order is not a permutation of {count} commands")
+            return [layouts.decode("Triangle", mon.read(renderer_address+triangles_offset+n*triangle_size, triangle_size)) for n in order]
 
         def measured_frame(folder, capture_image):
             path = folder / "monitor.log"
@@ -665,16 +685,12 @@ def main():
             mon.command(f'logname "{path.as_posix()}"')
             mon.command("log on")
             start = vice.counters(mon, syms)
-            cache_before = mon.read(syms["SKY_CACHE"], 8).hex() if "SKY_CACHE" in syms else None
             first_deadline = finish_timer_seed()
             mon.run_until(syms["geometry_complete"], failures)
             mon.command("bank ram")
             clear_offset, _ = layouts.member("Renderer", "clear_color")
             clear_color = mon.integer(renderer_address+clear_offset, 1)
             geometry = read_geometry()
-            sky_bands = mon.integer(syms["SKY_BANDS"], 4) if "SKY_BANDS" in syms else None
-            sky_bands = apply_cache_policy(geometry, sky_bands)
-            cache_prepared = mon.read(syms["SKY_CACHE"], 8) if "SKY_CACHE" in syms else None
             mon.command("bank cpu")
             mon.run_until(syms["frame_complete"], failures)
             end = vice.counters(mon, syms)
@@ -690,21 +706,12 @@ def main():
                           "max_bytes": max((item["bytes"] for item in transfers), default=0), "transfers": transfers,
                           "bytes_by_phase_marker": {str(phase): sum(item["bytes"] for item in transfers if item["phase_marker"] == phase)
                                                     for phase in sorted({item["phase_marker"] for item in transfers})}}
-            end["audio_service_cycles"] = execution_cycles(path.read_text(errors="replace"), audio_tick_address)
+            trace = path.read_text(errors="replace")
+            end["audio_service_cycles"] = execution_cycles(trace, audio_tick_address)
+            end["scanout_commits"] = scanout_commit_profile(trace, syms, 63 if args.video == "pal" else 65)
             end["sid"] = vice.sid_summary(path, events, sid_count)
             if any(not end["sid"][chip]["gate_on"] for chip in ("left_d400", "right_d420")):
                 raise RuntimeError("Measured frame did not service live music on both SID chips")
-            if cache_before is not None:
-                cache_after = mon.read(syms["SKY_CACHE"], 8)
-                front = end["front_bank"]
-                end["sky_cache"] = {"before_hex": cache_before, "after_hex": cache_after.hex(),
-                                    "prepared_hex": cache_prepared.hex(),
-                                    "geometry_bands": sky_bands,
-                                    "eligible_bands": int.from_bytes(cache_after[(front-2)*4:(front-1)*4], "little"),
-                                    # Count actual skipped paint/pack operations;
-                                    # pre-geometry masks can be invalidated by a
-                                    # theme switch and do not prove reuse.
-                                    "reused_bands": 25 - sum(event["address"] == syms["PROF_DETAIL"] and event["value"] == 2 for event in events)}
             mon.command("bank ram")
             state = vice.logical_game_state(layouts.decode("Game", mon.read(game_address, layouts.size("Game"))))
             end["simulation_ticks"] = state["ticks"]
@@ -724,7 +731,9 @@ def main():
                        static_background_sha256=semantic_hash([triangle for triangle in geometry if triangle["reserved"] & 2]),
                        static_background_triangles=sum(bool(triangle["reserved"] & 2) for triangle in geometry),
                        game_sha256=semantic_hash(state), native_sha256=digest(native),
-                       native_screen_sha256=digest(native[8000:9000]), native_color_sha256=digest(native[9000:]),
+                       native_pixels_sha256=digest(decoded_pixels(native)),
+                       native_screen_sha256=digest(native[8000:9000]), native_color_sha256=digest(native[9000:10000]),
+                       native_background=native[10000],
                        clear_color=clear_color)
             if capture_image:
                 end["capture"] = vice.capture(mon, syms, folder, "frame")
@@ -748,7 +757,7 @@ def main():
                 raise RuntimeError("Audio counter does not match traced services")
             return end
 
-        for fixture in ([] if args.cache_checks_only else chosen):
+        for fixture in chosen:
             for ticks in ticks_values:
                 for palette in palettes:
                     case = {"fixture": fixture["name"], "ticks": ticks, "palette": palette, "samples": []}
@@ -758,18 +767,12 @@ def main():
                         folder = output / f"{fixture['name']}-{ticks}-{palette}" / str(sample_index)
                         folder.mkdir(parents=True, exist_ok=True)
                         if palette == "retained":
-                            # Each VIC bank keeps its own palette. Render the
-                            # same post-simulation state into both banks first.
-                            for warmup in range(2):
-                                seed(fixture, ticks, warmup == 0, phase)
-                                finish_timer_seed()
-                                if args.cloud_only_cache:
-                                    mon.run_until(syms["geometry_complete"], failures)
-                                    mon.command("bank ram")
-                                    apply_cache_policy(read_geometry(), mon.integer(syms["SKY_BANDS"], 4))
-                                    mon.command("bank cpu")
-                                mon.run_until(syms["frame_complete"], failures)
-                                mon.run_until(syms["benchmark_frame_ready"], failures)
+                            # Render the same post-simulation state once so the
+                            # visible screen and color RAM hold its palette.
+                            seed(fixture, ticks, True, phase)
+                            finish_timer_seed()
+                            mon.run_until(syms["frame_complete"], failures)
+                            mon.run_until(syms["benchmark_frame_ready"], failures)
                         seeded = seed(fixture, ticks, palette == "cold", phase)
                         sample = measured_frame(folder, sample_index == 0)
                         if fixture["patch"]["mode"] in (1, 3, 6):
@@ -799,101 +802,6 @@ def main():
                             report.setdefault("comparison_failures", []).extend(comparison_failures)
                     print(f"BENCH {args.video} {fixture['name']} ticks={ticks} palette={palette}: {case['median_cycles']/bus_hz*1000:.3f}ms DMA={case['samples'][0]['dma']['bytes']}B", flush=True)
                     (output/"report.json").write_text(json.dumps(report, indent=2)+"\n")
-        if "SKY_CACHE" in syms and not args.skip_cache_checks:
-            cache_report = {"passed": False, "sequence": cache_sequence(package_format["medal"], package_format["campaign"], package_format["space"], boss_health), "runs": {}}
-            report["cache_checks"] = cache_report
-            for forced in (False, True):
-                name = "forced-misses" if forced else "normal-cache"
-                samples = []
-                cache_report["runs"][name] = samples
-                for index, fixture in enumerate(cache_report["sequence"]):
-                    folder = output / "cache-checks" / name / str(index)
-                    folder.mkdir(parents=True, exist_ok=True)
-                    if index == 0:
-                        word(syms["FRONT_BANK"], 3, 1)
-                    seed(fixture, 0, index == 0, 0)
-                    if forced:
-                        write(syms["SKY_CACHE"], bytes(8))
-                    sample = measured_frame(folder, False)
-                    samples.append(sample)
-                    mon.run_until(syms["benchmark_frame_ready"], failures)
-            normal, forced = [cache_report["runs"][name] for name in ("normal-cache", "forced-misses")]
-            theme_age = 0
-            camera_backgrounds, camera_geometry = {}, {}
-            for index, (cached, uncached) in enumerate(zip(normal, forced)):
-                fixture = cache_report["sequence"][index]
-                switched = index > 0 and fixture["section"] != cache_report["sequence"][index-1]["section"]
-                theme_age = 0 if switched else theme_age + 1
-                for key in ("geometry_sha256", "game_sha256", "native_sha256", "native_screen_sha256", "native_color_sha256", "clear_color"):
-                    if cached[key] != uncached[key]:
-                        raise RuntimeError(f"Cache transition {index} changed {key}")
-                if uncached["sky_cache"]["reused_bands"] != 0:
-                    raise RuntimeError("Forced cache miss unexpectedly reused a band")
-                if fixture.get("victory_check"):
-                    cache = cached["sky_cache"]
-                    if cache["eligible_bands"] or cache["reused_bands"] or cache["prepared_hex"] != bytes(8).hex():
-                        raise RuntimeError(f"Victory frame {index} retained cached sky or skipped a screen band")
-                    if fixture["patch"]["menu_ticks"] >= 100 and cached["clear_color"] != 0:
-                        raise RuntimeError(f"Victory frame {index} retained the outgoing sky after blackout")
-                if fixture.get("theme_check"):
-                    cache = cached["sky_cache"]
-                    info = stage_metadata(package_image, fixture["section"]) if package_format["campaign"] else None
-                    expected_sky = SKY_COLORS[info["theme"] if info else fixture["section"]]
-                    if fixture.get("bridge_check"):
-                        quarter = fixture["patch"]["transition_ticks"] // 100
-                        if info:
-                            next_sky = SKY_COLORS[info["next_theme"]]
-                            if info["theme"] >= 10:
-                                expected_sky = 0
-                            elif info["next_theme"] >= 10:
-                                elapsed = fixture["patch"]["transition_ticks"]
-                                expected_sky = expected_sky if elapsed < 80 else 6 if elapsed < 180 else 0
-                            elif expected_sky != next_sky:
-                                midpoint_sky = next_sky if info["next_theme"] == 4 else 12
-                                expected_sky = (expected_sky, 14, midpoint_sky, next_sky)[quarter]
-                        else:
-                            expected_sky = ((6, 14, 10, 8), (8, 9, 12, 11), (11, 6, 14, 4))[fixture["section"]][quarter]
-                        if cache["eligible_bands"] or cache["reused_bands"] or cache["prepared_hex"] != bytes(8).hex():
-                            raise RuntimeError(f"Scenic flight {index} retained static sky cache data")
-                    if cached["clear_color"] != expected_sky:
-                        raise RuntimeError(f"Theme transition {index} selected the wrong sky color")
-                    if switched and cache["prepared_hex"] != bytes(8).hex():
-                        raise RuntimeError(f"Theme transition {index} did not invalidate both VIC banks")
-                    if theme_age < 2 and cache["reused_bands"]:
-                        raise RuntimeError(f"Theme transition {index} reused sky before both VIC banks repainted")
-                    if not cache["eligible_bands"] and cache["reused_bands"]:
-                        raise RuntimeError(f"Theme transition {index} reused an ineligible sky band")
-                    if fixture.get("stable_check") and cache["eligible_bands"] and cache["reused_bands"] <= 0:
-                        raise RuntimeError(f"Stable theme {fixture['section']} never reused its eligible native sky")
-                if fixture.get("camera_check"):
-                    section = fixture["section"]
-                    expected_backdrop = 10 if package_format["space"] and section >= 12 else 14
-                    if cached["static_background_triangles"] != expected_backdrop:
-                        raise RuntimeError(f"Camera sweep {index} did not retain all {expected_backdrop} backdrop triangles")
-                    reference = camera_backgrounds.setdefault(section, cached["static_background_sha256"])
-                    if cached["static_background_sha256"] != reference:
-                        raise RuntimeError(f"Camera sweep {index} moved the static backdrop")
-                    camera_geometry.setdefault(section, set()).add(cached["geometry_sha256"])
-            if any(len(camera_geometry.get(section, ())) < 2 for section in range(package_format["count"])):
-                raise RuntimeError("Camera sweeps did not move foreground geometry in every stage")
-            if normal[2]["sky_cache"]["reused_bands"] <= 0:
-                raise RuntimeError("Stable native sky never exercised cache reuse")
-            stable = normal[2]["sky_cache"]["eligible_bands"]
-            if stable & ~normal[3]["sky_cache"]["eligible_bands"] == 0:
-                raise RuntimeError("Native occluder fixture did not invalidate a cached sky band")
-            if not stable & 0x78 or normal[8]["sky_cache"]["eligible_bands"] & 0x78:
-                raise RuntimeError("Sector banner cache exclusion was not exercised")
-            if not stable & 0x6 or normal[13]["sky_cache"]["eligible_bands"] & 0x6:
-                raise RuntimeError("Boss HUD cache exclusion was not exercised")
-            if normal[18]["sky_cache"]["eligible_bands"] or normal[19]["sky_cache"]["reused_bands"]:
-                raise RuntimeError("Title-to-playing transition reused stale sky")
-            cache_report["passed"] = True
-            print(f"CACHE {args.video}: {len(normal)} transition frames match forced misses exactly", flush=True)
-        report["package_unchanged"] = all(digest(path.read_bytes()) == hashes[extension] for extension, path in (("prg", prg), ("reu", reu), ("elf", elf)))
-        if not report["package_unchanged"]:
-            raise RuntimeError("Input package changed during benchmarking")
-        if report.get("comparison_failures"):
-            raise RuntimeError("; ".join(report["comparison_failures"]))
         report["passed"] = True
     except (OSError, RuntimeError, ValueError, subprocess.CalledProcessError) as error:
         report["error"] = str(error)

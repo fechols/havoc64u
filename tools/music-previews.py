@@ -23,7 +23,6 @@ import wave
 
 
 ROOT = Path(__file__).resolve().parents[1]
-SCORE_OFFSET = 0x200000
 CUES = {
     7: ("crystal-current", 1, False),
     8: ("ashes-and-steel", 4, False),
@@ -93,7 +92,9 @@ def main():
     package = args.package_dir.resolve()
     elf, reu, prg = (package / f"havoc.{suffix}" for suffix in ("elf", "reu", "prg"))
     data = reu.read_bytes()
-    header = data[SCORE_OFFSET:SCORE_OFFSET + 256]
+    package_format = smoke.package_model_layout(data, validate_size=True)
+    score_offset = package_format["music_offset"]
+    header = data[score_offset:score_offset + 256]
     if header[:4] != b"SMU3" or header[6] != 21 or header[4] not in (2, 4):
         raise RuntimeError("Expected the twenty-one-cue campaign SMU3 bank")
     sid_count = header[4]
@@ -126,7 +127,7 @@ def main():
     command = [str(args.vice.resolve()), "-directory", str(args.roms.resolve()), "+logtofile", "+logcolorize",
                "-" + args.video, "-warp", "-sound", "-sounddev", "alsa", "-soundarg", "null",
                "-soundoutput", "2", "-soundrate", "44100", "-soundwarpmode", "1",
-               "-jamaction", "5", "-autostartprgmode", "1", "-reu", "-reusize", "16384",
+               "-jamaction", "5", "-autostartprgmode", "1", "-reu", "-reusize", str(package_format["reu_size"] // 1024),
                "-reuimage", str(reu), "+reuimagerw", "-sidextra", str(sid_count - 1), "-sid2address", "0xd420",
                "-joydev1", "0", "-joydev2", "0", "-controlport1device", "iosim", "-controlport2device", "iosim",
                "-remotemonitor", "-remotemonitoraddress", f"127.0.0.1:{port}",
@@ -227,10 +228,17 @@ def main():
                 mon.command("warp on")
                 if seen != set(range(pages)):
                     raise RuntimeError(f"{name} skipped score pages: {sorted(seen)}")
+                # Boot fills the IRQ software stack with $A5; the lowest touched
+                # byte after a complete loop is its high-water mark so far.
+                stack_bottom, stack_top = syms["__irq_stack_bottom"], syms["__irq_stack"]
+                stack = mon.read(stack_bottom, stack_top - stack_bottom)
+                untouched = next((index for index, value in enumerate(stack) if value != 0xa5), len(stack))
+                irq_stack_used = len(stack) - untouched
                 result = {"cue": cue, "name": name, "path": str(path), "pages_seen": sorted(seen),
-                          "fixture": fixture, **wav_metrics(path, loop_ticks / 50)}
+                          "fixture": fixture, "irq_stack_used": irq_stack_used,
+                          "irq_stack_size": len(stack), **wav_metrics(path, loop_ticks / 50)}
                 report["cues"].append(result)
-                print(f'RECORDED {name}: {result["duration_seconds"]:.2f}s, {sid_count} SIDs, {pages} pages', flush=True)
+                print(f'RECORDED {name}: {result["duration_seconds"]:.2f}s, {sid_count} SIDs, {pages} pages, IRQ stack high-water {irq_stack_used}/{len(stack)} bytes', flush=True)
             report["passed"] = True
     finally:
         if mon is not None:

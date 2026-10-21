@@ -6,23 +6,38 @@
 //! copies a ready page into the active page at a phrase boundary; it never reads
 //! REU. Reset lives in BOOT and page validation lives in the AUDIO overlay.
 //! SID 0/1 voice three remain exclusively reserved for the existing effects.
+//!
+//! With the `music-kernels` feature, each cue may bring its own per-tick
+//! modulation kernel: on the target it is REU code the foreground copies into
+//! a fixed resident slot at a cue change; on the host the same Rust runs
+//! directly. Kernels only colour registers after the transport has written
+//! the row, and derive all state from the transport position plus `scratch`,
+//! which clears whenever page zero is consumed so every loop sounds the same.
 
 pub use crate::music::ScoreError;
 use crate::music::{
     validate_page, EVENT_OFFSET, INSTRUMENT_OFFSET, MUSIC_VOICES, PAGE_ROWS, PAGE_SIZE, SID_COUNT,
 };
 
+#[cfg(feature = "music-kernels")]
+pub mod kernels;
+
 #[cfg(not(feature = "four-sid"))]
 pub const SID_BASES: [u16; SID_COUNT] = [0xd400, 0xd420];
 #[cfg(feature = "four-sid")]
 pub const SID_BASES: [u16; SID_COUNT] = [0xd400, 0xd420, 0xd440, 0xd460];
 const QUEUE_CAPACITY: usize = 4;
+/// Kernel-owned state bytes; cleared at every loop start.
+pub const SCRATCH_SIZE: usize = 16;
+const NO_KERNEL: u8 = 0xff;
+const DEFAULT_FILTER_CUTOFF: u8 = 0x80;
 
 pub trait SidBus {
     fn write(&mut self, sid: u8, reg: u8, value: u8);
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
 pub enum VideoStandard {
     Pal,
     Ntsc,
@@ -69,6 +84,7 @@ impl MusicState {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
 pub enum Effect {
     Fire,
     EnemyFire,
@@ -109,13 +125,16 @@ impl Effect {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(C)]
 pub struct AudioEvent {
     pub effect: Effect,
     /// Below -32: left; above 32: right; otherwise both reserved effects voices.
     pub pan: i8,
 }
 
+// Packed so the host image of the engine matches the byte-aligned MOS layout.
 #[derive(Clone, Copy)]
+#[repr(C, packed)]
 struct FxVoice {
     frequency: u16,
     effect: Effect,
@@ -143,15 +162,24 @@ pub struct PageRequest {
 
 /// The active page and audio state fit the fixed 432-byte target allocation.
 /// The external page is separately owned by the foreground loader.
+/// `repr(C)` with the only two-byte field first keeps the declared order and
+/// a padding-free layout on both the host and the byte-aligned MOS target, so
+/// a host engine image is a valid simulator fixture for kernel tests.
+#[repr(C)]
+#[cfg_attr(feature = "host-tools", derive(Clone))]
 pub struct AudioEngine {
+    underruns: u16,
     page: [u8; PAGE_SIZE],
-    registers: [[u8; 25]; SID_COUNT],
+    // 32-byte rows: the shadow offset equals the hardware register offset, so
+    // every inlined accessor shares one shift instead of a multiply by 25.
+    registers: [[u8; 32]; SID_COUNT],
     effects: [FxVoice; 2],
     events: [AudioEvent; QUEUE_CAPACITY],
+    scratch: [u8; SCRATCH_SIZE],
     standard: VideoStandard,
     music: MusicState,
     playing: MusicState,
-    underruns: u16,
+    kernel: u8,
     row: u8,
     row_ticks: u8,
     event_count: u8,
@@ -162,17 +190,34 @@ pub struct AudioEngine {
     waiting: bool,
 }
 
+// image() exposes every byte, so reject any layout with padding at compile
+// time. After the counter and arrays come four identity bytes, three
+// transport bytes and five booleans; the nested records are padding-free.
+const _: () = assert!(
+    core::mem::size_of::<AudioEngine>()
+        == 2 + PAGE_SIZE + 32 * SID_COUNT + 10 + 8 + SCRATCH_SIZE + 4 + 3 + 5
+);
+
+/// A valid host-side engine state captured by [`AudioEngine::snapshot`].
+/// The external score page and SID bus state remain owned by the caller.
+#[cfg(feature = "host-tools")]
+pub struct AudioSnapshot {
+    engine: AudioEngine,
+}
+
 impl AudioEngine {
     pub const fn new(standard: VideoStandard) -> Self {
         Self {
+            underruns: 0,
             page: [0; PAGE_SIZE],
-            registers: [[0; 25]; SID_COUNT],
+            registers: [[0; 32]; SID_COUNT],
             effects: [EMPTY_FX; 2],
             events: [EMPTY_EVENT; QUEUE_CAPACITY],
+            scratch: [0; SCRATCH_SIZE],
             standard,
             music: MusicState::Title,
             playing: MusicState::Title,
-            underruns: 0,
+            kernel: NO_KERNEL,
             row: 0,
             row_ticks: 0,
             event_count: 0,
@@ -223,6 +268,71 @@ impl AudioEngine {
                 self.page[6]
             },
         })
+    }
+
+    /// The cue whose modulation kernel the foreground should load next, if the
+    /// slot does not already hold it (or its recorded absence). Snapshot under
+    /// an IRQ mask.
+    pub fn kernel_request(&self) -> Option<MusicState> {
+        (self.enabled && self.kernel & 0x7f != self.music as u8).then_some(self.music)
+    }
+
+    /// Call under an IRQ mask before overwriting the resident kernel slot; the
+    /// interrupt stops calling the slot until `accept_kernel`.
+    pub fn invalidate_kernel(&mut self) {
+        self.kernel = NO_KERNEL;
+    }
+
+    /// Call under an IRQ mask once the slot holds the verified kernel for
+    /// `cue`, or record that `cue` has none (bit seven marks the absence, so
+    /// the slot never runs for it while the request stays satisfied).
+    pub fn accept_kernel(&mut self, cue: MusicState, present: bool) {
+        self.kernel = cue as u8 | if present { 0 } else { 0x80 };
+    }
+
+    pub const fn kernel_runs(&self) -> bool {
+        // A written row is required: the cue-change gate-low tick has none,
+        // and a nonzero row implies a loaded page.
+        self.row != 0 && self.kernel == self.playing as u8
+    }
+
+    /// The engine's exact byte image: with the padding-free `repr(C)` layout
+    /// this is also the MOS image, which the simulator kernel test loads.
+    #[cfg(feature = "host-tools")]
+    pub fn image(&self) -> &[u8] {
+        // SAFETY: the struct is plain old data with no padding between fields.
+        unsafe {
+            core::slice::from_raw_parts(
+                (self as *const Self).cast::<u8>(),
+                core::mem::size_of::<Self>(),
+            )
+        }
+    }
+
+    /// Capture a typed engine state without exposing a raw-byte constructor.
+    #[cfg(feature = "host-tools")]
+    pub fn snapshot(&self) -> AudioSnapshot {
+        AudioSnapshot {
+            engine: self.clone(),
+        }
+    }
+
+    /// Restore a captured engine state. The caller must retain the matching
+    /// external score page and SID bus state; this does not write to the bus.
+    #[cfg(feature = "host-tools")]
+    pub fn restore(&mut self, snapshot: &AudioSnapshot) {
+        *self = snapshot.engine.clone();
+    }
+
+    /// Run the loaded kernel once more on the current state, exactly as the
+    /// tick would; host tooling records the result as a simulator fixture.
+    #[cfg(all(feature = "host-tools", feature = "music-kernels"))]
+    pub fn run_kernel_once<B: SidBus>(&mut self, bus: &mut B) -> bool {
+        if !self.kernel_runs() {
+            return false;
+        }
+        kernels::run(self, bus);
+        true
     }
 
     /// Validate and publish the external page. The caller must mask the audio
@@ -332,6 +442,8 @@ impl AudioEngine {
         self.ready = false;
         self.waiting = false;
         self.enabled = true;
+        self.kernel = NO_KERNEL;
+        self.scratch = [0; SCRATCH_SIZE];
         self.initialize(bus);
     }
 
@@ -355,11 +467,25 @@ impl AudioEngine {
             return;
         }
         self.tick_music(bus, next_page);
+        self.tick_kernel(bus);
         self.tick_effects(bus);
         for index in 0..self.event_count as usize {
             self.start_effect(bus, self.events[index]);
         }
         self.event_count = 0;
+    }
+
+    /// Colour the row the transport has just written. The slot only runs for
+    /// the cue it was loaded for, so a cue change never modulates the old tail
+    /// with the new song's kernel.
+    #[inline(always)]
+    fn tick_kernel<B: SidBus>(&mut self, bus: &mut B) {
+        #[cfg(feature = "music-kernels")]
+        if self.kernel_runs() {
+            kernels::run(self, bus);
+        }
+        #[cfg(not(feature = "music-kernels"))]
+        let _ = bus;
     }
 
     #[cfg_attr(target_arch = "mos", link_section = ".phase.boot")]
@@ -373,7 +499,7 @@ impl AudioEngine {
                     *self.registers.get_unchecked_mut(sid).get_unchecked_mut(reg) = 0;
                 }
             }
-            self.write(bus, sid, 22, 0x80);
+            self.write(bus, sid, 22, DEFAULT_FILTER_CUTOFF);
             // Extra chips have three music voices; effects bypass filters on 0/1.
             self.write(bus, sid, 23, if sid < 2 { 0x23 } else { 0x27 });
             self.write(bus, sid, 24, 0x1c);
@@ -389,6 +515,19 @@ impl AudioEngine {
             *previous = value;
             bus.write(sid as u8, reg as u8, value);
         }
+    }
+
+    /// Write a little-endian register pair (frequency or pulse width).
+    #[inline(never)]
+    fn write_word<B: SidBus>(&mut self, bus: &mut B, sid: usize, reg: usize, value: u16) {
+        self.write(bus, sid, reg, value as u8);
+        self.write(bus, sid, reg + 1, (value >> 8) as u8);
+    }
+
+    /// The active page's event for a row and voice.
+    #[inline(never)]
+    fn event_at(&self, row: usize, voice: usize) -> u8 {
+        self.page_byte(EVENT_OFFSET + row * MUSIC_VOICES + voice)
     }
 
     #[inline(always)]
@@ -424,6 +563,11 @@ impl AudioEngine {
         self.waiting = false;
         self.row = 0;
         self.row_ticks = 0;
+        #[cfg(feature = "music-kernels")]
+        if self.page[5] == 0 {
+            // Kernel state restarts with the loop, so each traversal is identical.
+            self.scratch = [0; SCRATCH_SIZE];
+        }
     }
 
     #[inline(never)]
@@ -431,6 +575,14 @@ impl AudioEngine {
         if self.ready && (!self.loaded || self.playing != self.music) {
             self.release_music(bus);
             self.consume_page(next_page);
+            #[cfg(feature = "music-kernels")]
+            if self.playing == MusicState::Defeat {
+                // Lost Wing has no kernel, so its baseline must not inherit
+                // the preceding cue's modulation. Wait until it is active.
+                for sid in 0..SID_COUNT {
+                    self.write(bus, sid, 22, DEFAULT_FILTER_CUTOFF);
+                }
+            }
             return; // A complete gate-low tick before a new cue begins.
         }
         if !self.loaded {
@@ -451,7 +603,7 @@ impl AudioEngine {
                     let event = if self.row as usize == PAGE_ROWS {
                         next_page[EVENT_OFFSET + voice]
                     } else {
-                        self.page_byte(EVENT_OFFSET + self.row as usize * MUSIC_VOICES + voice)
+                        self.event_at(self.row as usize, voice)
                     };
                     if event != 1 && event & 0x80 == 0 {
                         let (sid, base) = music_voice(voice);
@@ -471,7 +623,7 @@ impl AudioEngine {
         }
         for voice in 0..MUSIC_VOICES {
             let (sid, base) = music_voice(voice);
-            let event = self.page_byte(EVENT_OFFSET + self.row as usize * MUSIC_VOICES + voice);
+            let event = self.event_at(self.row as usize, voice);
             if event == 1 {
                 continue;
             }
@@ -481,8 +633,7 @@ impl AudioEngine {
             }
             let frequency = note_frequency(self.standard, event & 0x7f);
             let instrument = INSTRUMENT_OFFSET + voice * 5;
-            self.write(bus, sid, base, frequency as u8);
-            self.write(bus, sid, base + 1, (frequency >> 8) as u8);
+            self.write_word(bus, sid, base, frequency);
             self.write(bus, sid, base + 2, self.page_byte(instrument + 1));
             self.write(bus, sid, base + 3, self.page_byte(instrument + 2));
             self.write(bus, sid, base + 5, self.page_byte(instrument + 3));
@@ -527,8 +678,7 @@ impl AudioEngine {
                         note_frequency(self.standard, 60 + curve * 3)
                     }
                 };
-                self.write(bus, sid, 14, fx.frequency as u8);
-                self.write(bus, sid, 15, (fx.frequency >> 8) as u8);
+                self.write_word(bus, sid, 14, fx.frequency);
                 if fx.effect == Effect::Fire {
                     // Thicken the pulse from 12.5% to 31.25% to 50% duty.
                     // Set pitch/width before leaving noise, keeping the gate
@@ -578,8 +728,7 @@ impl AudioEngine {
                 continue;
             }
             self.write(bus, sid, 18, waveform);
-            self.write(bus, sid, 14, frequency as u8);
-            self.write(bus, sid, 15, (frequency >> 8) as u8);
+            self.write_word(bus, sid, 14, frequency);
             self.write(bus, sid, 16, 0);
             self.write(bus, sid, 17, 8);
             self.write(bus, sid, 19, attack_decay);

@@ -13,8 +13,7 @@ use havoc::{
     hud,
     music::{self, BANK_HEADER_SIZE, PAGE_SIZE},
     presentation::BombEffect,
-    render::{self, Renderer},
-    sky_cache::SkyCache,
+    render::Renderer,
     space_dust::SpaceDustFrame,
     transition::TransitionAudio,
 };
@@ -41,8 +40,15 @@ static ERROR_MUSIC_PAGE: [u8; 18] = *b"INVALID MUSIC PAGE";
 static ERROR_MUSIC_DIRECTORY: [u8; 23] = *b"INVALID MUSIC DIRECTORY";
 #[link_section = ".phase.audio.startup.data"]
 static ERROR_MUSIC_CHECKSUM: [u8; 22] = *b"INVALID MUSIC CHECKSUM";
+#[cfg(feature = "music-kernels")]
+#[link_section = ".phase.audio.data"]
+static ERROR_MUSIC_KERNEL: [u8; 20] = *b"INVALID MUSIC KERNEL";
+
+#[cfg(feature = "music-kernels")]
+mod kernels;
 
 #[link_section = ".renderer"]
+#[no_mangle]
 static mut RENDERER: MaybeUninit<Renderer> = MaybeUninit::uninit();
 #[link_section = ".game_state"]
 static mut GAME: MaybeUninit<Game> = MaybeUninit::uninit();
@@ -76,8 +82,11 @@ pub static mut VIDEO_FRAMES: u16 = 0;
 pub static mut AUDIO_TICKS: u16 = 0;
 #[no_mangle]
 pub static mut BOMB_EFFECT: BombEffect = BombEffect::new();
+// The game publishes staged bands into VIC bank 2; tooling reads this constant to
+// locate the visible screen and bitmap. initialize_video stores it so the
+// linker keeps the symbol.
 #[no_mangle]
-pub static mut FRONT_BANK: u8 = 3;
+pub static mut FRONT_BANK: u8 = 2;
 #[no_mangle]
 pub static mut FRAME_TRIANGLES: u16 = 0;
 #[no_mangle]
@@ -106,10 +115,6 @@ pub static mut TEST_INPUT: u8 = 0xff;
 pub static mut PROF_PHASE: u8 = 0;
 #[no_mangle]
 pub static mut PROF_DETAIL: u8 = 0;
-#[no_mangle]
-pub static mut SKY_CACHE: SkyCache = SkyCache::new();
-#[no_mangle]
-pub static mut SKY_BANDS: u32 = 0;
 // Host-monitored benchmark controls are absent from production builds.
 #[cfg(feature = "benchmarks")]
 #[no_mangle]
@@ -117,9 +122,23 @@ pub static mut BENCH_TICKS: u8 = 255;
 #[cfg(feature = "benchmarks")]
 #[no_mangle]
 pub static mut BENCH_RUNTIME: u16 = 0;
-static mut CLOCK_MS: u32 = 0;
+// Sixteen-bit milliseconds (wrapping every 65.5 s): the simulation keeps every
+// remembered instant within two seconds of the present, and every frame
+// samples the controls at least once, also while paused.
+static mut CLOCK_MS: u16 = 0;
 static mut AUDIO_PERIOD: u16 = 19705;
 static mut CLOCK_KHZ: u16 = 985;
+// Frame-rate overlay toggled by the space bar. Each window covers at least one
+// second of 50 Hz audio ticks on either video standard; the readout is in
+// tenths of frames per second.
+static mut FPS_SHOWN: bool = false;
+/// Keys seen down on the previous frame: bit 0 space, bit 1 F.
+static mut KEYS_HELD: u8 = 0;
+/// Set by the PIXELS key scan, consumed by SIM: simulation time stands still.
+static mut PAUSED: bool = false;
+static mut FPS_WINDOW_START: u16 = 0;
+static mut FPS_WINDOW_FRAMES: u8 = 0;
+static mut FPS_TENTHS: u16 = 0;
 static mut INPUTS: [InputSample; 64] = [InputSample {
     bits: 0,
     pressed: 0,
@@ -137,9 +156,9 @@ extern "C" {
     fn nmi_entry();
     fn disable_irq();
     fn enable_irq();
-    fn fast_copy_color();
     fn io_on();
     fn io_off();
+    fn publish_staged_band(band: u8);
     static __phase_boot_size: u8;
     static __phase_sim_aux_size: u8;
     static __phase_geometry_size: u8;
@@ -159,9 +178,14 @@ extern "C" {
     static __startup_checks_start: u8;
     static __startup_checks_end: u8;
     static __code_sizes: [u16; 24];
+    static __code_reu_pages: [u8; 31];
     static __sim_load_sizes: [u16; 8];
+    #[cfg(feature = "music-kernels")]
+    static __music_kernel_start: u8;
+    #[cfg(feature = "music-kernels")]
+    static __music_kernel_size: u8;
 }
-struct HardwareSid;
+pub(crate) struct HardwareSid;
 impl SidBus for HardwareSid {
     fn write(&mut self, sid: u8, reg: u8, value: u8) {
         unsafe { poke(0xd400 + sid as u16 * 32 + reg as u16, value) }
@@ -223,7 +247,7 @@ pub unsafe extern "C" fn irq_body() {
             elapsed -= CLOCK_KHZ;
             fraction += 1;
         }
-        let ms = CLOCK_MS.wrapping_add(fraction as u32);
+        let ms = CLOCK_MS.wrapping_add(fraction as u16);
         let next = (INPUT_HEAD + 1) & 63;
         if next != INPUT_TAIL {
             INPUTS[INPUT_HEAD as usize] = InputSample {
@@ -311,20 +335,26 @@ unsafe fn dma(mut reu: u32, mut cpu: u16, mut count: u16) {
 }
 #[inline(never)]
 unsafe fn load_phase(page: u8, size: u16) {
+    // Callers select fixed logical phase IDs; the checked linker table maps
+    // them to 4 KiB-aligned slots without widening the hot loader interface.
+    let reu_page = *__code_reu_pages.get_unchecked(page as usize);
+    let reu_middle = reu_page << 4;
+    let reu_bank = reu_page >> 4;
     let mut offset = 0u16;
     while offset < size {
         let n = (size - offset).min(1024);
         // Every caller uses a linker size (or a checked prefix),
         // bounded by $4200; startup also validates each full package size.
-        // CPU $3000-$71FF never reaches I/O or wraps, and the selected 64 KiB
-        // REU page plus this offset cannot cross a 512 KiB boundary or image end.
+        // CPU $3000-$71FF never reaches I/O or wraps. The linker and package
+        // audit keep every slot inside one 64 KiB bank of the 1 MiB image,
+        // so adding its middle byte cannot carry into another REU bank.
         // Thus general dma() would emit exactly one identical transfer here.
         // Keep its register order and 1024-byte IRQ-latency limit, avoiding its
         // repeated 32-bit bounds arithmetic for these statically bounded loads.
         word(0xdf02, 0x3000 + offset);
         poke(0xdf04, offset as u8);
-        poke(0xdf05, (offset >> 8) as u8);
-        poke(0xdf06, page);
+        poke(0xdf05, reu_middle + (offset >> 8) as u8);
+        poke(0xdf06, reu_bank);
         word(0xdf07, n);
         poke(0xdf09, 0);
         poke(0xdf0a, 0);
@@ -337,7 +367,7 @@ unsafe fn load_sim(profile: u8) {
     // GEOMETRY, PIXELS and AUDIO reuse this workspace after SIM returns.
     // Reload on every SIM entry; the IRQ never references these helpers.
     dma(
-        0x170000,
+        (__code_reu_pages[23] as u32) << 12,
         0x8c00,
         core::ptr::addr_of!(__phase_sim_aux_size) as u16,
     );
@@ -498,7 +528,9 @@ unsafe fn copy_model_bank(level: u8) {
 unsafe fn segment_data(slot: u8) -> &'static [u8] {
     core::slice::from_raw_parts((0x9500 + slot as u16 * 512) as *const u8, 512)
 }
-#[link_section = ".phase.sim"]
+// Benchmark controls grow SIM; its checksum helper can use spare resident RAM.
+// Production keeps the same code placement and transfer sizes.
+#[cfg_attr(not(feature = "benchmarks"), link_section = ".phase.sim")]
 #[inline(never)]
 unsafe fn validate_segment(slot: u8, index: u8) {
     let b = segment_data(slot);
@@ -532,6 +564,7 @@ unsafe fn detect_standard() -> VideoStandard {
 #[link_section = ".phase.boot"]
 #[inline(never)]
 unsafe fn initialize_video() {
+    // Display stays disabled until the first complete frame has been drawn.
     poke(0xd011, 0x2b);
     poke(0xd016, 0x18);
     poke(0xd018, 0x08);
@@ -539,22 +572,21 @@ unsafe fn initialize_video() {
     poke(0xd020, 0);
     poke(0xd021, 0);
     poke(0xdd02, peek(0xdd02) | 3);
-    poke(0xdd00, peek(0xdd00) & 0xfc);
+    // VIC bank 2: screen $8000, bitmap $A000. The game never switches banks.
+    poke(0xdd00, (peek(0xdd00) & 0xfc) | 1);
+    wr(core::ptr::addr_of_mut!(FRONT_BANK), 2);
     for i in 0..8000u16 {
         poke(0xa000 + i, 0);
-        poke(0xe000 + i, 0);
     }
     for i in 0..1000u16 {
         poke(0x8000 + i, 0);
-        poke(0xc000 + i, 0);
         poke(0xd800 + i, 0);
-        poke(0x9100 + i, 0);
     }
     for i in 0..32u16 {
         poke(0xc400 + i, 0xa5);
     }
-    for i in 0..0x400u16 {
-        poke(0x7200 + i, 0xa5);
+    for i in 0..0x100u16 {
+        poke(0x7500 + i, 0xa5);
     }
 }
 #[link_section = ".phase.boot"]
@@ -587,7 +619,7 @@ unsafe fn initialize_irq(standard: VideoStandard) {
     poke(0xd01a, 1);
     enable_irq();
 }
-unsafe fn clock_ms() -> u32 {
+unsafe fn clock_ms() -> u16 {
     disable_irq();
     let value = rd(core::ptr::addr_of!(CLOCK_MS));
     enable_irq();
@@ -595,10 +627,10 @@ unsafe fn clock_ms() -> u32 {
 }
 #[link_section = ".phase.sim"]
 #[inline(never)]
-unsafe fn take_input(until: u32) -> Option<InputSample> {
+unsafe fn take_input(until: u16) -> Option<InputSample> {
     disable_irq();
     let result = if INPUT_TAIL != INPUT_HEAD
-        && INPUTS[INPUT_TAIL as usize].ms.wrapping_sub(until) as i32 <= 0
+        && INPUTS[INPUT_TAIL as usize].ms.wrapping_sub(until) as i16 <= 0
     {
         let value = INPUTS[INPUT_TAIL as usize];
         INPUT_TAIL = (INPUT_TAIL + 1) & 63;
@@ -634,6 +666,15 @@ unsafe fn service_audio() {
         }
         validate_music_bank(header);
         MUSIC_VALIDATED = true;
+    }
+    #[cfg(feature = "music-kernels")]
+    {
+        disable_irq();
+        let kernel = AUDIO.assume_init_ref().kernel_request();
+        enable_irq();
+        if let Some(cue) = kernel {
+            load_music_kernel(cue);
+        }
     }
     disable_irq();
     let request = AUDIO.assume_init_ref().page_request();
@@ -726,6 +767,86 @@ unsafe fn validate_music_bank(header: &[u8]) {
     if end != assets::u32_at(header, 8) {
         fail(&ERROR_MUSIC_DIRECTORY)
     }
+    // Startup-only like the rest of this tail: the AUDIO prefix keeps its
+    // single reviewed call into the validator, which checks the kernels too.
+    #[cfg(feature = "music-kernels")]
+    validate_music_kernels();
+}
+
+/// Copy the cue's kernel image into the resident slot. The IRQ stops calling
+/// the slot before the directory header and entry land in it, and only the
+/// verified image for this cue re-enables it. Both transfers stay far below
+/// the 1 KiB DMA bound. A zero-sized entry means the cue plays without one.
+#[cfg(feature = "music-kernels")]
+#[link_section = ".phase.audio"]
+#[inline(never)]
+unsafe fn load_music_kernel(cue: havoc::audio::MusicState) {
+    let slot = core::ptr::addr_of!(__music_kernel_start) as u16;
+    let capacity = core::ptr::addr_of!(__music_kernel_size) as u16;
+    disable_irq();
+    AUDIO.assume_init_mut().invalidate_kernel();
+    enable_irq();
+    let base = assets::MUSIC_KERNELS_OFFSET;
+    let header_size = music::KERNEL_HEADER_SIZE as u16;
+    dma(base, slot, header_size);
+    dma(
+        base + (header_size + cue as u16 * music::KERNEL_ENTRY_SIZE as u16) as u32,
+        slot + header_size,
+        music::KERNEL_ENTRY_SIZE as u16,
+    );
+    let staged = core::slice::from_raw_parts(
+        slot as *const u8,
+        music::KERNEL_HEADER_SIZE + music::KERNEL_ENTRY_SIZE,
+    );
+    if music::kernel_header(staged, capacity).is_err() {
+        fail(&ERROR_MUSIC_KERNEL)
+    }
+    let (size, expected) = match music::kernel_entry(&staged[music::KERNEL_HEADER_SIZE..], capacity)
+    {
+        Ok(entry) => entry,
+        Err(_) => fail(&ERROR_MUSIC_KERNEL),
+    };
+    if size != 0 {
+        dma(music::kernel_image_offset(base, cue as u8, capacity), slot, size);
+        let image = core::slice::from_raw_parts(slot as *const u8, size as usize);
+        if assets::checksum(image) != expected {
+            fail(&ERROR_MUSIC_KERNEL)
+        }
+    }
+    disable_irq();
+    AUDIO.assume_init_mut().accept_kernel(cue, size != 0);
+    enable_irq();
+}
+
+/// Boot-time check of the complete kernel directory and every image, using
+/// the same retired workspace as the score header; no kernel runs yet.
+#[cfg(feature = "music-kernels")]
+#[link_section = ".phase.audio.startup"]
+#[inline(never)]
+unsafe fn validate_music_kernels() {
+    let slot = core::ptr::addr_of!(__music_kernel_start) as u16;
+    let capacity = core::ptr::addr_of!(__music_kernel_size) as u16;
+    let base = assets::MUSIC_KERNELS_OFFSET;
+    dma(base, 0x8c00, music::KERNEL_DIRECTORY_SIZE as u16);
+    let directory = core::slice::from_raw_parts(0x8c00 as *const u8, music::KERNEL_DIRECTORY_SIZE);
+    if music::kernel_directory(directory, capacity).is_err() {
+        fail(&ERROR_MUSIC_KERNEL)
+    }
+    for cue in 0..music::CUE_COUNT as u8 {
+        let at = music::KERNEL_HEADER_SIZE + cue as usize * music::KERNEL_ENTRY_SIZE;
+        let (size, expected) = match music::kernel_entry(&directory[at..], capacity) {
+            Ok(entry) => entry,
+            Err(_) => fail(&ERROR_MUSIC_KERNEL),
+        };
+        if size == 0 {
+            continue;
+        }
+        dma(music::kernel_image_offset(base, cue, capacity), slot, size);
+        let image = core::slice::from_raw_parts(slot as *const u8, size as usize);
+        if assets::checksum(image) != expected {
+            fail(&ERROR_MUSIC_KERNEL)
+        }
+    }
 }
 #[no_mangle]
 #[inline(never)]
@@ -735,9 +856,10 @@ pub unsafe extern "C" fn frame_complete() {
 }
 #[no_mangle]
 #[inline(never)]
-#[cfg_attr(feature = "benchmarks", link_section = ".benchmark_resident")]
 pub unsafe extern "C" fn geometry_complete() {
     // This resident checkpoint precedes any PIXELS reuse of command storage.
+    // Keep it in ordinary resident code: instrumented four-SID builds exhaust
+    // constant RAM, while the ordinary resident region has room for this call.
     wr(core::ptr::addr_of_mut!(PROF_PHASE), 3);
 }
 #[cfg(feature = "benchmarks")]
@@ -760,45 +882,68 @@ pub unsafe extern "C" fn benchmark_frame_ready() {
 // Capture the benchmark deadline in resident main before SIM reentry.
 #[cfg(feature = "benchmarks")]
 #[inline(never)]
-unsafe fn benchmark_now(sim_ms: u32, ticks: u8) -> u32 {
-    sim_ms.wrapping_add((ticks as u16 * 20) as u32)
+unsafe fn benchmark_now(sim_ms: u16, ticks: u8) -> u16 {
+    sim_ms.wrapping_add(ticks as u16 * 20)
 }
 #[inline(never)]
-unsafe fn publish(bank: u8, last: &mut u16) {
-    loop {
-        disable_irq();
-        let frames = rd(core::ptr::addr_of!(VIDEO_FRAMES));
-        enable_irq();
-        let line = raster();
-        if frames.wrapping_sub(*last) >= 2 && (line >= 251 || line < 30) {
-            break;
-        }
-    }
+unsafe fn present() {
+    // Every band has already been published into the visible bank and color RAM.
+    // Enable the display once the first complete frame exists, preserving the
+    // raster-driven bomb shake's Y scroll; the IRQ keeps these mode bits.
     disable_irq();
-    fast_copy_color();
-    poke(0xdd00, (peek(0xdd00) & 0xfc) | (3 - bank));
-    FRONT_BANK = bank;
-    // Publishing a new bitmap must not interrupt the raster-driven shake.
     poke(0xd011, 0x38 | (peek(0xd011) & 7));
-    *last = VIDEO_FRAMES;
     enable_irq();
     frame_complete();
 }
 
-// Screen bytes only prove reuse for identical pixels, so a section change must
-// invalidate both banks even when old and new clouds happen to share a palette.
+/// Frame-rate bookkeeping and the keyboard scan run inside PIXELS, which has
+/// the overlay room; only their few state bytes stay resident. The caller
+/// must have I/O mapped in: the CIA registers are read directly.
+#[link_section = ".phase.pixels"]
 #[inline(never)]
-#[link_section = ".phase.scenery"]
-unsafe fn prepare_sky(section: u8) -> u8 {
-    let game = GAME.assume_init_ref();
-    if RENDER_SEGMENT != section
-        || game.transition_progress().is_some()
-        || game.mode() == havoc::game::Mode::Victory
-    {
-        SKY_CACHE = SkyCache::new();
+unsafe fn update_fps_overlay(mode: havoc::game::Mode) {
+    disable_irq();
+    let ticks = AUDIO_TICKS;
+    enable_irq();
+    FPS_WINDOW_FRAMES = FPS_WINDOW_FRAMES.saturating_add(1);
+    let elapsed = ticks.wrapping_sub(FPS_WINDOW_START);
+    if elapsed >= 50 {
+        // frames * 50 Hz / ticks, in tenths; frames stay far below 130.
+        FPS_TENTHS = havoc::math::div_u32_u16(
+            (FPS_WINDOW_FRAMES.min(130) as u16 * 500) as u32,
+            elapsed,
+        );
+        FPS_WINDOW_START = ticks;
+        FPS_WINDOW_FRAMES = 0;
     }
-    RENDER_SEGMENT = section;
-    game.sky_color()
+    // Space is keyboard row 7 column 4 and F is row 2 column 5. CIA 1 port A
+    // doubles as joystick port 2, so drive it as key rows only briefly with
+    // the sampling IRQ masked, then return it to input. A column counts as a
+    // key only if it also reads high with no row selected: a joystick in
+    // port 1 or a test harness driving port B cannot fake a key press.
+    disable_irq();
+    poke(0xdc02, 0xff);
+    poke(0xdc00, 0xff);
+    let idle = peek(0xdc01);
+    poke(0xdc00, 0x7f);
+    let space = peek(0xdc01) & 0x10 == 0 && idle & 0x10 != 0;
+    poke(0xdc00, 0xfb);
+    let f_key = peek(0xdc01) & 0x20 == 0 && idle & 0x20 != 0;
+    poke(0xdc02, 0);
+    enable_irq();
+    let keys = space as u8 | (f_key as u8) << 1;
+    let pressed = keys & !KEYS_HELD;
+    // Pause only has meaning while flying; elsewhere the key is ignored and
+    // a stale pause cannot survive, because no tick runs while it is set.
+    if pressed & 1 != 0
+        && matches!(mode, havoc::game::Mode::Playing | havoc::game::Mode::Transition)
+    {
+        PAUSED = !PAUSED;
+    }
+    if pressed & 2 != 0 {
+        FPS_SHOWN = !FPS_SHOWN;
+    }
+    KEYS_HELD = keys;
 }
 
 #[link_section = ".phase.scenery"]
@@ -806,6 +951,8 @@ unsafe fn prepare_sky(section: u8) -> u8 {
 unsafe fn prepare_scenery(current: u8, sounds: &mut TransitionAudio) -> u8 {
     let game = GAME.assume_init_ref();
     let data = segment_data(current);
+    // Telemetry only: tools read the section whose scenery is being drawn.
+    RENDER_SEGMENT = data[4];
     let bridge = data[10];
     if bridge < 3 && game.transition_progress().is_some() {
         // Terrestrial crossings omit the space helpers between this prefix and
@@ -817,7 +964,8 @@ unsafe fn prepare_scenery(current: u8, sounds: &mut TransitionAudio) -> u8 {
         };
         io_on();
         dma(
-            ((page as u32) << 16) + core::ptr::addr_of!(__phase_scenery_base_size) as u32,
+            ((__code_reu_pages[page] as u32) << 12)
+                + core::ptr::addr_of!(__phase_scenery_base_size) as u32,
             core::ptr::addr_of!(__phase_scenery_base_end) as u16,
             core::ptr::addr_of!(__phase_scenery_earth_tail_size) as u16,
         );
@@ -840,9 +988,9 @@ unsafe fn prepare_scenery(current: u8, sounds: &mut TransitionAudio) -> u8 {
     }
     enable_irq();
     let renderer = RENDERER.assume_init_mut();
-    renderer.begin(prepare_sky(data[4]));
+    renderer.begin(game.sky_color());
     let mut stage = renderer.scenery_stage();
-    game.render_scenery(&mut stage, &Segment::from_validated(data));
+    game.stage_scenery(&mut stage, &Segment::from_validated(data));
     stage.count()
 }
 
@@ -852,8 +1000,13 @@ unsafe fn prepare_geometry(scenery_count: u8, bank: &AssetBank<'_>) {
     havoc::projection::begin_frame();
     let game = GAME.assume_init_ref();
     let renderer = RENDERER.assume_init_mut();
-    let prefix = renderer.project_scenery(scenery_count);
+    let [parallax_x, parallax_y] = game.sky_parallax();
+    // Detail markers 5-8 split GEOMETRY work for the profilers; 0 ends it.
+    wr(core::ptr::addr_of_mut!(PROF_DETAIL), 5);
+    let prefix = renderer.project_scenery(scenery_count, parallax_x, parallax_y);
+    wr(core::ptr::addr_of_mut!(PROF_DETAIL), 6);
     game.render_foreground(renderer, bank, 174.min(233 - scenery_count as u16));
+    wr(core::ptr::addr_of_mut!(PROF_DETAIL), 7);
     renderer.scenery_last(prefix);
     if game.mode() == havoc::game::Mode::Victory {
         victory_geometry(
@@ -862,12 +1015,9 @@ unsafe fn prepare_geometry(scenery_count: u8, bank: &AssetBank<'_>) {
             (bank as *const AssetBank<'_>).cast(),
         );
     }
+    wr(core::ptr::addr_of_mut!(PROF_DETAIL), 8);
     renderer.finish();
-    SKY_BANDS = if game.transition_progress().is_some() {
-        0
-    } else {
-        renderer.static_sky_bands()
-    };
+    wr(core::ptr::addr_of_mut!(PROF_DETAIL), 0);
     FRAME_TRIANGLES = renderer.triangle_count;
     FRAME_DROPPED = renderer.dropped;
 }
@@ -883,35 +1033,39 @@ pub unsafe extern "C" fn medal_geometry(game: *const (), renderer: *mut Renderer
     renderer.fade_scene(game.victory_ticks());
     game.render_medal(renderer, &*bank.cast::<AssetBank<'_>>());
 }
+/// The cockpit completely replaces bands 0 and 24 during play. Edge state
+/// still advances there so crossing triangles remain continuous.
 #[link_section = ".phase.pixels"]
 #[inline(never)]
-unsafe fn draw_pixels(status: &Hud) -> u8 {
+fn band_painted(mode: havoc::game::Mode, band: u8) -> bool {
+    matches!(
+        mode,
+        havoc::game::Mode::Title | havoc::game::Mode::Attract | havoc::game::Mode::Victory
+    ) || (band != 0 && band != 24)
+}
+
+#[link_section = ".phase.pixels"]
+#[inline(never)]
+unsafe fn draw_pixels(status: &Hud) {
     // GEOMETRY may have overwritten the tail. The caller has hidden I/O for
-    // raster access, so expose the REU only while loading the auxiliary image.
+    // raster access, so expose the REU only while loading the auxiliary image;
+    // the frame-rate overlay scans the keyboard in the same exposure, and the
+    // VIC background takes the frame's clear colour (the cell writer's code 0).
     io_on();
     dma(
         0x043f20,
         0x6f20,
         core::ptr::addr_of!(__phase_pixels_aux_size) as u16,
     );
+    update_fps_overlay(status.mode);
+    let renderer = RENDERER.assume_init_mut();
+    poke(0xd021, renderer.clear_color());
     io_off();
     let ambient = SPACE_DUST.prepare(
         status.section,
         status.mode,
         GAME.assume_init_ref().animation_ticks(),
     );
-    let renderer = RENDERER.assume_init_mut();
-    let front = rd(core::ptr::addr_of!(FRONT_BANK));
-    let back = if front == 3 { 2 } else { 3 };
-    let front_screen = if front == 3 { 0xc000 } else { 0x8000 };
-    let back_screen = if back == 3 { 0xc000 } else { 0x8000 };
-    let back_bitmap = if back == 3 { 0xe000 } else { 0xa000 };
-    let eligible = if ambient.is_some() {
-        0
-    } else {
-        SkyCache::eligible_bands(SKY_BANDS, status)
-    };
-    let mut reusable = SKY_CACHE.reusable_bands() & eligible;
     // Preparation belongs to raster time, including before the opaque HUD band.
     wr(core::ptr::addr_of_mut!(PROF_DETAIL), 1);
     let Some(mut pass) = renderer.raster_pass() else {
@@ -923,46 +1077,32 @@ unsafe fn draw_pixels(status: &Hud) -> u8 {
         }
         let pixels = &mut *(0x8c00 as *mut [u8; 1280]);
         let offset = band as u16 * 40;
-        let previous_screen = &*((front_screen + offset) as *const [u8; 40]);
-        let screen = &mut *((back_screen + offset) as *mut [u8; 40]);
-        let reuse_sky = reusable & 1 != 0 && SkyCache::screens_match(previous_screen, screen);
-        reusable >>= 1;
-        // The cockpit completely replaces these two bands. Edge state still
-        // advances so triangles crossing their boundaries remain continuous.
-        let paint_scene = !reuse_sky
-            && (matches!(
-                status.mode,
-                havoc::game::Mode::Title | havoc::game::Mode::Attract | havoc::game::Mode::Victory
-            ) || (band != 0 && band != 24));
-        if pass.next_band_with_ambient(pixels, paint_scene, ambient) != Some(band) {
+        if pass.next_band_with_ambient(pixels, band_painted(status.mode, band), ambient) != Some(band) {
             fail(b"INVALID RASTER BAND ORDER")
         }
-        if reuse_sky {
-            // Both banks contain the same static pixels and exact palette.
-            // Keep the back bitmap/screen and the current front color shadow.
-            continue;
-        }
         wr(core::ptr::addr_of_mut!(PROF_DETAIL), 2);
-        hud::draw(band, pixels, status, FRAME_SERIAL);
-        let previous_color = &*((0x9100 + offset) as *const [u8; 40]);
-        let bitmap = &mut *((back_bitmap + band as u16 * 320) as *mut [u8; 320]);
-        // Stage only color: previous_color and mutable colors must not alias.
-        let color = &mut *(0x7768 as *mut [u8; 40]);
+        let mut cells = havoc::cells::NativeCells;
+        hud::draw(band, &mut cells, status, FRAME_SERIAL);
+        if band == 1 && FPS_SHOWN {
+            hud::draw_fps(band, &mut cells, FPS_TENTHS);
+        }
+        if PAUSED {
+            hud::draw_paused(band, &mut cells);
+        }
         wr(core::ptr::addr_of_mut!(PROF_DETAIL), 3);
-        render::pack_band(
-            pixels,
-            previous_screen,
-            previous_color,
-            bitmap,
-            screen,
-            color,
+        // Quantize completely into consumed band workspace before touching
+        // the display. Only overflow cells need the preceding live attributes.
+        // Keep I/O mapped for color RAM and the publisher's raster reads.
+        io_on();
+        cells.stage(
+            &*((0x8000 + offset) as *const [u8; 40]),
+            &*((0xd800 + offset) as *const [u8; 40]),
         );
         wr(core::ptr::addr_of_mut!(PROF_DETAIL), 4);
-        core::ptr::copy_nonoverlapping(color.as_ptr(), (0x9100 + offset) as *mut u8, 40);
+        publish_staged_band(band);
+        io_off();
     }
-    SKY_CACHE.record_frame(back, eligible);
     wr(core::ptr::addr_of_mut!(PROF_DETAIL), 0);
-    back
 }
 
 #[link_section = ".phase.boot"]
@@ -970,6 +1110,7 @@ unsafe fn draw_pixels(status: &Hud) -> u8 {
 unsafe fn boot_init() {
     let standard = detect_standard();
     initialize_video();
+    initialize_quarter_squares();
     // Renderer consists solely of integer fields; its zero representation is
     // Renderer::new(). Initialize in place, without a 4102-byte stack temporary.
     io_off();
@@ -990,6 +1131,23 @@ unsafe fn boot_init() {
 unsafe fn initialize_game() {
     GAME.write(Game::new());
 }
+/// Quarter squares Q[n] = floor(n^2 / 4) for n in 0..512, low bytes at $C000
+/// and high bytes at $C200, for the exact Q8 multiply kernel. Q[n+1] - Q[n] =
+/// floor((n + 1) / 2), so the table accumulates without a multiply. This RAM
+/// is otherwise unused, and the IRQ never touches it.
+#[link_section = ".phase.boot"]
+#[inline(never)]
+unsafe fn initialize_quarter_squares() {
+    let low = QUARTER_SQUARES as *mut u8;
+    let high = (QUARTER_SQUARES + 512) as *mut u8;
+    let mut square: u16 = 0;
+    for n in 0..512u16 {
+        low.add(n as usize).write_volatile(square as u8);
+        high.add(n as usize).write_volatile((square >> 8) as u8);
+        square = square.wrapping_add((n + 1) >> 1);
+    }
+}
+const QUARTER_SQUARES: usize = 0xc000;
 #[link_section = ".phase.boot"]
 #[inline(never)]
 unsafe fn initialize_audio(standard: VideoStandard) {
@@ -997,12 +1155,13 @@ unsafe fn initialize_audio(standard: VideoStandard) {
     core::ptr::write_bytes(NEXT_PAGE.as_mut_ptr().cast::<u8>(), 0, PAGE_SIZE);
 }
 struct Runtime {
-    sim_ms: u32,
+    sim_ms: u16,
     // Foreground-only history; benchmark fixture restoration includes it.
     transition_audio: TransitionAudio,
     loaded: [u8; 2],
     current: u8,
     profile: u8,
+    was_paused: bool,
 }
 #[link_section = ".phase.sim"]
 #[inline(never)]
@@ -1032,7 +1191,7 @@ unsafe fn select_stage(runtime: &mut Runtime, game: &mut Game) {
 }
 #[link_section = ".phase.sim"]
 #[inline(never)]
-unsafe fn simulate(runtime: &mut Runtime, now: u32) -> Option<Hud> {
+unsafe fn simulate(runtime: &mut Runtime, now: u16) -> Option<Hud> {
     let game = GAME.assume_init_mut();
     select_stage(runtime, game);
     if runtime.profile != ENEMY_CODE_PROFILE {
@@ -1073,6 +1232,19 @@ unsafe fn simulate(runtime: &mut Runtime, now: u32) -> Option<Hud> {
     let bench_ticks = rd(core::ptr::addr_of!(BENCH_TICKS));
     #[cfg(not(feature = "benchmarks"))]
     let bench_ticks = 255u8;
+    // Synchronize held buttons and their clock without queuing gestures.
+    // The first resumed frame also discards samples from the final paused
+    // render and rebases the deadline, so neither inputs nor missed ticks
+    // replay when play resumes.
+    if PAUSED || runtime.was_paused {
+        disable_irq();
+        INPUT_TAIL = INPUT_HEAD;
+        let held = LAST_BITS;
+        enable_irq();
+        runtime.sim_ms = now;
+        game.sample_paused_input(held, now);
+        runtime.was_paused = PAUSED;
+    }
     while now.wrapping_sub(runtime.sim_ms) >= 20 {
         let step_ms = runtime.sim_ms.wrapping_add(20);
         if bench_ticks == 255 {
@@ -1110,13 +1282,16 @@ unsafe fn simulate(runtime: &mut Runtime, now: u32) -> Option<Hud> {
     match presentation {
         PresentationEvent::None => {}
         PresentationEvent::Bomb => BOMB_EFFECT.trigger(),
+        PresentationEvent::Hit => BOMB_EFFECT.trigger_hit(),
         PresentationEvent::Reset => BOMB_EFFECT.reset(),
     }
     enable_irq();
     send_audio(game);
     let status = game.hud();
     GAME_MODE = status.mode as u8;
-    GAME_DISTANCE = status.distance;
+    // The campaign distance for the monitor tools: section × 30,000 as a
+    // 16-bit product of 1,875 shifted by four, plus the section-local part.
+    GAME_DISTANCE = (((status.section as u16 * 1_875) as u32) << 4) + status.distance as u32;
     GAME_STAGE = status.section;
     Some(status)
 }
@@ -1136,8 +1311,8 @@ pub unsafe extern "C" fn main() -> i32 {
         loaded: [0xff; 2],
         current: 0,
         profile: 0,
+        was_paused: false,
     };
-    let mut last_present = 0;
     #[cfg(feature = "benchmarks")]
     {
         BENCH_RUNTIME = core::ptr::addr_of_mut!(runtime) as u16;
@@ -1163,6 +1338,10 @@ pub unsafe extern "C" fn main() -> i32 {
                 now
             }
         };
+        // Paused frames keep rendering (the caption and the readout live in
+        // PIXELS, which only toggles the flag while flying); `simulate`
+        // discards the queued joystick samples and moves the simulation
+        // deadline along so resuming does not replay the missed ticks.
         let status = loop {
             wr(core::ptr::addr_of_mut!(PROF_PHASE), 5);
             if let Some(status) = simulate(&mut runtime, now) {
@@ -1252,11 +1431,11 @@ pub unsafe extern "C" fn main() -> i32 {
         load_phase(4, core::ptr::addr_of!(__phase_pixels_prefix_size) as u16);
         wr(core::ptr::addr_of_mut!(PROF_PHASE), 7);
         io_off();
-        let back = draw_pixels(&status);
+        draw_pixels(&status);
         io_on();
         wr(core::ptr::addr_of_mut!(PROF_PHASE), 4);
-        publish(back, &mut last_present);
-        if peek(0xc400) != 0xa5 || peek(0x7200) != 0xa5 {
+        present();
+        if peek(0xc400) != 0xa5 || peek(0x7500) != 0xa5 {
             fail(b"STACK GUARD FAILED")
         }
     }

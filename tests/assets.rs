@@ -164,7 +164,9 @@ fn dma_chunks_stop_at_reu_pages_cpu_wrap_and_end_of_installed_ram() {
     assert_eq!(dma_chunk(0x80000, 0x8410, 48), 48);
     assert_eq!(dma_chunk(0x2000, 0xfff0, 64), 16);
     assert_eq!(dma_chunk(0x2000, 0xffff, 2), 1);
-    assert_eq!(dma_chunk(0xffffff, 0x8400, 2), 1);
+    assert_eq!(dma_chunk(0x7ffff, 0x8400, 2), 1);
+    assert_eq!(dma_chunk(0xfffff, 0x8400, 2), 1);
+    assert_eq!(dma_chunk(0x100000, 0x8400, 1), 0);
     assert_eq!(dma_chunk(0x1000000, 0x8400, 1), 0);
     assert_eq!(dma_chunk(u32::MAX, 0x8400, 1), 0);
     assert_eq!(dma_chunk(0, 0, 0), 0);
@@ -176,10 +178,22 @@ fn package_validation_detects_payload_corruption_and_wrong_image_size() {
     let mut bytes = package();
     assert!(baked_assets::check_package(&bytes).is_ok());
     assert!(baked_assets::check_package(&bytes[..REU_SIZE as usize - 1]).is_err());
+    bytes.push(0);
+    assert!(baked_assets::check_package(&bytes).is_err());
+    bytes.pop();
     bytes[COMMON_OFFSET as usize + 2000] ^= 1;
     assert!(baked_assets::check_package(&bytes).is_err());
     bytes[COMMON_OFFSET as usize + 2000] ^= 1;
     bytes[SEGMENTS_OFFSET as usize + SEGMENT_SIZE + 400] ^= 1;
+    assert!(baked_assets::check_package(&bytes).is_err());
+}
+
+#[test]
+fn relocated_package_rejects_old_version_even_with_a_valid_header_checksum() {
+    let mut bytes = package();
+    put32(&mut bytes, 4, 0x534D0700);
+    seal_header(&mut bytes);
+    assert_eq!(validate_header(&bytes), Err(AssetError::Version));
     assert!(baked_assets::check_package(&bytes).is_err());
 }
 
@@ -343,13 +357,18 @@ fn stage_model_banks_keep_twenty_six_distinct_enemy_shapes_and_shared_player_ass
             }
             let spec = bank.enemy(kind);
             assert_eq!(spec.score, if kind == 3 { 250 } else { 100 });
-            assert_eq!((spec.shot_radius, spec.ram_radius), (38, 36));
+            // Boss stages expose two escorts, so every checked spec is a
+            // regular enemy at three halves of its authored size.
+            assert_eq!(
+                (spec.shot_radius, spec.ram_radius),
+                (enemy_scaled(19) as u8, enemy_scaled(18) as u8)
+            );
             assert_eq!(
                 spec.center_y,
                 if kind != TURRET || profile == 1 {
                     0
                 } else {
-                    28
+                    (enemy_scaled(18) - 8) as i8
                 }
             );
             assert_eq!(
@@ -399,20 +418,21 @@ fn enlarged_enemy_meshes_keep_ground_bases_and_original_model_budgets() {
             bank.level()
         );
     };
-    // Independently recorded target extents: ground models keep their -8 base,
-    // while airborne enemies and the carrier assembly double about the origin.
+    // Independently recorded target extents: ground models keep their -8 base.
+    // Regular enemies scale by three halves about the origin; the boss side
+    // unit in slot three (level 11) and the carrier assembly keep doubling.
     for (level, mesh, counts, min, max) in [
-        (0, FIGHTER, (6, 8), [-54, -14, -60], [54, 20, 50]),
-        (0, DIVER, (5, 6), [-36, -20, -64], [36, 36, 40]),
-        (0, TURRET, (9, 11), [-40, -8, -56], [40, 44, 40]),
-        (2, FIGHTER, (8, 10), [-76, -14, -56], [76, 10, 52]),
-        (2, DIVER, (7, 8), [-68, -34, -70], [68, 68, 58]),
-        (2, TURRET, (9, 12), [-30, -56, -68], [30, 56, 28]),
-        (6, FIGHTER, (10, 12), [-64, -14, -76], [64, 22, 44]),
-        (6, DIVER, (6, 8), [-24, -16, -96], [24, 18, 68]),
-        (6, TURRET, (9, 11), [-68, -8, -78], [68, 38, 50]),
-        (11, FIGHTER, (8, 10), [-60, -20, -56], [60, 26, 50]),
-        (11, DIVER, (6, 8), [-34, -24, -84], [34, 54, 54]),
+        (0, FIGHTER, (6, 8), [-40, -10, -45], [40, 15, 37]),
+        (0, DIVER, (5, 6), [-27, -15, -48], [27, 27, 30]),
+        (0, TURRET, (9, 11), [-30, -8, -42], [30, 31, 30]),
+        (2, FIGHTER, (8, 10), [-57, -10, -42], [57, 7, 39]),
+        (2, DIVER, (7, 8), [-51, -25, -52], [51, 51, 43]),
+        (2, TURRET, (9, 12), [-22, -42, -51], [22, 42, 21]),
+        (6, FIGHTER, (10, 12), [-48, -10, -57], [48, 16, 33]),
+        (6, DIVER, (6, 8), [-18, -12, -72], [18, 13, 51]),
+        (6, TURRET, (9, 11), [-51, -8, -58], [51, 26, 37]),
+        (11, FIGHTER, (8, 10), [-45, -15, -42], [45, 19, 37]),
+        (11, DIVER, (6, 8), [-25, -18, -63], [25, 40, 40]),
         (11, TURRET, (9, 11), [-40, -16, -56], [40, 36, 40]),
     ] {
         let bytes = baked_assets::model_bank(level);
@@ -434,6 +454,26 @@ fn enlarged_enemy_meshes_keep_ground_bases_and_original_model_budgets() {
         check(&bank, BUILDING, (8, 10), [-22, 0, -22], [22, 60, 22]);
         if !matches!(level, 1 | 4) {
             check(&bank, ROCK, (6, 6), [-32, 0, -30], [35, 42, 30]);
+        }
+    }
+}
+
+#[test]
+fn every_actor_mesh_is_fully_behind_the_near_plane_at_the_retire_depth() {
+    // Actors keep rendering down to the retire depth, so no mesh may still
+    // reach the near plane there; otherwise it would vanish while visible.
+    for level in 0..SEGMENT_COUNT {
+        let bytes = baked_assets::model_bank(level);
+        let bank = AssetBank::new(&bytes).unwrap();
+        for mesh in [FIGHTER, DIVER, TURRET, BUILDING, ROCK] {
+            let front = (0..bank.vertex_count(mesh))
+                .map(|index| bank.vertex(mesh, index).z)
+                .max()
+                .unwrap();
+            assert!(
+                havoc::game::ACTOR_RETIRE_Z + front < havoc::render::NEAR,
+                "level {level} mesh {mesh} reaches z {front}"
+            );
         }
     }
 }
@@ -609,7 +649,9 @@ fn eighteen_stage_profiles_cover_terrestrial_and_orbital_campaign_with_contiguou
         MODEL_BANKS_OFFSET + MODEL_SIZE as u32 * SEGMENT_COUNT as u32,
         0xb9000
     );
-    assert_eq!(MUSIC_OFFSET + MUSIC_CAPACITY as u32, 0x240000);
+    assert_eq!(REU_SIZE, 1024 * 1024);
+    assert_eq!(MUSIC_OFFSET, 0x0c0000);
+    assert_eq!(MUSIC_OFFSET + MUSIC_CAPACITY, REU_SIZE);
     let mut bosses = Vec::new();
     for stage in 0..SEGMENT_COUNT {
         let bytes = baked_assets::segment_bank(stage);

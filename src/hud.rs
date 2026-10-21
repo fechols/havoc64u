@@ -1,57 +1,97 @@
 //! Screen-space cockpit and mission screens. All ink participates in the same
 //! VIC-II palette packing as geometry; no sprites, textures, or allocations.
 
-use crate::assets::{SEGMENT_COUNT, SEGMENT_DISTANCE};
+use crate::assets::SEGMENT_COUNT;
 use crate::game::{Hud, Mode};
-use crate::render::{draw_bar, draw_text, draw_text_scaled, fill_color, HUD_INK};
+use crate::render::{draw_bar, draw_text, draw_text_scaled, Canvas, HUD_INK};
 use crate::victory::REVEAL_TICKS;
 
-/// Shared with sky eligibility so cached bands exclude the same sector panel.
+/// The sector panel occupies bands 3-6 for the first 800 distance units.
 #[inline(never)]
 #[cfg_attr(target_arch = "mos", link_section = ".phase.pixels")]
 pub(crate) fn sector_banner_visible(hud: &Hud) -> bool {
-    hud.distance
-        .saturating_sub(hud.section as u32 * SEGMENT_DISTANCE)
-        < 800
+    hud.distance < 800
+}
+
+/// Frame-rate readout for the space-bar toggle: tenths of frames per second,
+/// right-aligned in band 1 beside the boss panel. Paint it after every panel
+/// so no opaque fill erases it; the ink joins packing like all other HUD text.
+/// Digits come from the existing bounded division kernel: generic 16-bit
+/// division would link extra compiler helpers into resident code.
+#[inline(never)]
+#[cfg_attr(target_arch = "mos", link_section = ".phase.pixels")]
+pub fn draw_fps(band: u8, canvas: &mut impl Canvas, tenths: u16) -> bool {
+    if band != 1 {
+        return false;
+    }
+    let tenths = tenths.min(999);
+    let whole = crate::math::div_u32_u16(tenths as u32, 10);
+    let tens = crate::math::div_u32_u16(whole as u32, 10);
+    let mut text = *b" 0.0 FPS";
+    text[3] = b'0' + (tenths - whole * 10) as u8;
+    text[1] = b'0' + (whole - tens * 10) as u8;
+    if tens != 0 {
+        text[0] = b'0' + tens as u8;
+    }
+    draw_text(band, canvas, 128, 9, &text, 1);
+    true
+}
+
+/// The pause caption: double-height text across the middle of the picture.
+/// Returns whether the band received ink.
+#[inline(never)]
+#[cfg_attr(target_arch = "mos", link_section = ".phase.pixels")]
+pub fn draw_paused(band: u8, canvas: &mut impl Canvas) -> bool {
+    // Rows 92..108 span bands 11 to 13.
+    if !(11..=13).contains(&band) {
+        return false;
+    }
+    centered_scaled(band, canvas, 92, b"PAUSED", 1, 2);
+    true
 }
 
 /// Paint a HUD into one rendered eight-row band. `frame` controls soft blinking.
+/// Returns whether any ink reached the band: the packer's row-uniform fast
+/// path is only valid for cells no HUD primitive touched.
 #[inline(never)]
 #[cfg_attr(target_arch = "mos", link_section = ".phase.pixels")]
-pub fn draw(band: u8, pixels: &mut [u8; 1280], hud: &Hud, frame: u16) {
+pub fn draw(band: u8, canvas: &mut impl Canvas, hud: &Hud, frame: u16) -> bool {
     if band >= 25 {
-        return;
+        return false;
     }
     if hud.mode == Mode::Victory {
-        victory(band, pixels, hud, frame);
-        return;
+        return victory(band, canvas, hud, frame);
     }
     // The map tour keeps the entire world visible around two short labels.
     if hud.mode == Mode::Attract {
         if band == 0 {
-            centered(band, pixels, 2, section_name(hud.section), 1);
+            centered(band, canvas, 2, section_name(hud.section), 1);
+            return true;
         }
         if band >= 23 {
-            centered(band, pixels, 189, b"MOVE OR FIRE FOR MENU", blink(frame));
+            centered(band, canvas, 189, b"MOVE OR FIRE FOR MENU", blink(frame));
+            return true;
         }
-        return;
+        return false;
     }
     // Cockpit strips occupy only the first band and the last two bands. None
     // of the mission panels overlaps them, so route them before mode work.
     if hud.mode != Mode::Title && (band == 0 || band >= 23) {
-        cockpit(band, pixels, hud, frame);
-        return;
+        cockpit(band, canvas, hud, frame);
+        return true;
     }
     match hud.mode {
-        Mode::Attract | Mode::Transition | Mode::Victory => {}
-        Mode::Title => title(band, pixels, frame),
+        Mode::Attract | Mode::Transition | Mode::Victory => false,
+        Mode::Title => title(band, canvas, frame),
         Mode::Playing => {
-            if (1..=2).contains(&band) && hud.boss_shield != 0 {
-                panel(band, pixels, 10, 10, 116, 11, 12);
-                draw_text(band, pixels, 14, 13, boss_name(hud.boss_kind), 15);
+            let boss_panel = (1..=2).contains(&band) && hud.boss_shield != 0;
+            let banner = (3..=6).contains(&band) && sector_banner_visible(hud);
+            if boss_panel {
+                panel(band, canvas, 10, 10, 116, 11, 12);
+                draw_text(band, canvas, 14, 13, boss_name(hud.boss_kind), 15);
                 draw_bar(
                     band,
-                    pixels,
+                    canvas,
                     70,
                     14,
                     50,
@@ -61,8 +101,8 @@ pub fn draw(band: u8, pixels: &mut [u8; 1280], hud: &Hud, frame: u16) {
                     if hud.boss_shield <= 25 { 10 } else { 8 },
                 );
             }
-            if (3..=6).contains(&band) && sector_banner_visible(hud) {
-                panel(band, pixels, 24, 29, 112, 22, 12);
+            if banner {
+                panel(band, canvas, 24, 29, 112, 22, 12);
                 let mut sector = *b"SECTOR 01";
                 let number = hud.section.min(SEGMENT_COUNT - 1) + 1;
                 if number >= 10 {
@@ -71,110 +111,115 @@ pub fn draw(band: u8, pixels: &mut [u8; 1280], hud: &Hud, frame: u16) {
                 } else {
                     sector[8] = b'0' + number;
                 }
-                centered(band, pixels, 33, &sector, 3);
-                centered(band, pixels, 43, section_name(hud.section), 1);
+                centered(band, canvas, 33, &sector, 3);
+                centered(band, canvas, 43, section_name(hud.section), 1);
             }
+            boss_panel || banner
         }
         Mode::Respawning => {
             if !(9..=14).contains(&band) {
-                return;
+                return false;
             }
-            panel(band, pixels, 26, 78, 108, 37, 12);
-            centered(band, pixels, 84, b"SHIP LOST", 10);
-            centered(band, pixels, 96, b"RETURNING TO CHECKPOINT", 15);
+            panel(band, canvas, 26, 78, 108, 37, 12);
+            centered(band, canvas, 84, b"SHIP LOST", 10);
+            centered(band, canvas, 96, b"RETURNING TO CHECKPOINT", 15);
             let mut lives = *b"SHIPS REMAINING: 0";
             lives[17] = b'0' + hud.lives.min(9);
-            centered(band, pixels, 106, &lives, 3);
+            centered(band, canvas, 106, &lives, 3);
+            true
         }
         Mode::GameOver => {
             if !(8..=16).contains(&band) {
-                return;
+                return false;
             }
-            panel(band, pixels, 8, 69, 144, 65, 12);
-            centered_scaled(band, pixels, 77, b"MISSION LOST", 10, 2);
-            centered(band, pixels, 96, b"NO SHIPS REMAIN", 15);
+            panel(band, canvas, 8, 69, 144, 65, 12);
+            centered_scaled(band, canvas, 77, b"MISSION LOST", 10, 2);
+            centered(band, canvas, 96, b"NO SHIPS REMAIN", 15);
             if band == 13 || band == 14 {
                 let mut score = *b"SCORE 000000";
                 digits(hud.score, &mut score[6..]);
-                centered(band, pixels, 109, &score, 1);
+                centered(band, canvas, 109, &score, 1);
             }
-            centered(band, pixels, 124, b"FIRE: RETRY MISSION", blink(frame));
+            centered(band, canvas, 124, b"FIRE: RETRY MISSION", blink(frame));
+            true
         }
     }
 }
 
 #[inline(never)]
 #[cfg_attr(target_arch = "mos", link_section = ".phase.pixels")]
-fn victory(band: u8, pixels: &mut [u8; 1280], hud: &Hud, frame: u16) {
+fn victory(band: u8, canvas: &mut impl Canvas, hud: &Hud, frame: u16) -> bool {
     if hud.victory_ticks < REVEAL_TICKS {
-        return;
+        return false;
     }
     // Narrow opaque strips keep the raised star and most of the medal clear.
     if (1..=3).contains(&band) {
-        rect(band, pixels, 8, 9, 144, 18, 0);
-        centered_scaled(band, pixels, 13, b"MISSION COMPLETE", 7, 2);
+        rect(band, canvas, 8, 9, 144, 18, 0);
+        centered_scaled(band, canvas, 13, b"MISSION COMPLETE", 7, 2);
     }
     if band >= 22 {
-        rect(band, pixels, 36, 177, 88, 22, 0);
+        rect(band, canvas, 36, 177, 88, 22, 0);
         let mut score = *b"SCORE 000000";
         digits(hud.score, &mut score[6..]);
-        centered(band, pixels, 180, &score, 1);
+        centered(band, canvas, 180, &score, 1);
         centered(
             band,
-            pixels,
+            canvas,
             190,
             b"FIRE: FLY AGAIN",
             if frame & 16 == 0 { 1 } else { 7 },
         );
     }
+    (1..=3).contains(&band) || band >= 22
 }
 
 #[inline(never)]
 #[cfg_attr(target_arch = "mos", link_section = ".phase.pixels")]
-fn title(band: u8, pixels: &mut [u8; 1280], frame: u16) {
+fn title(band: u8, canvas: &mut impl Canvas, frame: u16) -> bool {
     // Keep the center open so the original Kestrel model remains visible.
     if band == 0 || (9..16).contains(&band) {
-        return;
+        return false;
     }
     if band <= 8 {
-        rect(band, pixels, 0, 10, 160, 58, 0);
-        centered(band, pixels, 17, b"C64 ULTIMATE", 12);
-        centered_scaled(band, pixels, 31, b"H.A.V.O.C.", 1, 3);
-        centered(band, pixels, 51, b"HEAVY ASSAULT VESSEL:", 3);
-        centered(band, pixels, 59, b"ORBITAL COMBAT", 3);
-        rect(band, pixels, 34, 65, 92, 1, HUD_INK | 14);
-        return;
+        rect(band, canvas, 0, 10, 160, 58, 0);
+        centered(band, canvas, 17, b"C64 ULTIMATE", 12);
+        centered_scaled(band, canvas, 31, b"H.A.V.O.C.", 1, 3);
+        centered(band, canvas, 51, b"HEAVY ASSAULT VESSEL:", 3);
+        centered(band, canvas, 59, b"ORBITAL COMBAT", 3);
+        rect(band, canvas, 34, 65, 92, 1, HUD_INK | 14);
+        return true;
     }
-    rect(band, pixels, 10, 131, 140, 67, 0);
-    centered(band, pixels, 134, b"PORT 2 / ONE BUTTON", 12);
-    centered(band, pixels, 146, b"HOLD FIRE: SHOOT", 15);
-    centered(band, pixels, 155, b"RELEASE: CHARGE", 15);
-    centered(band, pixels, 164, b"DOUBLE FIRE: BOMB", 15);
-    centered(band, pixels, 173, b"DOUBLE LEFT/RIGHT: ROLL", 15);
-    centered(band, pixels, 189, b"PUSH FIRE TO LAUNCH", blink(frame));
+    rect(band, canvas, 10, 131, 140, 67, 0);
+    centered(band, canvas, 134, b"PORT 2 / ONE BUTTON", 12);
+    centered(band, canvas, 146, b"HOLD FIRE: SHOOT", 15);
+    centered(band, canvas, 155, b"RELEASE: CHARGE", 15);
+    centered(band, canvas, 164, b"DOUBLE FIRE: BOMB", 15);
+    centered(band, canvas, 173, b"DOUBLE LEFT/RIGHT: ROLL", 15);
+    centered(band, canvas, 189, b"PUSH FIRE TO LAUNCH", blink(frame));
+    true
 }
 
 #[inline(never)]
 #[cfg_attr(target_arch = "mos", link_section = ".phase.pixels")]
-fn cockpit(band: u8, pixels: &mut [u8; 1280], hud: &Hud, frame: u16) {
+fn cockpit(band: u8, canvas: &mut impl Canvas, hud: &Hud, frame: u16) {
     if band == 0 {
-        rect(band, pixels, 0, 0, 160, 8, 0);
-        draw_text(band, pixels, 1, 2, b"SCORE", 12);
+        rect(band, canvas, 0, 0, 160, 8, 0);
+        draw_text(band, canvas, 1, 2, b"SCORE", 12);
         let mut score = [b'0'; 6];
         digits(hud.score, &mut score);
-        draw_text(band, pixels, 23, 2, &score, 1);
-        centered(band, pixels, 2, section_name(hud.section), 1);
-        draw_text(band, pixels, 115, 2, b"LIVES", 12);
-        draw_text(band, pixels, 143, 2, &[b'0' + hud.lives.min(9)], 1);
+        draw_text(band, canvas, 23, 2, &score, 1);
+        centered(band, canvas, 2, section_name(hud.section), 1);
+        draw_text(band, canvas, 115, 2, b"LIVES", 12);
+        draw_text(band, canvas, 143, 2, &[b'0' + hud.lives.min(9)], 1);
     }
     if band < 23 {
         return;
     }
-    rect(band, pixels, 0, 185, 160, 15, 0);
-    draw_text(band, pixels, 3, 187, b"SHIELD", 12);
+    rect(band, canvas, 0, 185, 160, 15, 0);
+    draw_text(band, canvas, 3, 187, b"SHIELD", 12);
     draw_text(
         band,
-        pixels,
+        canvas,
         68,
         187,
         if hud.charge == 255 {
@@ -184,10 +229,10 @@ fn cockpit(band: u8, pixels: &mut [u8; 1280], hud: &Hud, frame: u16) {
         },
         if hud.charge == 255 { blink(frame) } else { 12 },
     );
-    draw_text(band, pixels, 127, 187, b"BOMBS", 12);
+    draw_text(band, canvas, 127, 187, b"BOMBS", 12);
     draw_bar(
         band,
-        pixels,
+        canvas,
         3,
         194,
         60,
@@ -198,7 +243,7 @@ fn cockpit(band: u8, pixels: &mut [u8; 1280], hud: &Hud, frame: u16) {
     );
     draw_bar(
         band,
-        pixels,
+        canvas,
         68,
         194,
         55,
@@ -210,7 +255,7 @@ fn cockpit(band: u8, pixels: &mut [u8; 1280], hud: &Hud, frame: u16) {
     for i in 0..3 {
         rect(
             band,
-            pixels,
+            canvas,
             129 + i * 7,
             194,
             4,
@@ -277,10 +322,10 @@ fn blink(frame: u16) -> u8 {
 
 #[inline(never)]
 #[cfg_attr(target_arch = "mos", link_section = ".phase.pixels_aux")]
-fn centered(band: u8, pixels: &mut [u8; 1280], y: i16, text: &[u8], color: u8) {
+fn centered(band: u8, canvas: &mut impl Canvas, y: i16, text: &[u8], color: u8) {
     draw_text(
         band,
-        pixels,
+        canvas,
         (161 - text.len() as i16 * 4) / 2,
         y,
         text,
@@ -290,22 +335,22 @@ fn centered(band: u8, pixels: &mut [u8; 1280], y: i16, text: &[u8], color: u8) {
 
 #[inline(never)]
 #[cfg_attr(target_arch = "mos", link_section = ".phase.pixels")]
-fn centered_scaled(band: u8, pixels: &mut [u8; 1280], y: i16, text: &[u8], color: u8, scale: u8) {
+fn centered_scaled(band: u8, canvas: &mut impl Canvas, y: i16, text: &[u8], color: u8, scale: u8) {
     let width = (text.len() as i16 * 4 - 1) * scale as i16;
-    draw_text_scaled(band, pixels, (160 - width) / 2, y, text, color, scale);
+    draw_text_scaled(band, canvas, (160 - width) / 2, y, text, color, scale);
 }
 
 #[inline(never)]
 #[cfg_attr(target_arch = "mos", link_section = ".phase.pixels")]
-fn panel(band: u8, pixels: &mut [u8; 1280], x: i16, y: i16, width: i16, height: i16, border: u8) {
-    rect(band, pixels, x, y, width, height, 0);
-    rect(band, pixels, x, y, width, 1, border | HUD_INK);
-    rect(band, pixels, x, y + height - 1, width, 1, border | HUD_INK);
+fn panel(band: u8, canvas: &mut impl Canvas, x: i16, y: i16, width: i16, height: i16, border: u8) {
+    rect(band, canvas, x, y, width, height, 0);
+    rect(band, canvas, x, y, width, 1, border | HUD_INK);
+    rect(band, canvas, x, y + height - 1, width, 1, border | HUD_INK);
 }
 
 #[inline(never)]
 #[cfg_attr(target_arch = "mos", link_section = ".phase.pixels")]
-fn rect(band: u8, pixels: &mut [u8; 1280], x: i16, y: i16, width: i16, height: i16, color: u8) {
+fn rect(band: u8, canvas: &mut impl Canvas, x: i16, y: i16, width: i16, height: i16, color: u8) {
     let band_y = band as i16 * 8;
     let left = x.clamp(0, 160) as usize;
     let right = (x + width).clamp(0, 160) as usize;
@@ -313,8 +358,7 @@ fn rect(band: u8, pixels: &mut [u8; 1280], x: i16, y: i16, width: i16, height: i
         return;
     }
     for row in y.max(band_y)..(y + height).min(band_y + 8) {
-        let offset = (row - band_y) as usize * 160;
-        fill_color(&mut pixels[offset + left..offset + right], color);
+        canvas.span((row - band_y) as usize, left, right, color);
     }
 }
 
