@@ -14,19 +14,21 @@ https://github.com/user-attachments/assets/f2c0d2a9-250d-456e-89e2-7e5f1bc5605a
 
 The current source campaign has eighteen stages and five bosses, with 24:46 of scheduled flight before retries or extended boss fights. The original twelve stages lead into six orbital missions, each with its own enemy silhouettes and scenery. The orbital score adds eight original, Jeroen Tel-inspired SID tracks, and every track now brings its own tiny "music kernel": per-song 6502 code swapped in from the REU that sweeps the filter, shimmers pulse widths, bends and slurs the lead, flutters arpeggios and programs the drums between the sequencer's rows. The four-SID build also answers the lead with a stereo echo from the opposite chip and rings bells and anvils on the extra SIDs. Steering and weapons stay the same in space: shoot the small fragments, use bombs to clear large rocks and wreckage, and attack the bosses' side units before their cores. Brief scenic crossings include the climb out of the atmosphere.
 
-| Lowland Approach | Crystal Cave |
+These screenshots show the released **v0.1.0 four-SID build** in a PAL emulator, with joystick-driven banking, climbs, dives, and barrel rolls.
+
+| Lowland Approach — barrel roll | Crystal Cave — diving |
 | --- | --- |
-| ![Ship flying over green hills in Lowland Approach](docs/media/lowlands.png) | ![Flight through the enclosed Crystal Cave](docs/media/crystal-cave.png) |
-| **Iron Canyon** | **Foundry Belt** |
-| ![Combat between the ridges of Iron Canyon](docs/media/iron-canyon.png) | ![Industrial scenery in Foundry Belt](docs/media/foundry.png) |
-| **Storm Front** | **Carrier Assault** |
-| ![Flight beneath the dark sky of Storm Front](docs/media/storm-front.png) | ![Approaching the enemy carrier in Carrier Assault](docs/media/carrier.png) |
-| **Asteroid Belt** | **Shattered Moon** |
-| ![Dodging solid rocks and firing at small fragments in Asteroid Belt](docs/media/asteroid-belt.png) | ![Flying among lunar fragments beneath the Shattered Moon](docs/media/shattered-moon.png) |
-| **Ship Graveyard** | **Orbital Shipyard** |
-| ![Dogfighting between abandoned hulls in Ship Graveyard](docs/media/ship-graveyard.png) | ![Flying through the gantries of Orbital Shipyard](docs/media/orbital-shipyard.png) |
-| **Space Carrier** | **Jump Gate** |
-| ![Attacking the Dreadnought's broad deck and side units](docs/media/space-carrier.png) | ![Fighting the Gate Guardian around its open aperture](docs/media/jump-gate.png) |
+| ![Ship mid-barrel roll over the green hills of Lowland Approach](docs/media/lowlands.png) | ![Ship pitching nose-down while descending through Crystal Cave](docs/media/crystal-cave.png) |
+| **Iron Canyon — banking left** | **Foundry Belt — banking right** |
+| ![Ship banking left between the ridges of Iron Canyon](docs/media/iron-canyon.png) | ![Ship banking right over the industrial scenery of Foundry Belt](docs/media/foundry.png) |
+| **Storm Front — climbing** | **Carrier Assault — banking right** |
+| ![Ship pitching nose-up while climbing into Storm Front](docs/media/storm-front.png) | ![Ship banking right beside the enemy carrier during Carrier Assault](docs/media/carrier.png) |
+| **Asteroid Belt — banking right** | **Shattered Moon — banking left** |
+| ![Ship banking right among rocks in Asteroid Belt](docs/media/asteroid-belt.png) | ![Ship banking left and climbing beneath the Shattered Moon](docs/media/shattered-moon.png) |
+| **Ship Graveyard — banking left** | **Orbital Shipyard — banking right** |
+| ![Ship banking left and descending among abandoned hulls in Ship Graveyard](docs/media/ship-graveyard.png) | ![Ship banking right and descending in front of Orbital Shipyard's gantries](docs/media/orbital-shipyard.png) |
+| **Space Carrier — climbing turn** | **Jump Gate — banking left** |
+| ![Ship banking right and climbing above the Dreadnought's broad deck](docs/media/space-carrier.png) | ![Ship banking left beside the Gate Guardian's open aperture](docs/media/jump-gate.png) |
 
 ## Download and launch
 
