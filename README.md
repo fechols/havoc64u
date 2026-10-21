@@ -8,9 +8,9 @@ Fly an original polygon rail shooter for the **64 MHz C64 Ultimate**. Skim green
 
 ## See it in action
 
-**Sound on!** Unmute the player to hear the four-SID arrangement and the game's own weapon, engine, and impact effects. This clip shows the earlier terrestrial campaign running in the compiled C64 game in an emulator; the orbital screenshots below come from the expanded native build.
+**Sound on!** Hear the enhanced four-SID score and the game's own weapon, engine, and impact effects. This 72-second trailer shows the current compiled C64 build with its renderer and music improvements, recorded in a calibrated PAL emulator at the game's original speed. Fly through four terrestrial missions, climb into orbit, and get a brief peek at the Asteroid Belt, without revealing bosses or the ending.
 
-https://github.com/user-attachments/assets/7493efc7-68c3-4a6f-b649-75e3ac2fc472
+https://github.com/user-attachments/assets/f2c0d2a9-250d-456e-89e2-7e5f1bc5605a
 
 The current source campaign has eighteen stages and five bosses, with 24:46 of scheduled flight before retries or extended boss fights. The original twelve stages lead into six orbital missions, each with its own enemy silhouettes and scenery. The orbital score adds eight original, Jeroen Tel-inspired SID tracks, and every track now brings its own tiny "music kernel": per-song 6502 code swapped in from the REU that sweeps the filter, shimmers pulse widths, bends and slurs the lead, flutters arpeggios and programs the drums between the sequencer's rows. The four-SID build also answers the lead with a stereo echo from the opposite chip and rings bells and anvils on the extra SIDs. Steering and weapons stay the same in space: shoot the small fragments, use bombs to clear large rocks and wreckage, and attack the bosses' side units before their cores. Brief scenic crossings include the climb out of the atmosphere.
 
