@@ -6,14 +6,11 @@ if ($LASTEXITCODE -ne 0) { throw 'Unable to locate project in WSL.' }
 & wsl -d $Distribution -- bash "$linuxRoot/scripts/build.sh"
 if ($LASTEXITCODE -ne 0) { throw 'C64 build failed; no output copied.' }
 if ($OutputDirectory) {
+    $archiveName=(& wsl -d $Distribution -- python3 "$linuxRoot/tools/package-release.py" --print-name).Trim()
+    if ($LASTEXITCODE -ne 0) { throw 'Unable to determine the release archive name; no output copied.' }
     $destination=$ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($OutputDirectory)
     New-Item -ItemType Directory -Force -Path $destination | Out-Null
-    foreach ($name in @('havoc.prg','havoc.reu','havoc.cfg','havoc.elf','memory-map.txt')) {
+    foreach ($name in @('havoc.prg','havoc.reu','havoc.cfg','havoc.elf','memory-map.txt',$archiveName)) {
         Copy-Item -LiteralPath (Join-Path $projectRoot "dist/$name") -Destination (Join-Path $destination $name)
-    }
-    $fourSidDestination=Join-Path $destination '4sid'
-    New-Item -ItemType Directory -Force -Path $fourSidDestination | Out-Null
-    foreach ($name in @('havoc.prg','havoc.reu','havoc.cfg','havoc.elf','memory-map.txt')) {
-        Copy-Item -LiteralPath (Join-Path $projectRoot "dist/4sid/$name") -Destination (Join-Path $fourSidDestination $name)
     }
 }

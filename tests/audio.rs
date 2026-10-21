@@ -113,16 +113,14 @@ fn music_registers(bus: &Bus) -> [[u8; 14]; 2] {
 }
 
 #[test]
-fn resident_engine_and_external_page_fit_the_profile_allocations() {
+fn quad_sid_engine_and_external_page_fit_the_resident_allocations() {
     let engine = core::mem::size_of::<AudioEngine>();
-    if SID_COUNT == 2 {
-        assert!(engine + PAGE_SIZE <= 432, "{engine} + {PAGE_SIZE}");
-    } else {
-        assert!(engine <= 432, "{engine}");
-        assert_eq!(PAGE_SIZE, 224);
-    }
-    assert_eq!(&SID_BASES[..2], &[0xd400, 0xd420]);
-    assert_eq!(SID_BASES.len(), SID_COUNT);
+    assert_eq!(engine, 400);
+    assert!(engine <= 432, "{engine}");
+    assert_eq!(PAGE_SIZE, 224);
+    assert_eq!(SID_COUNT, 4);
+    assert_eq!(MUSIC_VOICES, 10);
+    assert_eq!(SID_BASES, [0xd400, 0xd420, 0xd440, 0xd460]);
 }
 
 #[test]
@@ -1434,7 +1432,7 @@ mod kernels {
         // host image is also the byte-aligned MOS image, with no padding.
         let payload = 2 + PAGE_SIZE + 32 * SID_COUNT + 10 + 8 + 16 + 4 + 3 + 5;
         assert_eq!(image.len(), payload);
-        assert_eq!(image.len(), if SID_COUNT == 2 { 208 } else { 400 });
+        assert_eq!(image.len(), 400);
     }
 
     #[test]

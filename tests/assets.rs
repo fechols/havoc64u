@@ -68,7 +68,7 @@ fn header_rejects_wrong_size_signature_version_and_directory() {
         (8, 0xff, AssetError::Bounds),
         (12, 0xff, AssetError::Bounds),
         (16, 5, AssetError::Bounds),
-        (17, 6 - havoc::music::SID_COUNT as u8, AssetError::Bounds),
+        (17, 2, AssetError::Bounds),
     ] {
         let mut bytes = good;
         bytes[offset] = value;

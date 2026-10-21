@@ -5,11 +5,14 @@ VICE build used by `tools/vice-smoke.py`. These are emulator measurements, not
 claims about physical C64 Ultimate frame rates. The package is read-only during
 measurement; its PRG, REU, and ELF hashes are recorded and checked afterward.
 
-Current package ID `$534D0800` uses a 1 MiB REU image for both sound profiles,
+Current package ID `$534D0800` uses a 1 MiB REU image and four built-in UltiSIDs,
 with music at `$0C0000-$0FFFFF` and code overlays packed into the lower banks.
 Recorded measurements below retain their original package layouts and hashes;
 earlier 16 MiB results do not measure the relocated loader. Use the configuration
 and REU capacity matching the package when reproducing a historical run.
+
+Current span summaries require only four-SID PAL and NTSC results. Use
+`--historical-dual-sid` to validate archived matrices containing both SID profiles.
 
 ## Span-renderer optimizations: 2026-10-21
 
@@ -110,11 +113,11 @@ original failure, reproduction and old smoke tool are retained alongside the
 corrected retry. Timing reports all use the unchanged, frozen original tool.
 
 Build instrumented packages with
-`bash scripts/build-benchmark.sh OUTPUT PROFILE RENDERER`,
-where `PROFILE` is `2sid` or `4sid` and `RENDERER` is `painter`,
+`bash scripts/build-benchmark.sh OUTPUT RENDERER`,
+where `RENDERER` is `painter`,
 `spans` or `front`. Each benchmark report records the complete fixture list and
 invocation. Run
-`python3 tools/summarize-span-benchmarks.py target/span-opt --optimization-matrix`
+`python3 tools/summarize-span-benchmarks.py target/span-opt --optimization-matrix --historical-dual-sid`
 to verify all package hashes and comparisons and produce
 `summary.json`; exit status 1 correctly reports the failed speed gate. The
 separate pointer-hoist retention gate passes. Reproduce kernel checks with

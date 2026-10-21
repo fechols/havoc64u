@@ -1,6 +1,6 @@
 # H.A.V.O.C. hardware and build notes
 
-H.A.V.O.C. (Heavy Assault Vessel: Orbital Combat) targets the C64 Ultimate at 64 MHz with its built-in REU configured to 1 MB (1 MiB). The standard package in `dist/` uses two built-in UltiSIDs; `dist/4sid/` uses four built-in UltiSIDs for an enhanced arrangement. Neither profile requires physical SID chips. Import the chosen package's `havoc.cfg`, load its `havoc.reu` at REU address zero, then run its `havoc.prg`. Keep all three files from the same build and sound profile together. Older packages with 16 MiB images retain their original memory settings.
+H.A.V.O.C. (Heavy Assault Vessel: Orbital Combat) targets the C64 Ultimate at 64 MHz with its built-in REU configured to 1 MB (1 MiB). The single package in `dist/` uses four built-in UltiSIDs for the complete arrangement and requires no physical SID chips. Import its `havoc.cfg`, load its `havoc.reu` at REU address zero, then run its `havoc.prg`. Keep all three files from the same build together. Historical packages with 16 MiB images retain their original memory settings when reproducing older results.
 
 The configuration selects the C64U turbo registers, 64 MHz CPU speed, disabled badline timing, and quiet bus operation. The runtime programs the turbo register at startup and checks that the setting is available. An ordinary 1 MHz C64 is not a supported execution target.
 
@@ -25,8 +25,8 @@ Production companion screenshots have an existing screen/color-fetch defect with
 | `$0002–$0021` | LLVM-MOS imaginary registers |
 | `$00D0–$00E0` | Row walker zero page during PIXELS: the current triangle band's four Q16 edge values and its row count (`target-c64/asm/raster.S`); the compiler's zero-page region `$0022–$00EF` is otherwise empty (`tools/check-layout.py` asserts it) |
 | `$00F0–$00FF` | Cell writer zero page: the span being painted and its hot temporaries; `$FE` the span colour's key (colour XOR the clear colour), `$FF` the band's clear colour, read by the quantizer as its background (`target-c64/asm/cells.S`, `pack.S`) |
-| `$0200–$07FF` | Resident globals, including a 168-byte validated music directory, and compiler static scratch frames; four-SID builds end below `$0720` |
-| `$0720–$07FF` | Four-SID next-score page, 224 bytes; unused by music in the two-SID build |
+| `$0200–$071F` | Resident globals, including a 168-byte validated music directory, and compiler static scratch frames; all end below `$0720` |
+| `$0720–$07FF` | Next-score page, 224 bytes |
 | `$0801–$2FFF` | BASIC startup, resident code, data initializers |
 | `$3000–$71FF` | BOOT, SIM, GEOMETRY, PIXELS, AUDIO, or SCENERY code overlay; the PIXELS prefix may extend to `$6F1F` |
 | `$6F20–$71FF` | PIXELS helper code and the 16-byte ambient-particle frame |
@@ -47,7 +47,7 @@ Production companion screenshots have an existing screen/color-fetch defect with
 | `$C400–$C7FF` | Main software stack |
 | `$C800–$CA7F` | Game state |
 | `$CA80–$CDFF` | Main IRQ static-frame backup |
-| `$CE00–$CFAF` | Resident audio engine, including its active score page; also the next page in the two-SID build |
+| `$CE00–$CFAF` | Resident audio allocation; the 400-byte engine and active score page occupy `$CE00–$CF8F` |
 | `$CFFA–$CFFF` / `$D000–$DFFF` | Renderer header / triangle commands beneath I/O, left in emission order for the whole frame |
 | `$E000–$EBFF` | Twelve-byte persistent raster tails during PIXELS (former bitmap B) |
 | `$EC00–$EF1F` | Twenty-five ordered triangle masks, 32 bytes per band |
@@ -67,11 +67,11 @@ The PRG spans `$0801-$9FFF`, including resident constants and zero-filled gaps; 
 
 The music reservation occupies `$0C0000-$0FFFFF` (256 KiB). Every code reservation stays within one 64 KiB bank, and PIXELS retains its exclusive bank. Logical overlay IDs remain unchanged; a linker-authored, 31-byte table in resident `.tables` maps IDs to REU bases in 4 KiB units. The loader resolves each base once before its bounded DMA loop.
 
-Both sound profiles produce exactly 1,048,576-byte REU images. The allocated directories, common data, eighteen encounter/model banks, twenty-four `$4200` code slots and music reservation occupy 744,832 bytes in total, leaving 303,744 bytes (296.625 KiB) unreserved. These figures count reserved address ranges; the serialized code and music payloads use less than their reservations. The game only reads REU data during play; mutable game state stays in C64 RAM. The separate hardware timing probe writes solely to unreserved padding at `$0BFC00-$0BFFFF`.
+The build produces an exactly 1,048,576-byte REU image. The allocated directories, common data, eighteen encounter/model banks, twenty-four `$4200` code slots, 16 KiB music-kernel reservation and music bank occupy 761,216 bytes in total, leaving 287,360 bytes (280.625 KiB) unreserved. These figures count reserved address ranges; the serialized code and music payloads use less than their reservations. The game only reads REU data during play; mutable game state stays in C64 RAM. The separate hardware timing probe writes solely to unreserved padding at `$0BFC00-$0BFFFF`.
 
 The 1 MiB layout's same-source comparison against a 16 MiB build passes eighteen four-SID PAL fixtures with identical game state, geometry and native pixels. Measured frame-time changes range from -0.209% to +0.177% in calibrated VICE, with one sample per fixture; these are not physical-machine measurements. `target/reu-1m/performance-summary.json` and its source manifest record the comparison. Benchmark-only builds keep the unchanged segment-checksum helper in resident RAM to accommodate their SIM instrumentation; production retains its existing SIM placement.
 
-The final 1 MiB packages pass 311 host tests, 119 layout rejection fixtures, 64 overlay rejection fixtures and 127 package-corruption cases per sound profile. Each profile also passes 43 streaming/respawn/restart scenarios and all 21 complete music loops under both PAL and NTSC with a 1,024 KiB emulated REU and no music underruns. `target/reu-1m/validation-summary.json` records the matching package hashes, reports and verified copies to the hardware drive.
+The earlier dual-profile 1 MiB packages passed 311 host tests, 119 layout rejection fixtures, 64 overlay rejection fixtures and 127 package-corruption cases per sound profile. Each profile also passed 43 streaming/respawn/restart scenarios and all 21 complete music loops under both PAL and NTSC with a 1,024 KiB emulated REU and no music underruns. `target/reu-1m/validation-summary.json` records those historical package hashes, reports and verified copies to the hardware drive.
 
 On 2026-10-21 the user reported that the 1 MiB build looks and sounds great on physical hardware. The sound profile, video standard and campaign coverage were not specified.
 
@@ -183,18 +183,18 @@ start of PIXELS. Global background transitions can recolor old code-zero
 pixels before their bands are replaced; this change addresses local
 bitmap/attribute mismatches, not atomic whole-frame or background changes.
 
-## SID configurations
+## UltiSID configuration
 
-The two executables are selected at build time with Cargo's `four-sid` feature. There is no runtime hardware probe or profile menu. Both configurations disable automatic address mirroring and leave both physical sockets unmapped and muted. The standard configuration disables range splitting. The four-SID configuration sets `UltiSID Range Split=1/2 (A6)`, giving each UltiSID two independent SID instances at the game's existing addresses: UltiSID 1A/1B at `$D400/$D440` and UltiSID 2A/2B at `$D420/$D460`.
+Every build uses four SIDs; there is no sound-profile feature, hardware probe, or profile menu. The supplied configuration disables automatic address mirroring and leaves both physical sockets unmapped and muted. `UltiSID Range Split=1/2 (A6)` gives each UltiSID two independent SID instances at the game's addresses: UltiSID 1A/1B at `$D400/$D440` and UltiSID 2A/2B at `$D420/$D460`.
 
-| Chip | Address | Two-SID package | Four-SID package | Pan |
-|---|---|---|---|---|
-| UltiSID 1 / 1A | `$D400` | 0 dB; two music + one effect voice | Same | Left 1 |
-| UltiSID 2 / 2A | `$D420` | 0 dB; two music + one effect voice | Same | Right 1 |
-| UltiSID 1B | `$D440` | Inactive | Shared 0 dB gain; three music voices | Left 1 |
-| UltiSID 2B | `$D460` | Inactive | Shared 0 dB gain; three music voices | Right 1 |
+| Chip | Address | Voices and gain | Pan |
+|---|---|---|---|
+| UltiSID 1A | `$D400` | Two music + one effect voice; 0 dB | Left 1 |
+| UltiSID 2A | `$D420` | Two music + one effect voice; 0 dB | Right 1 |
+| UltiSID 1B | `$D440` | Three music voices; shared 0 dB gain | Left 1 |
+| UltiSID 2B | `$D460` | Three music voices; shared 0 dB gain | Right 1 |
 
-Both profiles use gentle stereo separation (`Left 1` / `Right 1`) for headphone listening, preserving left/right distinction while bringing the mix closer to center. Re-import the updated `havoc.cfg` to apply the mixer settings.
+The package uses gentle stereo separation (`Left 1` / `Right 1`) for headphone listening, preserving left/right distinction while bringing the mix closer to center. Re-import the updated `havoc.cfg` to apply the mixer settings.
 
 Each split pair shares its parent UltiSID's mixer gain and pan. Both parent gains remain at 0 dB; the former physical sockets' provisional −6 dB attenuation is dropped without changing the score or player. Addressing is described in the [Ultimate MultiSID guide](https://1541u-documentation.readthedocs.io/en/latest/config/multi_sid.html).
 
@@ -202,28 +202,15 @@ Both UltiSID groups use the same `8580 Lo` filter curve, `High` resonance settin
 
 The Ultimate Audio mapping at `$DF20–$DFFF` is disabled, and both sampler channels are muted. The firmware's `Digis Level=Medium` setting is retained but is not used for sampled playback. Mixer panning applies to HDMI and AV output, not the physical SID-TAP header. The built-in SID player's autoconfiguration can override mixer settings, so re-import the game configuration after using that player. See the [official mixer documentation](https://1541u-documentation.readthedocs.io/en/latest/config/audio_mixer.html).
 
-### Update an existing four-SID package
+### Updating an older package
 
-The archived v0.1.0 four-SID package routes the extra music voices to physical sockets. To use only the built-in UltiSIDs, edit these entries in that package's `havoc.cfg`:
-
-```ini
-[SID Addressing]
-SID Socket 1 Address=Unmapped
-SID Socket 2 Address=Unmapped
-UltiSID Range Split=1/2 (A6)
-
-[Audio Mixer]
-Vol Socket 1=OFF
-Vol Socket 2=OFF
-```
-
-These are replacements within the existing sections, not a complete configuration file. Keep the UltiSID base addresses at `$D400/$D420`, automatic mirroring disabled, both UltiSID gains at 0 dB, and their existing 8580 settings. Keep or set `Pan UltiSID 1=Left 1` and `Pan UltiSID 2=Right 1`; the muted socket pan entries can be removed. Preserve the package's CPU and REU settings, including 16 MB for older 16 MiB images. Re-import the edited configuration before running the matching four-SID PRG/REU; no game rebuild is needed. New builds already include this routing.
+Earlier downloads offered two-SID and four-SID variants, and the original four-SID configuration used physical sockets. Replace all three runtime files with the refreshed single package and re-import its configuration. An old two-SID REU image is incompatible with the current executable and is rejected at startup. Keep historical binaries with their original matching REU images and memory settings when reproducing archived measurements.
 
 ## Paged melodic score
 
-The score runs at 50 Hz from CIA1 Timer A independently of rendering, with PAL/NTSC timer periods and frequency tables. Twenty-one cues preserve the original thirteen arrangements and add six mission themes, an ascent cue and the Gate Guardian encounter. The four core parts remain identical in both profiles; baking strips only the optional six-part orchestration for two SIDs. The additional cues reuse the existing paged player and require no larger IRQ page cache.
+The score runs at 50 Hz from CIA1 Timer A independently of rendering, with PAL/NTSC timer periods and frequency tables. Twenty-one cues preserve the original thirteen arrangements and add six mission themes, an ascent cue and the Gate Guardian encounter. Every build includes the four core parts and six additional orchestration parts. The consolidation preserves the complete former four-SID score byte for byte.
 
-Each score page contains one bar of sixteen sixteenth-note rows. Cues carry their own checked row duration. The score allocation is `$0C0000-$0FFFFF` (256 KiB), with 32-bit bank-relative offsets; package `assets.txt` records the exact used byte count for its sound profile. Track names, arrangements and row timing are authored in [src/soundtrack.rs](../src/soundtrack.rs).
+Each score page contains one bar of sixteen sixteenth-note rows. Cues carry their own checked row duration. The score allocation is `$0C0000-$0FFFFF` (256 KiB), with 32-bit bank-relative offsets; package `assets.txt` records the exact used byte count. The resident engine occupies 400 bytes within its 432-byte allocation; the 224-byte next page occupies `$0720-$07FF`, with compiler globals kept below `$0720`. Track names, arrangements and row timing are authored in [src/soundtrack.rs](../src/soundtrack.rs).
 
 The resident engine holds the active page, SID register shadows, two effects states, and a small event queue. The foreground AUDIO overlay fills a separate next-page buffer and publishes it while interrupts are masked. The buffer is not modified until the player consumes it. The IRQ copies a ready page at the bar boundary and requests its successor; it performs no REU access. If the next page is late, playback waits before the boundary's release tick, preserving held music and continuing effects. `MUSIC_UNDERRUNS` counts each incident. Cue changes request page zero and insert a complete gate-low tick before the new cue starts.
 
@@ -233,25 +220,64 @@ Historical OST-build MOS layouts used 177 bytes for the two-SID engine plus a 96
 
 The historical OST ELF symbols account for **2,699 / 2,707 bytes of resident player code** in the two/four-SID builds: music transport, effects, register writes, pitch conversion, page requests, and the audio-tick wrapper. This excludes shared arithmetic helpers, constants, and the common IRQ wrapper. The foreground AUDIO overlay is 2,859 / 2,881 bytes and reuses the existing overlay window; it adds no separate resident code allocation. Its loader and validators are unreachable from the IRQ. Four-SID routing tables avoid a per-note divide, keeping the extra six voices inexpensive in code size.
 
-The bank format is `SMU3`. Its 256-byte header records SID/voice profile, total length, page size, and twenty-one eight-byte cue entries; the directory can represent thirty cues without another resize. Entries contain bank-relative offset, page count, row duration and cue checksum. The common asset bank stores a matching header copy. `SPG2` pages keep their layout: a 12-byte header, five instrument bytes per voice, and sixteen rows of four or ten events, totaling 96/224 bytes for two/four SIDs. Header byte 9 is the bar's filter cutoff target (SID register 22); zero holds the filter, so the historical pages remain byte-identical. Each instrument's control byte carries one waveform plus optional sync (`$02`) and ring-modulation (`$04`) bits; ring modulation is only accepted on triangle voices, and the player writes the byte unchanged with the gate bit, so the colours cost no resident code. Unused bytes are zero.
+The bank format is `SMU3`. Its 256-byte header records SID/voice profile, total length, page size, and twenty-one eight-byte cue entries; the directory can represent thirty cues without another resize. Entries contain bank-relative offset, page count, row duration and cue checksum. The common asset bank stores a matching header copy. `SPG2` pages keep their layout: a 12-byte header, five instrument bytes per voice, and sixteen rows of ten events, totaling 224 bytes. Historical two-SID pages used four events per row and 96 bytes; the current player rejects that profile. Header byte 9 is the bar's filter cutoff target (SID register 22); zero holds the filter, so the historical pages remain byte-identical. Each instrument's control byte carries one waveform plus optional sync (`$02`) and ring-modulation (`$04`) bits; ring modulation is only accepted on triangle voices, and the player writes the byte unchanged with the gate bit, so the colours cost no resident code. Unused bytes are zero.
 
 Events are `0` for rest, `1` for hold, MIDI notes `24..95` for an articulated attack, or a note with bit `$80` set for legato. Holds preserve the gate and pitch; legato changes pitch without releasing the gate. A new attack or rest releases the preceding note one 20 ms tick before its boundary. Page publication rejects a hold or legato opening when switching cues or changing that voice's instrument. For *Lost Wing*, an attack plus hold at nine ticks per row reproduces each old 18-tick note, followed by two resting rows; its full loop remains 2,304 ticks, or 46.08 seconds.
 
-The produced score keeps the four core parts in both profiles. The electronic and orbital cues add Jeroen Tel-style production entirely in the page data: lead and bass pulse widths step across every eight-bar phrase; voice six echoes the lead a dotted eighth (or an eighth) later from the opposite UltiSID in the four-SID ensemble; the orbital drum kit uses real noise decays, slurred falling snares, a tuned sub-octave kick body, phrase-end rolls and section crashes; basses walk chromatically into each chord change; strings swell through the second and final eights and drop out for a two-bar breakdown before each reprise; *Slingshot Through the Belt*, *Rivets in Orbit* and *Carrier Overdrive* lift their final sections a whole tone with newly written melodies; and *Silver Fractures*, *Beyond the Blue Threshold*, *Ashes and Steel* and *Rivets in Orbit* ring-modulate bells and anvils on the extra SIDs. *Lost Wing* is untouched. `tests/soundtrack.rs` pins every cue's published checksum in both profiles.
+The produced score keeps the four core parts and all six orchestration parts. The electronic and orbital cues add Jeroen Tel-style production entirely in the page data: lead and bass pulse widths step across every eight-bar phrase; voice six echoes the lead a dotted eighth (or an eighth) later from the opposite UltiSID in the four-SID ensemble; the orbital drum kit uses real noise decays, slurred falling snares, a tuned sub-octave kick body, phrase-end rolls and section crashes; basses walk chromatically into each chord change; strings swell through the second and final eights and drop out for a two-bar breakdown before each reprise; *Slingshot Through the Belt*, *Rivets in Orbit* and *Carrier Overdrive* lift their final sections a whole tone with newly written melodies; and *Silver Fractures*, *Beyond the Blue Threshold*, *Ashes and Steel* and *Rivets in Orbit* ring-modulate bells and anvils on the extra SIDs. *Lost Wing* is untouched. `tests/soundtrack.rs` pins every cue's published four-SID checksum.
 
 Header and page checksums treat their own two-byte fields as zero. Whole-cue checksums cover the stored pages including their checksums. Before the first cue plays, the foreground validator checks the header signature, all directory bounds, contiguous cue spans, profile fields, instrument/note ranges, tempos, page indices, next-page links, padding, and checksums. It also verifies the final bank extent before publishing the cached descriptors. Every subsequently fetched page is validated again before publication, including its checksum, cue/page identity, tempo and next-page link. Runtime uses the validated cached descriptors as its directory authority; it does not reread the REU header. The first AUDIO load includes the validator and parser, while later loads stop at `__phase_audio_runtime_size`. The `OVL7` code directory still checks the complete AUDIO image alongside the other executable images and matching PRG, constants, startup code, and SID profile.
 
 ## Per-song music kernels
 
-Each cue except *Lost Wing* ships its own modulation kernel: a small piece of 6502 code, written in Rust in [src/audio/kernels.rs](../src/audio/kernels.rs), that the IRQ calls once per tick after the transport has written the row. Kernels are composed from shared building blocks — filter glide towards the bar's authored target, the bass-triggered "wah" envelope, triangle pulse-width shimmer, delayed vibrato, portamento into slurred notes, a chord-safe double-time arpeggio that flutters between consecutive authored pitches, a tick-rate drum program that turns kicks into sliding pulse bodies and lets snares fall, and a modulator sweep for the ring-modulated bells — with the constants baked per song. They touch SID registers only through the engine's deduplicating writes, read the row the transport already wrote, keep all state in a sixteen-byte `scratch` that clears at every loop start, and never touch the reserved effects voices, routing or volume. Both sound profiles run them; the standard package gains the same expression on its four core voices.
+Each cue except *Lost Wing* ships its own modulation kernel: a small piece of 6502 code, written in Rust in [src/audio/kernels.rs](../src/audio/kernels.rs), that the IRQ calls once per tick after the transport has written the row. Kernels are composed from shared building blocks — filter glide towards the bar's authored target, the bass-triggered "wah" envelope, triangle pulse-width shimmer, delayed vibrato, portamento into slurred notes, a chord-safe double-time arpeggio that flutters between consecutive authored pitches, a tick-rate drum program that turns kicks into sliding pulse bodies and lets snares fall, and a modulator sweep for the ring-modulated bells — with the constants baked per song. They touch SID registers only through the engine's deduplicating writes, read the row the transport already wrote, keep all state in a sixteen-byte `scratch` that clears at every loop start, and never touch the reserved effects voices, routing or volume. The single package applies them to the complete ten-part arrangement.
 
-On the target every kernel is linked at the same resident slot (`$7200–$74FF`, 768 bytes) and stored as a separate REU image behind an `SMK1` directory at `$0B9000`: a 16-byte header with its own checksum, one `size, checksum` entry per cue, and a whole-directory checksum. The host `pack-overlays.py` writes the images from the linked ELF together with the `OVL7` code images, so the existing PRG/REU pairing check covers them. Startup verifies the complete directory and every image before `MUSIC_VALIDATED`; at each cue change the foreground AUDIO overlay marks the slot invalid under an IRQ mask, fetches the header and the cue's entry into the slot, copies and re-checksums the image (every transfer stays far below the 1 KiB DMA bound), and only then re-enables the slot for that cue. The IRQ calls the slot only while the loaded kernel belongs to the playing cue, so a changed cue's final bar is never coloured by its successor's kernel. The two/four-SID images are 275–748 bytes; the costliest kernel measures about 3,400 cycles per tick on the 6502 model, under 55 µs at 64 MHz. The slot reuses half of the former 1 KiB IRQ software stack, whose high-water mark measured three bytes across five native cue loops; `tools/check-layout.py` and `tools/check-overlays.py` verify the slot placement, every image size, and that kernels reference only resident code and data. The `music-kernels` Cargo feature (on by default in `target-c64`) can be disabled to ship the plain transport.
+On the target every kernel is linked at the same resident slot (`$7200–$74FF`, 768 bytes) and stored as a separate REU image behind an `SMK1` directory at `$0B9000`: a 16-byte header with its own checksum, one `size, checksum` entry per cue, and a whole-directory checksum. The host `pack-overlays.py` writes the images from the linked ELF together with the `OVL7` code images, so the existing PRG/REU pairing check covers them. Startup verifies the complete directory and every image before `MUSIC_VALIDATED`; at each cue change the foreground AUDIO overlay marks the slot invalid under an IRQ mask, fetches the header and the cue's entry into the slot, copies and re-checksums the image (every transfer stays far below the 1 KiB DMA bound), and only then re-enables the slot for that cue. The IRQ calls the slot only while the loaded kernel belongs to the playing cue, so a changed cue's final bar is never coloured by its successor's kernel. Historically, the two/four-SID images measured 275–748 bytes; the costliest kernel measures about 3,400 cycles per tick on the 6502 model, under 55 µs at 64 MHz. The slot reuses half of the former 1 KiB IRQ software stack, whose high-water mark measured three bytes across five native cue loops; `tools/check-layout.py` and `tools/check-overlays.py` verify the slot placement, every image size, and that kernels reference only resident code and data. The `music-kernels` Cargo feature (on by default in `target-c64`) can be disabled to ship the plain transport.
 
-`tools/test-music-kernel.py` replays the linked kernel images on a Python 6502 model against fixtures from `cargo run --release --features music-kernels -- kernel-fixtures` (add `--features four-sid` for the enhanced profile): 1,181 engine states per profile, each requiring identical engine bytes and SID writes to the host run, no stores outside the engine, SID, zero-page, stack and static-frame regions, and a balanced hardware stack. `tools/test-corrupt-package.py` includes a corrupted kernel directory, entry and image, which boot rejects with `INVALID MUSIC KERNEL`.
+`tools/test-music-kernel.py` replays the linked kernel images on a Python 6502 model against fixtures from `cargo run --release --features music-kernels -- kernel-fixtures`: the four-SID fixture set covers 1,181 engine states, each requiring identical engine bytes and SID writes to the host run, no stores outside the engine, SID, zero-page, stack and static-frame regions, and a balanced hardware stack. `tools/test-corrupt-package.py` includes a corrupted kernel directory, entry and image, which boot rejects with `INVALID MUSIC KERNEL`.
+
+## Single-build consolidation validation (2026-10-21)
+
+The consolidated package uses four UltiSID instances and the default painter renderer.
+The optional span renderers remain disabled unless explicitly selected. Host tests
+pass in all four configurations: 331 default, 343 with music kernels, 353 with
+deferred spans and music kernels, and 356 with front-to-back spans and music kernels.
+Each configuration retains one ignored fixture-export test.
+
+The default native build passes its memory and overlay audits, 129 negative layout
+fixtures, 69 negative overlay fixtures, 1,181 exact kernel replay states across
+20 kernels, and 131 corrupt-package rejection cases. The optional native span and
+front-to-back builds also pass their audits and respectively 132/75 and 136/79
+negative layout/overlay fixtures. No new renderer performance claims follow from
+these checks.
+
+Production and benchmark packaging select the ELF belonging to Cargo's selected
+PRG by file identity. Isolated default-to-experimental-to-default build sequences
+verify that a newer cached experimental ELF cannot displace the painter ELF;
+the restored painter package remains byte-identical. Missing or ambiguous matches
+fail before copying native files. Evidence is in
+`target/single-ultisid/artifact-selection.json`.
+
+The release ZIP has exactly five entries: the matching configuration, PRG and REU,
+launch instructions and license. Each entry matches its source bytes. The REU is
+1,048,576 bytes, the resident engine is 400 bytes, the separate music page is
+224 bytes, and resident headroom is 1,230 bytes. All 146,528 score bytes match the
+previous four-SID build. Logs and generated reports are under
+`target/single-ultisid/`; historical measurements elsewhere retain their original
+binary provenance.
+
+Both PAL and NTSC runs of the exact release files pass startup/title comparison,
+4 control, 22 weapon, 43 streaming/checkpoint/restart and 7 attract scenarios,
+plus the pause suite and all 21 complete music loops with every page visited and
+no underruns. Each report confirms unchanged PRG, REU and ELF hashes matching
+the package. `target/single-ultisid/validation-summary.json` ties together these
+reports, host tests, audits and package hashes. These monitor-assisted checks are
+not continuous campaign playthroughs or physical-machine measurements; four-UltiSID
+listening and shared mixer balance still need physical-hardware confirmation.
 
 ## Build and verification
 
-Host tools require Rust and Cargo. The target build additionally requires Linux/WSL, Python 3, LLVM-MOS SDK **v22.5.0**, and a Rust-MOS toolchain with the `mos-c64-none` target and Rust sources. This workspace was built with `rustc 1.87.0-dev` registered as the `mos` rustup toolchain; `target-c64/rust-toolchain.toml` selects that alias. `scripts/env.sh` defaults to `$HOME/.local/llvm-mos` and `$HOME/.local/rust-mos-targets`. Override `LLVM_MOS`, `MOS_CLANG`, and `RUST_TARGET_PATH` for another compatible installation.
+Host tools require Rust and Cargo. The target build and release packager additionally require Linux/WSL, Python 3.11 or later, LLVM-MOS SDK **v22.5.0**, and a Rust-MOS toolchain with the `mos-c64-none` target and Rust sources. This workspace was built with `rustc 1.87.0-dev` registered as the `mos` rustup toolchain; `target-c64/rust-toolchain.toml` selects that alias. `scripts/env.sh` defaults to `$HOME/.local/llvm-mos` and `$HOME/.local/rust-mos-targets`. Override `LLVM_MOS`, `MOS_CLANG`, and `RUST_TARGET_PATH` for another compatible installation.
 
 From PowerShell, using the configured Ubuntu-24.04 WSL toolchain:
 
@@ -265,19 +291,16 @@ Or from Linux/WSL:
 bash scripts/build.sh
 ```
 
-The complete build tests both profiles, bakes assets, links the C64 programs, audits memory and overlays, and produces matching `havoc.prg`, `havoc.reu`, and `havoc.cfg` files in `dist/` and `dist/4sid/`. The four-SID native build uses its own `target-c64/target-4sid` directory. Generated packages are ignored by Git; cloning the repository does not supply `dist/`.
+The complete build tests the host with and without music kernels, bakes assets, links one C64 program, audits memory and overlays, and produces matching `havoc.prg`, `havoc.reu`, and `havoc.cfg` files in `dist/`. It also creates `havoc-v0.1.0.zip` with the three runtime files, launch instructions, and license. The native build uses `target-c64/target`. Generated packages are ignored by Git; cloning the repository does not supply `dist/`.
 
-For a single profile after changing assets, bake with `cargo +stable run --release -- bake dist` or `cargo +stable run --release --features four-sid -- bake dist/4sid`, then run `bash scripts/build-target.sh 2sid` or `bash scripts/build-target.sh 4sid` respectively. The bake step alone does not produce executable overlays. On Windows, `scripts/build-windows.ps1` runs the complete two-profile build through WSL; its optional output directory receives the standard package and a `4sid` subfolder.
+After changing assets, bake with `cargo +stable run --release -- bake dist`, then run `bash scripts/build-target.sh`. The bake step alone does not produce executable overlays. Use the full build script to run checks and produce the release ZIP. On Windows, `scripts/build-windows.ps1` runs the same build through WSL; its optional output directory receives the single package and ZIP. SID-profile arguments and the `four-sid` Cargo feature have been removed.
 
 Host inspection commands:
 
 ```sh
 cargo test --all-targets
-cargo test --all-targets --features four-sid
 cargo test --all-targets --features music-kernels
-cargo test --all-targets --features "four-sid music-kernels"
 cargo run --release -- sizes
-cargo run --release --features four-sid -- sizes
 cargo run --release -- snapshot title 0 target/previews/title
 cargo run --release -- snapshot 2 5000 target/previews/canyon
 cargo run --release -- snapshot attract 35000 target/previews/attract-crystal
@@ -310,8 +333,6 @@ python3 tools/test-flight-kernel.py
 python3 tools/benchmark-division.py
 cargo +stable run --release --features music-kernels -- kernel-fixtures
 python3 tools/test-music-kernel.py --elf dist/havoc.elf
-cargo +stable run --release --features "four-sid music-kernels" -- kernel-fixtures
-python3 tools/test-music-kernel.py --elf dist/4sid/havoc.elf
 ```
 
 `tools/branch-audit.py <source.S>` runs from `target-c64/build.rs` on every assembled source: it re-assembles the file with line information, reads the label each conditional branch names and compares it with the encoded target, because the assembler silently wraps a branch that cannot reach its label in the same section (a wrapped target before the section start is printed with a sign, which the audit also recognizes). Two more assembler habits to know: `<` and `>` applied to a negative constant yield the bytes of its magnitude, so negative immediates are written as explicit bytes; `.L` labels survive only with `-Wa,-L`.
@@ -325,10 +346,9 @@ python3 tools/vice-smoke.py --video ntsc --title-reference target/previews/title
 python3 tools/vice-smoke.py --video pal --control-checks --weapon-checks --streaming-checks
 python3 tools/vice-smoke.py --video pal --attract-checks
 python3 tools/vice-smoke.py --video pal --music-checks
-python3 tools/vice-smoke.py --video pal --package-dir dist/4sid --music-checks
+python3 tools/vice-smoke.py --video ntsc --music-checks
 python3 tools/test-corrupt-package.py
 python3 tools/test-overlay-audit.py dist/havoc.elf
-python3 tools/test-overlay-audit.py dist/4sid/havoc.elf
 ```
 
 The smoke test records package/emulator hashes, exact native title bytes, physical joystick-port-2 input, audio activity, frame progress, and runtime guards under `target/vice`. Control and weapon checks exercise steering, roll dodges, homing missiles, hit flashes, and bomb display-register effects; streaming checks seed stage boundaries, checkpoints, and restart scenarios. Attract checks follow the complete idle tour and exercise dismissal with each input. These monitor-assisted cases are separate from a continuous campaign and physical-machine acceptance. Use distinct `--out-dir` paths when retaining multiple runs.
@@ -378,19 +398,19 @@ The other native kernels preserve host reference behavior: `sort.S` implements s
 
 `python3 tools/test-raster-prep.py` checks both the production Rust entry point and the direct assembly kernel against an independent integer reference. It compares all 28 prepared head/tail bytes for 852 triangles at four alignments, with separate storage and in-place input: 13,632 preparations with buffer and scratch guards. This closes the gap left by the row-walker test, whose inputs are already prepared on the host. Its report lives under `target/raster-prep-test`. `python3 tools/test-preparation-abi.py` separately checks 1,024 calls with changing callee-saved register canaries, stack and I/D flags, immutable input, and output guards; its report lives under `target/preparation-abi`.
 
-`python3 tools/test-corrupt-package.py` exercises package rejection in the calibrated VICE companion using damaged code/model directories, executable images, common and level assets, PRG/REU pairing, SID profile, and score pages. It uses private copies under `target/corrupt-package-test`, verifies the error-screen text bytes, saves screenshots and logs, and confirms the input package hashes remain unchanged. It reads failure addresses from the matching ELF and chooses a free monitor port. Pass `--package-dir dist/4sid` to exercise the enhanced package. These checks are emulator regressions, not physical C64 Ultimate acceptance.
+`python3 tools/test-corrupt-package.py` exercises package rejection in the calibrated VICE companion using damaged code/model directories, executable images, common and level assets, PRG/REU pairing, SID profile, and score pages. It uses private copies under `target/corrupt-package-test`, verifies the error-screen text bytes, saves screenshots and logs, and confirms the input package hashes remain unchanged. It reads failure addresses from the matching ELF and chooses a free monitor port. The default package directory is `dist`. These checks are emulator regressions, not physical C64 Ultimate acceptance.
 
 The final optimized release passed 125 corruption cases per sound profile, including every executable image and all twenty-one music cues. `target/offplanet-validation/release-corrupt-2sid/summary.json` and `target/offplanet-validation/release-corrupt-4sid/summary.json` record all 250 successful rejections and unchanged input hashes.
 
-`tools/vice-smoke.py --music-checks` derives the SID profile and cue count from the package, then verifies every complete cue loop plus an extra page while frames continue. It observes page order, clocks, underruns, authored pitches and lane activity; a held-fire Lowland fixture exercises both effects voices. The two-SID profile must not write to `$D440/$D460`. Add `--music-cues 13 14 15 16 17 18 19 20` to repeat just the eight new full loops, as in the final release suites above.
+`tools/vice-smoke.py --music-checks` derives the SID profile and cue count from the package, then verifies every complete cue loop plus an extra page while frames continue. It observes page order, clocks, underruns, authored pitches and lane activity; a held-fire Lowland fixture exercises both effects voices. The current package exercises all four SID banks and ten music lanes; the historical two-SID artifact checks still reject writes to `$D440/$D460`. Add `--music-cues 13 14 15 16 17 18 19 20` to repeat just the eight new full loops, as in the archived expansion-release suites.
 
-All twenty-one cues previously passed complete native loops in both sound profiles and both video standards on the frozen `target/offplanet-final/` packages. Those reports are `target/offplanet-validation/final-smoke-2sid-pal/report.json`, `target/offplanet-validation/final-smoke-2sid-ntsc/report.json`, `target/offplanet-validation/final-music-4sid-pal/report.json`, and `target/offplanet-validation/final-music-4sid-ntsc/report.json`. They precede the optimized directory cache and AUDIO transfers; the final release repeats the eight new loops and functional checks on the exact release hashes. The older thirteen-cue suite under `target/music-validation/native-{2sid,4sid}-{pal,ntsc}/` is historical evidence. These monitor-assisted scenes are separate from ordinary-play timing and a complete campaign.
+All twenty-one cues previously passed complete native loops in both sound profiles and both video standards on the frozen `target/offplanet-final/` packages. Those reports are `target/offplanet-validation/final-smoke-2sid-pal/report.json`, `target/offplanet-validation/final-smoke-2sid-ntsc/report.json`, `target/offplanet-validation/final-music-4sid-pal/report.json`, and `target/offplanet-validation/final-music-4sid-ntsc/report.json`. They precede the optimized directory cache and AUDIO transfers; the original expansion release repeated the eight new loops and functional checks on its exact release hashes. The older thirteen-cue suite under `target/music-validation/native-{2sid,4sid}-{pal,ntsc}/` is historical evidence. These monitor-assisted scenes are separate from ordinary-play timing and a complete campaign.
 
 `tools/music-previews.py` records the native player through VICE's SID audio output. Historical recordings of *Crystal Current*, *Ashes and Steel*, *Tempest Drive*, *Gorge Warden*, *Citadel Heart*, and *Carrier Overdrive* remain under `target/music-validation/previews-{2sid,4sid}/`; those manifests report zero clipped samples. The orbital score adds *Slingshot Through the Belt*, *Silver Fractures*, *Echoes of Lost Fleets*, *Rivets in Orbit*, *Shadow of the Dreadnought*, *Beyond the Blue Threshold*, *Atmosphere to Starlight*, and *The Last Sentinel*. The six mission cues and final boss cue each contain four distinct eight-bar sections; the ascent lasts eight seconds.
 
-`target/offplanet-validation/music-2sid/recordings.json` and `target/offplanet-validation/music-4sid/recordings.json` pass all eight new recordings: 407.36 seconds per profile of 44.1 kHz stereo WAV audio, with both channels active and zero clipped samples. The WAVs and manifests are bundled in `target/offplanet-validation/music-2sid.zip` and `target/offplanet-validation/music-4sid.zip`. They retain the earlier frozen packages as their recording provenance. `target/offplanet-validation/release-music-equivalence.json` verifies that their complete encoded score banks are byte-identical to the final release: 62,944 bytes for two SIDs and 146,528 for four SIDs. Those emulator recordings did not validate the former physical-SID mixer balance. Four-UltiSID playback and mixer balance on the Ultimate remain unverified.
+`target/offplanet-validation/music-2sid/recordings.json` and `target/offplanet-validation/music-4sid/recordings.json` pass all eight new recordings: 407.36 seconds per profile of 44.1 kHz stereo WAV audio, with both channels active and zero clipped samples. The WAVs and manifests are bundled in `target/offplanet-validation/music-2sid.zip` and `target/offplanet-validation/music-4sid.zip`. They retain the earlier frozen packages as their recording provenance. `target/offplanet-validation/release-music-equivalence.json` verifies that their complete encoded score banks are byte-identical to that historical release: 62,944 bytes for two SIDs and 146,528 for four SIDs. Those emulator recordings did not validate the former physical-SID mixer balance. Four-UltiSID playback and mixer balance on the Ultimate remain unverified.
 
-The soundtrack tests check cue lengths, distinct melodic sections, loop/page articulation, both serialization profiles, and the exact *Lost Wing* transcription. A passing host test or valid linker map does not establish a frame-rate result on the machine. Hardware acceptance must check PAL and NTSC presentation timing, all twenty-one cues and page boundaries, simultaneous music and effects, REU transfers during play, stack guards, and full-mission restart/checkpoint behavior. Four-SID acceptance must also confirm that importing the configuration exposes all four built-in SID instances, the physical sockets remain unmapped and muted, and the enhanced arrangement and effects sound balanced at the shared 0 dB gains. Physical chips are optional and unused.
+The soundtrack tests check cue lengths, distinct melodic sections, loop/page articulation, four-SID serialization, rejection of legacy two-SID data, and the exact *Lost Wing* transcription. A passing host test or valid linker map does not establish a frame-rate result on the machine. Hardware acceptance must check PAL and NTSC presentation timing, all twenty-one cues and page boundaries, simultaneous music and effects, REU transfers during play, stack guards, and full-mission restart/checkpoint behavior. Four-SID acceptance must also confirm that importing the configuration exposes all four built-in SID instances, the physical sockets remain unmapped and muted, and the enhanced arrangement and effects sound balanced at the shared 0 dB gains. Physical chips are optional and unused.
 
 The bootstrap structure was informed by the neighboring `doomc64u` repository. `secondreality/src/output/cfg.rs` provided a local example of the Ultimate mixer and SID-address configuration keys. H.A.V.O.C. uses its own synthesis player and does not adopt Second Reality's digital-audio modes.
 
@@ -401,7 +421,7 @@ Build the four-SID package first, then run the capture and encoding steps from L
 
 ```sh
 python3 tools/capture-showcase.py \
-  --package-dir dist/4sid --video pal --out-dir target/readme-showcase \
+  --package-dir dist --video pal --out-dir target/readme-showcase \
   --scene title --scene lowlands --scene crystal-cave \
   --scene foundry-belt --scene storm-front --scene orbital-ascent \
   --scene asteroid-belt --scene title-outro
@@ -410,7 +430,7 @@ python3 tools/encode-showcase.py target/readme-showcase/manifest.json
 
 Capture uses the compiled C64 program in the calibrated emulator and records its SID music and gameplay effects. The showcase presents selected scenes rather than a continuous campaign or a physical-machine recording. Keep the footage at its recorded game speed: duplicated video frames must not be presented as a higher game rendering rate. The four-SID recording represents VICE SID synthesis; it does not establish the Ultimate's UltiSID sound or final hardware mixer balance.
 
-The README trailer is 72 seconds: title (4), Lowland Approach (12), Crystal Cave (10), Foundry Belt (10), Storm Front (10), orbital ascent (8), Asteroid Belt (10), and title outro (8). It previews the first orbital mission without revealing bosses or the ending. Omitting `--scene` records the full storyboard, including all six orbital missions. Repeat `--scene <name>` to select scenes, or use `--duration 1` for short capture probes. The capture and encoder also accept the two-SID package with `--package-dir dist`; their manifests record the actual sound profile.
+The README trailer is 72 seconds: title (4), Lowland Approach (12), Crystal Cave (10), Foundry Belt (10), Storm Front (10), orbital ascent (8), Asteroid Belt (10), and title outro (8). It previews the first orbital mission without revealing bosses or the ending. Omitting `--scene` records the full storyboard, including all six orbital missions. Repeat `--scene <name>` to select scenes, or use `--duration 1` for short capture probes. Artifact readers can still inspect historical two-SID packages when an explicit package path is supplied; current builds always contain four SIDs.
 
 The encoder writes `target/readme-showcase/havoc-showcase.mp4` by default. It requires FFmpeg and FFprobe; use `--ffmpeg <path>` and `--ffprobe <path>` to select their executables. Native Linux and Windows executables are supported, with WSL path conversion for Windows tools. Preserve the capture manifest and source recordings with the generated video so its package, scene selection, timing, and audio can be checked before publishing. Generated capture artifacts stay under `target/`; only the selected README images belong in `docs/media/`.
 
@@ -521,8 +541,8 @@ whether any HUD write has occurred, preserving the scene fast paths beforehand.
 The former `$7700-$7727` slot flags are used only for final screen staging.
 
 Build isolated benchmark packages with
-`bash scripts/build-benchmark.sh target/span-buffer/candidate-2sid 2sid spans`
-(use `4sid` for the other profile, or `front` for front-to-back). Omit the final
+`bash scripts/build-benchmark.sh target/span-buffer/candidate-4sid spans`
+(use `front` for front-to-back). Omit the final
 argument, or use `painter`, for the default renderer. Native production builds opt in with
 `cargo build --release --features span-buffer` from `target-c64` in the configured
 toolchain; use `span-front-to-back` to select the other backend. Both features

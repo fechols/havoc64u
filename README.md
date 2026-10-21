@@ -9,7 +9,7 @@ Fly an original 3D rail shooter for the **64 MHz C64 Ultimate**. Skim green hill
 ## Features
 
 - **3D worlds** — Dive through colorful landscapes and orbital scenery.
-- **Stereo SID music** — Enjoy original tunes, with optional quad-SID arrangements.
+- **Quad-SID music** — Enjoy the complete original score through four built-in UltiSIDs.
 - **18 varied stages** — Journey from green hills to orbital battlefields.
 - **Five bosses** — Break their defenses and strike their exposed cores.
 - **Aircraft-like handling** — Bank, climb, and dive with weight and momentum.
@@ -21,11 +21,11 @@ Fly an original 3D rail shooter for the **64 MHz C64 Ultimate**. Skim green hill
 
 ## See it in action
 
-**Sound on!** Hear the enhanced four-SID score and combat effects as the action climbs into orbit. Recorded in a PAL emulator at the game's original speed (72 seconds).
+**Sound on!** Hear the four-SID score and combat effects as the action climbs into orbit. Recorded in a PAL emulator at the game's original speed (72 seconds).
 
 https://github.com/user-attachments/assets/f2c0d2a9-250d-456e-89e2-7e5f1bc5605a
 
-Screenshots: **v0.1.0, four-SID build**, captured in a PAL emulator.
+Screenshots: **original v0.1.0 four-SID build**, captured in a PAL emulator.
 
 | Lowland Approach — barrel roll | Crystal Cave — diving |
 | --- | --- |
@@ -43,23 +43,18 @@ Screenshots: **v0.1.0, four-SID build**, captured in a PAL emulator.
 
 ## Download and launch
 
-**H.A.V.O.C. v0.1.0** includes the complete eighteen-stage campaign. Choose your preferred arrangement:
-
-- **[Download the standard two-SID package](https://github.com/fechols/havoc64u/releases/download/v0.1.0/havoc-v0.1.0-2sid.zip)** — uses the two built-in UltiSIDs; no extra chips needed.
-- **[Download the enhanced four-SID package](https://github.com/fechols/havoc64u/releases/download/v0.1.0/havoc-v0.1.0-4sid.zip)** — a fuller score using four built-in UltiSIDs with the configuration update below; no extra chips needed.
-
-Both packages include the same missions and sound effects. Choose your sound profile before launching; it cannot be switched in-game.
-
-The archived v0.1.0 four-SID download contains the older physical-SID configuration. Apply the [UltiSID configuration update](docs/hardware.md#update-an-existing-four-sid-package) to its included `havoc.cfg` before importing it. New builds include the updated routing.
+**[Download H.A.V.O.C. v0.1.0](https://github.com/fechols/havoc64u/releases/download/v0.1.0/havoc-v0.1.0.zip)** — the complete eighteen-stage campaign and full four-SID score in one package. It uses the C64 Ultimate's built-in UltiSIDs; no extra chips or hardware installation needed.
 
 You need a **C64 Ultimate running at 64 MHz**, **1 MiB of REU memory**, and a joystick connected to **port 2**. The supplied configuration sets the speed, memory, and sound routing. A stock C64 cannot run the game.
 
-1. Unzip one package and copy its three files — `havoc.cfg`, `havoc.reu`, and `havoc.prg` — to the Ultimate's storage.
+1. Unzip the package and copy its three runtime files — `havoc.cfg`, `havoc.reu`, and `havoc.prg` — to the Ultimate's storage.
 2. Import `havoc.cfg`.
 3. Load `havoc.reu` into the REU at **address zero**.
 4. Run `havoc.prg`, then press fire to launch.
 
 Keep all three files from the **same package and version** together. If startup reports a mismatch or invalid REU data, reload the matching REU at zero before running the PRG again.
+
+Upgrading from an earlier two-SID or four-SID download? Replace all three runtime files and re-import the new configuration. The refreshed package supplies four built-in SIDs with gentle level-1 stereo panning.
 
 **Turn your joystick's hardware autofire off.** The game supplies its own autofire; controller-generated fire pulses can accidentally spend your bombs.
 
@@ -93,7 +88,7 @@ Wait fifteen seconds at the title for scenery and music previews. Move or press 
 
 ## Help
 
-See the [setup and troubleshooting guide](docs/hardware.md) for help getting started, or the [release notes](https://github.com/fechols/havoc64u/releases/tag/v0.1.0) for what's new. Found a problem? [Report it](https://github.com/fechols/havoc64u/issues) with your hardware, sound profile, and what happened.
+See the [setup and troubleshooting guide](docs/hardware.md) for help getting started, or the [release notes](https://github.com/fechols/havoc64u/releases/tag/v0.1.0) for what's new. Found a problem? [Report it](https://github.com/fechols/havoc64u/issues) with your hardware, video standard, and what happened.
 
 ## License
 

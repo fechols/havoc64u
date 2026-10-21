@@ -56,21 +56,15 @@ fn suite_has_the_authored_forms_and_independent_clock_durations() {
 }
 
 #[test]
-fn bank_round_trips_all_cues_and_only_strips_optional_orchestration() {
+fn bank_round_trips_all_cues_and_all_ten_authored_parts() {
     let bank = soundtrack::score_bank();
     let suite = soundtrack::cues();
     assert_eq!(assets::u32_at(&bank, 8) as usize, bank.len());
     assert!(bank[16 + music::CUE_COUNT * 8..BANK_HEADER_SIZE]
         .iter()
         .all(|&x| x == 0));
-    assert_eq!(
-        bank.len(),
-        if cfg!(feature = "four-sid") {
-            146_528
-        } else {
-            62_944
-        }
-    );
+    assert_eq!(bank.len(), 146_528);
+    assert_eq!(MUSIC_VOICES, VOICES);
     assert!(bank.len() <= music::BANK_CAPACITY as usize);
     let mut expected_offset = BANK_HEADER_SIZE;
     for (index, cue) in suite.iter().enumerate() {
@@ -110,20 +104,13 @@ fn bank_round_trips_all_cues_and_only_strips_optional_orchestration() {
 
 #[test]
 fn every_cue_payload_keeps_its_published_checksums() {
-    // Lost Wing retains its pre-expansion SMU2 payload in both profiles; the
+    // Lost Wing retains its pre-expansion SMU2 payload; the
     // other twenty cues carry the produced score. Any change to a note,
     // instrument, filter target or page link must be a deliberate republish.
-    let expected = if cfg!(feature = "four-sid") {
-        [
-            38531, 512, 64174, 35058, 39356, 33967, 25190, 59886, 19350, 48525, 3712, 59866,
-            10096, 12466, 35448, 40978, 42760, 37503, 47833, 8652, 15101,
-        ]
-    } else {
-        [
-            4100, 55587, 62212, 23317, 52142, 53213, 46112, 61879, 49160, 6697, 11474, 48593,
-            41170, 48867, 33569, 57674, 61441, 64467, 32115, 1671, 48869,
-        ]
-    };
+    let expected = [
+        38531, 512, 64174, 35058, 39356, 33967, 25190, 59886, 19350, 48525, 3712, 59866,
+        10096, 12466, 35448, 40978, 42760, 37503, 47833, 8652, 15101,
+    ];
     let bank = soundtrack::score_bank();
     for (cue, checksum) in expected.into_iter().enumerate() {
         assert_eq!(
@@ -132,8 +119,7 @@ fn every_cue_payload_keeps_its_published_checksums() {
             "cue {cue}"
         );
     }
-    let lost_wing = if cfg!(feature = "four-sid") { 25190 } else { 46112 };
-    assert_eq!(expected[havoc::audio::MusicState::Defeat as usize], lost_wing);
+    assert_eq!(expected[havoc::audio::MusicState::Defeat as usize], 25190);
 }
 
 fn echo_delay(cue: &soundtrack::Cue) -> usize {
@@ -378,7 +364,7 @@ fn space_suite_has_distinct_hooks_and_core_percussion_with_a_breathing_middle_ei
         assert!(hooks.insert(hook), "{} reuses another space hook", cue.name);
         assert!(
             cue.bars.iter().all(|bar| bar.instruments[2][0] == 0x80),
-            "{} loses its core percussion in the two-SID profile",
+            "{} loses its core percussion",
             cue.name
         );
         assert!(
@@ -511,7 +497,7 @@ fn campaign_tracks_keep_a_complete_core_and_six_complementary_parts() {
         }
         assert!(
             cue.bars.iter().all(|bar| bar.instruments[1][0] == 0x40),
-            "{} needs its pulse lead in both SID profiles",
+            "{} needs its pulse lead",
             cue.name
         );
         assert!(

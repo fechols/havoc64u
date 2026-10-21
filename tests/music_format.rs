@@ -89,10 +89,12 @@ fn bank_rejects_wrong_profile_truncation_gaps_and_bad_transport() {
     let good = soundtrack::score_bank();
     assert!(baked_assets::validate_soundtrack(&good).is_ok());
     assert!(baked_assets::validate_soundtrack(&good[..good.len() - 1]).is_err());
-    let mut bad = good.clone();
-    bad[4] = 6 - music::SID_COUNT as u8;
-    seal_directory(&mut bad);
-    assert_eq!(music::cue_info(&bad, 0).unwrap_err(), ScoreError::Profile);
+    for (offset, value) in [(4, 2), (5, 4), (12, 96)] {
+        let mut bad = good.clone();
+        bad[offset] = value;
+        seal_directory(&mut bad);
+        assert_eq!(music::cue_info(&bad, 0).unwrap_err(), ScoreError::Profile);
+    }
     let mut bad = good.clone();
     bad[16] += 1;
     seal_directory(&mut bad);
@@ -150,8 +152,8 @@ fn cue_directory_preserves_high_reu_offsets_and_enforces_the_expanded_bank_bound
     let last = (music::CUE_COUNT - 1) as u8;
     let entry = 16 + last as usize * 8;
     let pages = bank[entry + 4] as u32;
-    // Exercise the loader's 32-bit directory path in both profiles, even
-    // though only the four-SID production score crosses the 128 KiB boundary.
+    // Exercise the loader's 32-bit directory path beyond the 128 KiB boundary
+    // crossed by the production score.
     let high_offset = 0x20000u32;
     let length = high_offset + pages * PAGE_SIZE as u32;
     bank[entry..entry + 4].copy_from_slice(&high_offset.to_le_bytes());

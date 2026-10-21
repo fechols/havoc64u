@@ -75,6 +75,10 @@ def main():
             cases += 1
             print(f"Rejected {label}")
         for name, value, expected in (
+            ("__music_page_start", 0x721, "four-SID score page must occupy $0720-$07FF"),
+            ("__music_page_end", 0x720, "four-SID score page must occupy $0720-$07FF"),
+            ("__music_page_end", 0x7ff, "four-SID score page must occupy $0720-$07FF"),
+            ("__music_page_end", 0x801, "four-SID score page must occupy $0720-$07FF"),
             ("__cell_hud_seen", 0x9127, "HUD-seen flag must reuse cell scratch at $9128"),
             ("__cell_hud_seen", 0x9129, "HUD-seen flag must reuse cell scratch at $9128"),
             ("__phase_pixels_prefix_size", 0x3f21, "PIXELS prefix overlaps its helpers"),
@@ -122,6 +126,19 @@ def main():
             assert expected in result.stderr, result.stdout + result.stderr
             cases += 1
             print(f"Rejected {name}={value}")
+        section_offset = struct.unpack_from("<I", elf.data, 32)[0]
+        section_stride = struct.unpack_from("<H", elf.data, 46)[0]
+        music_page = next(section for section in elf.sections if section.name == ".music_page")
+        page_header = section_offset + music_page.index * section_stride
+        for field, value in ((12, 0x721), (20, 0), (20, 223), (20, 225)):
+            data = bytearray(elf.data)
+            struct.pack_into("<I", data, page_header + field, value)
+            damaged_elf.write_bytes(data)
+            result = check(prg, damaged_elf)
+            assert result.returncode != 0, f"accepted score page field {field}={value}"
+            assert "four-SID score page section must occupy $0720-$07FF" in result.stderr, result.stdout + result.stderr
+            cases += 1
+            print(f"Rejected score page field {field}={value}")
         program_offset = struct.unpack_from("<I", elf.data, 28)[0]
         program_stride, program_count = struct.unpack_from("<HH", elf.data, 42)
         boot = next(section for section in elf.sections if section.name == ".phase.boot")

@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
 """Summarize matched span-buffer experiments without waiving pixel differences.
 
-By default, reads baseline/candidate-{2sid,4sid}-{pal,ntsc}/report.json beneath
-ROOT; --baseline, --candidate and --output select other prefixes and output.
+By default, reads baseline/candidate-4sid-{pal,ntsc}/report.json beneath ROOT;
+--historical-dual-sid additionally requires the archived 2sid configurations.
+--baseline, --candidate and --output select other prefixes and output.
 --optimization-matrix reads original, corrected, unoptimized, unhoisted, spans
 and front reports. A renderer wins only with exact geometry/state/pixels and a
-faster mean full frame against BOTH painter baselines in all four SID/video
+faster mean full frame against BOTH painter baselines in all selected SID/video
 configurations, with no per-case FPS ratio below 0.95. Pointer-hoist retention
-separately requires four complete unhoisted-to-spans comparisons with no mean
+separately requires complete unhoisted-to-spans comparisons with no mean
 frame regression. Held-FIRE FPS changes are reported without changing either
 gate. Packages, tools, workload, initial state and CIA phases must match;
 palette-history differences never waive decoded-pixel mismatches.
@@ -21,7 +22,8 @@ import re
 import statistics
 
 
-PROFILES = ("2sid", "4sid")
+PROFILES = ("4sid",)
+HISTORICAL_PROFILES = ("2sid", "4sid")
 VIDEOS = ("pal", "ntsc")
 MATRIX_PAIRS = (("original", "corrected"), ("corrected", "unoptimized"),
                 ("unoptimized", "spans"), ("unhoisted", "spans"),
@@ -126,9 +128,11 @@ def compare(root, profile, video, baseline_name="baseline", candidate_name="cand
             "cases": cases}
 
 
-def summarize(combinations, optimization_matrix=False):
+def summarize(combinations, profiles, optimization_matrix=False):
+    assert profiles and len(set(profiles)) == len(profiles) and set(profiles) <= set(HISTORICAL_PROFILES), "Invalid expected profiles"
+    configurations = {(profile, video) for profile in profiles for video in VIDEOS}
     expected = {(baseline, profile, video) for baseline in ("original", "corrected")
-                for profile in PROFILES for video in VIDEOS}
+                for profile in profiles for video in VIDEOS}
     winners = {}
     pointer_hoist_retained = None
     if optimization_matrix:
@@ -141,15 +145,20 @@ def summarize(combinations, optimization_matrix=False):
                                           for item in evidence))
         evidence = [item for item in combinations if (item["baseline"], item["candidate"]) == ("unhoisted", "spans")]
         actual = {(item["profile"], item["video"]) for item in evidence}
-        pointer_hoist_retained = (len(evidence) == len(PROFILES) * len(VIDEOS)
-                                 and actual == {(profile, video) for profile in PROFILES for video in VIDEOS}
+        pointer_hoist_retained = (len(evidence) == len(configurations)
+                                 and actual == configurations
                                  and all(item["exact_geometry_state_and_pixels"]
                                          and item["mean_milliseconds"]["frame"][1] <= item["mean_milliseconds"]["frame"][0]
                                          for item in evidence))
+    else:
+        actual = {(item["profile"], item["video"]) for item in combinations}
+        pairs = {(item["baseline"], item["candidate"]) for item in combinations}
+        complete = len(combinations) == len(configurations) and actual == configurations and len(pairs) == 1
     return {"scope": "Calibrated VICE, matched packages; no physical-hardware timing claim",
+            "expected_profiles": list(profiles),
             "correctness_passed": bool(combinations) and all(item["exact_geometry_state_and_pixels"] for item in combinations),
             "performance_gate_passed": any(winners.values()) if optimization_matrix else
-                                       bool(combinations) and all(item["performance_win"] for item in combinations),
+                                       complete and all(item["performance_win"] for item in combinations),
             "renderer_winners": winners,
             "pointer_hoist_retention_gate_passed": pointer_hoist_retained,
             "sample_pairs": sum(item["sample_pairs"] for item in combinations), "comparisons": combinations}
@@ -163,11 +172,14 @@ def main():
     parser.add_argument("--output", default="summary.json")
     parser.add_argument("--optimization-matrix", action="store_true",
                         help="compare shared HUD fix, deferred optimization and front traversal against both painter baselines")
+    parser.add_argument("--historical-dual-sid", action="store_true",
+                        help="require both archived 2sid and current 4sid PAL/NTSC evidence")
     args = parser.parse_args()
+    profiles = HISTORICAL_PROFILES if args.historical_dual_sid else PROFILES
     pairs = MATRIX_PAIRS if args.optimization_matrix else [(args.baseline, args.candidate)]
     combinations = [compare(args.root, profile, video, baseline, candidate)
-                    for baseline, candidate in pairs for profile in PROFILES for video in VIDEOS]
-    summary = summarize(combinations, args.optimization_matrix)
+                    for baseline, candidate in pairs for profile in profiles for video in VIDEOS]
+    summary = summarize(combinations, profiles, args.optimization_matrix)
     output = args.root / args.output
     output.write_text(json.dumps(summary, indent=2) + "\n")
     for item in combinations:

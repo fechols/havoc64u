@@ -342,8 +342,9 @@ def main():
     args = parser.parse_args()
     elf, symbols = load_elf(args.elf)
     sections = {section.name: section for section in elf.sections}
-    four_sid = symbols["__music_page_end"].address > symbols["__music_page_start"].address
-    sid_count = 4 if four_sid else 2
+    if (symbols["__music_page_start"].address, symbols["__music_page_end"].address) != (0x720, 0x800):
+        raise SystemExit("four-SID score page must occupy $0720-$07FF")
+    sid_count = 4
     fixtures_path = args.fixtures or ROOT / f"target/kernel-fixtures/kernel-fixtures-{sid_count}sid.json"
     fixtures = json.loads(fixtures_path.read_text())
     if fixtures["sid_count"] != sid_count:

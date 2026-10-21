@@ -1653,11 +1653,7 @@ pub fn bake(out: &Path) -> Result<(), Box<dyn std::error::Error>> {
     fs::write(out.join("havoc.reu"), &reu)?;
     fs::write(
         out.join("havoc.cfg"),
-        if cfg!(feature = "four-sid") {
-            include_str!("../config/havoc-4sid.cfg")
-        } else {
-            include_str!("../config/havoc.cfg")
-        },
+        include_str!("../config/havoc.cfg"),
     )?;
     let mut report = format!("H.A.V.O.C. package {PACKAGE_ID:08X}\n1 MiB REU; common {COMMON_OFFSET:06X} (3072 bytes; 2048 resident model bytes); eighteen checked 2048-byte stage model banks at {MODEL_BANKS_OFFSET:06X}; 64-byte model directory at {MODEL_DIRECTORY_OFFSET:06X}; eighteen 2048-byte segments at {SEGMENTS_OFFSET:06X}, each with a checksummed 512-byte runtime prefix (up to 62 encounters)\nEighteen 75-second stages, seventeen 8-second crossings: 24:46 scheduled gameplay plus victory reveal. Five bosses: Gorge Warden, Citadel Heart, Carrier, Dreadnought, Gate Guardian.\nFour enemy movement families with distinct terrestrial and orbital meshes; authored three-dimensional debris fields and an orbital ascent.\n{} SIDs: {} music voices + 2 effects voices. {} original cues; {} bytes of paged score data at {MUSIC_OFFSET:06X}.\nOriginal models and music; no external ROMs or samples.\n", music::SID_COUNT, music::MUSIC_VOICES, music::CUE_COUNT, score.len());
     for (index, design) in CAMPAIGN.iter().enumerate() {

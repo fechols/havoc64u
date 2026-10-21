@@ -23,7 +23,6 @@ default = ["host-tools"]
 host-tools = []
 span-buffer = []
 span-front-to-back = ["span-buffer"]
-four-sid = []
 # Per-song modulation kernels: resident slot code swapped in from the REU at
 # each cue change. Off until the single-framebuffer layout frees the slot RAM.
 music-kernels = []

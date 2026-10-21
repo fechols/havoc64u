@@ -45,10 +45,10 @@ assert 0x8c00<symbols['__startup_checks_end']<=0x9100
 assert symbols['__phase_sim_aux_start']==0x8c00
 assert 0x8c00<symbols['__phase_sim_aux_end']<=0x9100
 assert symbols['__phase_sim_aux_size']==symbols['__phase_sim_aux_end']-symbols['__phase_sim_aux_start']
-assert symbols['__music_page_start']==0x720
-assert symbols['__music_page_end'] in (0x720,0x800)
-four_sid=symbols['__music_page_end']==0x800
-low_end=0x720 if four_sid else 0x800
+assert (symbols['__music_page_start'], symbols['__music_page_end']) == (0x720, 0x800), 'four-SID score page must occupy $0720-$07FF'
+music_page = next((section for section in metadata.sections if section.name == '.music_page'), None)
+assert music_page is not None and (music_page.address, music_page.size) == (0x720, 224), 'four-SID score page section must occupy $0720-$07FF'
+low_end=0x720
 assert symbols['__renderer_start']==0xcffa and symbols['__renderer_end']==0xe000
 assert symbols['__irq_static_save_size']<=1088
 assert symbols['__pixel_band_start']==0x8c00 and symbols['__pixel_band_end']==0x9100
@@ -272,7 +272,7 @@ assert code_sizes == expected_code_sizes, f'Code size table disagrees with overl
 assert phase_sizes['.phase.scenery'] == symbols['__phase_scenery_base_size']
 assert symbols['__phase_scenery_size'] == symbols['__phase_scenery_base_size'] + max(phase_sizes[name] for name in scenery_sections)
 print(f'PRG {len(data):,} bytes; resident headroom {0x3000-symbols["__resident_end"]} bytes')
-print(f'Music profile: {4 if four_sid else 2} SIDs; extra score page {224 if four_sid else 0} bytes')
+print('Music: 4 built-in UltiSIDs; external score page 224 bytes')
 if kernel_sizes:
     largest = max(kernel_sizes, key=kernel_sizes.get)
     print(f'Music kernels: {len(kernel_sizes)} per-song images in the {symbols["__music_kernel_size"]}-byte slot at ${symbols["__music_kernel_start"]:04X}; largest {largest} {kernel_sizes[largest]} bytes; REU ${symbols["__reu_music_kernels"]:06X}')

@@ -511,7 +511,7 @@ class Capture:
 def main():
     sibling = ROOT.parent / "doomc64u"
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--package-dir", type=Path, default=ROOT / "dist/4sid")
+    parser.add_argument("--package-dir", type=Path, default=ROOT / "dist")
     parser.add_argument("--video", choices=tuple(BUS_HZ), default="pal")
     parser.add_argument("--out-dir", type=Path, default=ROOT / "target/readme-showcase")
     parser.add_argument("--scene", action="append", choices=[scene["name"] for scene in SCENES],
@@ -537,7 +537,7 @@ def main():
     package = (args.package_dir / "havoc.reu").read_bytes()
     package_layout = vice.package_model_layout(package, validate_size=True)
     if package_layout["count"] != 18:
-        raise RuntimeError("README showcase requires an eighteen-stage two- or four-SID package")
+        raise RuntimeError("README showcase requires a supported eighteen-stage package")
     args.out_dir.mkdir(parents=True, exist_ok=True)
     syms = vice.symbols(elf, args.llvm_nm)
     for name in ("BOMB_EFFECT", "MUSIC_UNDERRUNS", "GAME_STAGE", "RENDER_SEGMENT"):

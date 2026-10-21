@@ -1,4 +1,4 @@
-//! Allocation-free, paged two/four-SID music and sound-effects player.
+//! Allocation-free, paged four-SID music and sound-effects player.
 //!
 //! The timer calls `tick` at 50 Hz. Foreground AUDIO code fills one external
 //! page, then publishes it while the interrupt is masked. Keep that external
@@ -22,9 +22,6 @@ use crate::music::{
 #[cfg(feature = "music-kernels")]
 pub mod kernels;
 
-#[cfg(not(feature = "four-sid"))]
-pub const SID_BASES: [u16; SID_COUNT] = [0xd400, 0xd420];
-#[cfg(feature = "four-sid")]
 pub const SID_BASES: [u16; SID_COUNT] = [0xd400, 0xd420, 0xd440, 0xd460];
 const QUEUE_CAPACITY: usize = 4;
 /// Kernel-owned state bytes; cleared at every loop start.
@@ -494,7 +491,7 @@ impl AudioEngine {
         for sid in 0..SID_COUNT {
             for reg in 0..25 {
                 bus.write(sid as u8, reg as u8, 0);
-                // The loops exactly cover the compiled profile's shadows.
+                // The loops exactly cover all four SID register shadows.
                 unsafe {
                     *self.registers.get_unchecked_mut(sid).get_unchecked_mut(reg) = 0;
                 }
@@ -820,18 +817,13 @@ pub fn note_frequency(standard: VideoStandard, note: u8) -> u16 {
 
 #[inline(always)]
 fn music_voice(voice: usize) -> (usize, usize) {
-    #[cfg(feature = "four-sid")]
-    {
-        const CHIPS: [u8; MUSIC_VOICES] = [0, 1, 0, 1, 2, 2, 2, 3, 3, 3];
-        const BASES: [u8; MUSIC_VOICES] = [0, 0, 7, 7, 0, 7, 14, 0, 7, 14];
-        // Every private caller loops over exactly MUSIC_VOICES lanes.
-        unsafe {
-            return (
-                *CHIPS.get_unchecked(voice) as usize,
-                *BASES.get_unchecked(voice) as usize,
-            );
-        }
+    const CHIPS: [u8; MUSIC_VOICES] = [0, 1, 0, 1, 2, 2, 2, 3, 3, 3];
+    const BASES: [u8; MUSIC_VOICES] = [0, 0, 7, 7, 0, 7, 14, 0, 7, 14];
+    // Every private caller loops over exactly MUSIC_VOICES lanes.
+    unsafe {
+        (
+            *CHIPS.get_unchecked(voice) as usize,
+            *BASES.get_unchecked(voice) as usize,
+        )
     }
-    #[cfg(not(feature = "four-sid"))]
-    (voice & 1, (voice >> 1) * 7)
 }

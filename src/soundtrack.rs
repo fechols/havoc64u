@@ -16,8 +16,8 @@ pub const HOLD: u8 = 1;
 const H: u8 = HOLD;
 const R: u8 = 0;
 
-/// The first four parts form a complete two-SID arrangement. The other six
-/// parts are optional orchestration, never substitutes for the principal tune.
+/// The first four parts carry the principal tune. The other six parts add
+/// orchestration across the four built-in UltiSID instances.
 /// `filter` is the bar's cutoff target (page byte 9); zero holds the filter.
 #[derive(Clone, Debug)]
 pub struct ScoreBar {
@@ -510,8 +510,8 @@ fn arrange(
         bar.instruments[3] = [0x40, 0x00, 0x01, 0x02, 0x22];
     }
 
-    // The optional ensemble grows over a phrase instead of being permanently
-    // tutti. Its harmony is already supplied by the four compatible parts.
+    // The ensemble grows over a phrase instead of being permanently tutti.
+    // Its harmony is already supplied by the four core parts.
     if bar_index % 8 >= 2 || section > 0 {
         note(&mut bar, 4, 0, third + 12, 14);
         note(&mut bar, 5, 0, root, 14);
@@ -1370,7 +1370,7 @@ fn defeat() -> Cue {
             for (voice, &pitch) in pitches.iter().enumerate() {
                 note(&mut bar, voice, beat * 4, pitch, 2);
             }
-            // Gentle optional colour enters after the original opening. Its
+            // Gentle ensemble colour enters after the original opening. Its
             // breaths coincide with the quartet; there is no percussion here.
             if (4..12).contains(&bar_index) {
                 if pitches[2] != 0 {
@@ -2000,7 +2000,7 @@ fn production(cue: usize) -> Option<Style> {
 }
 
 /// Stable runtime cue order: original thirteen, six space worlds, ascent, boss.
-/// This always returns all ten authored parts, independently of build profile.
+/// This returns all ten authored music parts.
 pub fn cues() -> Vec<Cue> {
     let mut suite = vec![
         title(),
@@ -2033,8 +2033,7 @@ pub fn cues() -> Vec<Cue> {
     suite
 }
 
-/// Encode the same composition for the selected two- or four-SID executable.
-/// All profile stripping happens here; the four core parts are byte-identical.
+/// Encode all ten authored parts for the four-SID executable.
 pub fn score_bank() -> Vec<u8> {
     use crate::music::{
         self, BANK_HEADER_SIZE, EVENT_OFFSET, INSTRUMENT_OFFSET, MUSIC_VOICES, PAGE_SIZE, SID_COUNT,

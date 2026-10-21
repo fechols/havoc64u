@@ -6,10 +6,10 @@
 //! Instrument control bytes carry one waveform plus optional sync/ring bits.
 use crate::assets::{u16_at, u32_at};
 
-pub const SID_COUNT: usize = if cfg!(feature = "four-sid") { 4 } else { 2 };
-pub const MUSIC_VOICES: usize = if cfg!(feature = "four-sid") { 10 } else { 4 };
+pub const SID_COUNT: usize = 4;
+pub const MUSIC_VOICES: usize = 10;
 pub const PAGE_ROWS: usize = 16;
-pub const PAGE_SIZE: usize = if cfg!(feature = "four-sid") { 224 } else { 96 };
+pub const PAGE_SIZE: usize = 224;
 pub const INSTRUMENT_OFFSET: usize = 12;
 pub const EVENT_OFFSET: usize = INSTRUMENT_OFFSET + MUSIC_VOICES * 5;
 pub const BANK_HEADER_SIZE: usize = 256;

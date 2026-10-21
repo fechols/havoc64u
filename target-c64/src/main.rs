@@ -58,8 +58,7 @@ static mut GAME: MaybeUninit<Game> = MaybeUninit::uninit();
 static mut SPACE_DUST: SpaceDustFrame = SpaceDustFrame::EMPTY;
 #[link_section = ".audio_state"]
 static mut AUDIO: MaybeUninit<AudioEngine> = MaybeUninit::uninit();
-#[cfg_attr(feature = "four-sid", link_section = ".music_page")]
-#[cfg_attr(not(feature = "four-sid"), link_section = ".audio_state")]
+#[link_section = ".music_page"]
 static mut NEXT_PAGE: MaybeUninit<[u8; PAGE_SIZE]> = MaybeUninit::uninit();
 static mut MUSIC_DIRECTORY_HASH: u16 = 0;
 static mut MUSIC_VALIDATED: bool = false;
@@ -286,11 +285,8 @@ unsafe fn fail(message: &[u8]) -> ! {
     poke(0xdd0d, 0x7f);
     poke(0xd418, 0);
     poke(0xd438, 0);
-    #[cfg(feature = "four-sid")]
-    {
-        poke(0xd458, 0);
-        poke(0xd478, 0);
-    }
+    poke(0xd458, 0);
+    poke(0xd478, 0);
     // Bank 2 exposes the VIC character ROM at $9000. Reuse screen A, keeping
     // the compiler's low-memory scratch intact even while displaying an error.
     poke(0xdd02, peek(0xdd02) | 3);

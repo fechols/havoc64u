@@ -31,7 +31,7 @@ class SummaryTests(unittest.TestCase):
                  "unoptimized": (1050, 2100), "unhoisted": (920, 1840),
                  "spans": (900, 1800), "front": (800, 1600)}
         for name, cycles in costs.items():
-            for profile in summary.PROFILES:
+            for profile in summary.HISTORICAL_PROFILES:
                 package = self.root / f"{name}-{profile}"
                 package.mkdir()
                 hashes = {}
@@ -69,24 +69,24 @@ class SummaryTests(unittest.TestCase):
                         report[field] = digest(field)
                     self.save(report, name, profile, video)
 
-    def path(self, name="candidate", profile="2sid", video="pal"):
+    def path(self, name="candidate", profile="4sid", video="pal"):
         return self.root / f"{name}-{profile}-{video}" / "report.json"
 
-    def load(self, name="candidate", profile="2sid", video="pal"):
+    def load(self, name="candidate", profile="4sid", video="pal"):
         return json.loads(self.path(name, profile, video).read_text())
 
-    def save(self, report, name="candidate", profile="2sid", video="pal"):
+    def save(self, report, name="candidate", profile="4sid", video="pal"):
         path = self.path(name, profile, video)
         path.parent.mkdir(exist_ok=True)
         path.write_text(json.dumps(report))
 
     def compare(self):
-        return summary.compare(self.root, "2sid", "pal")
+        return summary.compare(self.root, "4sid", "pal")
 
-    def matrix(self):
+    def matrix(self, profiles=summary.PROFILES):
         return [summary.compare(self.root, profile, video, baseline, candidate)
                 for baseline, candidate in summary.MATRIX_PAIRS
-                for profile in summary.PROFILES for video in summary.VIDEOS]
+                for profile in profiles for video in summary.VIDEOS]
 
     def run_cli(self, *arguments):
         return subprocess.run([sys.executable, str(TOOL), str(self.root), *arguments],
@@ -110,7 +110,7 @@ class SummaryTests(unittest.TestCase):
                 with self.assertRaises(AssertionError):
                     self.compare()
         self.save(good)
-        (self.root / "candidate-2sid/havoc.prg").write_bytes(b"changed after recording")
+        (self.root / "candidate-4sid/havoc.prg").write_bytes(b"changed after recording")
         with self.assertRaisesRegex(AssertionError, "Changed package"):
             self.compare()
 
@@ -125,6 +125,15 @@ class SummaryTests(unittest.TestCase):
                 self.save(report)
                 with self.assertRaises(AssertionError):
                     self.compare()
+
+    def test_cross_sid_reports_cannot_substitute_for_selected_profile(self):
+        for profile, other in (("4sid", "2sid"), ("2sid", "4sid")):
+            with self.subTest(profile=profile):
+                original = self.load("candidate", profile)
+                self.save(self.load("candidate", other), "candidate", profile)
+                with self.assertRaises(AssertionError):
+                    summary.compare(self.root, profile, "pal")
+                self.save(original, "candidate", profile)
 
     def test_failed_truthy_or_incomplete_reports_are_rejected(self):
         good = self.load()
@@ -260,50 +269,83 @@ class SummaryTests(unittest.TestCase):
         self.assertEqual(result["real_time_fps_change_percent"], -50)
         self.assertTrue(result["performance_win"])
 
-    def test_complete_matrix_requires_both_baselines_and_all_four_configurations(self):
-        combinations = self.matrix()
-        result = summary.summarize(combinations, True)
-        self.assertEqual(result["renderer_winners"], {"spans": True, "front": True})
-        self.assertTrue(result["pointer_hoist_retention_gate_passed"])
-        for index, item in enumerate(combinations):
-            if item["candidate"] not in ("spans", "front") or item["baseline"] not in ("original", "corrected"):
-                continue
-            with self.subTest(missing=(item["baseline"], item["candidate"], item["profile"], item["video"])):
+    def test_complete_matrix_requires_both_baselines_and_all_selected_configurations(self):
+        for profiles in (summary.PROFILES, summary.HISTORICAL_PROFILES):
+            combinations = self.matrix(profiles)
+            result = summary.summarize(combinations, profiles, True)
+            self.assertEqual(result["renderer_winners"], {"spans": True, "front": True})
+            self.assertTrue(result["pointer_hoist_retention_gate_passed"])
+            self.assertEqual(result["expected_profiles"], list(profiles))
+            for index, item in enumerate(combinations):
+                if item["candidate"] not in ("spans", "front") or item["baseline"] not in ("original", "corrected"):
+                    continue
+                with self.subTest(profiles=profiles, missing=(item["baseline"], item["candidate"], item["profile"], item["video"])):
+                    incomplete = combinations[:index] + combinations[index + 1:]
+                    self.assertFalse(summary.summarize(incomplete, profiles, True)["renderer_winners"][item["candidate"]])
+                for gate in ("performance_win", "exact_geometry_state_and_pixels"):
+                    with self.subTest(profiles=profiles, gate=gate, configuration=(item["profile"], item["video"])):
+                        damaged = copy.deepcopy(combinations)
+                        damaged[index][gate] = False
+                        self.assertFalse(summary.summarize(damaged, profiles, True)["renderer_winners"][item["candidate"]])
+
+    def test_profile_selection_is_explicit_and_never_inferred_from_evidence(self):
+        current, historical = self.matrix(), self.matrix(summary.HISTORICAL_PROFILES)
+        for combinations, expected in ((current, summary.HISTORICAL_PROFILES),
+                                       (historical, summary.PROFILES)):
+            result = summary.summarize(combinations, expected, True)
+            self.assertEqual(result["renderer_winners"], {"spans": False, "front": False})
+            self.assertFalse(result["pointer_hoist_retention_gate_passed"])
+        for profiles in ((), ("4sid", "4sid"), ("8sid",)):
+            with self.assertRaisesRegex(AssertionError, "Invalid expected profiles"):
+                summary.summarize(current, profiles, True)
+
+    def test_simple_summary_requires_all_selected_configurations_without_duplicates(self):
+        for profiles in (summary.PROFILES, summary.HISTORICAL_PROFILES):
+            combinations = [summary.compare(self.root, profile, video)
+                            for profile in profiles for video in summary.VIDEOS]
+            self.assertTrue(summary.summarize(combinations, profiles)["performance_gate_passed"])
+            for index in range(len(combinations)):
                 incomplete = combinations[:index] + combinations[index + 1:]
-                self.assertFalse(summary.summarize(incomplete, True)["renderer_winners"][item["candidate"]])
-            for gate in ("performance_win", "exact_geometry_state_and_pixels"):
-                with self.subTest(gate=gate, configuration=(item["profile"], item["video"])):
-                    damaged = copy.deepcopy(combinations)
-                    damaged[index][gate] = False
-                    self.assertFalse(summary.summarize(damaged, True)["renderer_winners"][item["candidate"]])
+                self.assertFalse(summary.summarize(incomplete, profiles)["performance_gate_passed"])
+                duplicate = combinations + [combinations[index]]
+                self.assertFalse(summary.summarize(duplicate, profiles)["performance_gate_passed"])
+            mixed_pairs = copy.deepcopy(combinations)
+            mixed_pairs[0]["baseline"] = "original"
+            self.assertFalse(summary.summarize(mixed_pairs, profiles)["performance_gate_passed"])
+        for profiles, expected in ((summary.PROFILES, summary.HISTORICAL_PROFILES),
+                                   (summary.HISTORICAL_PROFILES, summary.PROFILES)):
+            combinations = [summary.compare(self.root, profile, video)
+                            for profile in profiles for video in summary.VIDEOS]
+            self.assertFalse(summary.summarize(combinations, expected)["performance_gate_passed"])
 
     def test_empty_or_duplicate_matrix_evidence_cannot_win(self):
         for matrix_mode in (False, True):
-            empty = summary.summarize([], matrix_mode)
+            empty = summary.summarize([], summary.PROFILES, matrix_mode)
             self.assertFalse(empty["correctness_passed"])
             self.assertFalse(empty["performance_gate_passed"])
-        self.assertEqual(summary.summarize([], True)["renderer_winners"], {"spans": False, "front": False})
+        self.assertEqual(summary.summarize([], summary.PROFILES, True)["renderer_winners"], {"spans": False, "front": False})
         combinations = self.matrix()
         duplicate = next(item for item in combinations if (item["baseline"], item["candidate"]) == ("original", "front"))
-        self.assertFalse(summary.summarize(combinations + [duplicate], True)["renderer_winners"]["front"])
+        self.assertFalse(summary.summarize(combinations + [duplicate], summary.PROFILES, True)["renderer_winners"]["front"])
 
     def test_pointer_hoist_retention_requires_its_own_complete_nonregressing_pairs(self):
-        combinations = self.matrix()
-        indices = [index for index, item in enumerate(combinations)
-                   if (item["baseline"], item["candidate"]) == ("unhoisted", "spans")]
-        self.assertEqual(len(indices), 4)
-        for index in indices:
-            damaged = copy.deepcopy(combinations)
-            frame = damaged[index]["mean_milliseconds"]["frame"]
-            frame[1] = frame[0]
-            self.assertTrue(summary.summarize(damaged, True)["pointer_hoist_retention_gate_passed"])
-            frame[1] += .001
-            result = summary.summarize(damaged, True)
-            self.assertFalse(result["pointer_hoist_retention_gate_passed"])
-            self.assertTrue(result["renderer_winners"]["spans"])
-            del damaged[index]
-            self.assertFalse(summary.summarize(damaged, True)["pointer_hoist_retention_gate_passed"])
-        self.assertFalse(summary.summarize(combinations + [combinations[indices[0]]], True)["pointer_hoist_retention_gate_passed"])
+        for profiles in (summary.PROFILES, summary.HISTORICAL_PROFILES):
+            combinations = self.matrix(profiles)
+            indices = [index for index, item in enumerate(combinations)
+                       if (item["baseline"], item["candidate"]) == ("unhoisted", "spans")]
+            self.assertEqual(len(indices), len(profiles) * 2)
+            for index in indices:
+                damaged = copy.deepcopy(combinations)
+                frame = damaged[index]["mean_milliseconds"]["frame"]
+                frame[1] = frame[0]
+                self.assertTrue(summary.summarize(damaged, profiles, True)["pointer_hoist_retention_gate_passed"])
+                frame[1] += .001
+                result = summary.summarize(damaged, profiles, True)
+                self.assertFalse(result["pointer_hoist_retention_gate_passed"])
+                self.assertTrue(result["renderer_winners"]["spans"])
+                del damaged[index]
+                self.assertFalse(summary.summarize(damaged, profiles, True)["pointer_hoist_retention_gate_passed"])
+            self.assertFalse(summary.summarize(combinations + [combinations[indices[0]]], profiles, True)["pointer_hoist_retention_gate_passed"])
 
     def test_cli_preserves_default_and_custom_prefixes_and_output(self):
         for arguments, output in (((), "summary.json"),
@@ -311,14 +353,44 @@ class SummaryTests(unittest.TestCase):
             result = self.run_cli(*arguments)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             report = json.loads((self.root / output).read_text())
-            self.assertEqual(len(report["comparisons"]), 4)
+            self.assertEqual(len(report["comparisons"]), 2)
+            self.assertEqual(report["expected_profiles"], ["4sid"])
             self.assertTrue(report["correctness_passed"])
+
+    def test_historical_cli_requires_full_two_and_four_sid_matrix(self):
+        for arguments, count in (((), 4), (("--optimization-matrix",), 32)):
+            result = self.run_cli("--historical-dual-sid", *arguments)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            report = json.loads((self.root / "summary.json").read_text())
+            self.assertEqual(len(report["comparisons"]), count)
+            self.assertEqual(report["expected_profiles"], ["2sid", "4sid"])
+            self.assertTrue(report["correctness_passed"])
+            self.assertTrue(report["performance_gate_passed"])
+
+    def test_default_cli_does_not_require_historical_evidence_but_historical_mode_does(self):
+        self.path("candidate", "2sid", "ntsc").unlink()
+        self.path("front", "2sid", "ntsc").unlink()
+        for arguments in ((), ("--optimization-matrix",)):
+            result = self.run_cli(*arguments)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            historical = self.run_cli("--historical-dual-sid", *arguments)
+            self.assertNotEqual(historical.returncode, 0)
+            self.assertIn("FileNotFoundError", historical.stderr)
+
+    def test_cli_never_infers_a_smaller_matrix_when_current_evidence_is_missing(self):
+        self.path("candidate", "4sid", "ntsc").unlink()
+        self.path("front", "4sid", "ntsc").unlink()
+        for selection in ((), ("--historical-dual-sid",)):
+            for mode in ((), ("--optimization-matrix",)):
+                result = self.run_cli(*selection, *mode)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("FileNotFoundError", result.stderr)
 
     def test_matrix_cli_and_pixel_failure_exit_status(self):
         result = self.run_cli("--optimization-matrix")
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         report = json.loads((self.root / "summary.json").read_text())
-        self.assertEqual(len(report["comparisons"]), 32)
+        self.assertEqual(len(report["comparisons"]), 16)
         self.assertEqual(report["renderer_winners"], {"spans": True, "front": True})
         front = self.load("front", "4sid", "ntsc")
         front["cases"][0]["samples"][2]["native_pixels_sha256"] = digest("wrong pixels")
