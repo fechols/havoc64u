@@ -4,27 +4,73 @@
 //! is also its exclusive end; 160 terminates the list and never needs storage.
 //! Only reachable nodes matter, so splitting and merging never allocate.
 
+#[cfg(any(not(feature = "span-front-to-back"), test))]
 use super::{Canvas, BAND_HEIGHT, BAND_PIXELS, TERRAIN_CLEAR_INK, WIDTH};
 
 /// Work performed by the host span compositor, before the existing cell packer.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct SpanStats {
+    /// Nonempty geometry and dust spans, excluding front coverage prepass work.
     pub input_spans: u32,
     pub run_visits: u32,
     pub emitted_spans: u32,
     pub emitted_pixels: u32,
-    /// Largest number of live runs in one row after a completed input span.
+    pub search_visits: u32,
+    pub noop_spans: u32,
+    pub bulk_spans: u32,
+    pub splits: u32,
+    pub merges: u32,
+    /// Front-to-back coverage work; excluded from input/emission counts.
+    pub prepass_spans: u32,
+    pub prepass_pixels: u32,
+    pub rejected_spans: u32,
+    /// Front-to-back ownership, including geometry of the background color.
+    pub claimed_pixels: u32,
+    /// Largest number of live runs or holes observed in one row.
     pub peak_runs: u16,
 }
 
+impl core::ops::AddAssign for SpanStats {
+    fn add_assign(&mut self, other: Self) {
+        self.input_spans += other.input_spans;
+        self.run_visits += other.run_visits;
+        self.emitted_spans += other.emitted_spans;
+        self.emitted_pixels += other.emitted_pixels;
+        self.search_visits += other.search_visits;
+        self.noop_spans += other.noop_spans;
+        self.bulk_spans += other.bulk_spans;
+        self.splits += other.splits;
+        self.merges += other.merges;
+        self.prepass_spans += other.prepass_spans;
+        self.prepass_pixels += other.prepass_pixels;
+        self.rejected_spans += other.rejected_spans;
+        self.claimed_pixels += other.claimed_pixels;
+        self.peak_runs = self.peak_runs.max(other.peak_runs);
+    }
+}
+
+#[cfg(any(not(feature = "span-front-to-back"), test))]
+fn composed_ink(old: u8, flags: u8) -> u8 {
+    if flags & crate::TERRAIN_CLEAR_GEOMETRY != 0 {
+        flags & 15 | TERRAIN_CLEAR_INK
+    } else if flags & crate::EXTERIOR_TERRAIN != 0 && old & TERRAIN_CLEAR_INK != 0 {
+        old
+    } else {
+        flags & 15 | old & TERRAIN_CLEAR_INK
+    }
+}
+
+#[cfg(any(not(feature = "span-front-to-back"), test))]
 pub(super) struct SpanBand {
     next: [[u8; WIDTH]; BAND_HEIGHT],
     ink: [[u8; WIDTH]; BAND_HEIGHT],
     runs: [u16; BAND_HEIGHT],
     background: u8,
+    coverage_seen: bool,
     pub(super) stats: SpanStats,
 }
 
+#[cfg(any(not(feature = "span-front-to-back"), test))]
 impl SpanBand {
     pub(super) fn new(background: u8) -> Self {
         let mut band = Self {
@@ -32,6 +78,7 @@ impl SpanBand {
             ink: [[0; WIDTH]; BAND_HEIGHT],
             runs: [1; BAND_HEIGHT],
             background: background & 15,
+            coverage_seen: false,
             stats: SpanStats {
                 peak_runs: 1,
                 ..SpanStats::default()
@@ -51,49 +98,90 @@ impl SpanBand {
             return;
         }
         self.stats.input_spans += 1;
+        let terrain_clear = flags & crate::TERRAIN_CLEAR_GEOMETRY != 0;
+        self.coverage_seen |= terrain_clear;
         let mut current = 0;
         let mut previous = None;
         while self.next[row][current] as usize <= first {
             self.stats.run_visits += 1;
+            self.stats.search_visits += 1;
             previous = Some(current);
             current = self.next[row][current] as usize;
+        }
+        // The common no-op never needs temporary boundary nodes. In
+        // particular, covered exterior terrain leaves both color and coverage.
+        if self.next[row][current] as usize >= end
+            && composed_ink(self.ink[row][current], flags) == self.ink[row][current]
+        {
+            self.stats.run_visits += 1;
+            self.stats.noop_spans += 1;
+            return;
         }
         if current < first {
             self.split(row, current, first);
             previous = Some(current);
             current = first;
         }
-        while current < end {
+        if terrain_clear || !self.coverage_seen {
+            // A uniform overwrite only needs its surviving boundaries. TC
+            // sets coverage everywhere; before the first TC all coverage is
+            // absent, so ordinary and exterior spans are uniform too.
+            self.stats.bulk_spans += 1;
+            let start = current;
+            while (self.next[row][current] as usize) < end {
+                self.stats.run_visits += 1;
+                current = self.next[row][current] as usize;
+                self.runs[row] -= 1;
+                self.stats.merges += 1;
+            }
             self.stats.run_visits += 1;
             if self.next[row][current] as usize > end {
                 self.split(row, current, end);
             }
             let next = self.next[row][current] as usize;
-            let old = self.ink[row][current];
-            self.ink[row][current] = if flags & crate::TERRAIN_CLEAR_GEOMETRY != 0 {
-                flags & 15 | TERRAIN_CLEAR_INK
-            } else if flags & crate::EXTERIOR_TERRAIN != 0 && old & TERRAIN_CLEAR_INK != 0 {
-                old
-            } else {
-                flags & 15 | old & TERRAIN_CLEAR_INK
-            };
+            self.next[row][start] = next as u8;
+            self.ink[row][start] = flags & 15 | if terrain_clear { TERRAIN_CLEAR_INK } else { 0 };
             if let Some(before) = previous {
-                if self.ink[row][before] == self.ink[row][current] {
+                if self.ink[row][before] == self.ink[row][start] {
                     self.next[row][before] = next as u8;
                     self.runs[row] -= 1;
+                    self.stats.merges += 1;
+                } else {
+                    previous = Some(start);
+                }
+            } else {
+                previous = Some(start);
+            }
+            current = next;
+        } else {
+            while current < end {
+                self.stats.run_visits += 1;
+                if self.next[row][current] as usize > end {
+                    self.split(row, current, end);
+                }
+                let next = self.next[row][current] as usize;
+                let old = self.ink[row][current];
+                self.ink[row][current] = composed_ink(old, flags);
+                if let Some(before) = previous {
+                    if self.ink[row][before] == self.ink[row][current] {
+                        self.next[row][before] = next as u8;
+                        self.runs[row] -= 1;
+                        self.stats.merges += 1;
+                    } else {
+                        previous = Some(current);
+                    }
                 } else {
                     previous = Some(current);
                 }
-            } else {
-                previous = Some(current);
+                current = next;
             }
-            current = next;
         }
         if current < WIDTH {
             let before = previous.unwrap();
             if self.ink[row][before] == self.ink[row][current] {
                 self.next[row][before] = self.next[row][current];
                 self.runs[row] -= 1;
+                self.stats.merges += 1;
             }
         }
         self.stats.peak_runs = self.stats.peak_runs.max(self.runs[row]);
@@ -105,6 +193,7 @@ impl SpanBand {
         self.ink[row][at] = self.ink[row][node];
         self.next[row][node] = at as u8;
         self.runs[row] += 1;
+        self.stats.splits += 1;
     }
 
     /// Emit each final non-background pixel once. Protected background ink is
@@ -132,6 +221,7 @@ impl SpanBand {
         self.emit(|row, first, end, ink| pixels[row * WIDTH + first..row * WIDTH + end].fill(ink));
     }
 
+    #[cfg(not(feature = "span-front-to-back"))]
     pub(super) fn write_cells(&mut self, cells: &mut crate::cells::CellBand) {
         cells.clear(self.background);
         self.emit(|row, first, end, ink| {
@@ -147,6 +237,7 @@ impl SpanBand {
 }
 
 // Ambient dust uses ordinary background ink. HUD remains a later cell pass.
+#[cfg(any(not(feature = "span-front-to-back"), test))]
 impl Canvas for SpanBand {
     fn span(&mut self, row: usize, first: usize, end: usize, color: u8) {
         self.geometry_span(row, first, end, color & 15);
@@ -188,6 +279,30 @@ mod tests {
                 *pixel = flags & 15 | *pixel & TERRAIN_CLEAR_INK;
             }
         }
+    }
+
+    #[test]
+    fn contained_noops_skip_boundaries_and_uniform_overwrites_keep_coverage() {
+        let mut band = SpanBand::new(0);
+        for flags in [0, crate::EXTERIOR_TERRAIN] {
+            band.geometry_span(0, 31, 129, flags);
+        }
+        assert_eq!(band.stats.noop_spans, 2);
+        assert_eq!(band.stats.splits, 0);
+        band.geometry_span(0, 20, 140, 3 | crate::TERRAIN_CLEAR_GEOMETRY);
+        let before = band.stats;
+        for flags in [3, 3 | crate::TERRAIN_CLEAR_GEOMETRY, 5 | crate::EXTERIOR_TERRAIN] {
+            band.geometry_span(0, 31, 129, flags);
+        }
+        assert_eq!(band.stats.noop_spans, before.noop_spans + 3);
+        assert_eq!(band.stats.splits, before.splits);
+        band.geometry_span(0, 0, 160, 7);
+        validate(&band);
+        assert_eq!(band.runs[0], 3, "ordinary ink must retain coverage boundaries");
+        band.geometry_span(0, 0, 160, 6 | crate::TERRAIN_CLEAR_GEOMETRY);
+        validate(&band);
+        assert_eq!(band.runs[0], 1);
+        assert_eq!(band.ink[0][0], 6 | TERRAIN_CLEAR_INK);
     }
 
     #[test]
@@ -270,7 +385,7 @@ mod tests {
 
     #[test]
     fn full_triangle_capacity_dust_and_hidden_bands_match_the_classic_reference() {
-        use super::super::{Renderer, Triangle, POSITIVE_AREA, TRIANGLE_CAPACITY};
+        use super::super::{prepare_triangle, raster_rows, Renderer, Triangle, POSITIVE_AREA, TRIANGLE_CAPACITY};
         use crate::{game::Mode, space_dust::SpaceDustFrame};
         let mut random = 0x329a_fae1u32;
         let mut next = || {
@@ -314,12 +429,23 @@ mod tests {
                 assert_eq!(renderer.render_band_spans(band, &mut actual, ambient).input_spans, 0);
                 assert_eq!(actual, [6; BAND_PIXELS]);
             }
+            let mut prepared = renderer.triangles.map(|triangle| prepare_triangle(&triangle));
             let mut pass = renderer.raster_pass().unwrap();
             for band in 0..25 {
                 let paint = band % 3 != 1;
                 let mut actual = [0xa5; BAND_PIXELS];
+                let previous_stats = pass.span_stats();
                 assert_eq!(pass.next_band_with_ambient(&mut actual, paint, ambient), Some(band));
                 assert_eq!(actual, if paint { expected[band as usize] } else { [0xa5; BAND_PIXELS] });
+                if !paint {
+                    assert_eq!(pass.span_stats(), previous_stats, "hidden bands do no composition work");
+                }
+                for (index, (head, tail)) in prepared[..count].iter_mut().enumerate() {
+                    raster_rows(head, tail, band * 8, |_, _, _, _| {});
+                    assert_eq!(unsafe { pass.head_ptr(index).read_unaligned() }, *head,
+                        "persistent head advanced more than once: count {count}, band {band}, index {index}");
+                    assert_eq!(pass.tails[index], *tail, "coverage prepass changed a tail");
+                }
             }
             assert!(pass.span_stats().emitted_pixels <= 25 * BAND_PIXELS as u32);
         }

@@ -1,6 +1,6 @@
 # H.A.V.O.C. hardware and build notes
 
-H.A.V.O.C. (Heavy Assault Vessel: Orbital Combat) targets the C64 Ultimate at 64 MHz with its built-in REU configured to 1 MB (1 MiB). The standard package in `dist/` uses two UltiSIDs; `dist/4sid/` adds two physical ARMSIDs for an enhanced arrangement. Import the chosen package's `havoc.cfg`, load its `havoc.reu` at REU address zero, then run its `havoc.prg`. Keep all three files from the same build and sound profile together. Older packages with 16 MiB images retain their original configurations.
+H.A.V.O.C. (Heavy Assault Vessel: Orbital Combat) targets the C64 Ultimate at 64 MHz with its built-in REU configured to 1 MB (1 MiB). The standard package in `dist/` uses two built-in UltiSIDs; `dist/4sid/` uses four built-in UltiSIDs for an enhanced arrangement. Neither profile requires physical SID chips. Import the chosen package's `havoc.cfg`, load its `havoc.reu` at REU address zero, then run its `havoc.prg`. Keep all three files from the same build and sound profile together. Older packages with 16 MiB images retain their original memory settings.
 
 The configuration selects the C64U turbo registers, 64 MHz CPU speed, disabled badline timing, and quiet bus operation. The runtime programs the turbo register at startup and checks that the setting is available. An ordinary 1 MHz C64 is not a supported execution target.
 
@@ -32,13 +32,13 @@ Production companion screenshots have an existing screen/color-fetch defect with
 | `$6F20–$71FF` | PIXELS helper code and the 16-byte ambient-particle frame |
 | `$7200–$74FF` | Music kernel slot: the playing cue's per-song modulation code, copied from the REU at each cue change |
 | `$7500–$75FF` | IRQ software stack (measured high-water mark: 3 bytes) |
-| `$7600–$77FF` | Sorted command order written by the depth sort (`$7600–$76FF`, one command index per sorted position; BOOT's directory scratch before any frame), cell writer tables (HUD slots `$7700`, overflow flags `$7728`, cover-clean marker `$7750`), then preparation, row-walker and quantizer scratch from `$77A0` |
+| `$7600–$77FF` | Sorted command order written by the depth sort (`$7600–$76FF`, one command index per sorted position; BOOT's directory scratch before any frame), screen staging (`$7700`), cell overflow flags (`$7728`), cover-clean marker (`$7750`), then preparation, row-walker and quantizer scratch from `$77A0` |
 | `$7800–$7FFF` | Resident constants |
 | `$8000` / `$A000` | The single visible screen / bitmap (VIC bank 2), updated in place band by band |
 | `$8400–$8BFF` | Current level's model bank and enemy descriptors |
 | `$8C00–$8FFF` | 64-entry projected-vertex cache, then the depth sort's key bytes, index list and 256 bucket counts during GEOMETRY |
 | `$8C00–$90FF` | Pixel form of overflowed cells during PIXELS; the workspace also holds startup checks, SIM helpers and initial AUDIO directory scratch in separate phases |
-| `$9100–$91FF` | GEOMETRY kernel scratch (matrix, rotation, projection, emit, replay, mesh, near clip at `$91D0`); PIXELS reuses `$9100–$9127` for the cell writer's rare paths; SIM reuses `$9140–$917F` for the missile guidance kernel |
+| `$9100–$91FF` | GEOMETRY kernel scratch (matrix, rotation, projection, emit, replay, mesh, near clip at `$91D0`); PIXELS reuses `$9100–$9128` for the cell writer's rare paths and HUD-seen flag; SIM reuses `$9140–$917F` for the missile guidance kernel |
 | `$9200–$94F7` | Cell writer band state during PIXELS: 8×40 two-bit code bytes, 8×40 coverage nibbles, three 40-byte palette slots holding keys (colour XOR the clear colour; 0 = free, `$FF` ×3 marks a cell that lives in the pixel band) |
 | `$9500–$98FF` | Two 512-byte mission-segment buffers |
 | `$9900–$9FFF` | Resident math/palette tables and compact kernels: the depth sort, the Q8 multiply and the bounded division |
@@ -129,9 +129,9 @@ GEOMETRY clears and uses a 640-byte vertex cache inside the color-band workspace
 
 The resident `mul_q8` is an assembly kernel (`fast_mul_q8`): it multiplies the operand magnitudes through unsigned 8x8 partial products from the quarter-square table BOOT builds at `$C000` (`Q[n] = floor(n*n/4)`, 512 low bytes then 512 high bytes) and rounds a negative product toward minus infinity, exactly like the reference `((a as i32 * b as i32) >> 8) as i16`. GEOMETRY composes each mesh instance's yaw, pitch and roll into a 3×3 Q8 matrix once (`fast_mesh_matrix`, the body of `RotationMatrix::compose`, entries clamped to ±256) and rotates every stored `i8` vertex with `fast_rotate_vertex`: nine quarter-square products with zero entries skipped, a 24-bit sum and one arithmetic shift by `8 − mesh shift (+1 for half-size debris)`. Projection is `fast_project` (`target-c64/asm/project.S`), the body of `projection::project_reference`: z normalised to 128..255 with a signed exponent, one 16×16 product per axis against the resident `PROJECT_X`/`PROJECT_Y` tables (`80·32768/d`, `133·32768/d`), a byte-aligned shift and the ±8191 clamps; `project_cached` keeps the 64-entry hash cache around it with shifted adds instead of 16-bit multiplies. `tools/test-multiply-kernel.py` and `tools/test-projection-kernel.py` check every kernel against its reference in `mos-sim`, and `target-c64/build.rs` runs `tools/branch-audit.py` on every assembled object so a silently wrapped conditional branch fails the build.
 
-PIXELS prepares a sixteen-byte persistent raster head at `$EF20` for each sorted position, reading the command through the sorted order (the command array is not consumed). `fast_prepare_triangle` keeps the host's exact Q16 arithmetic but takes a fast path for the usual edge (dy ≤ 255 and |dx| ≤ 255): a 24-bit restoring division by the 8-bit dy, the row-centre fraction `16384 / dy` from a table when the start row is on screen, and two quarter-square products; native positions carry +32767 so a row's column is simply the high word. Twelve-byte tails at `$E000` and ordered bit masks at `$EC00` identify the triangles touching each band. Edge positions advance sequentially in Q16 across all 25 bands, including bands whose painting can be skipped; edges are not recomputed from scratch for every band. The band driver is assembly (`fast_raster_band`): it scans the band's ordered mask and derives each marked triangle's head and tail addresses from its sorted position; the row walker copies the head into zero page (`$D0–$DF`), splits the band's rows into the segment before the middle row and the segment from it (so no row tests for the middle), clamps both columns from the high words, hands every nonempty span to the cell writer and writes the positions back when it leaves the band, except from the triangle's last band. Spans do not paint pixels: the cell writer (`target-c64/asm/cells.S`, the native body of `havoc::cells::CellBand`) writes two-bit colour codes straight into a row-major 8×40 table of cell bytes while a three-slot palette per cell hands out the hardware colours on first use (the span loops take a free slot inline). Code 0 is the VIC background, which PIXELS sets to the frame's clear colour at the start of every frame, so the clear colour and every unpainted pixel need no slot; the slots store keys (colour XOR the clear colour), which makes the clear colour key 0 like a free slot and keeps every fast path's zero test free of a comparison. A slot whose colour no longer appears in any of the cell's eight rows is recycled; a cell asked for a genuine fourth other colour is expanded into the pixel band at `$8C00` and painted per pixel from then on (its palette is poisoned with `$FF` so the span fast paths route every later write there; whole cell rows of plain or terrain ink take unrolled pixel paths). Terrain-clear coverage lives in a parallel table of nibbles; exterior terrain skips covered pixels; HUD ink marks its slot so the expanded pixels carry the quantizer's priority bit. `fast_cell_stage` transposes the 320 code bytes into the consumed coverage table and writes the 80 attribute bytes over the consumed HUD-slot and overflow tables (XORing the keys back; a free slot shows the clear colour). Each overflow flag is consumed before its byte is replaced. Only overflowed cells pass through the classic per-pixel quantizer (`fast_pack_cell`); their staged attributes are first seeded with the visible preceding values so its palette-retention behavior stays identical. Staging invalidates the coverage-clean marker, ensuring the next band clears the reused bytes. Before the background carried the clear colour, cells crossed by terrain while still showing sky spilled into the pixel form 40–60 times per frame (about 5 ms); with it they rarely do. Decoded pixels are checked against the host reference with the background (`tools/bench-native.py --pixel-identity` records `$D021` as byte 10,000 of a capture). The HUD, text and ambient dust draw through the same `Canvas` trait (`span`, `plot`, `glyph`) as the host reference.
+PIXELS prepares a sixteen-byte persistent raster head at `$EF20` for each sorted position, reading the command through the sorted order (the command array is not consumed). `fast_prepare_triangle` keeps the host's exact Q16 arithmetic but takes a fast path for the usual edge (dy ≤ 255 and |dx| ≤ 255): a 24-bit restoring division by the 8-bit dy, the row-centre fraction `16384 / dy` from a table when the start row is on screen, and two quarter-square products; native positions carry +32767 so a row's column is simply the high word. Twelve-byte tails at `$E000` and ordered bit masks at `$EC00` identify the triangles touching each band. Edge positions advance sequentially in Q16 across all 25 bands, including bands whose painting can be skipped; edges are not recomputed from scratch for every band. The band driver is assembly (`fast_raster_band`): it scans the band's ordered mask and derives each marked triangle's head and tail addresses from its sorted position; the row walker copies the head into zero page (`$D0–$DF`), splits the band's rows into the segment before the middle row and the segment from it (so no row tests for the middle), clamps both columns from the high words, hands every nonempty span to the cell writer and writes the positions back when it leaves the band, except from the triangle's last band. Spans do not paint pixels: the cell writer (`target-c64/asm/cells.S`, the native body of `havoc::cells::CellBand`) writes two-bit colour codes straight into a row-major 8×40 table of cell bytes while a three-slot palette per cell hands out the hardware colours on first use (the span loops take a free slot inline). Code 0 is the VIC background, which PIXELS sets to the frame's clear colour at the start of every frame, so the clear colour and every unpainted pixel need no slot; the slots store keys (colour XOR the clear colour), which makes the clear colour key 0 like a free slot and keeps every fast path's zero test free of a comparison. A slot whose colour no longer appears in any of the cell's eight rows is recycled; a cell asked for a genuine fourth other colour is expanded into the pixel band at `$8C00` and painted per pixel from then on (its palette is poisoned with `$FF` so the span fast paths route every later write there; whole cell rows of plain or terrain ink take unrolled pixel paths). The parallel metadata table keeps terrain coverage in its low nibble and per-pixel HUD priority in its high nibble. Exterior terrain skips covered pixels; every effective write replaces its HUD bit, and spill expansion reconstructs both metadata bits. `fast_cell_stage` transposes the 320 code bytes into the consumed coverage table and writes the 80 attribute bytes into screen staging and the consumed overflow table (XORing the keys back; a free slot shows the clear colour). Each overflow flag is consumed before its byte is replaced. Only overflowed cells pass through the classic per-pixel quantizer (`fast_pack_cell`); their staged attributes are first seeded with the visible preceding values so its palette-retention behavior stays identical. Staging invalidates the coverage-clean marker, ensuring the next band clears the reused bytes. Before the background carried the clear colour, cells crossed by terrain while still showing sky spilled into the pixel form 40–60 times per frame (about 5 ms); with it they rarely do. Decoded pixels are checked against the host reference with the background (`tools/bench-native.py --pixel-identity` records `$D021` as byte 10,000 of a capture). The HUD, text and ambient dust draw through the same `Canvas` trait (`span`, `plot`, `glyph`) as the host reference.
 
-`fast_pack_cell` (`target-c64/asm/pack.S`) is the only remaining per-pixel quantizer: it ranks a spilled cell's colours (count, retained slot, HUD priority), keeps retained colours in their preceding slots, maps omitted colours to the nearest chosen colour or the background, and writes the eight bitmap bytes and two attribute bytes in place. `tools/test-pack-kernel.py` checks it byte for byte against `render::pack_band` over 256 bands (random, exact-colour, row-uniform and rendered-scene bands with black and coloured backgrounds). The band packer and its partial-cell sampling table at `$7700` are gone; `$7700–$774F` now hold the cell writer's HUD-slot and overflow flags.
+`fast_pack_cell` (`target-c64/asm/pack.S`) is the only remaining per-pixel quantizer: it ranks a spilled cell's colours (count, retained slot, HUD priority), keeps retained colours in their preceding slots, maps omitted colours to the nearest chosen colour or the background, and writes the eight bitmap bytes and two attribute bytes in place. `tools/test-pack-kernel.py` checks it byte for byte against `render::pack_band` over 256 bands (random, exact-colour, row-uniform and rendered-scene bands with black and coloured backgrounds). The band packer and its partial-cell sampling table at `$7700` are gone; `$7700–$7727` now supplies screen staging, and `$7728–$774F` holds cell overflow flags until staging.
 
 Each of the ten terrestrial visual themes uses five horizon triangles and nine cloud facets, decoded from compact signed-byte descriptors in SCENERY. The backdrop is authored in camera space; crossings interpolate the outgoing and incoming arrangements. Horizons use the neutral gameplay camera height of 40. The extended horizon bases cover the moving terrain even at camera extremes. Each theme has its own horizon and cloud arrangement and palette. Outdoor clouds and horizons occupy separate bands, so each 4-by-8 cell contains at most three colours besides the sky (the background) despite the larger palette across the complete backdrop. Crystal Cave reuses the fourteen faces for walls, roof, and hanging crystals, sharing three such colors even where they overlap. Ashen Wastes limits its scenery and rock obstacles to orange, charcoal, and black, leaving a cell slot available to an isolated red projectile.
 
@@ -152,7 +152,7 @@ The assembly IRQ wrapper preserves the processor-port setting, maps I/O back in,
 `publish_staged_band` (`target-c64/asm/publish.S`) copies one completed band:
 320 bitmap bytes from `$9340`, 40 screen bytes from `$7700`, and 40 color
 bytes from `$7728`. There is no additional framebuffer. These are consumed
-coverage, HUD-slot and overflow tables, and `fast_cell_stage` marks coverage
+coverage/priority and overflow tables plus screen staging, and `fast_cell_stage` marks coverage
 dirty so the next band clears it before drawing.
 
 For band `b`, the publisher excludes raster lines `[40 + 8b, 64 + 8b)`.
@@ -185,22 +185,39 @@ bitmap/attribute mismatches, not atomic whole-frame or background changes.
 
 ## SID configurations
 
-The two executables are selected at build time with Cargo's `four-sid` feature. There is no runtime hardware probe or profile menu. Both configurations disable range splitting and automatic address mirroring, giving every enabled SID a separate address. The standard configuration leaves both physical sockets unmapped and muted.
+The two executables are selected at build time with Cargo's `four-sid` feature. There is no runtime hardware probe or profile menu. Both configurations disable automatic address mirroring and leave both physical sockets unmapped and muted. The standard configuration disables range splitting. The four-SID configuration sets `UltiSID Range Split=1/2 (A6)`, giving each UltiSID two independent SID instances at the game's existing addresses: UltiSID 1A/1B at `$D400/$D440` and UltiSID 2A/2B at `$D420/$D460`.
 
 | Chip | Address | Two-SID package | Four-SID package | Pan |
 |---|---|---|---|---|
-| UltiSID 1 | `$D400` | 0 dB; two music + one effect voice | Same | Left 1 |
-| UltiSID 2 | `$D420` | 0 dB; two music + one effect voice | Same | Right 1 |
-| Physical socket 1 | `$D440` | Unmapped, muted | −6 dB; three music voices | Left 1 |
-| Physical socket 2 | `$D460` | Unmapped, muted | −6 dB; three music voices | Right 1 |
+| UltiSID 1 / 1A | `$D400` | 0 dB; two music + one effect voice | Same | Left 1 |
+| UltiSID 2 / 2A | `$D420` | 0 dB; two music + one effect voice | Same | Right 1 |
+| UltiSID 1B | `$D440` | Inactive | Shared 0 dB gain; three music voices | Left 1 |
+| UltiSID 2B | `$D460` | Inactive | Shared 0 dB gain; three music voices | Right 1 |
 
 Both profiles use gentle stereo separation (`Left 1` / `Right 1`) for headphone listening, preserving left/right distinction while bringing the mix closer to center. Re-import the updated `havoc.cfg` to apply the mixer settings.
 
-The extra pair is intended for ARMSIDs configured for 8580 behavior. Set that behavior on the ARMSIDs themselves: the game's configuration supplies socket addressing, gain, and pan, not ARMSID firmware settings. The −6 dB socket gain is the initial balance for the added orchestration. Addressing and mixer controls are described in the [Ultimate MultiSID guide](https://1541u-documentation.readthedocs.io/en/latest/config/multi_sid.html).
+Each split pair shares its parent UltiSID's mixer gain and pan. Both parent gains remain at 0 dB; the former physical sockets' provisional −6 dB attenuation is dropped without changing the score or player. Addressing is described in the [Ultimate MultiSID guide](https://1541u-documentation.readthedocs.io/en/latest/config/multi_sid.html).
 
-Both UltiSIDs use the same `8580 Lo` filter curve, `High` resonance setting, and `8580` combined-waveform behavior. Music owns their filters; the reserved third effects voices bypass them. All three voices on each added physical SID are available to music. The engine uses oscillator waveforms, ADSR envelopes, noise, and, on the extra physical SIDs, ring modulation of triangle voices by their chip's noise oscillator. Per-song kernels sweep the filter cutoff, pulse widths and pitches between rows. SID volume remains constant during playback; there are no digital samples or volume-register DAC effects.
+Both UltiSID groups use the same `8580 Lo` filter curve, `High` resonance setting, and `8580` combined-waveform behavior. Each SID instance has an independent filter owned by music; the reserved third effects voices on `$D400/$D420` bypass their filters. All three voices on each added SID instance are available to music. The engine uses oscillator waveforms, ADSR envelopes, noise, and, on the extra SIDs, ring modulation of triangle voices by their chip's noise oscillator. Per-song kernels sweep the filter cutoff, pulse widths and pitches between rows. SID volume remains constant during playback; there are no digital samples or volume-register DAC effects.
 
 The Ultimate Audio mapping at `$DF20–$DFFF` is disabled, and both sampler channels are muted. The firmware's `Digis Level=Medium` setting is retained but is not used for sampled playback. Mixer panning applies to HDMI and AV output, not the physical SID-TAP header. The built-in SID player's autoconfiguration can override mixer settings, so re-import the game configuration after using that player. See the [official mixer documentation](https://1541u-documentation.readthedocs.io/en/latest/config/audio_mixer.html).
+
+### Update an existing four-SID package
+
+The archived v0.1.0 four-SID package routes the extra music voices to physical sockets. To use only the built-in UltiSIDs, edit these entries in that package's `havoc.cfg`:
+
+```ini
+[SID Addressing]
+SID Socket 1 Address=Unmapped
+SID Socket 2 Address=Unmapped
+UltiSID Range Split=1/2 (A6)
+
+[Audio Mixer]
+Vol Socket 1=OFF
+Vol Socket 2=OFF
+```
+
+These are replacements within the existing sections, not a complete configuration file. Keep the UltiSID base addresses at `$D400/$D420`, automatic mirroring disabled, both UltiSID gains at 0 dB, and their existing 8580 settings. Keep or set `Pan UltiSID 1=Left 1` and `Pan UltiSID 2=Right 1`; the muted socket pan entries can be removed. Preserve the package's CPU and REU settings, including 16 MB for older 16 MiB images. Re-import the edited configuration before running the matching four-SID PRG/REU; no game rebuild is needed. New builds already include this routing.
 
 ## Paged melodic score
 
@@ -371,9 +388,9 @@ All twenty-one cues previously passed complete native loops in both sound profil
 
 `tools/music-previews.py` records the native player through VICE's SID audio output. Historical recordings of *Crystal Current*, *Ashes and Steel*, *Tempest Drive*, *Gorge Warden*, *Citadel Heart*, and *Carrier Overdrive* remain under `target/music-validation/previews-{2sid,4sid}/`; those manifests report zero clipped samples. The orbital score adds *Slingshot Through the Belt*, *Silver Fractures*, *Echoes of Lost Fleets*, *Rivets in Orbit*, *Shadow of the Dreadnought*, *Beyond the Blue Threshold*, *Atmosphere to Starlight*, and *The Last Sentinel*. The six mission cues and final boss cue each contain four distinct eight-bar sections; the ascent lasts eight seconds.
 
-`target/offplanet-validation/music-2sid/recordings.json` and `target/offplanet-validation/music-4sid/recordings.json` pass all eight new recordings: 407.36 seconds per profile of 44.1 kHz stereo WAV audio, with both channels active and zero clipped samples. The WAVs and manifests are bundled in `target/offplanet-validation/music-2sid.zip` and `target/offplanet-validation/music-4sid.zip`. They retain the earlier frozen packages as their recording provenance. `target/offplanet-validation/release-music-equivalence.json` verifies that their complete encoded score banks are byte-identical to the final release: 62,944 bytes for two SIDs and 146,528 for four SIDs. Physical SID listening and mixer balance remain unverified.
+`target/offplanet-validation/music-2sid/recordings.json` and `target/offplanet-validation/music-4sid/recordings.json` pass all eight new recordings: 407.36 seconds per profile of 44.1 kHz stereo WAV audio, with both channels active and zero clipped samples. The WAVs and manifests are bundled in `target/offplanet-validation/music-2sid.zip` and `target/offplanet-validation/music-4sid.zip`. They retain the earlier frozen packages as their recording provenance. `target/offplanet-validation/release-music-equivalence.json` verifies that their complete encoded score banks are byte-identical to the final release: 62,944 bytes for two SIDs and 146,528 for four SIDs. Those emulator recordings did not validate the former physical-SID mixer balance. Four-UltiSID playback and mixer balance on the Ultimate remain unverified.
 
-The soundtrack tests check cue lengths, distinct melodic sections, loop/page articulation, both serialization profiles, and the exact *Lost Wing* transcription. A passing host test or valid linker map does not establish a frame-rate result on the machine. Hardware acceptance must check PAL and NTSC presentation timing, all twenty-one cues and page boundaries, simultaneous music and effects, REU transfers during play, stack guards, and full-mission restart/checkpoint behavior. Four-SID acceptance also needs the physical ARMSID pair and its final mixer balance.
+The soundtrack tests check cue lengths, distinct melodic sections, loop/page articulation, both serialization profiles, and the exact *Lost Wing* transcription. A passing host test or valid linker map does not establish a frame-rate result on the machine. Hardware acceptance must check PAL and NTSC presentation timing, all twenty-one cues and page boundaries, simultaneous music and effects, REU transfers during play, stack guards, and full-mission restart/checkpoint behavior. Four-SID acceptance must also confirm that importing the configuration exposes all four built-in SID instances, the physical sockets remain unmapped and muted, and the enhanced arrangement and effects sound balanced at the shared 0 dB gains. Physical chips are optional and unused.
 
 The bootstrap structure was informed by the neighboring `doomc64u` repository. `secondreality/src/output/cfg.rs` provided a local example of the Ultimate mixer and SID-address configuration keys. H.A.V.O.C. uses its own synthesis player and does not adopt Second Reality's digital-audio modes.
 
@@ -391,7 +408,7 @@ python3 tools/capture-showcase.py \
 python3 tools/encode-showcase.py target/readme-showcase/manifest.json
 ```
 
-Capture uses the compiled C64 program in the calibrated emulator and records its SID music and gameplay effects. The showcase presents selected scenes rather than a continuous campaign or a physical-machine recording. Keep the footage at its recorded game speed: duplicated video frames must not be presented as a higher game rendering rate. The four-SID recording represents emulated SID synthesis, not a recording of the physical ARMSIDs or their final hardware mixer balance.
+Capture uses the compiled C64 program in the calibrated emulator and records its SID music and gameplay effects. The showcase presents selected scenes rather than a continuous campaign or a physical-machine recording. Keep the footage at its recorded game speed: duplicated video frames must not be presented as a higher game rendering rate. The four-SID recording represents VICE SID synthesis; it does not establish the Ultimate's UltiSID sound or final hardware mixer balance.
 
 The README trailer is 72 seconds: title (4), Lowland Approach (12), Crystal Cave (10), Foundry Belt (10), Storm Front (10), orbital ascent (8), Asteroid Belt (10), and title outro (8). It previews the first orbital mission without revealing bosses or the ending. Omitting `--scene` records the full storyboard, including all six orbital missions. Repeat `--scene <name>` to select scenes, or use `--duration 1` for short capture probes. The capture and encoder also accept the two-SID package with `--package-dir dist`; their manifests record the actual sound profile.
 
@@ -438,13 +455,21 @@ pure scenery blend-weight helper occupy resident table-code space, keeping all
 phase ownership and memory-limit checks active. The coverage rule does not replace
 the general average-depth painter sort for other overlapping geometry.
 
-## Experimental span-buffer renderer
+## Experimental span renderers
 
 The default-off `span-buffer` feature resolves each eight-row scene band before
 painting cells. It retains the stable painter order and existing Q16 edge setup
 and stepping. `src/render/spans.rs` is the host reference; `asm/spans.S` supplies
 the native compositor. This removes overlapping scene paint submissions, while
 band initialization, palette spill expansion, and the later HUD remain separate.
+
+The deferred backend skips a contained write when its complete color/coverage
+value is unchanged. Uniform overwrites splice out the covered runs in one pass:
+terrain-clear writes always qualify; ordinary/exterior writes qualify before
+any protected coverage has appeared in the band. Later writes retain the
+per-run coverage checks. The compositor owns the per-band coverage flag, even
+when a protected write takes an early return. Row pointers are prepared once
+per triangle band and advanced with the Q16 walker, including clipped rows.
 
 Each row is a list of maximal color/coverage runs indexed by its starting pixel.
 The successor byte is also the exclusive end, with 160 as the sentinel. Eight
@@ -469,10 +494,38 @@ overfull cell's equal-frequency color selection. Tests require identical raw
 scene pixels and coverage, and compare both renderers under the same preceding
 palettes to distinguish that history effect from visibility or HUD errors.
 
+The alternative `span-front-to-back` feature implies `span-buffer` and selects
+the front-to-back backend instead of linking both. `src/render/front.rs` and
+`asm/front_spans.S` walk the exact reverse of the stable painter order. Each row
+starts as one uncovered interval. Geometry claims visible fragments and sends
+them directly to the ordinary cell writer; clear-colored fragments also claim
+ownership. Dust fills the remaining holes after geometry, and there is no flush.
+The two arrays at `$D000-$D9FF` hold hole successors and ends, while eight row
+heads borrow retired preparation scratch at `$77AC-$77B3`. The maximum is 80
+disjoint holes per row. No buffer, transfer, or persistent allocation is added.
+
+Before front-to-back painting, a noncommitting pass over terrain-clear faces
+unions their coverage into the cells. It copies Q16 heads into the existing
+walker scratch and returns before any persistent head store; tails are read-only.
+This makes exterior rejection independent of reverse traversal. The main pass
+advances every active head once, including fully obscured geometry and hidden
+bands. Seeded coverage survives cell spills. Terrain-clear takes precedence when
+both terrain flags are present, matching the painter. The coverage prepass and
+hole bookkeeping are real costs, so fewer writes alone do not establish a win.
+
+All backends share per-pixel HUD priority. The cell coverage byte now holds
+terrain bits in its low nibble and HUD bits in its high nibble. Every effective
+write replaces its pixel's HUD bit, including background writes, and spills
+reconstruct the old metadata before applying the new write. `$9128` latches
+whether any HUD write has occurred, preserving the scene fast paths beforehand.
+The former `$7700-$7727` slot flags are used only for final screen staging.
+
 Build isolated benchmark packages with
 `bash scripts/build-benchmark.sh target/span-buffer/candidate-2sid 2sid spans`
-(use `4sid` for the other profile). Omit `spans`, or use `painter`, for the
-default renderer. Native production builds opt in with
+(use `4sid` for the other profile, or `front` for front-to-back). Omit the final
+argument, or use `painter`, for the default renderer. Native production builds opt in with
 `cargo build --release --features span-buffer` from `target-c64` in the configured
-toolchain. The feature remains off in normal builds. See
-[the measured experiment](benchmarks.md#span-buffer-experiment-2026-10-21).
+toolchain; use `span-front-to-back` to select the other backend. Both features
+remain off in normal builds. `HAVOC_SPAN_PREPARED_POINTERS=0` builds the deferred
+pointer-hoisting ablation with no runtime branch. See
+[the measured optimizations](benchmarks.md#span-renderer-optimizations-2026-10-21).

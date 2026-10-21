@@ -10,6 +10,7 @@ fn main() {
         "asm/memcpy.S",
         "asm/raster.S",
         "asm/spans.S",
+        "asm/front_spans.S",
         "asm/division.S",
         "asm/sort.S",
         "asm/preparation.S",
@@ -25,7 +26,7 @@ fn main() {
     ] {
         println!("cargo:rerun-if-changed={source}");
     }
-    for name in ["MOS_CLANG", "LLVM_MOS", "HOME"] {
+    for name in ["MOS_CLANG", "LLVM_MOS", "HOME", "HAVOC_SPAN_PREPARED_POINTERS"] {
         println!("cargo:rerun-if-env-changed={name}");
     }
     let directory = PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").unwrap());
@@ -37,12 +38,19 @@ fn main() {
         format!("{sdk}/bin/mos-c64-clang")
     });
     let span_buffer = env::var_os("CARGO_FEATURE_SPAN_BUFFER").is_some();
+    let span_front = env::var_os("CARGO_FEATURE_SPAN_FRONT_TO_BACK").is_some();
+    // Deferred-backend ablation only: select at assembly time, with no test
+    // in the production row loop. Front always advances its prepared pointers.
+    let span_pointers = env::var("HAVOC_SPAN_PREPARED_POINTERS").unwrap_or_else(|_| "1".into());
+    assert!(span_pointers == "0" || span_pointers == "1",
+            "HAVOC_SPAN_PREPARED_POINTERS must be 0 or 1");
     for source in [
         "platform",
         "pack",
         "memcpy",
         "raster",
         "spans",
+        "front_spans",
         "division",
         "sort",
         "preparation",
@@ -56,13 +64,19 @@ fn main() {
         "shots",
         "flight",
     ] {
-        if source == "spans" && !span_buffer {
+        if source == "spans" && (!span_buffer || span_front)
+            || source == "front_spans" && !span_front
+        {
             continue;
         }
         let object = output.join(format!("{source}.o"));
         let mut assembly = Command::new(&compiler);
         if span_buffer {
             assembly.arg("-Wa,-defsym,SPAN_BUFFER=1");
+            assembly.arg(format!("-Wa,-defsym,SPAN_PREPARED_POINTERS={span_pointers}"));
+        }
+        if span_front {
+            assembly.arg("-Wa,-defsym,SPAN_FRONT=1");
         }
         let status = assembly.args(["-c", "-o"])
             .arg(&object)
@@ -77,6 +91,10 @@ fn main() {
         audit_command.arg(directory.join("../tools/branch-audit.py"));
         if span_buffer {
             audit_command.arg("--define").arg("SPAN_BUFFER=1");
+            audit_command.arg("--define").arg(format!("SPAN_PREPARED_POINTERS={span_pointers}"));
+        }
+        if span_front {
+            audit_command.arg("--define").arg("SPAN_FRONT=1");
         }
         let audit = audit_command
             .arg(directory.join(format!("asm/{source}.S")))

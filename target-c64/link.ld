@@ -497,12 +497,19 @@ __span_buffer_end = 0xDA00;
 __span_buffer_size = __span_buffer_end - __span_buffer_start;
 ASSERT(__span_buffer_size == 8 * 160 * 2, "incorrect span compositor allocation")
 ASSERT(__span_buffer_start == __renderer_start + 6 && __span_buffer_end <= __renderer_end, "span compositor must reuse retired commands only")
+/* Front-to-back row heads borrow preparation/packer scratch only while painting. */
+__span_front_heads_start = 0x77AC;
+__span_front_heads_end = 0x77B4;
+ASSERT(__span_front_heads_end - __span_front_heads_start == 8, "incorrect front span row-head allocation")
+/* GEOMETRY retires this scratch before cell clear; preserve it until staging. */
+__cell_hud_seen = 0x9128;
 /* Preparation is complete before the row walker or packer uses this scratch.
  * The IRQ never borrows it; persistent models at $8400 are untouched. */
 __raster_prepare_scratch_start = 0x77A0;
 __raster_prepare_scratch_end = 0x77BF;
 /* PIXELS resets this byte per band; preparation and packing own it before/after. */
 __raster_player_seen = 0x77AB;
+ASSERT(__span_front_heads_start > __raster_player_seen && __span_front_heads_end <= __raster_prepare_scratch_end, "front span heads must reuse retired raster scratch")
 /* BOOT builds the quarter-square table for the resident Q8 multiply here. */
 __quarter_squares_start = 0xC000;
 __quarter_squares_end = 0xC400;

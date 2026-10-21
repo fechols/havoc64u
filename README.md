@@ -43,12 +43,14 @@ Screenshots: **v0.1.0, four-SID build**, captured in a PAL emulator.
 
 ## Download and launch
 
-**H.A.V.O.C. v0.1.0** includes the complete eighteen-stage campaign. Choose the package that matches your sound hardware:
+**H.A.V.O.C. v0.1.0** includes the complete eighteen-stage campaign. Choose your preferred arrangement:
 
 - **[Download the standard two-SID package](https://github.com/fechols/havoc64u/releases/download/v0.1.0/havoc-v0.1.0-2sid.zip)** — uses the two built-in UltiSIDs; no extra chips needed.
-- **[Download the enhanced four-SID package](https://github.com/fechols/havoc64u/releases/download/v0.1.0/havoc-v0.1.0-4sid.zip)** — requires two physical ARMSIDs, each set to **8580 behavior**, for a fuller score.
+- **[Download the enhanced four-SID package](https://github.com/fechols/havoc64u/releases/download/v0.1.0/havoc-v0.1.0-4sid.zip)** — a fuller score using four built-in UltiSIDs with the configuration update below; no extra chips needed.
 
 Both packages include the same missions and sound effects. Choose your sound profile before launching; it cannot be switched in-game.
+
+The archived v0.1.0 four-SID download contains the older physical-SID configuration. Apply the [UltiSID configuration update](docs/hardware.md#update-an-existing-four-sid-package) to its included `havoc.cfg` before importing it. New builds include the updated routing.
 
 You need a **C64 Ultimate running at 64 MHz**, **1 MiB of REU memory**, and a joystick connected to **port 2**. The supplied configuration sets the speed, memory, and sound routing. A stock C64 cannot run the game.
 

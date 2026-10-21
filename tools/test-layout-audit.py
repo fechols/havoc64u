@@ -13,6 +13,9 @@ def main():
     checker = Path(__file__).with_name("check-layout.py")
     overlay = runpy.run_path(str(checker.with_name("check-overlays.py")))
     elf = overlay["Elf"](source)
+    names = {symbol.name for symbol in elf.symbols}
+    front_enabled = "span_front_compose" in names
+    span_enabled = "span_compose" in names or front_enabled
     original = prg.read_bytes()
     tables = (("__sim_load_sizes", 8, "SIM load table disagrees", "SIM profile"),
               ("__code_sizes", 24, "Code size table disagrees", "OVL7 image"))
@@ -72,6 +75,8 @@ def main():
             cases += 1
             print(f"Rejected {label}")
         for name, value, expected in (
+            ("__cell_hud_seen", 0x9127, "HUD-seen flag must reuse cell scratch at $9128"),
+            ("__cell_hud_seen", 0x9129, "HUD-seen flag must reuse cell scratch at $9128"),
             ("__phase_pixels_prefix_size", 0x3f21, "PIXELS prefix overlaps its helpers"),
             ("__phase_pixels_aux_start", 0x6f1f, "PIXELS helpers must start at $6F20"),
             ("__phase_pixels_aux_size", 0x2e1, "PIXELS helpers exceed workspace"),
@@ -97,7 +102,13 @@ def main():
                 ("__span_buffer_start", 0xcfff),
                 ("__span_buffer_end", 0xda01),
                 ("__span_buffer_size", 0xa01),
-            ) if any(symbol.name == 'span_compose' for symbol in elf.symbols)),
+            ) if span_enabled),
+            *((name, value, "front span heads must reuse exactly") for name, value in (
+                ("__span_front_heads_start", 0x77ab),
+                ("__span_front_heads_start", 0x77ad),
+                ("__span_front_heads_end", 0x77b3),
+                ("__span_front_heads_end", 0x77b5),
+            ) if front_enabled),
         ):
             entry = next(table.offset + index * table.entry_size
                          for table in elf.sections if table.kind == 2

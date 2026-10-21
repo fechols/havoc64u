@@ -59,7 +59,7 @@ const fn column_mask(lo: usize, hi: usize) -> u8 {
 /// How a geometry span treats the terrain-clear coverage of the cells it paints.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Paint {
-    /// Ordinary ink: paints every pixel, coverage bits untouched.
+    /// Ordinary ink: preserves coverage, except HUD ink clears it.
     Plain,
     /// Terrain-clear geometry: paints and marks every pixel as covered.
     Clear,
@@ -83,8 +83,8 @@ pub struct CellBand {
     codes: [[u8; 40]; 8],
     /// Slot keys: the slot's colour XOR the clear colour; 0 = free.
     palette: [[u8; 40]; 3],
+    /// Low nibble: terrain coverage; high nibble: per-pixel HUD priority.
     cover: [[u8; 40]; 8],
-    hud_slots: [u8; 40],
     overflow: [bool; 40],
     /// Pixel form of overflowed cells (the classic band layout).
     pub pixels: [u8; BAND_PIXELS],
@@ -100,7 +100,6 @@ impl CellBand {
             codes: [[0; 40]; 8],
             palette: [[0; 40]; 3],
             cover: [[0; 40]; 8],
-            hud_slots: [0; 40],
             overflow: [false; 40],
             pixels: [0; BAND_PIXELS],
             coverage_seen: false,
@@ -128,7 +127,6 @@ impl CellBand {
         for row in &mut self.cover {
             row.fill(0);
         }
-        self.hud_slots.fill(0);
         self.overflow.fill(false);
         self.coverage_seen = false;
     }
@@ -152,8 +150,24 @@ impl CellBand {
         self.span(row, first, end, color_flags & 15, false, paint);
     }
 
-    /// Paint `[first, end)` of `row`. HUD ink marks its slot so an overflowed
-    /// cell's pixels carry the priority bit the quantizer expects.
+    /// Seed terrain coverage before painting a freshly cleared band.
+    #[cfg(feature = "span-front-to-back")]
+    pub(crate) fn mark_terrain_coverage(&mut self, row: usize, first: usize, end: usize) {
+        debug_assert!(row < 8 && first <= end && end <= WIDTH);
+        if first == end {
+            return;
+        }
+        self.coverage_seen = true;
+        for cell in first / 4..=(end - 1) / 4 {
+            debug_assert!(!self.overflow[cell]);
+            let lo = first.max(cell * 4) - cell * 4;
+            let hi = end.min(cell * 4 + 4) - cell * 4;
+            self.cover[row][cell] |= column_mask(lo, hi);
+        }
+    }
+
+    /// Paint `[first, end)` of `row`. HUD priority belongs to each written
+    /// pixel and is replaced by subsequent writes, independent of spill timing.
     pub fn span(&mut self, row: usize, first: usize, end: usize, color: u8, hud: bool, paint: Paint) {
         debug_assert!(row < 8 && first <= end && end <= WIDTH);
         if first >= end {
@@ -202,13 +216,14 @@ impl CellBand {
                 }
             }
         };
-        if hud && slot != 0 {
-            self.hud_slots[cell] |= 1 << (slot - 1);
-        }
         let bits = EXPAND[mask as usize];
         self.codes[row][cell] = (self.codes[row][cell] & !bits) | (PATTERN[slot] & bits);
+        let cover = &mut self.cover[row][cell];
+        *cover = (*cover & !(mask << 4)) | if hud { mask << 4 } else { 0 };
         if paint == Paint::Clear {
-            self.cover[row][cell] |= mask;
+            *cover |= mask;
+        } else if paint == Paint::Plain && hud {
+            *cover &= !mask;
         }
     }
 
@@ -236,7 +251,6 @@ impl CellBand {
             if live & (2 << slot) == 0 {
                 self.stats.recycled_slots += 1;
                 self.palette[slot][cell] = key;
-                self.hud_slots[cell] &= !(1 << slot);
                 return Some(slot + 1);
             }
         }
@@ -259,7 +273,7 @@ impl CellBand {
                 if cover & (8 >> column) != 0 {
                     pixel |= crate::render::TERRAIN_CLEAR_INK;
                 }
-                if slot != 0 && self.hud_slots[cell] & (1 << (slot - 1)) != 0 {
+                if cover & (0x80 >> column) != 0 {
                     pixel |= HUD_INK;
                 }
                 self.pixels[row * WIDTH + cell * 4 + column] = pixel;
@@ -346,8 +360,8 @@ impl crate::render::Canvas for CellBand {
 }
 
 /// The target's band: the kernels in `target-c64/asm/cells.S` keep the same
-/// state in fixed RAM (`CODES` at $9200, palettes at $9480, HUD slots and
-/// overflow flags at $7700, the pixel form at $8C00), so this is a handle.
+/// state in fixed RAM (`CODES` at $9200, metadata at $9340, palettes at $9480,
+/// overflow flags at $7728, the pixel form at $8C00), so this is a handle.
 #[cfg(target_arch = "mos")]
 pub struct NativeCells;
 
@@ -371,7 +385,7 @@ impl NativeCells {
     /// Stage the band's VIC bytes in fixed RAM: bitmap at $9340, screen at
     /// $7700 and colors at $7728. The preceding attributes are read only;
     /// live color RAM needs I/O mapped in. Staging consumes the band's cover,
-    /// HUD-slot and overflow state. Publish it before calling `clear`, and
+    /// metadata and overflow state. Publish it before calling `clear`, and
     /// clear before painting or staging another band.
     #[inline(always)]
     pub fn stage(&mut self, old_screen: &[u8; 40], old_colors: &[u8; 40]) {

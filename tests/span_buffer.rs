@@ -50,11 +50,7 @@ fn every_scene_matches_raw_pixels_and_decoded_cells_with_identical_previous_pale
                 let stats = renderer.render_band_spans(band, &mut actual, ambient);
                 assert_eq!(actual, expected, "section {section}, distance {distance}, band {band}");
                 assert!(stats.emitted_pixels <= BAND_PIXELS as u32);
-                totals.input_spans += stats.input_spans;
-                totals.run_visits += stats.run_visits;
-                totals.emitted_spans += stats.emitted_spans;
-                totals.emitted_pixels += stats.emitted_pixels;
-                totals.peak_runs = totals.peak_runs.max(stats.peak_runs);
+                totals += stats;
 
                 let mut painter = CellBand::new();
                 let mut spans = CellBand::new();
@@ -75,7 +71,8 @@ fn every_scene_matches_raw_pixels_and_decoded_cells_with_identical_previous_pale
             }
         }
     }
-    eprintln!("span-buffer: {bands} scene bands; {totals:?}; spills painter={painter_spills}, spans={span_spills}; cell-row writes painter={painter_cell_rows}, spans={span_cell_rows}");
+    let backend = if cfg!(feature = "span-front-to-back") { "front-to-back" } else { "deferred" };
+    eprintln!("span-buffer {backend}: {bands} scene bands; {totals:?}; spills painter={painter_spills}, spans={span_spills}; cell-row writes painter={painter_cell_rows}, spans={span_cell_rows}");
     assert!(bands >= 25 * 5);
 }
 

@@ -247,17 +247,28 @@ def audit(path):
     auxiliary = phases[SIM_AUX_SECTION]
     for helper in ('__divsi3', '__udivsi3', '__mulsi3'):
         require(helper not in symbols, f'generic 32-bit helper linked: {helper}')
-    span_enabled = 'span_compose' in symbols
+    front_enabled = 'span_front_compose' in symbols
+    span_enabled = 'span_compose' in symbols or front_enabled
+    require('__cell_hud_seen' in symbols and symbols['__cell_hud_seen'].address == 0x9128,
+            'HUD-seen flag must reuse cell scratch at $9128')
     if span_enabled:
-        require(elf.sections[symbols['span_compose'].section].name == '.text',
-                'span compositor must be resident pure code')
-        for name in ('fast_span_clear', 'fast_span_plot', 'fast_span_flush'):
+        if not front_enabled:
+            require(elf.sections[symbols['span_compose'].section].name == '.text',
+                    'span compositor must be resident pure code')
+        for name in (('fast_span_clear', 'fast_span_plot') if front_enabled else
+                     ('fast_span_clear', 'fast_span_plot', 'fast_span_flush')):
             require(name in symbols and elf.sections[symbols[name].section].name in PIXELS_SECTIONS,
                     f'{name} must belong to PIXELS')
         require(tuple(symbols[name].address if name in symbols else None for name in
                       ('__span_buffer_start', '__span_buffer_end', '__span_buffer_size'))
                 == (0xD000, 0xDA00, 0xA00),
                 'span buffer must reuse exactly $D000-$D9FF of retired commands')
+    if front_enabled:
+        require('span_compose' not in symbols and 'fast_span_flush' not in symbols,
+                'front renderer must not link the deferred compositor')
+        require(tuple(symbols[name].address if name in symbols else None for name in
+                      ('__span_front_heads_start', '__span_front_heads_end')) == (0x77AC, 0x77B4),
+                'front span heads must reuse exactly $77AC-$77B3 of retired raster scratch')
     require(auxiliary.address == 0x8C00 and 0 < auxiliary.size <= 0x500,
             "SIM helpers must fit the retired $8C00-$90FF workspace")
     require(all(name in symbols for name in ("__phase_sim_aux_start", "__phase_sim_aux_end", "__phase_sim_aux_size")),

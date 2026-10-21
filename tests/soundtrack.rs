@@ -648,7 +648,7 @@ impl havoc::audio::SidBus for PlaybackBus {
 fn sounding_music(bus: &PlaybackBus) -> [Option<u16>; MUSIC_VOICES] {
     std::array::from_fn(|voice| {
         // Public hardware contract: the core quartet uses voices one/two of
-        // the UltiSID pair; each extra physical SID contributes three voices.
+        // SID 0/1; each additional SID (2/3) contributes three music voices.
         let (sid, base) = if voice < 4 {
             (voice & 1, (voice >> 1) * 7)
         } else {

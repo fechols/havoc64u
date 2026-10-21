@@ -15,10 +15,11 @@
 ;
 ; State, PIXELS phase only:
 ;   CODES  $9200  8 rows x 40 cells, bits 7..6 = leftmost pixel, slot k = k*$55
-;   COVER  $9340  8 rows x 40 four-bit terrain-clear masks, bit 3 = leftmost
+;   COVER  $9340  8 rows x 40 masks: low nibble terrain, high nibble HUD;
+;                bits 3 and 7 = leftmost pixel
 ;   PAL0/1/2 $9480/$94A8/$94D0  slot keys per cell, 0 = free ($FF x 3 once
 ;                                the cell lives in the pixel band)
-;   HUDS   $7700  per cell, bit k-1 set when slot k carries HUD ink
+;   HUDS   $7700  screen-byte staging only
 ;   OVER   $7728  per cell, nonzero once the cell lives in the pixel band
 ;   COVER_CLEAN $7750 holds $5A while COVER is known to be all zero
 ; After staging, COVER holds 320 cell-major bitmap bytes, HUDS holds 40 screen
@@ -102,6 +103,7 @@
 .set CF_COLOR, CS_SCRATCH+$24
 .set CF_CELL, CS_SCRATCH+$26
 .set CF_CLEAR2, CS_SCRATCH+$27
+.set CS_HUD_SEEN, CS_SCRATCH+$28
 
 .section .phase.pixels.cells,"ax",@progbits
 
@@ -130,6 +132,13 @@ cell_row_pointers:
 ; and falls back to cell_row for everything else.
 .globl cell_rows
 cell_rows:
+    ; Once HUD ink appears, later unmarked writes must clear its pixel bits.
+    lda CS_HUD
+    beq .Lcs_hud_ready
+    sta CS_HUD_SEEN
+    lda #0
+    sta COVER_CLEAN
+.Lcs_hud_ready:
     ldx CS_END
     dex
     txa
@@ -159,7 +168,7 @@ cell_rows:
     jmp cell_row
 .Lcs_first:
     ldy CS_CELL
-    lda CS_HUD
+    lda CS_HUD_SEEN
     ora CS_MODE
     bne .Lcs_general_first
     ; plain ink without HUD marking: the edge cells merge through the mask
@@ -171,7 +180,7 @@ cell_rows:
     jsr cell_row
     ldy CS_CELL
     iny
-    lda CS_HUD
+    lda CS_HUD_SEEN
     bne .Lcs_general_interior
     lda CS_MODE
     cmp #1
@@ -179,7 +188,7 @@ cell_rows:
     jmp .Lcs_clear_interior
 .Lcs_exterior_far:
     jmp .Lcs_exterior_loop
-; HUD spans mark slots: every cell takes the general path.
+; After HUD ink appears, every cell takes the metadata-aware general path.
 .Lcs_general_interior:
     cpy CS_LASTCELL
     beq .Lcs_last_cell
@@ -426,7 +435,7 @@ cell_row:
     lda OVER,y
     bne .Lcr_pixels_far
     lda CS_MODE
-    ora CS_HUD
+    ora CS_HUD_SEEN
     bne .Lcr_cell
     ldx CS_MASK
     lda CS_KEY
@@ -544,9 +553,6 @@ cell_row:
     bne .Lcr_live1
     lda CS_KEY
     sta PAL0,y
-    lda HUDS,y
-    and #$fe
-    sta HUDS,y
     ldx #1
     jmp .Lcr_slot
 .Lcr_live1:
@@ -555,9 +561,6 @@ cell_row:
     bne .Lcr_live2
     lda CS_KEY
     sta PAL1,y
-    lda HUDS,y
-    and #$fd
-    sta HUDS,y
     ldx #2
     jmp .Lcr_slot
 .Lcr_live2:
@@ -566,20 +569,12 @@ cell_row:
     bne .Lcr_spill
     lda CS_KEY
     sta PAL2,y
-    lda HUDS,y
-    and #$fb
-    sta HUDS,y
     ldx #3
     jmp .Lcr_slot
 .Lcr_spill:
     jsr .Lcr_expand
     jmp .Lcr_pixels
 .Lcr_slot:
-    lda CS_HUD
-    beq .Lcr_write
-    lda HUDS,y
-    ora .Lcs_slot_bit-1,x
-    sta HUDS,y
 .Lcr_write:
     lda .Lcs_pattern,x
     sta CS_PAT
@@ -593,9 +588,37 @@ cell_row:
     and CS_BITS
     eor CS_T
     sta (__rc8),y
+    lda CS_HUD_SEEN
+    beq .Lcr_cover_mode
+    ; Replace only the written pixels' HUD bits, including background ink.
+    lda CS_MASK
+    asl
+    asl
+    asl
+    asl
+    sta CS_T
+    eor #$ff
+    and (__rc10),y
+    ldx CS_HUD
+    beq .Lcr_hud_store
+    ora CS_T
+.Lcr_hud_store:
+    sta (__rc10),y
+.Lcr_cover_mode:
     lda CS_MODE
     cmp #1
+    beq .Lcr_cover_set
+    cmp #0
     bne .Lcr_done
+    lda CS_HUD
+    beq .Lcr_done
+    ; Match pixel form: plain HUD ink replaces terrain coverage too.
+    lda CS_MASK
+    eor #$ff
+    and (__rc10),y
+    sta (__rc10),y
+    rts
+.Lcr_cover_set:
     lda (__rc10),y
     ora CS_MASK
     sta (__rc10),y
@@ -745,39 +768,24 @@ cell_row:
     rts
 
 ; Expand cell Y into its pixel form (all eight rows) and mark it overflowed.
-; Y is preserved. The four slot pixels (colour with the HUD bit of a marked
-; slot; slot 0 is the clear colour, the keys XOR back into colours) are built
+; Y is preserved. The four slot colours (slot 0 is the clear colour;
+; the keys XOR back into colours) are built
 ; once; every row then decodes its code byte through them and adds the
-; coverage bits of its COVER nibble.
+; terrain and HUD bits of its COVER nibbles.
 .Lcr_expand:
     sty CS_CELL
     lda #1
     sta OVER,y
     lda CS_CLEAR
     sta CS_PALC
-    lda HUDS,y
-    sta CS_HUDC
-    ; slot pixel k = colour | $80 when HUD bit k-1 is set (shifted into carry)
     lda PAL0,y
     eor CS_CLEAR
-    lsr CS_HUDC
-    bcc .Lcr_expand_slot1
-    ora #$80
-.Lcr_expand_slot1:
     sta CS_PALC+1
     lda PAL1,y
     eor CS_CLEAR
-    lsr CS_HUDC
-    bcc .Lcr_expand_slot2
-    ora #$80
-.Lcr_expand_slot2:
     sta CS_PALC+2
     lda PAL2,y
     eor CS_CLEAR
-    lsr CS_HUDC
-    bcc .Lcr_expand_slot3
-    ora #$80
-.Lcr_expand_slot3:
     sta CS_PALC+3
     ; poison the palette: the span fast paths then never match or take a
     ; slot here and route every nonblack write to the pixel form
@@ -811,6 +819,7 @@ cell_row:
     sta __rc3
     ldy CS_CELL
     lda (__rc2),y
+    sta CS_HUDC            ; HUD nibble already in bits 7..4
     asl
     asl
     asl
@@ -829,6 +838,10 @@ cell_row:
     bcc .Lcr_expand_p0
     ora #$40
 .Lcr_expand_p0:
+    asl CS_HUDC
+    bcc .Lcr_expand_h0
+    ora #$80
+.Lcr_expand_h0:
     sta CS_PIXEL
     ; pixel 1: bits 5..4
     lda CS_CODES
@@ -843,6 +856,10 @@ cell_row:
     bcc .Lcr_expand_p1
     ora #$40
 .Lcr_expand_p1:
+    asl CS_HUDC
+    bcc .Lcr_expand_h1
+    ora #$80
+.Lcr_expand_h1:
     sta CS_PIXEL+1
     ; pixel 2: bits 3..2
     lda CS_CODES
@@ -855,6 +872,10 @@ cell_row:
     bcc .Lcr_expand_p2
     ora #$40
 .Lcr_expand_p2:
+    asl CS_HUDC
+    bcc .Lcr_expand_h2
+    ora #$80
+.Lcr_expand_h2:
     sta CS_PIXEL+2
     ; pixel 3: bits 1..0
     lda CS_CODES
@@ -865,6 +886,10 @@ cell_row:
     bcc .Lcr_expand_p3
     ora #$40
 .Lcr_expand_p3:
+    asl CS_HUDC
+    bcc .Lcr_expand_h3
+    ora #$80
+.Lcr_expand_h3:
     sta CS_PIXEL+3
     ; store the row
     ldx CS_EROW
@@ -903,14 +928,15 @@ cell_row:
 
 ; void fast_cell_clear(uint8_t color): start a band filled with `color`.
 ; C ABI: color in A. Remembers the clear colour (code 0, the VIC background)
-; and clears CODES, the palettes (every slot free), HUD slots and overflow
-; flags; COVER only when a terrain-clear span dirtied it since the last clear.
+; and clears CODES, the palettes (every slot free), HUD-seen and overflow
+; flags; COVER only when terrain or HUD metadata dirtied it since the last clear.
 .globl fast_cell_clear
 .type fast_cell_clear,@function
 fast_cell_clear:
     and #15
     sta CS_CLEAR
     lda #0
+    sta CS_HUD_SEEN
     ; eight rows per step: 320 code bytes in forty steps
     ldx #39
 .Lcc_codes:
@@ -924,7 +950,7 @@ fast_cell_clear:
     sta CODES+280,x
     dex
     bpl .Lcc_codes
-    ; the palettes, the HUD slots and the overflow flags start clear (five
+    ; the palettes and the overflow flags start clear (five
     ; eight-cell steps)
     ldx #7
 .Lcc_zero:
@@ -943,11 +969,6 @@ fast_cell_clear:
     sta PAL2+16,x
     sta PAL2+24,x
     sta PAL2+32,x
-    sta HUDS,x
-    sta HUDS+8,x
-    sta HUDS+16,x
-    sta HUDS+24,x
-    sta HUDS+32,x
     sta OVER,x
     sta OVER+8,x
     sta OVER+16,x
@@ -1018,6 +1039,11 @@ fast_cell_plot:
     lda __rc2
     and #$80
     sta CS_HUD
+    beq .Lpl_hud_ready
+    sta CS_HUD_SEEN
+    lda #0
+    sta COVER_CLEAN
+.Lpl_hud_ready:
     lda #0
     sta CS_MODE
     txa
@@ -1052,6 +1078,11 @@ fast_cell_glyph:
     lda __rc4
     and #$80
     sta CS_HUD
+    beq .Lgl_hud_ready
+    sta CS_HUD_SEEN
+    lda #0
+    sta COVER_CLEAN
+.Lgl_hud_ready:
     lda #0
     sta CS_MODE
     sta CS_GROW
@@ -1252,8 +1283,6 @@ fast_cell_stage:
 
 .Lcs_pattern:
     .byte $00,$55,$aa,$ff
-.Lcs_slot_bit:
-    .byte 1,2,4
 .Lcs_left:
     .byte $0f,$07,$03,$01
 .Lcs_right:

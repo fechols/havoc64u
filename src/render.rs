@@ -15,6 +15,8 @@ use crate::TWO_SIDED;
 use crate::{GeometrySink, Vec3};
 
 mod sort;
+#[cfg(all(feature = "span-front-to-back", not(target_arch = "mos")))]
+mod front;
 #[cfg(all(feature = "span-buffer", not(target_arch = "mos")))]
 mod spans;
 #[cfg(all(feature = "span-buffer", not(target_arch = "mos")))]
@@ -383,8 +385,9 @@ impl Renderer {
         }
     }
 
-    /// Experimental final-span composition, retaining the classic band's raw
-    /// colors and terrain coverage for direct differential comparisons.
+    /// Experimental span rendering, retaining the classic band's raw colors
+    /// and terrain coverage. `span-front-to-back` selects reverse ownership;
+    /// `span-buffer` alone selects deferred painter-order composition.
     #[cfg(all(feature = "span-buffer", not(target_arch = "mos")))]
     pub fn render_band_spans(
         &self,
@@ -392,13 +395,20 @@ impl Renderer {
         pixels: &mut [u8; BAND_PIXELS],
         ambient: Option<&SpaceDustFrame>,
     ) -> SpanStats {
-        let mut spans = self.compose_band(band, ambient);
-        spans.write_pixels(pixels);
-        spans.stats
+        #[cfg(feature = "span-front-to-back")]
+        {
+            self.render_front_band(band, pixels, ambient)
+        }
+        #[cfg(not(feature = "span-front-to-back"))]
+        {
+            let mut spans = self.compose_band(band, ambient);
+            spans.write_pixels(pixels);
+            spans.stats
+        }
     }
 
-    /// Resolve a band before assigning cell palettes, so hidden geometry never
-    /// enters the cell writer. Palette slot order may differ from the painter.
+    /// Write only visible spans into cell palettes using the selected span
+    /// backend. Palette slot order may differ from the painter.
     #[cfg(all(feature = "span-buffer", not(target_arch = "mos")))]
     pub fn render_band_span_cells(
         &self,
@@ -406,12 +416,23 @@ impl Renderer {
         cells: &mut crate::cells::CellBand,
         ambient: Option<&SpaceDustFrame>,
     ) -> SpanStats {
-        let mut spans = self.compose_band(band, ambient);
-        spans.write_cells(cells);
-        spans.stats
+        #[cfg(feature = "span-front-to-back")]
+        {
+            self.render_front_band(band, cells, ambient)
+        }
+        #[cfg(not(feature = "span-front-to-back"))]
+        {
+            let mut spans = self.compose_band(band, ambient);
+            spans.write_cells(cells);
+            spans.stats
+        }
     }
 
-    #[cfg(all(feature = "span-buffer", not(target_arch = "mos")))]
+    #[cfg(all(
+        feature = "span-buffer",
+        not(feature = "span-front-to-back"),
+        not(target_arch = "mos")
+    ))]
     fn compose_band(&self, band: u8, ambient: Option<&SpaceDustFrame>) -> spans::SpanBand {
         assert_eq!(self.padding, 0, "raster pass consumed geometry commands");
         let mut spans = spans::SpanBand::new(self.clear_color);
@@ -429,6 +450,41 @@ impl Renderer {
             });
         }
         spans
+    }
+
+    #[cfg(all(feature = "span-front-to-back", not(target_arch = "mos")))]
+    fn render_front_band(
+        &self,
+        band: u8,
+        canvas: &mut impl front::FrontCanvas,
+        ambient: Option<&SpaceDustFrame>,
+    ) -> SpanStats {
+        assert_eq!(self.padding, 0, "raster pass consumed geometry commands");
+        let mut spans = front::FrontBand::new(self.clear_color, canvas);
+        if band >= 25 {
+            return spans.stats;
+        }
+        let triangles = &self.triangles[..self.triangle_count as usize];
+        // Coverage is independent of visible ownership. Exterior terrain can
+        // never survive any terrain-clear hit, before or after it in the order.
+        for triangle in triangles {
+            if triangle.reserved & crate::TERRAIN_CLEAR_GEOMETRY != 0 {
+                let (mut head, tail) = prepare_triangle(triangle);
+                seek_row(&mut head, &tail, band * 8);
+                raster_rows(&mut head, &tail, band * 8, |row, first, end, _| {
+                    spans.cover_span(row, first, end, canvas);
+                });
+            }
+        }
+        for triangle in triangles.iter().rev() {
+            let (mut head, tail) = prepare_triangle(triangle);
+            seek_row(&mut head, &tail, band * 8);
+            raster_rows(&mut head, &tail, band * 8, |row, first, end, flags| {
+                spans.geometry_span(row, first, end, flags, canvas);
+            });
+        }
+        spans.ambient(band, ambient, canvas);
+        spans.stats
     }
 
     /// Consume sorted geometry into a bounded sequential raster pass. A second
@@ -642,8 +698,9 @@ const _: [(); 11] = [(); core::mem::offset_of!(RasterTail, color_flags)];
 /// sorted positions to the commands left in emission order at $D000, heads
 /// occupy $EF20-$FF1F, tails $E000-$EBFF, and ordered band masks $EC00-$EF1F.
 /// With `span-buffer`, commands retire after all preparation and $D000-$D9FF
-/// becomes the band compositor. Host heads reuse commands, so host spans have
-/// separate storage. Neither path changes the persistent Q16 edge precision.
+/// becomes the band compositor. Front-to-back additionally borrows eight row
+/// heads at $77AC-$77B3 until packing. Host heads reuse commands, so host spans
+/// have separate storage. Both paths retain persistent Q16 edge precision.
 pub struct RasterPass<'a> {
     renderer: &'a mut Renderer,
     next_band: u8,
@@ -749,6 +806,7 @@ impl RasterPass<'_> {
             extern "C" {
                 fn fast_span_clear();
                 fn fast_span_plot(row: u8, x: u8, color: u8);
+                #[cfg(not(feature = "span-front-to-back"))]
                 fn fast_span_flush();
             }
             // Preparation has consumed every command before this point. The
@@ -757,6 +815,7 @@ impl RasterPass<'_> {
             unsafe {
                 fast_span_clear()
             };
+            #[cfg(not(feature = "span-front-to-back"))]
             if paint_scene {
                 if let Some(ambient) = ambient {
                     #[cfg(not(feature = "span-buffer"))]
@@ -785,13 +844,24 @@ impl RasterPass<'_> {
                     paint_scene as u8,
                 );
             }
-            #[cfg(feature = "span-buffer")]
+            #[cfg(all(feature = "span-buffer", not(feature = "span-front-to-back")))]
             if paint_scene {
                 // Final runs are disjoint; the HUD draws after this pass.
                 unsafe { fast_span_flush() };
             }
+            #[cfg(feature = "span-front-to-back")]
+            if paint_scene {
+                if let Some(ambient) = ambient {
+                    for &(x, y) in ambient.positions() {
+                        if y >> 3 == band {
+                            // Dust is the last candidate in the reverse pass.
+                            unsafe { fast_span_plot(y & 7, x, crate::space_dust::COLOR) };
+                        }
+                    }
+                }
+            }
         }
-        #[cfg(not(target_arch = "mos"))]
+        #[cfg(all(not(feature = "span-front-to-back"), not(target_arch = "mos")))]
         {
             #[cfg(feature = "span-buffer")]
             let mut spans = spans::SpanBand::new(self.renderer.clear_color);
@@ -837,11 +907,56 @@ impl RasterPass<'_> {
             #[cfg(feature = "span-buffer")]
             if paint_scene {
                 spans.write_pixels(pixels);
-                self.span_stats.input_spans += spans.stats.input_spans;
-                self.span_stats.run_visits += spans.stats.run_visits;
-                self.span_stats.emitted_spans += spans.stats.emitted_spans;
-                self.span_stats.emitted_pixels += spans.stats.emitted_pixels;
-                self.span_stats.peak_runs = self.span_stats.peak_runs.max(spans.stats.peak_runs);
+                self.span_stats += spans.stats;
+            }
+        }
+        #[cfg(all(feature = "span-front-to-back", not(target_arch = "mos")))]
+        {
+            let mut spans = if paint_scene {
+                Some(front::FrontBand::new(self.renderer.clear_color, pixels))
+            } else {
+                None
+            };
+            if let Some(spans) = &mut spans {
+                // Read copies only: this walk must not advance the persistent
+                // heads that the actual reverse pass consumes below.
+                for byte in 0..32usize {
+                    let mask = self.masks[band as usize][byte];
+                    for bit in 0..8 {
+                        let index = byte * 8 + bit;
+                        if mask & (1 << bit) != 0
+                            && self.tails[index].color_flags & crate::TERRAIN_CLEAR_GEOMETRY != 0
+                        {
+                            let mut head = unsafe { self.head_ptr(index).read_unaligned() };
+                            let tail = self.tails[index];
+                            raster_rows(&mut head, &tail, band * 8, |row, first, end, _| {
+                                spans.cover_span(row, first, end, pixels);
+                            });
+                        }
+                    }
+                }
+            }
+            // Reverse sorted positions, including ties. Even a hidden band or
+            // a fully owned row must consume each active edge exactly once.
+            for byte in (0..32usize).rev() {
+                let mask = self.masks[band as usize][byte];
+                for bit in (0..8).rev() {
+                    if mask & (1 << bit) != 0 {
+                        let index = byte * 8 + bit;
+                        let mut head = unsafe { self.head_ptr(index).read_unaligned() };
+                        let tail = self.tails[index];
+                        raster_rows(&mut head, &tail, band * 8, |row, first, end, flags| {
+                            if let Some(spans) = &mut spans {
+                                spans.geometry_span(row, first, end, flags, pixels);
+                            }
+                        });
+                        self.write_head(index, head);
+                    }
+                }
+            }
+            if let Some(mut spans) = spans {
+                spans.ambient(band, ambient, pixels);
+                self.span_stats += spans.stats;
             }
         }
         Some(band)

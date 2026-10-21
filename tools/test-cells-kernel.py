@@ -46,22 +46,24 @@ extern void fast_cell_span(uint8_t row, uint8_t first, uint8_t end, uint8_t colo
 extern void fast_cell_plot(uint8_t row, uint8_t x, uint8_t color);
 extern void fast_cell_glyph(uint8_t row, uint8_t x, const uint8_t rows[5], uint8_t color);
 extern void fast_cell_stage(const uint8_t *old_screen, const uint8_t *old_colors);
+extern void test_cell_span_mode(uint8_t row, uint8_t first, uint8_t end, uint8_t color, uint8_t mode);
 #include "fixtures.h"
 /* Kernel state (this build relocates the band state above the harness image). */
 #define K_CODES ((uint8_t*)0xa800)
 #define K_COVER ((uint8_t*)0xa940)
 #define K_PAL ((uint8_t*)0xaa80)
-#define K_HUD ((uint8_t*)0x9f00)
-#define K_OVER ((uint8_t*)0x9f28)
-#define K_CLEAN ((volatile uint8_t*)0x9f50)
+#define K_HUD ((uint8_t*)0xb600)
+#define K_OVER ((uint8_t*)0xb628)
+#define K_CLEAN ((volatile uint8_t*)0xb650)
+#define K_HUD_SEEN ((volatile uint8_t*)0xab28)
 #define K_PIXELS ((uint8_t*)0xb000)
-#define K_SEEN ((volatile uint8_t*)0x9f6b)   /* RR_PLAYER_SEEN = RR_SCRATCH + 11 */
+#define K_SEEN ((volatile uint8_t*)0xb66b)   /* RR_PLAYER_SEEN = RR_SCRATCH + 11 */
 #define COLOR_DISTANCE (*(uint16_t (*)[16][16])0xa400)
 static const uint8_t PALETTE_RGB[16][3]={{0,0,0},{255,255,255},{136,0,0},{170,255,238},{204,68,204},{0,204,85},{0,0,170},{238,238,119},{221,136,85},{102,68,0},{255,119,119},{51,51,51},{119,119,119},{170,255,102},{0,136,255},{187,187,187}};
 #define PRESENT ((uint8_t*)0xa600)
 static const uint8_t EXPAND[16]={0x00,0x03,0x0c,0x0f,0x30,0x33,0x3c,0x3f,0xc0,0xc3,0xcc,0xcf,0xf0,0xf3,0xfc,0xff};
 enum { PLAIN, CLEAR, EXTERIOR };
-struct Model { uint8_t codes[8][40], pal[3][40], cover[8][40], hud[40], over[40]; uint8_t pixels[1280]; uint8_t seen; uint8_t bg; };
+struct Model { uint8_t codes[8][40], pal[3][40], cover[8][40], over[40]; uint8_t pixels[1280]; uint8_t seen,hud_seen,bg; };
 /* Large buffers live above the kernel state so the harness image stays clear of it. */
 #define m (*(struct Model*)0xc000)
 static uint32_t checks, overflows, recycled;
@@ -70,7 +72,7 @@ static uint32_t checks, overflows, recycled;
 static void m_clear(uint8_t color){
   m.bg=color&15;
   memset(m.codes,0,sizeof m.codes); memset(m.pal,0,sizeof m.pal);
-  memset(m.cover,0,sizeof m.cover); memset(m.hud,0,40); memset(m.over,0,40); m.seen=0;
+  memset(m.cover,0,sizeof m.cover); memset(m.over,0,40); m.seen=m.hud_seen=0;
 }
 static void m_pixel_row(uint8_t row,uint8_t cell,uint8_t mask,uint8_t color,uint8_t hud,uint8_t paint){
   uint8_t ink=color|(hud?0x80:0);
@@ -86,7 +88,7 @@ static void m_spill(uint8_t cell){
   overflows++;
   for(uint8_t row=0;row<8;row++){ uint8_t codes=m.codes[row][cell],cover=m.cover[row][cell];
     for(uint8_t c=0;c<4;c++){ uint8_t slot=(codes>>(6-2*c))&3; uint8_t pixel=slot?(uint8_t)(m.pal[slot-1][cell]^m.bg):m.bg;
-      if(cover&(8>>c))pixel|=0x40; if(slot&&(m.hud[cell]&(1<<(slot-1))))pixel|=0x80; m.pixels[row*160+cell*4+c]=pixel; } }
+      if(cover&(8>>c))pixel|=0x40; if(cover&(0x80>>c))pixel|=0x80; m.pixels[row*160+cell*4+c]=pixel; } }
   m.over[cell]=1;
   /* the kernel poisons a spilled cell's palette so its span fast paths never match */
   m.pal[0][cell]=m.pal[1][cell]=m.pal[2][cell]=255;
@@ -95,17 +97,19 @@ static int m_slot(uint8_t cell,uint8_t key){
   for(uint8_t s=0;s<3;s++)if(m.pal[s][cell]==key)return s+1;
   for(uint8_t s=0;s<3;s++)if(m.pal[s][cell]==0){m.pal[s][cell]=key;return s+1;}
   uint8_t live=0; for(uint8_t row=0;row<8;row++)live|=PRESENT[m.codes[row][cell]];
-  for(uint8_t s=0;s<3;s++)if(!(live&(2<<s))){recycled++;m.pal[s][cell]=key;m.hud[cell]&=~(1<<s);return s+1;}
+  for(uint8_t s=0;s<3;s++)if(!(live&(2<<s))){recycled++;m.pal[s][cell]=key;return s+1;}
   return 0;
 }
 static void m_cell_row(uint8_t row,uint8_t cell,uint8_t mask,uint8_t color,uint8_t hud,uint8_t paint){
+  if(hud)m.hud_seen=0x80;
   if(m.over[cell]){m_pixel_row(row,cell,mask,color,hud,paint);return;}
   if(paint==EXTERIOR){mask&=~m.cover[row][cell];if(!mask)return;}
   uint8_t slot=0, key=color^m.bg;
   if(key){ int s=m_slot(cell,key); if(!s){m_spill(cell);m_pixel_row(row,cell,mask,color,hud,paint);return;} slot=(uint8_t)s; }
-  if(hud&&slot)m.hud[cell]|=1<<(slot-1);
   uint8_t bits=EXPAND[mask]; m.codes[row][cell]=(m.codes[row][cell]&~bits)|((uint8_t)(0x55*slot)&bits);
+  m.cover[row][cell]=(m.cover[row][cell]&~(mask<<4))|(hud?(mask<<4):0);
   if(paint==CLEAR)m.cover[row][cell]|=mask;
+  else if(paint==PLAIN&&hud)m.cover[row][cell]&=~mask;
 }
 static void m_span(uint8_t row,uint8_t first,uint8_t end,uint8_t color,uint8_t hud,uint8_t paint){
   if(first>=end)return; color&=15;
@@ -117,6 +121,7 @@ static void m_geometry_span(uint8_t row,uint8_t first,uint8_t end,uint8_t flags)
 }
 static void m_plot(uint8_t row,uint8_t x,uint8_t color){ m_cell_row(row,x/4,8>>(x&3),color&15,(color&0x80)!=0,PLAIN); }
 static void m_glyph(uint8_t row,uint8_t x,const uint8_t rows[5],uint8_t color){
+  if(color&0x80)m.hud_seen=0x80;
   for(uint8_t dy=0;dy<5;dy++){ uint8_t bits=rows[dy]; if(bits&4)m_plot(row+dy,x,color); if(bits&2)m_plot(row+dy,x+1,color); if(bits&1)m_plot(row+dy,x+2,color); }
 }
 /* render::pack_cell with the band's background colour (code 0, never a slot;
@@ -153,7 +158,7 @@ static const char *compare_state(void){
   if(memcmp(K_CODES,m.codes,320))return "codes";
   if(memcmp(K_COVER,m.cover,320))return "cover";
   if(memcmp(K_PAL,m.pal,120))return "palette";
-  if(memcmp(K_HUD,m.hud,40))return "hud slots";
+  if(*K_HUD_SEEN!=m.hud_seen)return "HUD band flag";
   if(memcmp(K_OVER,m.over,40))return "overflow flags";
   for(uint8_t cell=0;cell<40;cell++) if(m.over[cell]) for(uint8_t row=0;row<8;row++) if(memcmp(K_PIXELS+row*160+cell*4,m.pixels+row*160+cell*4,4))return "overflow pixels";
   return 0;
@@ -163,18 +168,19 @@ static void dump(const char *what){
   for(uint16_t i=0;i<320;i++)if(K_CODES[i]!=((uint8_t*)m.codes)[i]){printf(" codes[%u][%u] got %02x want %02x\n",i/40,i%40,K_CODES[i],((uint8_t*)m.codes)[i]);break;}
   for(uint16_t i=0;i<320;i++)if(K_COVER[i]!=((uint8_t*)m.cover)[i]){printf(" cover[%u][%u] got %02x want %02x\n",i/40,i%40,K_COVER[i],((uint8_t*)m.cover)[i]);break;}
   for(uint16_t i=0;i<120;i++)if(K_PAL[i]!=((uint8_t*)m.pal)[i]){printf(" pal[%u][%u] got %u want %u\n",i/40,i%40,K_PAL[i],((uint8_t*)m.pal)[i]);break;}
-  for(uint16_t i=0;i<40;i++)if(K_OVER[i]!=m.over[i]||K_HUD[i]!=m.hud[i]){printf(" cell %u over %u/%u hud %u/%u\n",i,K_OVER[i],m.over[i],K_HUD[i],m.hud[i]);break;}
+  printf(" HUD band flag %u/%u\n",*K_HUD_SEEN,m.hud_seen);
+  for(uint16_t i=0;i<40;i++)if(K_OVER[i]!=m.over[i]){printf(" cell %u over %u/%u\n",i,K_OVER[i],m.over[i]);break;}
   for(uint8_t cell=0;cell<40;cell++) if(m.over[cell]) for(uint8_t row=0;row<8;row++) for(uint8_t c=0;c<4;c++){ uint16_t i=row*160+cell*4+c; if(K_PIXELS[i]!=m.pixels[i]){printf(" pixel row %u cell %u col %u got %02x want %02x\n",row,cell,c,K_PIXELS[i],m.pixels[i]);return;} }
 }
 static uint32_t state=0x12345678u;
 static uint8_t last_first, last_end, last_flags, last_role;
 static uint32_t next(void){state=state*1664525u+1013904223u;return state;}
-#define actual_bitmap ((uint8_t*)0xa000)
-#define expected_bitmap ((uint8_t*)0xa140)
-#define actual_screen ((uint8_t*)0xa280)
-#define expected_screen ((uint8_t*)0xa2a8)
-#define actual_color ((uint8_t*)0xa2d0)
-#define expected_color ((uint8_t*)0xa2f8)
+#define actual_bitmap ((uint8_t*)0xb700)
+#define expected_bitmap ((uint8_t*)0xb840)
+#define actual_screen ((uint8_t*)0xb980)
+#define expected_screen ((uint8_t*)0xb9a8)
+#define actual_color ((uint8_t*)0xb9d0)
+#define expected_color ((uint8_t*)0xb9f8)
 static int stage_and_compare_attributes(const uint8_t *old_screen,const uint8_t *old_color){
   memcpy(actual_screen,old_screen,40); memcpy(actual_color,old_color,40);
   memset(actual_bitmap,0xa5,320); memset(expected_bitmap,0xa5,320);
@@ -190,6 +196,7 @@ static int stage_and_compare_attributes(const uint8_t *old_screen,const uint8_t 
   if(memcmp(actual_screen,old_screen,40)||memcmp(actual_color,old_color,40)){puts("FAIL staging changed preceding attributes");return 1;}
   for(uint16_t i=0;i<320;i++)if(actual_bitmap[i]!=0xa5){puts("FAIL staging wrote live bitmap");return 1;}
   if(*K_CLEAN!=0){puts("FAIL staging left coverage marked clean");return 1;}
+  if(*K_HUD_SEEN!=m.hud_seen){puts("FAIL staging changed HUD band flag");return 1;}
   if(memcmp(K_CODES,m.codes,320)||memcmp(K_PAL,m.pal,120)){puts("FAIL staging corrupted adjacent code/palette state");return 1;}
   return 0;
 }
@@ -241,6 +248,38 @@ int main(void){
     const char *why=compare_state(); if(why){dump(why);puts(" directed plot into spilled cell");return 9;}
     if(stage_and_compare())return 9;
   }
+  /* HUD metadata must survive spill timing, exact masks and all paint modes.
+     The broad span exercises both edges and full interior cells after HUD. */
+  for(uint8_t bg_index=0;bg_index<3;bg_index++)for(uint8_t early=0;early<2;early++)for(uint8_t paint=0;paint<3;paint++)for(uint8_t hud=0;hud<2;hud++){
+    static const uint8_t backgrounds[3]={0,6,15}; uint8_t bg=backgrounds[bg_index];
+    fast_cell_clear(bg); m_clear(bg); *K_SEEN=0;
+    if(early)for(uint8_t row=4;row<8;row++){
+      fast_cell_span(row,0,12,row-3); m_span(row,0,12,row-3,0,PLAIN);
+    }
+    test_cell_span_mode(0,0,12,2,CLEAR); m_span(0,0,12,2,0,CLEAR);
+    test_cell_span_mode(1,0,12,2,CLEAR); m_span(1,0,12,2,0,CLEAR);
+    fast_cell_span(0,1,11,0x82); m_span(0,1,11,2,1,PLAIN);
+    const char *why=compare_state(); if(why){dump(why);puts(" HUD clears terrain coverage");return 11;}
+    uint8_t ink=(uint8_t)(bg|(hud?0x80:0));
+    test_cell_span_mode(0,2,10,ink,paint); m_span(0,2,10,bg,hud,paint);
+    test_cell_span_mode(1,1,11,ink,paint); m_span(1,1,11,bg,hud,paint);
+    why=compare_state(); if(why){dump(why);printf(" HUD modes bg %u early %u paint %u hud %u\n",bg,early,paint,hud);return 11;}
+    /* Cross-cell glyph followed by unmarked spans and a clear-color plot. */
+    const uint8_t glyph[5]={7,5,2,5,7};
+    fast_cell_glyph(2,3,glyph,0x8e); m_glyph(2,3,glyph,0x8e);
+    fast_cell_span(3,1,11,2); m_span(3,1,11,2,0,PLAIN);
+    fast_cell_plot(2,4,bg); m_plot(2,4,bg);
+    why=compare_state(); if(why){dump(why);puts(" glyph and unmarked overwrite");return 11;}
+    /* Force every affected cell to spill; all metadata must reconstruct. */
+    for(uint8_t row=4;row<8;row++){
+      fast_cell_span(row,0,12,row-3); m_span(row,0,12,row-3,0,PLAIN);
+      why=compare_state(); if(why){dump(why);puts(" spill after HUD overwrite");return 11;}
+    }
+    if(stage_and_compare())return 11;
+    fast_cell_clear(bg); m_clear(bg);
+    why=compare_state(); if(why){dump(why);puts(" clear after HUD staging");return 11;}
+  }
+  puts("PASS 36 HUD metadata layouts: all paint modes, background ink, spill timing, glyphs and clear lifecycle");
   /* Staging consumes flags only for the current cell. Exercise every cell,
      alternating spill/direct paths, and an overflow in the final cell. */
   for(uint8_t background=0;background<3;background++)for(uint8_t layout=0;layout<4;layout++){
@@ -257,7 +296,7 @@ int main(void){
       old_color[cell]=(uint8_t)(0xf0|(bg^1)); /* undefined upper colour nibble */
     }
     const char *why=compare_state(); if(why){dump(why);puts(" directed staging setup");return 10;}
-    if(*K_CLEAN!=0x5a){puts("FAIL plain painting unexpectedly dirtied coverage");return 10;}
+    if(*K_CLEAN!=0){puts("FAIL HUD painting left metadata marked clean");return 10;}
     if(stage_and_compare_attributes(old_screen,old_color))return 10;
     /* The staged bitmap occupied clean COVER. A fresh clear must remove it
        before either plain painting or exterior terrain reads coverage. */
@@ -370,24 +409,49 @@ int main(void){
 }
 '''
 (build/"check.c").write_text(source, encoding="utf-8")
-subprocess.run([sdk/"mos-sim-clang", "-Oz", "-mlto-zp=0", "-Wa,-defsym,HUDS=0x9f00", "-Wa,-defsym,OVER=0x9f28",
-                "-Wa,-defsym,COVER_CLEAN=0x9f50", "-Wa,-defsym,PIXELS=0xb000", "-Wa,-defsym,RR_SCRATCH=0x9f60", "-Wa,-defsym,PK_SCRATCH=0x9fa0",
+(build/"wrapper.S").write_text('''
+.text
+.globl test_cell_span_mode
+.zeropage __rc2
+.zeropage __rc3
+.zeropage __rc4
+test_cell_span_mode:
+    sta $f0
+    stx $f1
+    lda __rc2
+    sta $f2
+    lda __rc3
+    and #15
+    sta $f3
+    eor $ff
+    sta $fe
+    lda __rc3
+    and #$80
+    sta $f4
+    lda __rc4
+    sta $f5
+    jsr cell_row_pointers
+    jmp cell_rows
+''', encoding="utf-8")
+subprocess.run([sdk/"mos-sim-clang", "-Oz", "-mlto-zp=0", "-Wa,-defsym,HUDS=0xb600", "-Wa,-defsym,OVER=0xb628",
+                "-Wa,-defsym,COVER_CLEAN=0xb650", "-Wa,-defsym,PIXELS=0xb000", "-Wa,-defsym,RR_SCRATCH=0xb660", "-Wa,-defsym,PK_SCRATCH=0xb6a0",
                 "-Wa,-defsym,CODES=0xa800", "-Wa,-defsym,COVER=0xa940", "-Wa,-defsym,PAL0=0xaa80", "-Wa,-defsym,CS_SCRATCH=0xab00",
-                "-Wl,--defsym=COLOR_DISTANCE=0xa400", build/"check.c", *assemblies,
+                "-Wl,--defsym=COLOR_DISTANCE=0xa400", build/"check.c", build/"wrapper.S", *assemblies,
                 "-Wl,-Map=" + str(build/"check.map"), "-o", build/"check"], check=True)
-# This build moves kernel state, output arrays and tables to $9F00–$B4FF;
-# the independent model occupies $C000–$C849. The harness image must end
+# Kernel state, output arrays and tables occupy $A400–$BA1F;
+# the independent model starts at $C000. The harness image must end
 # below all of them or the comparison is void.
 layout = (build/"check.map").read_text(encoding="utf-8", errors="replace")
 heap = re.search(r"^\s*([0-9a-f]+)\s+[0-9a-f]+\s+[0-9a-f]+\s+\d+\s+__heap_start", layout, re.M)
-if heap is None or int(heap.group(1), 16) > 0x9f00:
-    raise SystemExit(f"harness image reaches {heap.group(1) if heap else '?'}: overlaps kernel state at $9F00")
+if heap is None or int(heap.group(1), 16) > 0xa400:
+    raise SystemExit(f"harness image reaches {heap.group(1) if heap else '?'}: overlaps kernel tables at $A400")
 result = subprocess.run([sdk/"mos-sim", "--cycles", build/"check"], text=True, capture_output=True)
 print(result.stdout.strip(), flush=True)
 print(result.stderr.strip(), flush=True)
 if result.returncode or "PASS 40 layered scenes" not in result.stdout:
     raise SystemExit(result.returncode or "native cells check did not finish")
 report = {"passed": True,
+          "directed_hud_layouts": 36, "per_pixel_hud_priority": True,
           "directed_staging_layouts": 12, "live_output_untouched": True,
           "coverage_reuse_cleared": True,
           "assembly_sha256": {path.name: hashlib.sha256(path.read_bytes()).hexdigest() for path in assemblies},

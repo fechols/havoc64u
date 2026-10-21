@@ -11,6 +11,10 @@ def main():
     checker = runpy.run_path(str(Path(__file__).with_name("check-overlays.py")))
     elf = checker["Elf"](source)
     checker["audit"](source)
+    names = {symbol.name for symbol in elf.symbols}
+    front_enabled = "span_front_compose" in names
+    span_entry = "span_front_compose" if front_enabled else "span_compose"
+    span_enabled = span_entry in names
     entries = []
     for section in elf.sections:
         if section.kind != 4:
@@ -27,6 +31,11 @@ def main():
     def replace_target(data, entry, name):
         position, _owner, _address, kind, _symbol, table = entry
         struct.pack_into("<Ii", data, position + 4, (symbol_index(table, name) << 8) | kind, 0)
+
+    def symbol_address(data, name, value):
+        table = next(section for section in elf.sections if section.kind == 2)
+        index = symbol_index(table.index, name)
+        struct.pack_into("<I", data, table.offset + index * table.entry_size + 4, value)
 
     opaque = next(entry for entry in entries if entry[4].name == "encounter_step")
     scenic = next(entry for entry in entries if entry[4].name == "scenic_decoration")
@@ -161,15 +170,36 @@ def main():
     for helper in ('__divsi3', '__udivsi3', '__mulsi3'):
         cases.append((f'forbidden-{helper}', lambda data, name=helper: rename_symbol(data, name),
                       'generic 32-bit helper linked'))
-    if any(symbol.name == 'span_compose' for symbol in elf.symbols):
+    for value in (0x9127, 0x9129):
+        cases.append((f'hud-seen-address-{value:04x}',
+                      lambda data, value=value: symbol_address(data, '__cell_hud_seen', value),
+                      'HUD-seen flag must reuse cell scratch at $9128'))
+    if span_enabled:
+        for name, value in (('__span_buffer_start', 0xcfff),
+                            ('__span_buffer_end', 0xda01),
+                            ('__span_buffer_size', 0xa01)):
+            cases.append((f'span-buffer-{name}',
+                          lambda data, name=name, value=value: symbol_address(data, name, value),
+                          'span buffer must reuse exactly'))
+        # Front code belongs to PIXELS, so the general overlay guard may
+        # reject these references before the compositor-specific guard.
+        span_rejection = ('span compositor reference outside PIXELS', 'unsafe overlay references')
         cases.extend([
-            ('geometry-calls-span-compositor', lambda data: replace_target(data, geometry, 'span_compose'),
-             'span compositor reference outside PIXELS'),
-            ('irq-calls-span-compositor', lambda data: replace_target(data, irq, 'span_compose'),
-             'span compositor reference outside PIXELS'),
-            ('escaped-span-compositor', lambda data: replace_target(data, pointer, 'span_compose'),
-             'span compositor reference outside PIXELS'),
+            ('geometry-calls-span-compositor', lambda data: replace_target(data, geometry, span_entry),
+             span_rejection),
+            ('irq-calls-span-compositor', lambda data: replace_target(data, irq, span_entry),
+             span_rejection),
+            ('escaped-span-compositor', lambda data: replace_target(data, pointer, span_entry),
+             span_rejection),
         ])
+    if front_enabled:
+        for name, value in (('__span_front_heads_start', 0x77ab),
+                            ('__span_front_heads_start', 0x77ad),
+                            ('__span_front_heads_end', 0x77b3),
+                            ('__span_front_heads_end', 0x77b5)):
+            cases.append((f'front-heads-{name}-{value:04x}',
+                          lambda data, name=name, value=value: symbol_address(data, name, value),
+                          'front span heads must reuse exactly'))
     for phase in (".phase.boot", ".phase.geometry", ".phase.pixels", checker["PIXELS_AUX_SECTION"], ".phase.audio", ".phase.scenery", checker["STARTUP_SECTION"]):
         source_call = next(entry for entry in entries if entry[1].name == phase and entry[3] == 3
                            and (phase != ".phase.pixels"
@@ -197,7 +227,8 @@ def main():
             try:
                 checker["audit"](target)
             except checker["AuditError"] as error:
-                if expected is not None and expected not in str(error):
+                messages = (expected,) if isinstance(expected, str) else expected
+                if messages is not None and not any(message in str(error) for message in messages):
                     raise AssertionError(f"{name}: unexpected rejection: {error}") from error
                 print(f"Rejected {name}")
             else:

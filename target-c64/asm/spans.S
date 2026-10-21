@@ -8,14 +8,18 @@
 ;
 ; span_compose: CS_ROW/FIRST/END/COLOR/MODE describe a nonempty clipped span.
 ; Preserves all imaginary registers, the walker's $D0-$E0, all CS inputs and
-; raster scratch. Clobbers A/X/Y and $E1-$E9. No calls into an overlay: this
-; self-contained hot operation resides in ordinary resident code.
+; raster scratch except RR_PLAYER_SEEN. Clobbers A/X/Y and $E1-$E9. The
+; prepared entry retains the caller's $E1-$E4 row pointers. No calls into an
+; overlay: this self-contained hot operation resides in ordinary resident code.
 .zeropage __rc2
 .ifndef SPAN_NEXT
 .set SPAN_NEXT, $d000
 .endif
 .ifndef SPAN_INK
 .set SPAN_INK, $d500
+.endif
+.if (<SPAN_NEXT) != (<SPAN_INK)
+.error "span row pointer stepping requires matching low addresses"
 .endif
 .set SP_NEXT, $e1
 .set SP_INK, $e3
@@ -32,6 +36,10 @@
 .set CS_MODE, $f5
 .set CS_KEY, $fe
 .set CS_CLEAR, $ff
+.ifndef RR_SCRATCH
+.set RR_SCRATCH, $77a0
+.endif
+.set RR_PLAYER_SEEN, RR_SCRATCH+11
 
 .section .text.span_row_pointers,"ax",@progbits
 .globl span_row_pointers
@@ -66,6 +74,17 @@ span_row_pointers:
 .type span_compose,@function
 span_compose:
     jsr span_row_pointers
+.size span_compose, .-span_compose
+.globl span_compose_prepared
+.type span_compose_prepared,@function
+span_compose_prepared:
+    ; This flag belongs to composition, including direct/dust callers. Set
+    ; it before the first protected span can take a no-op or bulk path.
+    lda CS_MODE
+    cmp #1
+    bne .Lspan_begin
+    sta RR_PLAYER_SEEN
+.Lspan_begin:
     lda #$ff
     sta SP_PREV
     ldy #0
@@ -79,8 +98,34 @@ span_compose:
     jmp .Lspan_find
 .Lspan_found:
     sty SP_CUR
+    lda (SP_INK),y
+    sta SP_OLD
+    ldx CS_MODE
+    beq .Lspan_probe_plain
+    dex
+    beq .Lspan_probe_clear
+    and #$40
+    beq .Lspan_probe_color
+    lda SP_OLD
+    bne .Lspan_probe_new
+.Lspan_probe_clear:
+    lda #$40
+    bne .Lspan_probe_color
+.Lspan_probe_plain:
+    and #$40
+.Lspan_probe_color:
+    ora CS_COLOR
+.Lspan_probe_new:
+    sta SP_NEW
+    cmp SP_OLD
+    bne .Lspan_split_first
+    lda (SP_NEXT),y
+    cmp CS_END
+    bcc .Lspan_split_first
+    rts
+.Lspan_split_first:
     cpy CS_FIRST
-    beq .Lspan_update
+    beq .Lspan_choose
     ; Split the run containing first. Its old start remains the predecessor.
     lda (SP_NEXT),y
     sta SP_STOP
@@ -95,6 +140,36 @@ span_compose:
     sta (SP_NEXT),y
     lda SP_OLD
     sta (SP_INK),y
+.Lspan_choose:
+    ; TC overwrites every intersecting run uniformly. Before any TC exists,
+    ; plain/exterior does too; afterwards plain must retain each run's bit 6.
+    lda CS_MODE
+    cmp #1
+    beq .Lspan_bulk_find
+    lda RR_PLAYER_SEEN
+    bne .Lspan_update
+.Lspan_bulk_find:
+    lda (SP_NEXT),y
+    cmp CS_END
+    bcs .Lspan_bulk_end
+    tay
+    jmp .Lspan_bulk_find
+.Lspan_bulk_end:
+    beq .Lspan_bulk_link
+    sta SP_STOP
+    lda (SP_INK),y
+    ldy CS_END
+    sta (SP_INK),y
+    lda SP_STOP
+    sta (SP_NEXT),y
+.Lspan_bulk_link:
+    ldy SP_CUR
+    lda CS_END
+    sta SP_STOP
+    sta (SP_NEXT),y
+    lda SP_NEW
+    sta (SP_INK),y
+    jmp .Lspan_merge
 .Lspan_update:
     ldy SP_CUR
     lda (SP_NEXT),y
@@ -139,6 +214,7 @@ span_compose:
     lda (SP_INK),y
 .Lspan_new:
     sta SP_NEW
+.Lspan_merge:
     ldy SP_PREV
     cpy #$ff
     beq .Lspan_advance
@@ -169,7 +245,7 @@ span_compose:
     sta (SP_NEXT),y
 .Lspan_done:
     rts
-.size span_compose, .-span_compose
+.size span_compose_prepared, .-span_compose_prepared
 
 .section .phase.pixels.spans,"ax",@progbits
 ; void fast_span_clear(void): cell clear has already supplied CS_CLEAR.
@@ -178,6 +254,7 @@ span_compose:
 fast_span_clear:
     lda #0
     sta CS_ROW
+    sta RR_PLAYER_SEEN
 .Lspan_clear_row:
     jsr span_row_pointers
     ldy #0

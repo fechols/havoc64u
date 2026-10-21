@@ -96,6 +96,7 @@ static void compose(uint8_t row,uint8_t first,uint8_t end,uint8_t color,uint8_t 
   /* The internal kernel receives nonempty spans; the raster owns clipping. */
   if(first>=end)return;
   test_compose(row,first,end,color,mode);oracle_span(row,first,end,color,mode);
+  if(mode==1 && K_SEEN!=1){puts("FAIL direct terrain-clear did not mark coverage");BAD_ABI=1;}
   submitted++;raw_pixels+=end-first;
 }
 static uint8_t decode(uint8_t code,uint8_t screen,uint8_t color){
@@ -119,10 +120,14 @@ static int check_flushed(void){
 source += rgb + "\n" + quantizer + r'''
 static int check_quantized(uint8_t hud){
   uint8_t old_screen[40],old_color[40],bitmap[8],screen,color;
-  /* HUD follows the final flush; marked ink remains visible in this scenario. */
+  /* HUD follows the final flush. Overwrites must replace per-pixel priority,
+     irrespective of whether a cell spilled before or during the HUD pass. */
   if(hud)for(uint8_t row=0;row<8;row++){
     uint8_t x=(uint8_t)(row*17);
     fast_cell_plot(row,x,0x87);ORACLE[row*160+x]=0x87;
+    fast_cell_plot(row,x,11);ORACLE[row*160+x]=11;
+    fast_cell_plot(row,x+1,0x8e);ORACLE[row*160+x+1]=0x8e;
+    if(row&1){fast_cell_plot(row,x+1,background);ORACLE[row*160+x+1]=background;}
   }
   for(uint8_t cell=0;cell<40;cell++){old_screen[cell]=(uint8_t)(random_word()>>8);old_color[cell]=(uint8_t)((random_word()>>8)&15);}
   fast_cell_stage(old_screen,old_color);
@@ -236,6 +241,12 @@ test_compose:
     iny
     cpy #17
     bne 2b
+    ldy #0
+9:  lda $f0,y
+    sta $b5c0,y
+    iny
+    cpy #6
+    bne 9b
     jsr span_compose
     ldy #2
 3:  lda $00,y
@@ -251,6 +262,13 @@ test_compose:
     iny
     cpy #17
     bne 4b
+    ldy #0
+10: lda $f0,y
+    cmp $b5c0,y
+    bne 5f
+    iny
+    cpy #6
+    bne 10b
     rts
 5:  lda #1
     sta $ab41

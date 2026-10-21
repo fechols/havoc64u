@@ -11,6 +11,117 @@ Recorded measurements below retain their original package layouts and hashes;
 earlier 16 MiB results do not measure the relocated loader. Use the configuration
 and REU capacity matching the package when reproducing a historical run.
 
+## Span-renderer optimizations: 2026-10-21
+
+Both optimized renderers are correct in the measured matrix, but neither beats
+the standard painter. They remain **disabled by default**. The deferred backend
+improves its own unoptimized version by 0.33–0.47% in mean full-frame time;
+front-to-back costs more than the optimized deferred backend despite visiting
+fewer intervals in the host model.
+
+This experiment freezes commit `70f7d6e716329f586f0b5bfe4aae1571b12570e0`,
+including its revised stereo audio assets. It does not reuse the older packages
+from the original span experiment below. `target/span-opt` contains the source
+archive, isolated packages, reports and provenance. The variants are:
+
+- `original`: frozen painter before the HUD fix.
+- `corrected`: the same source with the shared per-pixel HUD fix.
+- `unoptimized`: original deferred compositor with that same HUD fix.
+- `spans`: contained no-op, uniform bulk splice and prepared row pointers.
+- `unhoisted`: optimized deferred compositor with only pointer hoisting disabled.
+- `front`: noncommitting terrain-coverage prepass, reverse stable traversal,
+  shrinking uncovered intervals, direct cell writes and dust last.
+
+All use matching assets, music kernels, SID profiles and benchmark settings.
+The same twenty fixtures, zero/ten ticks, cold/retained palettes and three CIA
+phases give **320 cases / 960 measured samples per variant**. Every comparison
+matches raw ordered geometry, game state and decoded displayed pixels exactly.
+No palette-history mismatch was waived. The matrix summary makes 7,680 paired
+comparisons by reusing those samples across its eight variant pairs.
+
+| Profile | Corrected painter | Optimized deferred | Front-to-back | Deferred / front change vs corrected |
+| --- | ---: | ---: | ---: | ---: |
+| Two SID PAL | 126.898 ms | 128.997 ms | 131.357 ms | +1.65% / +3.51% |
+| Two SID NTSC | 122.600 ms | 124.480 ms | 126.678 ms | +1.53% / +3.33% |
+| Four SID PAL | 128.114 ms | 129.987 ms | 132.384 ms | +1.46% / +3.33% |
+| Four SID NTSC | 123.683 ms | 125.544 ms | 127.798 ms | +1.50% / +3.33% |
+
+Values are means of each case's three-sample median full-frame time. Against the
+frozen original painter, deferred is 2.03–2.18% slower and front-to-back is
+3.83–4.05% slower. The shared HUD correction itself costs 0.48–0.69%. A winner
+must improve all four aggregate means against **both** painters and have no
+case below 0.95 times either painter's FPS. Deferred fails that per-case bound
+in six comparisons against the original and two against the corrected painter;
+front fails in 92 and 66 respectively. Both also fail the aggregate speed gate.
+Held-FIRE scheduling is reported separately and also favors the painter.
+Maximum measured audio lateness among the optimized variants is 1.191 ms.
+
+Pointer hoisting is retained: the isolated `unhoisted -> spans` comparison
+improves every aggregate mean by 0.07–0.09%, with exact state and pixels. It
+prepares pointers once per triangle band, advances them on clipped rows too,
+and adds no runtime selection test. Set `HAVOC_SPAN_PREPARED_POINTERS=0` when
+building a deferred package to reproduce the control.
+
+The 900-band host census records 241,263 painter cell-row writes, 185,463
+deferred writes and 190,153 front-to-back writes. Both span paths reduce spills
+from 414 to 109. Deferred takes 2,855 contained no-ops and 33,641 uniform bulk
+paths. Front visits 47,366 intervals versus deferred's 129,388, but emits 28,284
+fragments versus 21,617 and performs another 4,140 coverage spans. Its native
+fragment iterator restarts from the row head, unlike the host iterator, so the
+host visit census is not a native cycle model. Native timings include that
+bookkeeping, the coverage prepass, cell writes, packing, publication waits and
+the existing code transfers. Saved overdraw does not recover those costs here.
+
+Host suites pass for both backends, including 900 raw/decoded scene bands,
+144 consecutive frames with independently evolved palettes, maximal holes,
+clear-color ownership, spill reconstruction and persistent edge state. The
+shared HUD tests cover overwrites before and after spill, including background
+ink. Native harnesses pass 17,300 cell checks, 16,708 deferred checks and 896
+front checks. Front checks include 256 Q16 fixtures in 800 multi-triangle bands,
+immutable coverage walks, exact quantized output, ABI guards and no duplicate
+scene-pixel submissions. This does not count band initialization, spill
+expansion or later HUD work as scene overdraw.
+
+All six production packages pass unchanged memory and overlay limits; no
+generic 32-bit arithmetic helpers return. Four-SID resident headroom is 1,230
+bytes for the painter, 904 for deferred and 824 for front. PIXELS prefix
+headroom is respectively 840, 618 and 493 bytes; helper headroom is 37, 135 and
+135 bytes. Front reuses eight preparation-scratch bytes for row heads, and both
+backends reuse exactly 2,560 retired command bytes. No framebuffer, memory
+boundary or extra DMA stage was added. Default packages contain no span backend.
+Negative fixtures pass 121/69 layout/overlay cases for the painter, 124/75 for
+deferred and 128/79 for front; twenty summary-tool tests cover missing evidence,
+hash/state/CIA mismatches and the exact 5% boundary.
+
+All twelve production renderer/SID/video configurations pass exact decoded
+title pixels, eight gameplay frames and 69 smoke scenarios each: four controls,
+22 weapon cases and 43 streaming cases. Package hashes remain unchanged during
+testing. These production binaries are separate from the instrumented timing
+packages, and all artifacts remain outside `dist`. Reports and the effective
+configuration audit live under `target/span-opt`.
+
+A stale smoke-control assertion was also corrected. A right roll moved from
+x=-70 to x=-68, but the old test compared against x=-68 from before the tap gap,
+while the previous left roll was still coasting. The test now uses the existing
+active-to-released-frame directional displacement check; activation, direction,
+countdown, cooldown and released-input checks remain mandatory. Three focused
+regressions reject stationary or wrong-direction motion and held input. The
+original failure, reproduction and old smoke tool are retained alongside the
+corrected retry. Timing reports all use the unchanged, frozen original tool.
+
+Build instrumented packages with
+`bash scripts/build-benchmark.sh OUTPUT PROFILE RENDERER`,
+where `PROFILE` is `2sid` or `4sid` and `RENDERER` is `painter`,
+`spans` or `front`. Each benchmark report records the complete fixture list and
+invocation. Run
+`python3 tools/summarize-span-benchmarks.py target/span-opt --optimization-matrix`
+to verify all package hashes and comparisons and produce
+`summary.json`; exit status 1 correctly reports the failed speed gate. The
+separate pointer-hoist retention gate passes. Reproduce kernel checks with
+`tools/test-cells-kernel.py`, `tools/test-spans-kernel.py` and
+`tools/test-front-spans-kernel.py` in the configured SDK. These measurements use
+calibrated VICE; they make no physical C64 Ultimate timing claim.
+
 ## Span-buffer experiment: 2026-10-21
 
 The optional `span-buffer` renderer resolves each scene band into disjoint runs

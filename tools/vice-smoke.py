@@ -1212,6 +1212,14 @@ def attract_checks(mon, syms, failures, elf, reu, dwarf_tool, output, result):
     result["passed"] = True
 
 
+def released_dodge_displacement(before, after, direction, label):
+    """Require directional motion between recent observations with input released."""
+    drift = after["player.x"] - before["player.x"]
+    if after["controls.bits"] != 0 or drift * direction <= 0:
+        raise RuntimeError(f"Double-{label} has no physical dodge displacement after release")
+    return drift
+
+
 def control_checks(mon, syms, failures, elf, dwarf_tool, output, result):
     """Exercise real input sampling between rendered frames, without state writes."""
     layout = dwarf_game_layout(elf, dwarf_tool, syms, output, controls=True)
@@ -1323,14 +1331,14 @@ def control_checks(mon, syms, failures, elf, dwarf_tool, output, result):
         game = active["game"]
         if game["roll_direction"] != direction or not 10 < game["roll_ticks"] <= 25:
             raise RuntimeError(f"Double-{label} roll direction or initial countdown is invalid")
-        if (game["player.x"] - scenario["before"]["player.x"]) * direction <= 0:
-            raise RuntimeError(f"Double-{label} did not displace the player in the tapped direction")
+        # The preceding roll can still coast during this gesture's tap gap.
+        # Its pre-gesture position is therefore not a motion baseline. Require
+        # actual directional displacement from this active-roll observation
+        # to the following released-input observation instead.
         scenario["active_capture"] = capture(mon, syms, output, f"controls-{label}-dodge-active")
         released = observe(scenario)
-        drift = released["game"]["player.x"] - game["player.x"]
+        drift = released_dodge_displacement(game, released["game"], direction, label)
         scenario["released_input_displacement"] = drift
-        if released["game"]["controls.bits"] != 0 or drift * direction <= 0:
-            raise RuntimeError(f"Double-{label} has no physical dodge displacement after release")
         previous = active
         # Each frame verifies the countdown against the elapsed simulation
         # ticks; faster frames carry fewer ticks, so allow enough of them for
