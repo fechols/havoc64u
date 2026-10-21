@@ -189,10 +189,12 @@ The two executables are selected at build time with Cargo's `four-sid` feature. 
 
 | Chip | Address | Two-SID package | Four-SID package | Pan |
 |---|---|---|---|---|
-| UltiSID 1 | `$D400` | 0 dB; two music + one effect voice | Same | Left 2 |
-| UltiSID 2 | `$D420` | 0 dB; two music + one effect voice | Same | Right 2 |
-| Physical socket 1 | `$D440` | Unmapped, muted | −6 dB; three music voices | Left 2 |
-| Physical socket 2 | `$D460` | Unmapped, muted | −6 dB; three music voices | Right 2 |
+| UltiSID 1 | `$D400` | 0 dB; two music + one effect voice | Same | Left 1 |
+| UltiSID 2 | `$D420` | 0 dB; two music + one effect voice | Same | Right 1 |
+| Physical socket 1 | `$D440` | Unmapped, muted | −6 dB; three music voices | Left 1 |
+| Physical socket 2 | `$D460` | Unmapped, muted | −6 dB; three music voices | Right 1 |
+
+Both profiles use gentle stereo separation (`Left 1` / `Right 1`) for headphone listening, preserving left/right distinction while bringing the mix closer to center. Re-import the updated `havoc.cfg` to apply the mixer settings.
 
 The extra pair is intended for ARMSIDs configured for 8580 behavior. Set that behavior on the ARMSIDs themselves: the game's configuration supplies socket addressing, gain, and pan, not ARMSID firmware settings. The −6 dB socket gain is the initial balance for the added orchestration. Addressing and mixer controls are described in the [Ultimate MultiSID guide](https://1541u-documentation.readthedocs.io/en/latest/config/multi_sid.html).
 
