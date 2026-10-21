@@ -30,14 +30,14 @@ The current source campaign has eighteen stages and five bosses, with 24:46 of s
 
 ## Download and launch
 
-This is a **development preview**. Choose the package that matches your sound hardware:
+**H.A.V.O.C. v0.1.0** includes the complete eighteen-stage campaign. Choose the package that matches your sound hardware:
 
-- **[Download the standard two-SID package](https://github.com/fechols/havoc64u/releases/download/v0.1.0-preview.1/havoc-preview-2sid.zip)** — uses the Ultimate's two built-in UltiSIDs. No physical SID chips are required.
-- **[Download the enhanced four-SID package](https://github.com/fechols/havoc64u/releases/download/v0.1.0-preview.1/havoc-preview-4sid.zip)** — adds two physical ARMSIDs for a fuller musical arrangement. Set both ARMSIDs to **8580 behavior** separately.
+- **[Download the standard two-SID package](https://github.com/fechols/havoc64u/releases/download/v0.1.0/havoc-v0.1.0-2sid.zip)** — uses the Ultimate's two built-in UltiSIDs. No physical SID chips are required.
+- **[Download the enhanced four-SID package](https://github.com/fechols/havoc64u/releases/download/v0.1.0/havoc-v0.1.0-4sid.zip)** — adds two physical ARMSIDs for a fuller musical arrangement. Set both ARMSIDs to **8580 behavior** separately.
 
-The linked release is the earlier twelve-stage preview; build the current source for the eighteen-stage orbital campaign. Both sound profiles use the same missions and effects. There is no in-game sound-profile switch.
+Both sound profiles use the same eighteen missions and effects. Each ZIP contains the matching `havoc.cfg`, `havoc.reu`, and `havoc.prg`, plus launch instructions and the license. There is no in-game sound-profile switch. See the [release notes](https://github.com/fechols/havoc64u/releases/tag/v0.1.0) for changes and download checksums.
 
-You need a **C64 Ultimate running at 64 MHz**, **1 MiB of REU memory** for current source builds, and a joystick connected to **port 2**. The supplied configuration sets the speed, REU, and SID routing. The linked earlier preview uses a 16 MiB image; retain its matching configuration. The game requires the Ultimate's capabilities; a stock C64 cannot run it.
+You need a **C64 Ultimate running at 64 MHz**, **1 MiB of REU memory**, and a joystick connected to **port 2**. The supplied configuration sets the speed, REU, and SID routing. The game requires the Ultimate's capabilities; a stock C64 cannot run it.
 
 1. Unzip one package and copy its three files — `havoc.cfg`, `havoc.reu`, and `havoc.prg` — to the Ultimate's storage.
 2. Import `havoc.cfg`.
@@ -82,9 +82,9 @@ Leave the title idle for fifteen seconds to watch the automatic scenery previews
 
 ## Current status
 
-**The game has been tested on real C64 Ultimate hardware and plays through successfully from start to finish.**
+**An earlier twelve-stage build completed a successful playthrough on real C64 Ultimate hardware.** A later 1 MiB build was reported to look and sound great on hardware; its sound profile, video standard, and campaign coverage were not specified.
 
-An eighteen-stage orbital build also completed continuous emulator playthroughs with two SIDs on PAL and four SIDs on NTSC, including all five bosses and the final victory reveal. The four-SID run also exercised a natural death and checkpoint respawn. These emulator playthroughs preceded the latest loading optimizations; the [hardware guide](docs/hardware.md#build-and-verification) records their exact build provenance. The renderer's hot paths have since moved to hand-written 6502 assembly behind the Rust reference: the fixed emulator matrix's frame work fell from 120 to 50 ms (about 20 frames per second on the machine, where the frame time is the work time; ordinary flight frames take 41–46 ms, boss and crowded frames 65–87), with every frame decoded pixel-identical to the Rust renderer. Music and sound effects continue independently of the picture.
+An eighteen-stage orbital build also completed continuous emulator playthroughs with two SIDs on PAL and four SIDs on NTSC, including all five bosses and the final victory reveal. The four-SID run also exercised a natural death and checkpoint respawn. These emulator playthroughs preceded the latest loading optimizations; the [hardware guide](docs/hardware.md#build-and-verification) records their exact build provenance. The renderer's hot paths have since moved to hand-written 6502 assembly behind the Rust reference: the fixed emulator matrix's frame work fell from 120 to 50 ms, with every frame decoded pixel-identical to the Rust renderer. These emulator work-time measurements are not physical-machine frame-rate measurements. Music and sound effects continue independently of the picture. The [v0.1.0 release notes](https://github.com/fechols/havoc64u/releases/tag/v0.1.0) describe validation of the downloadable binaries separately from these earlier playthroughs.
 
 For sound setup, troubleshooting, or building from source, see the [hardware and build guide](docs/hardware.md). Developers can also read the [performance measurements](docs/benchmarks.md). Found a problem? [Open an issue](https://github.com/fechols/havoc64u/issues) with your hardware, sound profile, and what happened.
 
