@@ -245,6 +245,19 @@ def audit(path):
         entry_functions[name] = matches[0]
     symbols = {symbol.name: symbol for symbol in elf.symbols if symbol.name}
     auxiliary = phases[SIM_AUX_SECTION]
+    for helper in ('__divsi3', '__udivsi3', '__mulsi3'):
+        require(helper not in symbols, f'generic 32-bit helper linked: {helper}')
+    span_enabled = 'span_compose' in symbols
+    if span_enabled:
+        require(elf.sections[symbols['span_compose'].section].name == '.text',
+                'span compositor must be resident pure code')
+        for name in ('fast_span_clear', 'fast_span_plot', 'fast_span_flush'):
+            require(name in symbols and elf.sections[symbols[name].section].name in PIXELS_SECTIONS,
+                    f'{name} must belong to PIXELS')
+        require(tuple(symbols[name].address if name in symbols else None for name in
+                      ('__span_buffer_start', '__span_buffer_end', '__span_buffer_size'))
+                == (0xD000, 0xDA00, 0xA00),
+                'span buffer must reuse exactly $D000-$D9FF of retired commands')
     require(auxiliary.address == 0x8C00 and 0 < auxiliary.size <= 0x500,
             "SIM helpers must fit the retired $8C00-$90FF workspace")
     require(all(name in symbols for name in ("__phase_sim_aux_start", "__phase_sim_aux_end", "__phase_sim_aux_size")),
@@ -491,6 +504,11 @@ def audit(path):
         destination = symbol.address + addend
         caller = elf.function_at(source.index, address) if source.executable else None
         callee = elf.function_at(target.index, destination) if target.executable else None
+        if span_enabled and callee and callee.name.startswith(('span_', 'fast_span_')):
+            require(caller is not None and
+                    (source.name in PIXELS_SECTIONS or
+                     source.name == '.text' and caller.name.startswith('span_')),
+                    f'span compositor reference outside PIXELS: {caller.name if caller else source.name}')
         if source.name.startswith(".music.kernel.") or target.name.startswith(".music.kernel."):
             # Per-song kernels execute from the resident slot inside the IRQ:
             # they may reference only themselves or resident code and data,
@@ -619,6 +637,8 @@ def audit(path):
         require(elf.sections[function.section].name not in phases, f"IRQ reference graph reaches overlay function {function.name}")
         require(elf.sections[function.section].name != STARTUP_SECTION, f"IRQ reference graph reaches retired startup function {function.name}")
         require("call_indir" not in function.name, f"IRQ calls an indirect-call trampoline: {function.name}")
+        require(not function.name.startswith(('span_', 'fast_span_')),
+                f'IRQ reference graph reaches span compositor {function.name}')
         pending.extend(graph[function])
     print(f"Overlay audit: {sum(local_references.values())} phase-local references, {phase_tables} owned switch tables; zero cross-phase references")
     for phase, boundary, _, tail in partial_phases:
@@ -632,6 +652,8 @@ def audit(path):
     print("PIXELS helpers: $6F20-$71FF; prefix-only calls, reloaded with I/O mapped before raster access")
     print("Victory ABI: one terminal SIM and one medal GEOMETRY call; matching alternate tails")
     print(f"IRQ relocation graph: {len(reached)} functions, all resident")
+    if span_enabled:
+        print('Span compositor: resident pure core; PIXELS-only callers and flush; absent from IRQ graph')
     kernel_sections = [section for section in elf.sections if section.name.startswith(".music.kernel.") and section.size]
     print(f"Music kernels: {len(kernel_sections)} slot images; {kernel_references} references, all to resident code or data")
     print("Startup: ROMs disabled before BSS; only BSS clear, data copy, main are called")

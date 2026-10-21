@@ -382,15 +382,20 @@ Build the four-SID package first, then run the capture and encoding steps from L
 
 ```sh
 python3 tools/capture-showcase.py \
-  --package-dir dist/4sid --video pal --out-dir target/readme-showcase
+  --package-dir dist/4sid --video pal --out-dir target/readme-showcase \
+  --scene title --scene lowlands --scene crystal-cave \
+  --scene foundry-belt --scene storm-front --scene orbital-ascent \
+  --scene asteroid-belt --scene title-outro
 python3 tools/encode-showcase.py target/readme-showcase/manifest.json
 ```
 
 Capture uses the compiled C64 program in the calibrated emulator and records its SID music and gameplay effects. The showcase presents selected scenes rather than a continuous campaign or a physical-machine recording. Keep the footage at its recorded game speed: duplicated video frames must not be presented as a higher game rendering rate. The four-SID recording represents emulated SID synthesis, not a recording of the physical ARMSIDs or their final hardware mixer balance.
 
-The storyboard includes the ascent and all six orbital missions. Repeat `--scene <name>` to select scenes, or use `--duration 1` for short capture probes. The capture and encoder also accept the two-SID package with `--package-dir dist`; their manifests record the actual sound profile.
+The README trailer is 72 seconds: title (4), Lowland Approach (12), Crystal Cave (10), Foundry Belt (10), Storm Front (10), orbital ascent (8), Asteroid Belt (10), and title outro (8). It previews the first orbital mission without revealing bosses or the ending. Omitting `--scene` records the full storyboard, including all six orbital missions. Repeat `--scene <name>` to select scenes, or use `--duration 1` for short capture probes. The capture and encoder also accept the two-SID package with `--package-dir dist`; their manifests record the actual sound profile.
 
 The encoder writes `target/readme-showcase/havoc-showcase.mp4` by default. It requires FFmpeg and FFprobe; use `--ffmpeg <path>` and `--ffprobe <path>` to select their executables. Native Linux and Windows executables are supported, with WSL path conversion for Windows tools. Preserve the capture manifest and source recordings with the generated video so its package, scene selection, timing, and audio can be checked before publishing. Generated capture artifacts stay under `target/`; only the selected README images belong in `docs/media/`.
+
+The 2026-10-21 README refresh is preserved under `target/readme-refresh-20261021/`. Its frozen `package/` and `build-provenance.json` identify the four-SID build with music kernels enabled; `final/manifest.json` selects the eight verified takes and `final/encoded/report.json` verifies the 72-second MP4. The capture pilot uses physical joystick input with inertia-aware avoidance, and the Asteroid Belt preview starts at the beginning of the stage on a low scenic flight path. All retained takes preserve full shields and pass the existing raster-effect, geometry, input, and music checks.
 
 ## Terrain visibility coverage
 
@@ -430,3 +435,42 @@ The raster walker now resides in PIXELS. The conservative static-sky scan and th
 pure scenery blend-weight helper occupy resident table-code space, keeping all
 phase ownership and memory-limit checks active. The coverage rule does not replace
 the general average-depth painter sort for other overlapping geometry.
+
+## Experimental span-buffer renderer
+
+The default-off `span-buffer` feature resolves each eight-row scene band before
+painting cells. It retains the stable painter order and existing Q16 edge setup
+and stepping. `src/render/spans.rs` is the host reference; `asm/spans.S` supplies
+the native compositor. This removes overlapping scene paint submissions, while
+band initialization, palette spill expansion, and the later HUD remain separate.
+
+Each row is a list of maximal color/coverage runs indexed by its starting pixel.
+The successor byte is also the exclusive end, with 160 as the sentinel. Eight
+rows of successor and ink bytes occupy `$D000-$D9FF`, borrowing the triangle
+commands only after **all** native preparation completes. The six-byte renderer
+header and persistent edge heads/tails remain intact. Host heads reuse commands,
+so the host compositor has separate scratch. No framebuffer or REU transfer is
+added. The list has at most 160 runs per row and needs no allocation or overflow
+fallback.
+
+Dust enters first; ordinary ink preserves coverage, protected geometry sets it,
+and exterior terrain skips protected runs. Insertion splits boundary runs and
+coalesces equal neighbors. Flushing converts coverage bit 6 into the cell writer's
+protected paint mode and emits every final non-background scene pixel once;
+protected background runs are retained. HUD rendering and quantization follow.
+The resident insertion core calls no overlay, and only PIXELS may call it. Its
+`$E1-$E9` scratch preserves the walker's live registers; it is unreachable from
+the IRQ. Linker, ownership, and negative-fixture audits enforce these boundaries.
+
+Removing hidden colors can change unused palette slots, which may change a later
+overfull cell's equal-frequency color selection. Tests require identical raw
+scene pixels and coverage, and compare both renderers under the same preceding
+palettes to distinguish that history effect from visibility or HUD errors.
+
+Build isolated benchmark packages with
+`bash scripts/build-benchmark.sh target/span-buffer/candidate-2sid 2sid spans`
+(use `4sid` for the other profile). Omit `spans`, or use `painter`, for the
+default renderer. Native production builds opt in with
+`cargo build --release --features span-buffer` from `target-c64` in the configured
+toolchain. The feature remains off in normal builds. See
+[the measured experiment](benchmarks.md#span-buffer-experiment-2026-10-21).

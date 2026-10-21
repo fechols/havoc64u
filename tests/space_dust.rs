@@ -13,6 +13,18 @@ fn prepared(ticks: u16) -> SpaceDustFrame {
     frame
 }
 
+fn lifetime_tick(index: usize, generation: u8, phase: u8) -> u16 {
+    ((generation as u16 * 256) + phase as u16).wrapping_sub(index as u16 * 32)
+}
+
+fn rendering_ticks() -> impl Iterator<Item = u16> {
+    // Retain every early phase, then exercise later headings and clock rollover.
+    (0..=256).chain([
+        0x0101, 0x017f, 0x01ff, 0x1234, 0x7fff, 0x8000, 0xff00, 0xff7f, 0xfffe,
+        0xffff, 0, 1,
+    ])
+}
+
 fn raster(renderer: &Renderer, ambient: Option<&SpaceDustFrame>) -> Vec<u8> {
     let mut output = Vec::new();
     for band in 0..25 {
@@ -52,50 +64,114 @@ fn space_flight_modes_only_and_crossings_keep_the_same_phase() {
 }
 
 #[test]
-fn clock_wrap_and_period_are_exact_without_stage_local_time() {
-    for phase in 0..256 {
-        assert_eq!(prepared(phase), prepared(phase + 256));
-        assert_eq!(prepared(phase), prepared(phase + 0xff00));
+fn headings_vary_across_lifetimes_and_cover_all_outward_rays() {
+    let mut expected = BTreeSet::new();
+    for minor in [8, 16, 24] {
+        for sx in [-1, 1] {
+            for sy in [-1, 1] {
+                expected.insert((32 * sx, minor * sy));
+                expected.insert((minor * sx, 32 * sy));
+            }
+        }
     }
-    assert_eq!(prepared(u16::MAX), prepared(255));
-    assert_eq!(prepared(u16::MAX.wrapping_add(1)), prepared(256));
+    assert_eq!(expected.len(), 24);
+    for index in 0..SPECK_COUNT {
+        let headings: BTreeSet<_> = (0..=255)
+            .map(|generation| {
+                // Radius 32 makes all slopes exact and keeps every ray visible.
+                let (x, y) = prepared(lifetime_tick(index, generation, 128)).positions()[index];
+                (x as i16 - 80, y as i16 - 100)
+            })
+            .collect();
+        assert_eq!(headings, expected, "particle {index}");
+    }
+    assert!(
+        (0..256).any(|ticks| prepared(ticks) != prepared(ticks + 256)),
+        "the complete pattern must not repeat each particle lifetime"
+    );
 }
 
 #[test]
-fn rays_accelerate_outward_then_respawn_from_outside_the_view() {
-    for index in 0..SPECK_COUNT {
-        let mut previous_radius = 0;
-        let mut saw_offscreen = false;
-        for phase in 0..=255u8 {
-            let ticks = phase.wrapping_sub(index as u8 * 32) as u16;
-            let (x, y) = prepared(ticks).positions()[index];
-            if y == 255 {
-                saw_offscreen = true;
-                continue;
+fn rays_stay_straight_accelerate_and_leave_view_before_respawning() {
+    // Generation zero crosses the full u16 wrap for particles 1 through 7.
+    for generation in [0, 1, 31, 127, 255] {
+        for index in 0..SPECK_COUNT {
+            let (x, y) = prepared(lifetime_tick(index, generation, 128)).positions()[index];
+            let heading = (x as i16 - 80, y as i16 - 100);
+            let mut previous_radius = 0;
+            let mut saw_offscreen = false;
+            for phase in 0..=255u8 {
+                let ticks = lifetime_tick(index, generation, phase);
+                let (x, y) = prepared(ticks).positions()[index];
+                if y == 255 {
+                    saw_offscreen = true;
+                    continue;
+                }
+                assert!(!saw_offscreen, "ray reentered before its phase wrapped");
+                assert!(x < 160 && y < 200);
+                let displacement = (x as i16 - 80, y as i16 - 100);
+                let radius = displacement.0.abs().max(displacement.1.abs());
+                let expected_radius = (phase as u16 * phase as u16 / 512) as i16;
+                assert_eq!(radius, expected_radius, "quadratic acceleration at {ticks}");
+                assert!(radius >= previous_radius);
+                previous_radius = radius;
+                // Quarter-radius rounding moves a coordinate by at most 3/4 pixel.
+                // Changing a live particle's heading fails this comparison.
+                for (actual, direction) in [
+                    (displacement.0, heading.0),
+                    (displacement.1, heading.1),
+                ] {
+                    assert!(
+                        (actual * 32 - direction * radius).abs() <= 24,
+                        "particle {index} changed ray at tick {ticks}"
+                    );
+                }
             }
-            assert!(!saw_offscreen, "ray reentered before its phase wrapped");
-            let radius = (x as i16 - 80).abs().max((y as i16 - 100).abs());
-            assert!(radius >= previous_radius);
-            previous_radius = radius;
+            assert!(
+                saw_offscreen,
+                "every ray must leave the viewport before resetting"
+            );
+            let origin = prepared(lifetime_tick(index, generation, 0));
+            assert_eq!(origin.positions()[index], (80, 100));
         }
-        assert!(
-            saw_offscreen,
-            "every ray must leave the viewport before resetting"
-        );
-        let origin = prepared((index as u8 * 32).wrapping_neg() as u16);
-        assert_eq!(origin.positions()[index], (80, 100));
     }
-    // The second half covers substantially more distance than the first half.
-    assert_eq!(prepared(64).positions()[0].0 - 80, 8);
-    assert_eq!(prepared(128).positions()[0].0 - 80, 32);
-    assert_eq!(prepared(192).positions()[0].0 - 80, 72);
+}
+
+#[test]
+fn skipped_ticks_clock_rollover_and_call_history_do_not_change_positions() {
+    let ticks = [
+        u16::MAX - 300,
+        u16::MAX - 129,
+        u16::MAX - 1,
+        u16::MAX,
+        0,
+        1,
+        31,
+        32,
+        127,
+        128,
+        255,
+        256,
+        511,
+        12345,
+    ];
+    let mut frame = SpaceDustFrame::EMPTY;
+    for tick in ticks.into_iter().chain(ticks.into_iter().rev()) {
+        let expected = prepared(tick);
+        for mode in [Mode::Playing, Mode::Transition, Mode::Respawning] {
+            assert_eq!(frame.prepare(17, mode, tick), Some(&expected));
+        }
+        assert!(frame.prepare(11, Mode::Playing, tick).is_none());
+        assert!(frame.prepare(12, Mode::Title, tick).is_none());
+        assert_eq!(frame.prepare(12, Mode::Attract, tick), Some(&expected));
+    }
 }
 
 #[test]
 fn each_visible_speck_is_one_plain_gray_pixel_with_no_trail() {
     let mut renderer = Renderer::new();
     renderer.begin(0);
-    for ticks in 0..256 {
+    for ticks in rendering_ticks() {
         let frame = prepared(ticks);
         let expected: BTreeSet<_> = frame
             .positions()
@@ -127,9 +203,9 @@ fn packed_vic_frames_preserve_single_gray_specks_without_double_buffer_trails() 
     let mut bitmaps = [[0u8; 8000]; 2];
     let mut screens = [[0u8; 1000]; 2];
     let mut colors = [0u8; 1000];
-    // Include the phase wrap. Each back bank still contains its old frame,
+    // Include phase and clock wraps. Each back bank still contains its old frame,
     // while packing receives the preceding front frame's palette and colors.
-    for tick in 0..=256u16 {
+    for (frame_number, tick) in rendering_ticks().enumerate() {
         let frame = prepared(tick);
         let expected: BTreeSet<_> = frame
             .positions()
@@ -137,7 +213,7 @@ fn packed_vic_frames_preserve_single_gray_specks_without_double_buffer_trails() 
             .filter(|&&(_, y)| y < 200)
             .map(|&(x, y)| y as usize * 160 + x as usize)
             .collect();
-        let back = tick as usize & 1;
+        let back = frame_number & 1;
         let front = back ^ 1;
         let mut actual = BTreeSet::new();
         for band in 0..25usize {
@@ -193,36 +269,38 @@ fn rectangle(renderer: &mut Renderer, color: u8) {
 
 #[test]
 fn black_and_colored_geometry_occlude_dust_in_both_raster_paths() {
-    let dust = prepared(0);
-    for color in [0, 5] {
-        let mut renderer = Renderer::new();
-        renderer.begin(6);
-        rectangle(&mut renderer, color);
-        let expected = raster(&renderer, Some(&dust));
-        assert_eq!(expected[100 * 160 + 80], color);
-        assert!(expected.contains(&COLOR), "uncovered specks remain visible");
-        let count = renderer.triangle_count;
-        let mut pass = renderer.raster_pass().unwrap();
-        for band in 0..25 {
-            let mut pixels = [99; BAND_PIXELS];
+    for ticks in [0, 256, 0x7f00, 0xff00] {
+        let dust = prepared(ticks);
+        for color in [0, 5] {
+            let mut renderer = Renderer::new();
+            renderer.begin(6);
+            rectangle(&mut renderer, color);
+            let expected = raster(&renderer, Some(&dust));
+            assert_eq!(expected[100 * 160 + 80], color);
+            assert!(expected.contains(&COLOR), "uncovered specks remain visible");
+            let count = renderer.triangle_count;
+            let mut pass = renderer.raster_pass().unwrap();
+            for band in 0..25 {
+                let mut pixels = [99; BAND_PIXELS];
+                assert_eq!(
+                    pass.next_band_with_ambient(&mut pixels, true, Some(&dust)),
+                    Some(band)
+                );
+                assert_eq!(
+                    &pixels,
+                    &expected[band as usize * 1280..(band as usize + 1) * 1280]
+                );
+            }
+            let mut sentinel = [99; BAND_PIXELS];
             assert_eq!(
-                pass.next_band_with_ambient(&mut pixels, true, Some(&dust)),
-                Some(band)
+                pass.next_band_with_ambient(&mut sentinel, true, Some(&dust)),
+                None
             );
-            assert_eq!(
-                &pixels,
-                &expected[band as usize * 1280..(band as usize + 1) * 1280]
-            );
+            assert_eq!(sentinel, [99; BAND_PIXELS]);
+            drop(pass);
+            assert_eq!(renderer.triangle_count, count);
+            assert_eq!(renderer.dropped, 0);
         }
-        let mut sentinel = [99; BAND_PIXELS];
-        assert_eq!(
-            pass.next_band_with_ambient(&mut sentinel, true, Some(&dust)),
-            None
-        );
-        assert_eq!(sentinel, [99; BAND_PIXELS]);
-        drop(pass);
-        assert_eq!(renderer.triangle_count, count);
-        assert_eq!(renderer.dropped, 0);
     }
 }
 
@@ -269,7 +347,7 @@ fn cockpit_is_painted_after_dust() {
     let mut renderer = Renderer::new();
     renderer.begin(0);
     let mut checked = false;
-    for ticks in 0..256 {
+    for ticks in rendering_ticks() {
         let dust = prepared(ticks);
         if let Some(&(x, y)) = dust.positions().iter().find(|&&(_, y)| y < 8) {
             let mut pixels = [0; BAND_PIXELS];

@@ -5,12 +5,18 @@ root=$(cd "$(dirname "$0")/.." && pwd)
 cd "$root"
 source scripts/env.sh
 profile=${2:-2sid}
+renderer=${3:-painter}
 features=()
 native_features=benchmarks
 case "$profile" in
     2sid) default_output=target/bench/instrumented; native_target="$root/target/bench/cargo-native" ;;
     4sid) default_output=target/bench/instrumented-4sid; native_target="$root/target/bench/cargo-native-4sid"; features=(--features four-sid); native_features=benchmarks,four-sid ;;
-    *) echo 'usage: scripts/build-benchmark.sh [output-directory] [2sid|4sid]' >&2; exit 2 ;;
+    *) echo 'usage: scripts/build-benchmark.sh [output-directory] [2sid|4sid] [painter|spans]' >&2; exit 2 ;;
+esac
+case "$renderer" in
+    painter) ;;
+    spans) native_features="$native_features,span-buffer"; native_target="$native_target-spans"; default_output="$default_output-spans" ;;
+    *) echo 'renderer must be painter or spans' >&2; exit 2 ;;
 esac
 output=${1:-$default_output}
 mkdir -p "$output"

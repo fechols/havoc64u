@@ -11,6 +11,7 @@ label every branch names in the source, and compares that label's address
 with the branch's encoded target. Usage: branch-audit.py <source.S> [...]
 Exit status 1 when any branch does not reach its label.
 """
+import argparse
 import os
 import pathlib
 import re
@@ -26,14 +27,21 @@ line_pattern = re.compile(r"^;\s+(.*):(\d+)\s*$")
 branch_pattern = re.compile(r"^\s*([0-9a-f]+):\s+(b(?:ne|eq|cc|cs|pl|mi|vc|vs))\s+(-?)\$([0-9a-f]+)")
 source_pattern = re.compile(r"^\s*(b(?:ne|eq|cc|cs|pl|mi|vc|vs))\s+([A-Za-z_.$][\w.$]*)\s*(?:;.*)?$")
 
+parser = argparse.ArgumentParser(description=__doc__)
+parser.add_argument("--define", action="append", default=[], metavar="NAME=VALUE",
+                    help="assembler definition, matching the production invocation")
+parser.add_argument("sources", nargs="+")
+args = parser.parse_args()
+defines = [f"-Wa,-defsym,{value}" for value in args.define]
+
 bad = 0
 audited = 0
 with tempfile.TemporaryDirectory() as scratch:
-    for source in sys.argv[1:]:
+    for source in args.sources:
         source_path = pathlib.Path(source)
         lines = source_path.read_text(encoding="utf-8", errors="replace").splitlines()
         obj = pathlib.Path(scratch) / (source_path.stem + ".o")
-        subprocess.run([compiler, "-c", "-g", "-Wa,-L", str(source_path), "-o", str(obj)], check=True)
+        subprocess.run([compiler, "-c", "-g", "-Wa,-L", *defines, str(source_path), "-o", str(obj)], check=True)
         symbols = {}
         for entry in subprocess.run([nm, str(obj)], text=True, capture_output=True, check=True).stdout.splitlines():
             parts = entry.split()
@@ -69,5 +77,5 @@ with tempfile.TemporaryDirectory() as scratch:
                       f"(at ${pc:04x}, label at ${intended:04x}, encoded ${encoded:04x}, "
                       f"displacement {intended - (pc + 2):+d})")
                 bad += 1
-print(f"branch audit: {audited} branches in {len(sys.argv) - 1} source(s); wrapped: {bad}")
+print(f"branch audit: {audited} branches in {len(args.sources)} source(s); wrapped: {bad}")
 sys.exit(1 if bad else 0)

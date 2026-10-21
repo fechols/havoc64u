@@ -9,6 +9,7 @@ fn main() {
         "asm/pack.S",
         "asm/memcpy.S",
         "asm/raster.S",
+        "asm/spans.S",
         "asm/division.S",
         "asm/sort.S",
         "asm/preparation.S",
@@ -35,11 +36,13 @@ fn main() {
         });
         format!("{sdk}/bin/mos-c64-clang")
     });
+    let span_buffer = env::var_os("CARGO_FEATURE_SPAN_BUFFER").is_some();
     for source in [
         "platform",
         "pack",
         "memcpy",
         "raster",
+        "spans",
         "division",
         "sort",
         "preparation",
@@ -53,9 +56,15 @@ fn main() {
         "shots",
         "flight",
     ] {
+        if source == "spans" && !span_buffer {
+            continue;
+        }
         let object = output.join(format!("{source}.o"));
-        let status = Command::new(&compiler)
-            .args(["-c", "-o"])
+        let mut assembly = Command::new(&compiler);
+        if span_buffer {
+            assembly.arg("-Wa,-defsym,SPAN_BUFFER=1");
+        }
+        let status = assembly.args(["-c", "-o"])
             .arg(&object)
             .arg(directory.join(format!("asm/{source}.S")))
             .status()
@@ -64,8 +73,12 @@ fn main() {
         // The assembler wraps out-of-range conditional branches silently;
         // refuse to link a source containing one (the audit re-assembles it
         // with line information to compare every label with its branch).
-        let audit = Command::new("python3")
-            .arg(directory.join("../tools/branch-audit.py"))
+        let mut audit_command = Command::new("python3");
+        audit_command.arg(directory.join("../tools/branch-audit.py"));
+        if span_buffer {
+            audit_command.arg("--define").arg("SPAN_BUFFER=1");
+        }
+        let audit = audit_command
             .arg(directory.join(format!("asm/{source}.S")))
             .env("MOS_CLANG", &compiler)
             .status()

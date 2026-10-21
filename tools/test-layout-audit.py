@@ -93,6 +93,11 @@ def main():
             ("__reu_scenery_gate", 0x88000, "gate REU slot overlaps scenery_carrier"),
             ("__reu_scenery_gate", 0x95000, "incorrect scenery_gate REU slot address"),
             ("__code_reu_pages_end", reu_table.address + 30, "incorrect REU address table size"),
+            *((name, value, "span buffer must reuse exactly") for name, value in (
+                ("__span_buffer_start", 0xcfff),
+                ("__span_buffer_end", 0xda01),
+                ("__span_buffer_size", 0xa01),
+            ) if any(symbol.name == 'span_compose' for symbol in elf.symbols)),
         ):
             entry = next(table.offset + index * table.entry_size
                          for table in elf.sections if table.kind == 2

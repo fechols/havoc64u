@@ -11,7 +11,8 @@
 ; edge replaced it. The rows of a band split into the segment before the
 ; middle row and the segment from it, so no row tests for the middle; a
 ; painted row clamps both columns from the high words and hands the span to
-; the cell writer, whose CODES/COVER row pointers (rc8-rc11) step with the rows.
+; the cell writer, or the feature-gated deferred compositor. Cell CODES/COVER
+; row pointers (rc8-rc11) step with the rows only for the direct writer.
 ; fast_raster_band drives the core for a whole band from its ordered mask.
 ; rc2..19, $D0-$E7 and $77A0-$77B9 are volatile; IRQ never accesses them.
 ; $77AB is reset once per band, then retains whether a terrain-clear span was painted.
@@ -151,7 +152,9 @@ fast_raster_rows:
     lda RR_ROW
     sbc RR_BAND
     sta CS_ROW
+.ifndef SPAN_BUFFER
     jsr cell_row_pointers
+.endif
     ; Bring the head into zero page.
     ldy #0
     lda (__rc4),y
@@ -381,7 +384,11 @@ fast_raster_rows:
     lda #1
     sta RR_PLAYER_SEEN
 .Lrr_cells_\name:
+.ifdef SPAN_BUFFER
+    jsr span_compose
+.else
     jsr cell_rows
+.endif
 .Lrr_skip_\name:
     clc
     lda \left
@@ -413,6 +420,7 @@ fast_raster_rows:
     ; (stepped after the segment's last row too, harmlessly: every triangle
     ; band derives the pointers afresh, and the second segment continues)
     inc CS_ROW
+.ifndef SPAN_BUFFER
     lda __rc8
     clc
     adc #40
@@ -428,6 +436,7 @@ fast_raster_rows:
     sta __rc10
     bcc .Lrr_count_\name
     inc __rc11
+.endif
 .Lrr_count_\name:
     dec RW_ROWS
     beq .Lrr_rows_done_\name

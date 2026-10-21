@@ -10,6 +10,7 @@ build = "build.rs"
 [features]
 default = ["music-kernels"]
 benchmarks = []
+span-buffer = ["havoc/span-buffer"]
 four-sid = ["havoc/four-sid"]
 music-kernels = ["havoc/music-kernels"]
 

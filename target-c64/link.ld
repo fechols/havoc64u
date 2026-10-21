@@ -491,6 +491,12 @@ __raster_tails_start = 0xE000;
 __raster_tails_end = 0xEC00;
 __raster_masks_start = 0xEC00;
 __raster_masks_end = 0xEF20;
+/* Commands retire after every edge is prepared; PIXELS then owns these bytes. */
+__span_buffer_start = 0xD000;
+__span_buffer_end = 0xDA00;
+__span_buffer_size = __span_buffer_end - __span_buffer_start;
+ASSERT(__span_buffer_size == 8 * 160 * 2, "incorrect span compositor allocation")
+ASSERT(__span_buffer_start == __renderer_start + 6 && __span_buffer_end <= __renderer_end, "span compositor must reuse retired commands only")
 /* Preparation is complete before the row walker or packer uses this scratch.
  * The IRQ never borrows it; persistent models at $8400 are untouched. */
 __raster_prepare_scratch_start = 0x77A0;

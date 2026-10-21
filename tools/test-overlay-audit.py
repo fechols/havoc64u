@@ -148,6 +148,28 @@ def main():
         ("irq-calls-pixels-helpers", lambda data: replace_target(data, irq, pixels_auxiliary_name), "unsafe overlay references"),
         ("escaped-pixels-helper-pointer", lambda data: replace_target(data, pointer, pixels_auxiliary_name), "unsafe overlay references"),
     ]
+    # Symbol presence is sufficient: generic arithmetic must stay absent even
+    # if an optimizer currently leaves a helper unreachable.
+    def rename_symbol(data, name):
+        table = next(section for section in elf.sections if section.kind == 2)
+        index = next(i for i, symbol in enumerate(elf.symbol_tables[table.index])
+                     if symbol.name == '__phase_sim_aux_size')
+        offset = struct.unpack_from('<I', data, table.offset + index * table.entry_size)[0]
+        strings = elf.sections[table.link]
+        data[strings.offset + offset:strings.offset + offset + len(name) + 1] = name.encode() + b'\0'
+
+    for helper in ('__divsi3', '__udivsi3', '__mulsi3'):
+        cases.append((f'forbidden-{helper}', lambda data, name=helper: rename_symbol(data, name),
+                      'generic 32-bit helper linked'))
+    if any(symbol.name == 'span_compose' for symbol in elf.symbols):
+        cases.extend([
+            ('geometry-calls-span-compositor', lambda data: replace_target(data, geometry, 'span_compose'),
+             'span compositor reference outside PIXELS'),
+            ('irq-calls-span-compositor', lambda data: replace_target(data, irq, 'span_compose'),
+             'span compositor reference outside PIXELS'),
+            ('escaped-span-compositor', lambda data: replace_target(data, pointer, 'span_compose'),
+             'span compositor reference outside PIXELS'),
+        ])
     for phase in (".phase.boot", ".phase.geometry", ".phase.pixels", checker["PIXELS_AUX_SECTION"], ".phase.audio", ".phase.scenery", checker["STARTUP_SECTION"]):
         source_call = next(entry for entry in entries if entry[1].name == phase and entry[3] == 3
                            and (phase != ".phase.pixels"

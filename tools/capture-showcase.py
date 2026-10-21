@@ -55,7 +55,10 @@ SCENES = (
     dict(name="crossing", label="Meteor crossing", stage=9, local=3650, seconds=8),
     dict(name="carrier-combat", label="Carrier Assault", stage=11, local=1050, seconds=18),
     dict(name="orbital-ascent", label="Orbital ascent", stage=11, local=3650, seconds=8, crossing=True),
-    dict(name="asteroid-belt", label="Asteroid Belt", stage=12, local=625, seconds=10),
+    # Enter the first orbital mission before its hazards spawn, rather than
+    # inserting the ship into an already approaching debris formation.
+    dict(name="asteroid-belt", label="Asteroid Belt", stage=12, local=0, seconds=10,
+         pilot_target=(0, -60)),
     dict(name="shattered-moon", label="Shattered Moon", stage=13, local=725, seconds=10),
     dict(name="ship-graveyard", label="Ship Graveyard", stage=14, local=625, seconds=10),
     dict(name="orbital-shipyard", label="Orbital Shipyard", stage=15, local=725, seconds=10),
@@ -137,6 +140,95 @@ def screenshot(path, rows):
     vice.png(path, [wide[y * 200 // 480] for y in range(480)], 640, 480)
 
 
+def steering(position, velocity, target):
+    # The flight model takes about ten ticks to brake. Aim at its stopping
+    # position, rather than repeatedly overshooting a target and double tapping.
+    error = target - position - velocity * 10
+    return 1 if error > 5 else -1 if error < -5 else 0
+
+
+def showcase_input(state, package, previous=None, target=None):
+    """Choose physical joystick input; prediction never changes native state.
+
+    The campaign pilot aims well but only avoids scenery. A showcase also needs
+    to avoid enemy rams and incoming fire: player hits have a raster shake which
+    this bitmap-only recorder deliberately refuses to misrepresent.
+    """
+    if target is None:
+        target, _ = campaign.pilot_target(state, package, finish_boss=False)
+    player = state["player"]
+    flight = state.get("flight", {})
+    position = [player[axis] + fraction / 256 for axis, fraction in
+                zip(("x", "y"), flight.get("frac", (0, 0)))]
+    velocity = [value / 256 for value in flight.get("vel", (0, 0))]
+    horizon = 75  # 1.5 seconds of simulation, independent of rendering speed.
+    threats = [[] for _ in range(horizon)]
+    elapsed = ((state["ticks"] - previous["ticks"]) & 0xffff) if previous else 0
+    old_actors = previous["actors"] if previous and 0 < elapsed <= 25 else []
+    for index, actor in enumerate(state["actors"]):
+        kind, pos = actor["kind"], actor["pos"]
+        if kind not in (1, 2, 3, 6, 7) or not actor["hp"] or pos["z"] < 100:
+            continue
+        x, y = campaign.actor_center(actor, state["stage_id"], package)
+        small = kind == 7 and actor.get("flags", 0) & 2
+        if kind in (6, 7):
+            radius, depth = (18, 16) if small else (36, 32)
+        else:
+            descriptor = 0xb0000 + state["stage_id"] * 2048 + 88 + (kind - 1) * 8
+            radius, depth = package[descriptor + 3], 48  # enemy_scaled(32)
+        vx = vy = 0
+        if index < len(old_actors):
+            old = old_actors[index]
+            # Pool slots can be reused; only extrapolate a continuing actor.
+            if (old["kind"] == kind and old.get("origin_x") == actor.get("origin_x")
+                    and old.get("origin_y") == actor.get("origin_y")
+                    and actor["age"] == ((old["age"] + elapsed) & 0xffff)):
+                vx = (pos["x"] - old["pos"]["x"]) / elapsed
+                vy = (pos["y"] - old["pos"]["y"]) / elapsed
+        speed = max(1, actor.get("approach_speed", 8))
+        for tick in range(horizon):
+            if abs(pos["z"] - speed * (tick + 1) - player["z"]) <= depth + speed:
+                threats[tick].append((x + vx * (tick + 1), y + vy * (tick + 1), radius + 18))
+    for shot in state.get("shots", ()):
+        if shot["kind"] != 2:
+            continue
+        pos = shot["pos"]
+        for tick in range(horizon):
+            if abs(pos["z"] - 18 * (tick + 1) - player["z"]) <= 28:
+                threats[tick].append((pos["x"] + shot["dx"] * (tick + 1),
+                                      pos["y"] + shot["dy"] * (tick + 1), 24))
+
+    def score(destination):
+        p, v = list(position), list(velocity)
+        risk = 0
+        for tick, incoming in enumerate(threats):
+            for axis, (maximum, edge) in enumerate(((3, 100), (2.75, 65))):
+                command = steering(p[axis], v[axis], destination[axis])
+                speed = command * maximum
+                if axis == 0 and tick < state.get("roll_ticks", 0):
+                    speed += 2.5 * state.get("roll_direction", 0)
+                v[axis] += (speed - v[axis]) * 3 / 32
+                if p[axis] >= 0:
+                    v[axis] = min(v[axis], (edge - p[axis]) / 8)
+                else:
+                    v[axis] = max(v[axis], -(edge + p[axis]) / 8)
+                p[axis] += v[axis]
+            for x, y, radius in incoming:
+                clearance = max(abs(p[0] - x), abs(p[1] - y)) - radius
+                if clearance < 0:
+                    risk += (1 - clearance) * (horizon - tick)
+        # Safety comes first, then keep useful aim and avoid needless travel.
+        return (risk, abs(destination[0] - target[0]) + abs(destination[1] - target[1])
+                + .2 * (abs(destination[0] - position[0]) + abs(destination[1] - position[1])))
+
+    choices = [target, tuple(position)] + [(x, y) for x in (-100, -50, 0, 50, 100)
+                                         for y in (-65, -30, 0, 30, 65)]
+    destination = min(choices, key=score) if any(threats) else target
+    dx, dy = [steering(position[i], velocity[i], destination[i]) for i in (0, 1)]
+    # Hold FIRE throughout a take; never synthesize a bomb or repeated-fire SFX.
+    return 16 | (8 if dx > 0 else 4 if dx < 0 else 0) | (1 if dy > 0 else 2 if dy < 0 else 0)
+
+
 class Capture:
     def __init__(self, args, scene, package, syms, layout, layouts, failures):
         self.args, self.scene, self.package = args, scene, package
@@ -148,6 +240,7 @@ class Capture:
         self.hz = BUS_HZ[args.video]
         self.process = self.mon = None
         self.last_bits = None
+        self.previous_pilot_state = None
         self.game_address = vice.resident_symbol(syms, "GAME")[1]
         self.game_size = layouts.size("Game")
         self.report = dict(schema=1, name=scene["name"], label=scene["label"], passed=False,
@@ -157,6 +250,8 @@ class Capture:
                            trim_start_seconds=PREROLL, duration_seconds=args.duration or scene["seconds"],
                            native_width=160, native_height=200, display_width=640, display_height=480,
                            frames=[], screenshot="screenshot.png", setup_patches=[])
+        if "pilot_target" in scene:
+            self.report["pilot_target"] = scene["pilot_target"]
 
     def boot(self):
         package_layout = vice.package_model_layout(self.package, validate_size=True)
@@ -227,20 +322,13 @@ class Capture:
             self.mon.command(f"jpdb 1 ${31 ^ bits:02x}")
             self.last_bits = bits
 
-    def pilot(self, state, frame):
+    def pilot(self, state):
         if (self.scene["stage"] is None or self.scene["name"] == "crossing"
                 or self.scene.get("crossing") or state["mode"] != 1):
             return 0
-        # Show the opening fight without deliberately finishing its core.
-        (target_x, target_y), avoiding = campaign.pilot_target(state, self.package, finish_boss=False)
-        dx, dy = target_x - state["player"]["x"], target_y - state["player"]["y"]
-        bits = 16 | (8 if dx > 5 else 4 if dx < -5 else 0) | (1 if dy > 5 else 2 if dy < -5 else 0)
-        # Lateral double taps exercise the native dodge; FIRE stays held to
-        # avoid both bomb gestures and a synthetic repeated-fire soundtrack.
-        if not avoiding and frame % 12 in (0, 2):
-            bits &= ~12
-        elif not avoiding and frame % 12 in (1, 3):
-            bits = (bits & ~8) | 4
+        bits = showcase_input(state, self.package, self.previous_pilot_state,
+                              target=self.scene.get("pilot_target"))
+        self.previous_pilot_state = state
         return bits
 
     def prepare(self):
@@ -253,7 +341,6 @@ class Capture:
                 break
         else:
             raise RuntimeError("Physical FIRE did not start the game")
-        self.joystick(0)
         stage, local = self.scene["stage"], self.scene["local"]
         # Fresh boot supplies empty actor/shot pools. Native encounter spawning
         # advances normally from this checkpoint; no actors are fabricated.
@@ -271,6 +358,7 @@ class Capture:
         self.patch(setup)
         before = self.mon.registers()["bus_cycles"]
         for _ in range(80):
+            self.joystick(self.pilot(self.game()))
             self.mon.run_until(self.syms["frame_complete"], self.failures)
             counters = vice.counters(self.mon, self.syms)
             if (counters.get("render_segment") == stage and counters["game_stage"] == stage
@@ -291,8 +379,12 @@ class Capture:
             raise RuntimeError("Capture unexpectedly uses synthetic benchmark input")
         if state["mode"] in (3, 4) or (state["boss_defeated"] and self.scene["name"] != "orbital-ascent"):
             raise RuntimeError("Spoiler-free capture reached a result or boss defeat")
-        if self.mon.integer(self.syms["BOMB_EFFECT"], 1):
-            raise RuntimeError("Bomb raster effect cannot be represented by native bitmap capture")
+        effect = self.mon.integer(self.syms["BOMB_EFFECT"], 1)
+        if effect:
+            self.report["failure_state"] = dict(game=state, joystick=self.last_bits,
+                                                raster_effect=effect, counters=counters)
+            kind = "Player-hit" if effect & 0x80 else "Bomb"
+            raise RuntimeError(f"{kind} raster effect ({effect:#04x}) cannot be represented by native bitmap capture")
         bank = counters["front_bank"]
         if bank not in (2, 3):
             raise RuntimeError(f"Invalid front bank {bank}")
@@ -327,6 +419,8 @@ class Capture:
                     stage_ticks=state.get("stage_ticks"), rail_ticks=state["rail_ticks"],
                     frame_serial=counters["frame_serial"],
                     music_cue=counters["music_cue"], music_page=counters["music_page"],
+                    player=state["player"], flight=state.get("flight"),
+                    roll_ticks=state.get("roll_ticks"), joystick=self.last_bits,
                     shield=state["shield"], lives=state["lives"], score=state["score"],
                     boss_left=state["boss_left"], boss_right=state["boss_right"], boss_core=state["boss_core"],
                     native_sha256=hashlib.sha256(native).hexdigest())
@@ -374,7 +468,7 @@ class Capture:
                             candidate_names.add(name)
                 if elapsed >= endpoint + POSTROLL:
                     break
-                self.joystick(self.pilot(state, index))
+                self.joystick(self.pilot(state))
                 self.mon.run_until(self.syms["frame_complete"], self.failures)
                 index += 1
                 if index > 5000:

@@ -15,6 +15,10 @@ use crate::TWO_SIDED;
 use crate::{GeometrySink, Vec3};
 
 mod sort;
+#[cfg(all(feature = "span-buffer", not(target_arch = "mos")))]
+mod spans;
+#[cfg(all(feature = "span-buffer", not(target_arch = "mos")))]
+pub use spans::SpanStats;
 
 pub const WIDTH: usize = 160;
 pub const HEIGHT: usize = 200;
@@ -379,6 +383,54 @@ impl Renderer {
         }
     }
 
+    /// Experimental final-span composition, retaining the classic band's raw
+    /// colors and terrain coverage for direct differential comparisons.
+    #[cfg(all(feature = "span-buffer", not(target_arch = "mos")))]
+    pub fn render_band_spans(
+        &self,
+        band: u8,
+        pixels: &mut [u8; BAND_PIXELS],
+        ambient: Option<&SpaceDustFrame>,
+    ) -> SpanStats {
+        let mut spans = self.compose_band(band, ambient);
+        spans.write_pixels(pixels);
+        spans.stats
+    }
+
+    /// Resolve a band before assigning cell palettes, so hidden geometry never
+    /// enters the cell writer. Palette slot order may differ from the painter.
+    #[cfg(all(feature = "span-buffer", not(target_arch = "mos")))]
+    pub fn render_band_span_cells(
+        &self,
+        band: u8,
+        cells: &mut crate::cells::CellBand,
+        ambient: Option<&SpaceDustFrame>,
+    ) -> SpanStats {
+        let mut spans = self.compose_band(band, ambient);
+        spans.write_cells(cells);
+        spans.stats
+    }
+
+    #[cfg(all(feature = "span-buffer", not(target_arch = "mos")))]
+    fn compose_band(&self, band: u8, ambient: Option<&SpaceDustFrame>) -> spans::SpanBand {
+        assert_eq!(self.padding, 0, "raster pass consumed geometry commands");
+        let mut spans = spans::SpanBand::new(self.clear_color);
+        if band >= 25 {
+            return spans;
+        }
+        if let Some(ambient) = ambient {
+            ambient.draw_band(band, &mut spans);
+        }
+        for triangle in &self.triangles[..self.triangle_count as usize] {
+            let (mut head, tail) = prepare_triangle(triangle);
+            seek_row(&mut head, &tail, band * 8);
+            raster_rows(&mut head, &tail, band * 8, |row, first, end, flags| {
+                spans.geometry_span(row, first, end, flags);
+            });
+        }
+        spans
+    }
+
     /// Consume sorted geometry into a bounded sequential raster pass. A second
     /// pass requires begin(); the borrow prevents geometry changes during a pass.
     #[inline(never)]
@@ -395,6 +447,8 @@ impl Renderer {
             tails: [RasterTail::EMPTY; TRIANGLE_CAPACITY],
             #[cfg(not(target_arch = "mos"))]
             masks: [[0; 32]; 25],
+            #[cfg(all(feature = "span-buffer", not(target_arch = "mos")))]
+            span_stats: SpanStats::default(),
         };
         pass.masks_mut().fill([0; 32]);
         for index in 0..pass.renderer.triangle_count as usize {
@@ -587,6 +641,9 @@ const _: [(); 11] = [(); core::mem::offset_of!(RasterTail, color_flags)];
 /// Native storage is phase-owned: the depth sort's order table at $7600 maps
 /// sorted positions to the commands left in emission order at $D000, heads
 /// occupy $EF20-$FF1F, tails $E000-$EBFF, and ordered band masks $EC00-$EF1F.
+/// With `span-buffer`, commands retire after all preparation and $D000-$D9FF
+/// becomes the band compositor. Host heads reuse commands, so host spans have
+/// separate storage. Neither path changes the persistent Q16 edge precision.
 pub struct RasterPass<'a> {
     renderer: &'a mut Renderer,
     next_band: u8,
@@ -594,12 +651,20 @@ pub struct RasterPass<'a> {
     tails: [RasterTail; TRIANGLE_CAPACITY],
     #[cfg(not(target_arch = "mos"))]
     masks: [[u8; 32]; 25],
+    #[cfg(all(feature = "span-buffer", not(target_arch = "mos")))]
+    span_stats: SpanStats,
 }
 #[cfg(target_arch = "mos")]
 const SORT_ORDER: usize = 0x7600;
 #[cfg(target_arch = "mos")]
 const RASTER_HEADS: usize = 0xef20;
 impl RasterPass<'_> {
+    /// Accumulated compositor work for the visible bands produced by this pass.
+    #[cfg(all(feature = "span-buffer", not(target_arch = "mos")))]
+    pub fn span_stats(&self) -> SpanStats {
+        self.span_stats
+    }
+
     #[inline(always)]
     fn tails_mut(&mut self) -> &mut [RasterTail; TRIANGLE_CAPACITY] {
         #[cfg(target_arch = "mos")]
@@ -672,7 +737,7 @@ impl RasterPass<'_> {
             // reset even for hidden/empty bands; the IRQ never accesses it.
             (0x77ab as *mut u8).write_volatile(0);
         }
-        #[cfg(not(target_arch = "mos"))]
+        #[cfg(all(not(feature = "span-buffer"), not(target_arch = "mos")))]
         let mut coverage_seen = false;
         #[cfg(target_arch = "mos")]
         {
@@ -680,9 +745,29 @@ impl RasterPass<'_> {
             // band the HUD replaces still needs fresh palettes and flags.
             let mut cells = crate::cells::NativeCells;
             cells.clear(self.renderer.clear_color);
+            #[cfg(feature = "span-buffer")]
+            extern "C" {
+                fn fast_span_clear();
+                fn fast_span_plot(row: u8, x: u8, color: u8);
+                fn fast_span_flush();
+            }
+            // Preparation has consumed every command before this point. The
+            // compositor borrows only the retired command bytes at $D000.
+            #[cfg(feature = "span-buffer")]
+            unsafe {
+                fast_span_clear()
+            };
             if paint_scene {
                 if let Some(ambient) = ambient {
+                    #[cfg(not(feature = "span-buffer"))]
                     ambient.draw_band(band, &mut cells);
+                    #[cfg(feature = "span-buffer")]
+                    for &(x, y) in ambient.positions() {
+                        if y >> 3 == band {
+                            // prepare() guarantees x<160 for every visible y.
+                            unsafe { fast_span_plot(y & 7, x, crate::space_dust::COLOR) };
+                        }
+                    }
                 }
             }
             extern "C" {
@@ -700,13 +785,24 @@ impl RasterPass<'_> {
                     paint_scene as u8,
                 );
             }
+            #[cfg(feature = "span-buffer")]
+            if paint_scene {
+                // Final runs are disjoint; the HUD draws after this pass.
+                unsafe { fast_span_flush() };
+            }
         }
         #[cfg(not(target_arch = "mos"))]
         {
+            #[cfg(feature = "span-buffer")]
+            let mut spans = spans::SpanBand::new(self.renderer.clear_color);
             if paint_scene {
+                #[cfg(not(feature = "span-buffer"))]
                 fill_color(pixels, self.renderer.clear_color);
                 if let Some(ambient) = ambient {
+                    #[cfg(not(feature = "span-buffer"))]
                     ambient.draw_band(band, pixels);
+                    #[cfg(feature = "span-buffer")]
+                    ambient.draw_band(band, &mut spans);
                 }
             }
             for byte in 0..32usize {
@@ -717,6 +813,7 @@ impl RasterPass<'_> {
                         let index = byte * 8 + bit;
                         let mut head = unsafe { self.head_ptr(index).read_unaligned() };
                         let tail = self.tails[index];
+                        #[cfg(not(feature = "span-buffer"))]
                         raster_rows_reference(
                             &mut head,
                             &tail,
@@ -725,11 +822,26 @@ impl RasterPass<'_> {
                             paint_scene,
                             &mut coverage_seen,
                         );
+                        #[cfg(feature = "span-buffer")]
+                        raster_rows(&mut head, &tail, band * 8, |row, first, end, flags| {
+                            if paint_scene {
+                                spans.geometry_span(row, first, end, flags);
+                            }
+                        });
                         self.write_head(index, head);
                     }
                     mask >>= 1;
                     bit += 1;
                 }
+            }
+            #[cfg(feature = "span-buffer")]
+            if paint_scene {
+                spans.write_pixels(pixels);
+                self.span_stats.input_spans += spans.stats.input_spans;
+                self.span_stats.run_visits += spans.stats.run_visits;
+                self.span_stats.emitted_spans += spans.stats.emitted_spans;
+                self.span_stats.emitted_pixels += spans.stats.emitted_pixels;
+                self.span_stats.peak_runs = self.span_stats.peak_runs.max(spans.stats.peak_runs);
             }
         }
         Some(band)

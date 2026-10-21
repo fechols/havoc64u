@@ -10,6 +10,13 @@ for line in subprocess.check_output([str(nm),'-n',str(elf)],text=True).splitline
     if len(fields)==3:
         try: symbols[fields[2]]=int(fields[0],16)
         except ValueError: pass
+for helper in ('__divsi3', '__udivsi3', '__mulsi3'):
+    assert helper not in symbols, f'generic 32-bit helper linked: {helper}'
+span_enabled = 'span_compose' in symbols
+if span_enabled:
+    assert (symbols.get('__span_buffer_start'), symbols.get('__span_buffer_end'),
+            symbols.get('__span_buffer_size')) == (0xd000, 0xda00, 0xa00), \
+        'span buffer must reuse exactly $D000-$D9FF of retired commands'
 overlay_audit = runpy.run_path(str(pathlib.Path(__file__).with_name('check-overlays.py')))
 metadata = overlay_audit['Elf'](elf)
 directories = [symbol for symbol in metadata.symbols
@@ -288,6 +295,8 @@ print(f'SIM helper code8C00-90FF: {symbols["__phase_sim_aux_size"]} bytes; reloa
 print(f'Victory GEOMETRY composed image {symbols["__phase_victory_size"]} bytes')
 
 print('PIXELS preparation scratch77A0-77BE: reused later by raster/packer; models remain intact')
+if span_enabled:
+    print('Span buffer: nextD000-D4FF inkD500-D9FF; retired commands after all edge preparation; no additional persistent RAM')
 print('PIXELS player coverage flag77AB: reset per band, persistent until the band finish')
 print('PIXELS cell tables: HUD slots $7700-$7727, overflow flags $7728-$774F, cover-clean marker $7750; cell writer zero page $F0-$FF; row walker zero page $D0-$E0')
 print('PIXELS staging consumes cover9340-947F, HUD7700-7727, overflow7728-774F; next band clears coverage; raster-safe copy publishes 400 bytes')

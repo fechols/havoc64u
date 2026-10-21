@@ -11,6 +11,90 @@ Recorded measurements below retain their original package layouts and hashes;
 earlier 16 MiB results do not measure the relocated loader. Use the configuration
 and REU capacity matching the package when reproducing a historical run.
 
+## Span-buffer experiment: 2026-10-21
+
+The optional `span-buffer` renderer resolves each scene band into disjoint runs
+before cell painting. It preserves the current painter ordering and Q16 edges;
+the HUD still follows the scene. It is **disabled by default**: correctness
+passes, but the measured implementation does not pass the performance gate.
+
+The baseline is the clean post-refactor commit
+`2e2522536520bfc6560cbbec85175606ababd444`, archived beneath
+`target/span-buffer/baseline-source` before implementation. Its archive hash and
+shell-file newline normalization are recorded in `baseline-source-manifest.json`.
+Both renderers were separately packaged with identical assets and sound features.
+No comparison uses the older `s2` or pre-refactor binaries.
+
+The matrix contains twenty fixtures: title, four terrestrial scenes, missiles,
+full pools, section loading, ascent/orbital crossings, four crowded orbital
+scenes, four bosses, and two victory phases. Zero/ten simulation ticks and
+cold/retained palettes make 80 cases per video/SID combination, with three CIA
+phases each. All **320 cases / 960 paired samples** retain exact projected
+geometry (including visibility flags), decoded game state and displayed pixels.
+Raw VIC slot assignments can differ. No palette-history exception was needed.
+
+| Profile | Mean full frame, before -> spans | Change | Mean raster, before -> spans | Cases losing >5% FPS |
+| --- | ---: | ---: | ---: | ---: |
+| Two SID PAL | 126.210 -> 128.970 ms | +2.19% | 26.850 -> 30.027 ms | 2 |
+| Two SID NTSC | 121.950 -> 124.272 ms | +1.90% | 25.867 -> 29.021 ms | 0 |
+| Four SID PAL | 127.185 -> 129.907 ms | +2.14% | 26.906 -> 30.120 ms | 0 |
+| Four SID NTSC | 122.913 -> 125.420 ms | +2.04% | 25.874 -> 29.092 ms | 4 |
+
+These are means of per-case three-sample medians. Ordinary held-FIRE scheduling
+also slows: 9.333 -> 9.120 FPS (two-SID PAL), 9.676 -> 9.454 (two-SID NTSC),
+7.867 -> 7.683 (four-SID PAL), and 8.204 -> 8.023 (four-SID NTSC). The six
+threshold failures are cold/retained zero-tick `enemies-orbital-shipyard-full`
+under two-SID PAL and four-SID NTSC, plus zero-tick `missiles` under four-SID NTSC.
+The worst FPS ratio is 0.943935x. Maximum audio lateness remains below 1.188 ms;
+the matrix reports no dropped geometry, input overflow, score underrun, changed
+stack guard, or publication-check failure.
+
+The host census explains the tradeoff: across 900 scene bands, cell-row submissions
+fall from 241,251 to 185,453 (23.13%) and spills from 415 to 109 (73.73%).
+Composition visits 129,324 runs for 36,595 incoming spans, then emits 21,606
+final spans; the maximum observed row has 25 runs. The saved cell work does not
+offset run-list maintenance and flushing. All 900 bands match raw pixels and
+coverage, and the 144-frame independent-palette-history test has zero decoded
+differences. A constructed test still demonstrates why unused palette slots can
+change a later equal-frequency quantizer tie; both histories are cross-checked
+under identical preceding palettes rather than waiving arbitrary differences.
+
+The independent native harness passes 16,708 checks, including 256 raster
+fixtures over all 25 bands, maximal fragmentation, protected background ink,
+register/memory guards and nonoverlapping emitted pixels. Negative audits reject
+122 layout and 70 overlay corruptions. Both production profiles pass the memory,
+ownership and package checks. The four-SID production build retains 1,003 bytes
+of resident headroom, 668 bytes in PIXELS and 197 in its helper tail. The three
+removed generic 32-bit arithmetic helpers remain absent. The compositor borrows
+2,560 retired command bytes and adds no framebuffer or separate code transfer;
+the existing PIXELS transfers grow by 103 bytes per frame.
+
+All four production SID/video combinations also pass exact title pixels and
+69 smoke scenarios each: four controls, twenty-two weapons, and forty-three
+streaming scenarios. Their `smoke-PROFILE-VIDEO/report.json` files record intact
+input package hashes and no observed music underruns. These production packages
+are distinct from the instrumented timing packages; both sets remain isolated
+from `dist`.
+
+Feature-off rebuilds pass both profiles' checks with the compositor absent.
+Their PIXELS prefix/helper are byte-identical to the frozen baseline; all 325
+executable functions match after relocation normalization. Whole-package hashes
+differ because two unchanged resident iterator specializations exchanged link
+order and their call addresses changed. `default-parity.json` records this
+comparison rather than claiming whole-package byte identity.
+
+Reproduce the native test with `python3 tools/test-spans-kernel.py`. Build each
+variant using `bash scripts/build-benchmark.sh OUTPUT PROFILE painter` or
+`bash scripts/build-benchmark.sh OUTPUT PROFILE spans`. Measure with
+`tools/bench-native.py --samples 3 --compare BASELINE/report.json --pixel-identity`
+and matching fixture/video settings; each report records its complete invocation.
+`python3 tools/summarize-span-benchmarks.py target/span-buffer` verifies package
+hashes, every case and sample, and writes `summary.json`. Its nonzero exit here
+correctly reports the failed performance gate. Reports, frozen packages, native
+captures, and `host-census.log` remain under `target/span-buffer`; native-kernel
+and negative-audit evidence is under `target/spans-test`. These are calibrated
+VICE measurements, not physical C64 Ultimate timing.
+
 ## Guarded single-framebuffer publication: 2026-10-21
 
 PIXELS now prepares each complete band before publishing any of its bytes.

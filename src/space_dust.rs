@@ -30,13 +30,24 @@ impl SpaceDustFrame {
         {
             return None;
         }
-        let mut phase = ticks as u8;
+        let mut shifted = ticks;
+        let mut salt = 0xa7u8;
         for index in 0..SPECK_COUNT {
+            let phase = shifted as u8;
+            // Derive a new heading only when this speck respawns. Keeping the
+            // phase carry in the full clock also preserves other live specks
+            // across u16 wrap. No state survives the native overlay reload.
+            let mut ray = ((shifted >> 8) as u8).wrapping_add(salt);
+            ray ^= ray << 3;
+            ray ^= ray >> 5;
+            ray ^= ray << 1;
             // A quadratic radius accelerates outward without growing the dot.
             // Maximum product 255² fits u16; all rays exit before wrapping.
             let radius = ((phase as u16 * phase as u16) >> 9) as u8;
-            let minor = radius >> 1;
-            let ray = index as u8 ^ (index as u8 >> 1);
+            // Quarter, half and three-quarter slopes in eight octants give
+            // 24 outward headings without tables or another multiplication.
+            let minor = if ray & 8 == 0 { radius >> 2 } else { radius >> 1 };
+            let minor = if ray & 16 == 0 { minor } else { radius - minor };
             let (dx, dy) = if ray & 1 == 0 {
                 (radius, minor)
             } else {
@@ -53,7 +64,8 @@ impl SpaceDustFrame {
                 100u8.wrapping_sub(dy)
             };
             self.positions[index] = (x, if x < 160 && y < 200 { y } else { 255 });
-            phase = phase.wrapping_add(32);
+            shifted = shifted.wrapping_add(32);
+            salt = salt.wrapping_add(29);
         }
         Some(self)
     }
