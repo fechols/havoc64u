@@ -50,7 +50,7 @@ static uint8_t actual[402];
 /* The kernel reads the cell's pixels at the game's fixed band address and its
    preceding attributes in place from the screen and colour arrays, which it
    then overwrites; the background colour is the cell writer's zero-page byte. */
-#define BAND ((uint8_t*)0x8c00)
+#define BAND ((uint8_t*)0x8e00)
 #define BACKGROUND (*(volatile uint8_t*)0xff)
 int main(void){
   if((uint16_t)(uintptr_t)&actual[401] >= 0x7700u){puts("harness overlaps kernel scratch");return 4;}

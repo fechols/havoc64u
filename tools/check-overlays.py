@@ -249,8 +249,17 @@ def audit(path):
         require(helper not in symbols, f'generic 32-bit helper linked: {helper}')
     front_enabled = 'span_front_compose' in symbols
     span_enabled = 'span_compose' in symbols or front_enabled
-    require('__cell_hud_seen' in symbols and symbols['__cell_hud_seen'].address == 0x9128,
-            'HUD-seen flag must reuse cell scratch at $9128')
+    require(tuple(symbols[name].address if name in symbols else None for name in
+                  ('__hud_sprites_start', '__hud_sprites_end')) == (0x8C00, 0x8E00),
+            'incorrect HUD sprite allocation')
+    require(tuple(symbols[name].address if name in symbols else None for name in
+                  ('__segment0_start', '__segment0_end', '__segment1_start', '__segment1_end'))
+            == (0x2E00, 0x3000, 0x9700, 0x9900),
+            'incorrect mission buffer allocation')
+    require(symbols['__resident_end'].address <= symbols['__segment0_start'].address,
+            'resident code overlaps mission buffer at $2E00')
+    require('__cell_hud_seen' in symbols and symbols['__cell_hud_seen'].address == 0x9328,
+            'HUD-seen flag must reuse cell scratch at $9328')
     if span_enabled:
         if not front_enabled:
             require(elf.sections[symbols['span_compose'].section].name == '.text',
@@ -269,8 +278,8 @@ def audit(path):
         require(tuple(symbols[name].address if name in symbols else None for name in
                       ('__span_front_heads_start', '__span_front_heads_end')) == (0x77AC, 0x77B4),
                 'front span heads must reuse exactly $77AC-$77B3 of retired raster scratch')
-    require(auxiliary.address == 0x8C00 and 0 < auxiliary.size <= 0x500,
-            "SIM helpers must fit the retired $8C00-$90FF workspace")
+    require(auxiliary.address == 0x8E00 and 0 < auxiliary.size <= 0x500,
+            "SIM helpers must fit the retired $8E00-$92FF workspace")
     require(all(name in symbols for name in ("__phase_sim_aux_start", "__phase_sim_aux_end", "__phase_sim_aux_size")),
             "missing SIM helper ownership boundaries")
     require(symbols["__phase_sim_aux_start"].address == auxiliary.address
@@ -351,8 +360,8 @@ def audit(path):
     startup_sections = [section for section in elf.sections if section.name == STARTUP_SECTION]
     require(len(startup_sections) == 1, "missing or ambiguous startup-check section")
     startup_section = startup_sections[0]
-    require(startup_section.address == 0x8C00 and 0 < startup_section.size <= 0x500,
-            "startup checks must fit the retired $8C00-$90FF workspace")
+    require(startup_section.address == 0x8E00 and 0 < startup_section.size <= 0x500,
+            "startup checks must fit the retired $8E00-$92FF workspace")
     startup_matches = [function for function in elf.functions[startup_section.index] if function.name == STARTUP_ENTRY]
     require(len(startup_matches) == 1, "missing or ambiguous startup-check entry")
     startup_entry = startup_matches[0]
@@ -658,7 +667,7 @@ def audit(path):
     print("Encounter ABI: one opaque SIM call; seven entries at the shared prefix boundary")
     print("Scenery ABI: one opaque SCENERY call; ten entries at the shared prefix boundary")
     print(f"Terrestrial SCENERY: {terrain_end-scenery_phase.address} bytes; zero references to unloaded space helpers")
-    print("SIM helpers: $8C00-$90FF, callable only by SIM profiles; no IRQ or other-phase references")
+    print("SIM helpers: $8E00-$92FF, callable only by SIM profiles; no IRQ or other-phase references")
     print("SIM helper lifetime: one direct resident DMA before every load_sim profile transfer")
     print("PIXELS helpers: $6F20-$71FF; prefix-only calls, reloaded with I/O mapped before raster access")
     print("Victory ABI: one terminal SIM and one medal GEOMETRY call; matching alternate tails")

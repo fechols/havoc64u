@@ -1,9 +1,9 @@
-//! Screen-space cockpit and mission screens. All ink participates in the same
-//! VIC-II palette packing as geometry; no sprites, textures, or allocations.
+//! Transient mission screens and announcements painted into the bitmap.
+//! Persistent cockpit readouts are independent sprites in `hud_sprites`.
 
 use crate::assets::SEGMENT_COUNT;
 use crate::game::{Hud, Mode};
-use crate::render::{draw_bar, draw_text, draw_text_scaled, Canvas, HUD_INK};
+use crate::render::{draw_text, draw_text_scaled, Canvas, HUD_INK};
 use crate::victory::REVEAL_TICKS;
 
 /// The sector panel occupies bands 3-6 for the first 800 distance units.
@@ -11,30 +11,6 @@ use crate::victory::REVEAL_TICKS;
 #[cfg_attr(target_arch = "mos", link_section = ".phase.pixels")]
 pub(crate) fn sector_banner_visible(hud: &Hud) -> bool {
     hud.distance < 800
-}
-
-/// Frame-rate readout for the space-bar toggle: tenths of frames per second,
-/// right-aligned in band 1 beside the boss panel. Paint it after every panel
-/// so no opaque fill erases it; the ink joins packing like all other HUD text.
-/// Digits come from the existing bounded division kernel: generic 16-bit
-/// division would link extra compiler helpers into resident code.
-#[inline(never)]
-#[cfg_attr(target_arch = "mos", link_section = ".phase.pixels")]
-pub fn draw_fps(band: u8, canvas: &mut impl Canvas, tenths: u16) -> bool {
-    if band != 1 {
-        return false;
-    }
-    let tenths = tenths.min(999);
-    let whole = crate::math::div_u32_u16(tenths as u32, 10);
-    let tens = crate::math::div_u32_u16(whole as u32, 10);
-    let mut text = *b" 0.0 FPS";
-    text[3] = b'0' + (tenths - whole * 10) as u8;
-    text[1] = b'0' + (whole - tens * 10) as u8;
-    if tens != 0 {
-        text[0] = b'0' + tens as u8;
-    }
-    draw_text(band, canvas, 128, 9, &text, 1);
-    true
 }
 
 /// The pause caption: double-height text across the middle of the picture.
@@ -74,33 +50,11 @@ pub fn draw(band: u8, canvas: &mut impl Canvas, hud: &Hud, frame: u16) -> bool {
         }
         return false;
     }
-    // Cockpit strips occupy only the first band and the last two bands. None
-    // of the mission panels overlaps them, so route them before mode work.
-    if hud.mode != Mode::Title && (band == 0 || band >= 23) {
-        cockpit(band, canvas, hud, frame);
-        return true;
-    }
     match hud.mode {
         Mode::Attract | Mode::Transition | Mode::Victory => false,
         Mode::Title => title(band, canvas, frame),
         Mode::Playing => {
-            let boss_panel = (1..=2).contains(&band) && hud.boss_shield != 0;
             let banner = (3..=6).contains(&band) && sector_banner_visible(hud);
-            if boss_panel {
-                panel(band, canvas, 10, 10, 116, 11, 12);
-                draw_text(band, canvas, 14, 13, boss_name(hud.boss_kind), 15);
-                draw_bar(
-                    band,
-                    canvas,
-                    70,
-                    14,
-                    50,
-                    3,
-                    hud.boss_shield as u16,
-                    100,
-                    if hud.boss_shield <= 25 { 10 } else { 8 },
-                );
-            }
             if banner {
                 panel(band, canvas, 24, 29, 112, 22, 12);
                 let mut sector = *b"SECTOR 01";
@@ -114,7 +68,7 @@ pub fn draw(band: u8, canvas: &mut impl Canvas, hud: &Hud, frame: u16) -> bool {
                 centered(band, canvas, 33, &sector, 3);
                 centered(band, canvas, 43, section_name(hud.section), 1);
             }
-            boss_panel || banner
+            banner
         }
         Mode::Respawning => {
             if !(9..=14).contains(&band) {
@@ -200,76 +154,6 @@ fn title(band: u8, canvas: &mut impl Canvas, frame: u16) -> bool {
 }
 
 #[inline(never)]
-#[cfg_attr(target_arch = "mos", link_section = ".phase.pixels")]
-fn cockpit(band: u8, canvas: &mut impl Canvas, hud: &Hud, frame: u16) {
-    if band == 0 {
-        rect(band, canvas, 0, 0, 160, 8, 0);
-        draw_text(band, canvas, 1, 2, b"SCORE", 12);
-        let mut score = [b'0'; 6];
-        digits(hud.score, &mut score);
-        draw_text(band, canvas, 23, 2, &score, 1);
-        centered(band, canvas, 2, section_name(hud.section), 1);
-        draw_text(band, canvas, 115, 2, b"LIVES", 12);
-        draw_text(band, canvas, 143, 2, &[b'0' + hud.lives.min(9)], 1);
-    }
-    if band < 23 {
-        return;
-    }
-    rect(band, canvas, 0, 185, 160, 15, 0);
-    draw_text(band, canvas, 3, 187, b"SHIELD", 12);
-    draw_text(
-        band,
-        canvas,
-        68,
-        187,
-        if hud.charge == 255 {
-            b"HOMING MISSILE"
-        } else {
-            b"LASER CHARGE"
-        },
-        if hud.charge == 255 { blink(frame) } else { 12 },
-    );
-    draw_text(band, canvas, 127, 187, b"BOMBS", 12);
-    draw_bar(
-        band,
-        canvas,
-        3,
-        194,
-        60,
-        3,
-        hud.shield as u16,
-        100,
-        if hud.shield <= 25 { 10 } else { 13 },
-    );
-    draw_bar(
-        band,
-        canvas,
-        68,
-        194,
-        55,
-        3,
-        hud.charge as u16,
-        255,
-        if hud.charge == 255 { 7 } else { 3 },
-    );
-    for i in 0..3 {
-        rect(
-            band,
-            canvas,
-            129 + i * 7,
-            194,
-            4,
-            3,
-            if i < hud.bombs as i16 {
-                HUD_INK | 7
-            } else {
-                11
-            },
-        );
-    }
-}
-
-#[inline(never)]
 #[cfg_attr(target_arch = "mos", link_section = ".phase.pixels_aux")]
 fn section_name(section: u8) -> &'static [u8] {
     let index = section.min(SEGMENT_COUNT - 1) as usize;
@@ -293,23 +177,6 @@ ORBITAL SHIPYARDSPACE CARRIERJUMP GATE";
 static SECTOR_OFFSETS: [u8; SEGMENT_COUNT as usize + 1] = [
     0, 16, 28, 39, 50, 62, 74, 86, 98, 109, 121, 134, 149, 162, 176, 190, 206, 219, 228,
 ];
-#[cfg_attr(target_arch = "mos", link_section = ".rodata.hud_names")]
-static BOSS_NAMES: [u8; 56] = *b"GORGE WARDENCITADEL HEARTCARRIERDREADNOUGHTGATE GUARDIAN";
-#[cfg_attr(target_arch = "mos", link_section = ".phase.pixels_aux.data")]
-static BOSS_OFFSETS: [u8; 6] = [0, 12, 25, 32, 43, 56];
-
-#[inline(never)]
-#[cfg_attr(target_arch = "mos", link_section = ".phase.pixels_aux")]
-fn boss_name(kind: u8) -> &'static [u8] {
-    let index = if kind >= 1 && kind <= 5 { kind - 1 } else { 2 } as usize;
-    // As above, every accepted index and both offset endpoints are bounded.
-    unsafe {
-        let start = *BOSS_OFFSETS.get_unchecked(index) as usize;
-        let end = *BOSS_OFFSETS.get_unchecked(index + 1) as usize;
-        core::slice::from_raw_parts(BOSS_NAMES.as_ptr().add(start), end - start)
-    }
-}
-
 #[inline(never)]
 #[cfg_attr(target_arch = "mos", link_section = ".phase.pixels")]
 fn blink(frame: u16) -> u8 {
@@ -364,7 +231,7 @@ fn rect(band: u8, canvas: &mut impl Canvas, x: i16, y: i16, width: i16, height: 
 
 #[inline(never)]
 #[cfg_attr(target_arch = "mos", link_section = ".phase.pixels")]
-fn digits(mut value: u32, output: &mut [u8]) {
+pub(crate) fn digits(mut value: u32, output: &mut [u8]) {
     // Saturation preserves the display width instead of wrapping high scores.
     value = value.min(999_999);
     const POWERS: [u32; 6] = [100_000, 10_000, 1000, 100, 10, 1];

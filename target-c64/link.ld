@@ -14,14 +14,14 @@ MEMORY {
     low (rw) : ORIGIN = 0x0200, LENGTH = 0x0600
     ram (rwx) : ORIGIN = 0x0801, LENGTH = 0x27FF
     phase (rwx) : ORIGIN = 0x3000, LENGTH = 0x4200
-    startup_checks (rx) : ORIGIN = 0x8C00, LENGTH = 0x0500
-    sim_aux (rx) : ORIGIN = 0x8C00, LENGTH = 0x0500
+    startup_checks (rx) : ORIGIN = 0x8E00, LENGTH = 0x0500
+    sim_aux (rx) : ORIGIN = 0x8E00, LENGTH = 0x0500
     constants (r) : ORIGIN = 0x7800, LENGTH = 0x0800
     tables (r) : ORIGIN = 0x9900, LENGTH = 0x0700
     /* Empty regions materialize zero-filled holes in the contiguous PRG. */
     image_gap (r) : ORIGIN = 0x3000, LENGTH = 0x4800
-    image_midgap (r) : ORIGIN = 0x8000, LENGTH = 0x0C00
-    image_postgap (r) : ORIGIN = 0x9100, LENGTH = 0x0800
+    image_midgap (r) : ORIGIN = 0x8000, LENGTH = 0x0E00
+    image_postgap (r) : ORIGIN = 0x9300, LENGTH = 0x0600
     renderer (rw) : ORIGIN = 0xCFFA, LENGTH = 0x1006
     game (rw) : ORIGIN = 0xC800, LENGTH = 0x0280
     audio (rw) : ORIGIN = 0xCE00, LENGTH = 0x01B0
@@ -216,7 +216,7 @@ SECTIONS {
     } >phase
     /* Shared SIM helpers reuse the retired startup / renderer workspace.
      * load_sim restores them before every SIM entry. No IRQ references. */
-    .phase.sim_aux 0x8C00 : AT(__reu_sim_helpers) {
+    .phase.sim_aux 0x8E00 : AT(__reu_sim_helpers) {
         __phase_sim_aux_start = .;
         *(.phase.sim_aux .phase.sim_aux.*)
         __phase_sim_aux_end = .;
@@ -438,6 +438,16 @@ __irq_static_first_size = MIN(SIZEOF(.noinit), 0x380);
 __irq_static_tail_size = MAX(SIZEOF(.noinit), 0x380) - 0x380;
 __irq_static_tail_start = ADDR(.noinit) + __irq_static_first_size;
 __resident_end = MAX(LOADADDR(.data) + SIZEOF(.data), ADDR(.text) + SIZEOF(.text));
+/* The first mission buffer uses the loaded hole after resident code. The
+ * second stays above the cell workspace; neither is used by an interrupt. */
+__segment0_start = 0x2E00;
+__segment0_end = 0x3000;
+__segment1_start = 0x9700;
+__segment1_end = 0x9900;
+/* Eight 64-byte images are permanently owned by the VIC after BOOT's common
+ * asset validation retires. Models stop at $8BFF; shared scratch starts $8E00. */
+__hud_sprites_start = 0x8C00;
+__hud_sprites_end = 0x8E00;
 __phase_run = 0x3000;
 __phase_boot_size = SIZEOF(.phase.boot);
 __phase_sim_base_size = SIZEOF(.phase.sim);
@@ -468,12 +478,12 @@ __scenery_records_start = 0xD880;
 __scenery_records_end = 0xE000;
 /* GEOMETRY resets its cache before use. PIXELS then fills this same workspace
  * before rasterization; neither the IRQ nor resident model data uses it. */
-__pixel_band_start = 0x8C00;
-__pixel_band_end = 0x9100;
+__pixel_band_start = 0x8E00;
+__pixel_band_end = 0x9300;
 /* Once a band's raster/HUD work ends, its coverage and cell flags are dead.
  * Staging consumes them; the next clear must invalidate COVER_CLEAN. */
-__staged_bitmap_start = 0x9340;
-__staged_bitmap_end = 0x9480;
+__staged_bitmap_start = 0x9540;
+__staged_bitmap_end = 0x9680;
 __staged_screen_start = 0x7700;
 __staged_screen_end = 0x7728;
 __staged_color_start = 0x7728;
@@ -502,7 +512,7 @@ __span_front_heads_start = 0x77AC;
 __span_front_heads_end = 0x77B4;
 ASSERT(__span_front_heads_end - __span_front_heads_start == 8, "incorrect front span row-head allocation")
 /* GEOMETRY retires this scratch before cell clear; preserve it until staging. */
-__cell_hud_seen = 0x9128;
+__cell_hud_seen = 0x9328;
 /* Preparation is complete before the row walker or packer uses this scratch.
  * The IRQ never borrows it; persistent models at $8400 are untouched. */
 __raster_prepare_scratch_start = 0x77A0;
@@ -571,7 +581,14 @@ ASSERT(0xB000 <= __reu_boot &&
 ASSERT(__reu_pixels == 0x40000 && __reu_audio >= 0x50000, "REU bank 4 must remain PIXELS-only")
 
 ASSERT(__rc31 == 0x21, "IRQ save range must match compiler imaginary registers")
-ASSERT(__resident_end <= 0x3000, "resident code exceeds $0801-$2FFF")
+ASSERT(__resident_end <= __segment0_start, "resident code overlaps mission buffer at $2E00")
+ASSERT(__segment0_start == 0x2E00 && __segment0_end == __phase_run && __segment0_end - __segment0_start == 512, "incorrect first mission buffer allocation")
+ASSERT(__segment1_start == 0x9700 && __segment1_end == ORIGIN(tables) && __segment1_end - __segment1_start == 512, "incorrect second mission buffer allocation")
+ASSERT(__hud_sprites_start == 0x8C00 && __hud_sprites_end == 0x8E00 && __hud_sprites_end - __hud_sprites_start == 8 * 64, "incorrect HUD sprite allocation")
+ASSERT((__hud_sprites_start & 63) == 0 && __hud_sprites_end <= 0x9000, "HUD sprites must be aligned in VIC-visible RAM")
+ASSERT(__hud_sprites_end == __pixel_band_start && ORIGIN(startup_checks) == __pixel_band_start && ORIGIN(sim_aux) == __pixel_band_start, "shared workspace overlaps HUD sprites")
+ASSERT(__pixel_band_start == 0x8E00 && __pixel_band_end == 0x9300, "incorrect shared pixel-band workspace")
+ASSERT(__cell_hud_seen == 0x9328, "HUD-seen flag must reuse cell scratch at $9328")
 ASSERT(ADDR(.noinit) + SIZEOF(.noinit) <= 0x0720, "low globals overlap audio score page")
 ASSERT(SIZEOF(.music_page) == 0x00E0, "four-SID score page must occupy $0720-$07FF")
 ASSERT(SIZEOF(.renderer) <= 0x1006, "renderer exceeds header plus hidden-I/O triangle storage")
@@ -608,7 +625,8 @@ ASSERT(SIZEOF(.startup_checks) > 0 && SIZEOF(.startup_checks) <= 0x0500, "startu
 ASSERT(__projection_cache_start >= __pixel_band_start && __projection_cache_end <= __pixel_band_end, "projection cache exceeds shared pixel-band workspace")
 ASSERT(__projection_cache_start + 0x0400 <= __pixel_band_end, "depth-sort scratch exceeds the pixel-band workspace")
 ASSERT(__sort_order == 0x7600 && __sort_order + 256 <= 0x7700, "sorted order must fill the page below the cell tables")
-ASSERT(__staged_bitmap_start == 0x9340 && __staged_bitmap_end == 0x9480 && __staged_bitmap_end - __staged_bitmap_start == 320, "staged bitmap must reuse cell coverage only")
+ASSERT(__staged_bitmap_start == 0x9540 && __staged_bitmap_end == 0x9680 && __staged_bitmap_end - __staged_bitmap_start == 320, "staged bitmap must reuse cell coverage only")
+ASSERT(__staged_bitmap_end + 3 * 40 <= __segment1_start, "cell palettes overlap the second mission buffer")
 ASSERT(__staged_screen_start == __sort_order + 256 && __staged_screen_end == __staged_color_start && __staged_screen_end - __staged_screen_start == 40, "staged screen must reuse HUD slot flags")
 ASSERT(__staged_color_end == 0x7750 && __staged_color_end - __staged_color_start == 40 && __staged_color_end < __raster_prepare_scratch_start, "staged colors must reuse overflow flags without the clean marker or packer scratch")
 ASSERT(__raster_heads_end - __raster_heads_start == 256 * 16, "incorrect raster head allocation")

@@ -10,7 +10,7 @@ use havoc::{
     assets::{self, AssetBank, Segment},
     audio::{AudioEngine, SidBus, VideoStandard},
     game::{Game, Hud, InputSample, PresentationEvent},
-    hud,
+    hud, hud_sprites,
     music::{self, BANK_HEADER_SIZE, PAGE_SIZE},
     presentation::BombEffect,
     render::Renderer,
@@ -81,6 +81,15 @@ pub static mut VIDEO_FRAMES: u16 = 0;
 pub static mut AUDIO_TICKS: u16 = 0;
 #[no_mangle]
 pub static mut BOMB_EFFECT: BombEffect = BombEffect::new();
+// Image storage lives in the VIC bank; retain only the compact display key.
+static mut HUD_STATE: MaybeUninit<hud_sprites::DisplayState> = MaybeUninit::uninit();
+static mut HUD_VALID: bool = false;
+#[no_mangle]
+pub static mut HUD_SCROLL: u8 = 0xff;
+#[no_mangle]
+pub static mut HUD_IMAGE_WRITES: u16 = 0;
+#[no_mangle]
+pub static mut HUD_COMMITS: u16 = 0;
 // The game publishes staged bands into VIC bank 2; tooling reads this constant to
 // locate the visible screen and bitmap. initialize_video stores it so the
 // linker keeps the symbol.
@@ -158,6 +167,8 @@ extern "C" {
     fn io_on();
     fn io_off();
     fn publish_staged_band(band: u8);
+    fn publish_hud_corner(corner: u8);
+    fn hud_apply_scroll(scroll: u8);
     static __phase_boot_size: u8;
     static __phase_sim_aux_size: u8;
     static __phase_geometry_size: u8;
@@ -216,6 +227,9 @@ pub unsafe extern "C" fn irq_body() {
         // seven reads raster position but writes the IRQ compare high bit.
         poke(0xd011, (peek(0xd011) & 0x78) | (scroll >> 3));
         poke(0xd020, border);
+        if HUD_SCROLL != scroll {
+            hud_apply_scroll(scroll);
+        }
         // Initial score validation can outlast the input queue. Begin input
         // capture and the simulation clock only when that boot work is done.
         if !MUSIC_VALIDATED {
@@ -281,6 +295,7 @@ unsafe fn fail(message: &[u8]) -> ! {
     // Restore normal VIC fetches for the character-mode error console.
     poke(0xd031, 0x0f);
     poke(0xd01a, 0);
+    poke(0xd015, 0);
     poke(0xdc0d, 0x7f);
     poke(0xdd0d, 0x7f);
     poke(0xd418, 0);
@@ -364,7 +379,7 @@ unsafe fn load_sim(profile: u8) {
     // Reload on every SIM entry; the IRQ never references these helpers.
     dma(
         (__code_reu_pages[23] as u32) << 12,
-        0x8c00,
+        0x8e00,
         core::ptr::addr_of!(__phase_sim_aux_size) as u16,
     );
     load_phase(
@@ -470,7 +485,7 @@ unsafe fn load_initial_assets() {
     // Validate every segment's structure before play. Later transfers check
     // their complete runtime prefix against these validated package hashes.
     for level in 0..assets::SEGMENT_COUNT {
-        dma(assets::SEGMENTS_OFFSET + level as u32 * 2048, 0x9500, 512);
+        dma(assets::SEGMENTS_OFFSET + level as u32 * 2048, segment_address(0), 512);
         let bytes = segment_data(0);
         if assets::checksum(bytes) != SEGMENT_CHECKSUMS[level as usize]
             || bytes[4] != level
@@ -521,8 +536,12 @@ unsafe fn copy_model_bank(level: u8) {
     dma(source, 0x8400, 1024);
     dma(source + 1024, 0x8800, 1024);
 }
+#[inline(always)]
+fn segment_address(slot: u8) -> u16 {
+    if slot == 0 { 0x2e00 } else { 0x9700 }
+}
 unsafe fn segment_data(slot: u8) -> &'static [u8] {
-    core::slice::from_raw_parts((0x9500 + slot as u16 * 512) as *const u8, 512)
+    core::slice::from_raw_parts(segment_address(slot) as *const u8, 512)
 }
 // Benchmark controls grow SIM; its checksum helper can use spare resident RAM.
 // Production keeps the same code placement and transfer sizes.
@@ -655,8 +674,8 @@ unsafe fn send_audio(game: &mut Game) {
 #[inline(never)]
 unsafe fn service_audio() {
     if !MUSIC_VALIDATED {
-        dma(assets::MUSIC_OFFSET, 0x8c00, BANK_HEADER_SIZE as u16);
-        let header = core::slice::from_raw_parts(0x8c00 as *const u8, BANK_HEADER_SIZE);
+        dma(assets::MUSIC_OFFSET, 0x8e00, BANK_HEADER_SIZE as u16);
+        let header = core::slice::from_raw_parts(0x8e00 as *const u8, BANK_HEADER_SIZE);
         if assets::checksum(header) != MUSIC_DIRECTORY_HASH {
             fail(&ERROR_MUSIC_DIRECTORY)
         }
@@ -823,8 +842,8 @@ unsafe fn validate_music_kernels() {
     let slot = core::ptr::addr_of!(__music_kernel_start) as u16;
     let capacity = core::ptr::addr_of!(__music_kernel_size) as u16;
     let base = assets::MUSIC_KERNELS_OFFSET;
-    dma(base, 0x8c00, music::KERNEL_DIRECTORY_SIZE as u16);
-    let directory = core::slice::from_raw_parts(0x8c00 as *const u8, music::KERNEL_DIRECTORY_SIZE);
+    dma(base, 0x8e00, music::KERNEL_DIRECTORY_SIZE as u16);
+    let directory = core::slice::from_raw_parts(0x8e00 as *const u8, music::KERNEL_DIRECTORY_SIZE);
     if music::kernel_directory(directory, capacity).is_err() {
         fail(&ERROR_MUSIC_KERNEL)
     }
@@ -1029,15 +1048,29 @@ pub unsafe extern "C" fn medal_geometry(game: *const (), renderer: *mut Renderer
     renderer.fade_scene(game.victory_ticks());
     game.render_medal(renderer, &*bank.cast::<AssetBank<'_>>());
 }
-/// The cockpit completely replaces bands 0 and 24 during play. Edge state
-/// still advances there so crossing triangles remain continuous.
+/// Sprite images persist independently of the world. Reuse retired geometry
+/// workspace to stage one corner, then publish it outside its VIC fetch window.
 #[link_section = ".phase.pixels"]
 #[inline(never)]
-fn band_painted(mode: havoc::game::Mode, band: u8) -> bool {
-    matches!(
-        mode,
-        havoc::game::Mode::Title | havoc::game::Mode::Attract | havoc::game::Mode::Victory
-    ) || (band != 0 && band != 24)
+unsafe fn update_sprite_hud(status: &Hud) {
+    let next = hud_sprites::DisplayState::from_hud(
+        status, FRAME_SERIAL, if FPS_SHOWN { Some(FPS_TENTHS) } else { None },
+    );
+    let dirty = next.changed_corners(if HUD_VALID { Some(HUD_STATE.assume_init_ref()) } else { None });
+    for corner in 0..4u8 {
+        if dirty & (1 << corner) != 0 {
+            let images = &mut *(0x8e00 as *mut [u8; 128]);
+            hud_sprites::render_corner(corner, &next, images);
+            poke(0x8e80, next.accent(corner));
+            publish_hud_corner(corner);
+        }
+    }
+    let enabled = next.enabled_mask();
+    if peek(0xd015) != enabled {
+        poke(0xd015, enabled);
+    }
+    HUD_STATE.write(next);
+    HUD_VALID = true;
 }
 
 #[link_section = ".phase.pixels"]
@@ -1054,6 +1087,7 @@ unsafe fn draw_pixels(status: &Hud) {
         core::ptr::addr_of!(__phase_pixels_aux_size) as u16,
     );
     update_fps_overlay(status.mode);
+    update_sprite_hud(status);
     let renderer = RENDERER.assume_init_mut();
     poke(0xd021, renderer.clear_color());
     io_off();
@@ -1062,7 +1096,7 @@ unsafe fn draw_pixels(status: &Hud) {
         status.mode,
         GAME.assume_init_ref().animation_ticks(),
     );
-    // Preparation belongs to raster time, including before the opaque HUD band.
+    // Every band contains scenery, including the pixels behind the sprites.
     wr(core::ptr::addr_of_mut!(PROF_DETAIL), 1);
     let Some(mut pass) = renderer.raster_pass() else {
         fail(b"RASTER COMMANDS ALREADY CONSUMED")
@@ -1071,17 +1105,14 @@ unsafe fn draw_pixels(status: &Hud) {
         if band != 0 {
             wr(core::ptr::addr_of_mut!(PROF_DETAIL), 1);
         }
-        let pixels = &mut *(0x8c00 as *mut [u8; 1280]);
+        let pixels = &mut *(0x8e00 as *mut [u8; 1280]);
         let offset = band as u16 * 40;
-        if pass.next_band_with_ambient(pixels, band_painted(status.mode, band), ambient) != Some(band) {
+        if pass.next_band_with_ambient(pixels, true, ambient) != Some(band) {
             fail(b"INVALID RASTER BAND ORDER")
         }
         wr(core::ptr::addr_of_mut!(PROF_DETAIL), 2);
         let mut cells = havoc::cells::NativeCells;
         hud::draw(band, &mut cells, status, FRAME_SERIAL);
-        if band == 1 && FPS_SHOWN {
-            hud::draw_fps(band, &mut cells, FPS_TENTHS);
-        }
         if PAUSED {
             hud::draw_paused(band, &mut cells);
         }
@@ -1119,8 +1150,27 @@ unsafe fn boot_init() {
     initialize_game();
     initialize_audio(standard);
     load_initial_assets();
+    initialize_hud();
     AUDIO.assume_init_mut().reset(&mut HardwareSid);
     initialize_irq(standard);
+}
+#[link_section = ".phase.boot"]
+#[inline(never)]
+unsafe fn initialize_hud() {
+    // The common asset bank temporarily owns $8400-$8FFF during validation.
+    // Initialize these bytes only after load_initial_assets has consumed it.
+    core::ptr::write_bytes(0x8c00 as *mut u8, 0, 512);
+    for sprite in 0..8u16 {
+        poke(0x83f8 + sprite, 0x30 + sprite as u8);
+    }
+    poke(0xd015, 0);
+    poke(0xd01b, 0);
+    poke(0xd01c, 0xff);
+    poke(0xd017, 0);
+    poke(0xd01d, 0);
+    poke(0xd025, 12);
+    poke(0xd026, 1);
+    hud_apply_scroll(3 << 3);
 }
 #[link_section = ".phase.boot"]
 #[inline(never)]
@@ -1164,7 +1214,7 @@ struct Runtime {
 unsafe fn load_segment(slot: u8, index: u8) {
     dma(
         assets::SEGMENTS_OFFSET + index as u32 * 2048,
-        0x9500 + slot as u16 * 512,
+        segment_address(slot),
         512,
     );
     validate_segment(slot, index);

@@ -242,7 +242,7 @@ class Machine:
         while self.pc != 0xffff:
             self.step()
         expected = {}
-        for source, dest, length in ((0x9340, 0xa000 + 320 * self.band, 320),
+        for source, dest, length in ((0x9540, 0xa000 + 320 * self.band, 320),
                                      (0x7700, 0x8000 + 40 * self.band, 40),
                                      (0x7728, 0xd800 + 40 * self.band, 40)):
             expected.update((dest + n, self.before[source + n]) for n in range(length))

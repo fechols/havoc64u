@@ -14,7 +14,7 @@ for helper in ('__divsi3', '__udivsi3', '__mulsi3'):
     assert helper not in symbols, f'generic 32-bit helper linked: {helper}'
 front_enabled = 'span_front_compose' in symbols
 span_enabled = 'span_compose' in symbols or front_enabled
-assert symbols.get('__cell_hud_seen') == 0x9128, 'HUD-seen flag must reuse cell scratch at $9128'
+assert symbols.get('__cell_hud_seen') == 0x9328, 'HUD-seen flag must reuse cell scratch at $9328'
 if span_enabled:
     assert (symbols.get('__span_buffer_start'), symbols.get('__span_buffer_end'),
             symbols.get('__span_buffer_size')) == (0xd000, 0xda00, 0xa00), \
@@ -39,11 +39,14 @@ assert int.from_bytes(data[:2],'little')==0x0801,'PRG must load at0801'
 assert len(data)-2+0x0801==0xa000,'PRG must initialize through9FFF'
 assert symbols.get('__stack')==0xc800,'incorrect main stack'
 assert symbols.get('__irq_stack')==0x7600,'incorrect IRQ stack'
-assert symbols['__resident_end']<=0x3000
-assert symbols['__startup_checks_start']==0x8c00
-assert 0x8c00<symbols['__startup_checks_end']<=0x9100
-assert symbols['__phase_sim_aux_start']==0x8c00
-assert 0x8c00<symbols['__phase_sim_aux_end']<=0x9100
+assert (symbols['__segment0_start'], symbols['__segment0_end']) == (0x2e00, 0x3000), 'incorrect first mission buffer allocation'
+assert (symbols['__segment1_start'], symbols['__segment1_end']) == (0x9700, 0x9900), 'incorrect second mission buffer allocation'
+assert symbols['__resident_end'] <= symbols['__segment0_start'], 'resident code overlaps mission buffer at $2E00'
+assert (symbols['__hud_sprites_start'], symbols['__hud_sprites_end']) == (0x8c00, 0x8e00), 'incorrect HUD sprite allocation'
+assert symbols['__startup_checks_start']==0x8e00, 'startup checks must start after HUD sprites at $8E00'
+assert 0x8e00<symbols['__startup_checks_end']<=0x9300, 'startup checks exceed shared workspace'
+assert symbols['__phase_sim_aux_start']==0x8e00, 'SIM helpers must start after HUD sprites at $8E00'
+assert 0x8e00<symbols['__phase_sim_aux_end']<=0x9300, 'SIM helpers exceed shared workspace'
 assert symbols['__phase_sim_aux_size']==symbols['__phase_sim_aux_end']-symbols['__phase_sim_aux_start']
 assert (symbols['__music_page_start'], symbols['__music_page_end']) == (0x720, 0x800), 'four-SID score page must occupy $0720-$07FF'
 music_page = next((section for section in metadata.sections if section.name == '.music_page'), None)
@@ -51,13 +54,13 @@ assert music_page is not None and (music_page.address, music_page.size) == (0x72
 low_end=0x720
 assert symbols['__renderer_start']==0xcffa and symbols['__renderer_end']==0xe000
 assert symbols['__irq_static_save_size']<=1088
-assert symbols['__pixel_band_start']==0x8c00 and symbols['__pixel_band_end']==0x9100
-assert symbols['__projection_cache_start']==0x8c00 and symbols['__projection_cache_end']==0x8e80
+assert symbols['__pixel_band_start']==0x8e00 and symbols['__pixel_band_end']==0x9300, 'pixel band must occupy $8E00-$92FF after HUD sprites'
+assert symbols['__projection_cache_start']==0x8e00 and symbols['__projection_cache_end']==0x9080
 assert symbols['__projection_cache_end']<=symbols['__pixel_band_end']
 assert symbols['__projection_cache_start']+624<=symbols['__projection_cache_end']
 assert symbols['__projection_cache_start']+0x400<=symbols['__pixel_band_end']
 assert symbols['__sort_order']==0x7600 and symbols['__irq_stack']==0x7600
-assert (symbols['__staged_bitmap_start'],symbols['__staged_bitmap_end'])==(0x9340,0x9480), 'staged bitmap must reuse cell coverage only'
+assert (symbols['__staged_bitmap_start'],symbols['__staged_bitmap_end'])==(0x9540,0x9680), 'staged bitmap must reuse cell coverage only'
 assert (symbols['__staged_screen_start'],symbols['__staged_screen_end'])==(0x7700,0x7728), 'staged screen must reuse HUD slot flags'
 assert (symbols['__staged_color_start'],symbols['__staged_color_end'])==(0x7728,0x7750), 'staged colors must reuse overflow flags only'
 # The PIXELS kernels own zero page $D0-$E0 (row walker) and $F0-$FF (cell
@@ -105,7 +108,7 @@ assert symbols['__phase_pixels_size'] == 0x3f20 + symbols['__phase_pixels_aux_si
 assert symbols['__raster_player_seen']==0x77ab
 assert (symbols['__raster_prepare_scratch_start'],symbols['__raster_prepare_scratch_end'])==(0x77a0,0x77bf)
 assert symbols['__irq_stack']<=symbols['__raster_prepare_scratch_start']<symbols['__raster_prepare_scratch_end']<=0x7800
-ranges={'.basic_header':(0x801,0x3000),'.text':(0x801,0x3000),'.data':(0x200,low_end),'.bss':(0x200,low_end),'.noinit':(0x200,low_end),'.music_page':(0x720,0x800),'.startup_checks':(0x8c00,0x9100),'.rodata':(0x7800,0x8000),'.tables':(0x9900,0xa000),'.renderer':(0xcffa,0xe000),'.game_state':(0xc800,0xca80),'.audio_state':(0xce00,0xcfb0),'.zp.data':(0x22,0xf0),'.zp.bss':(0x22,0xf0),'.zp.noinit':(0x22,0xf0)}
+ranges={'.basic_header':(0x801,0x2e00),'.text':(0x801,0x2e00),'.data':(0x200,low_end),'.bss':(0x200,low_end),'.noinit':(0x200,low_end),'.music_page':(0x720,0x800),'.startup_checks':(0x8e00,0x9300),'.rodata':(0x7800,0x8000),'.tables':(0x9900,0xa000),'.renderer':(0xcffa,0xe000),'.game_state':(0xc800,0xca80),'.audio_state':(0xce00,0xcfb0),'.zp.data':(0x22,0xf0),'.zp.bss':(0x22,0xf0),'.zp.noinit':(0x22,0xf0)}
 ranges['.benchmark_resident'] = (0x7800, 0x8000)
 used=[]
 phase_sizes={}
@@ -121,7 +124,7 @@ for line in listing.splitlines():
     if name.startswith('.phase.'):
         phase_sizes[name]=size
     if name == '.phase.sim_aux':
-        assert address == 0x8c00 and 0 < size <= 0x500, name
+        assert address == 0x8e00 and 0 < size <= 0x500, name
         assert size == symbols['__phase_sim_aux_size'], name
     elif name == '.phase.pixels_aux':
         assert address == 0x6f20 and 0 < size <= 0x2e0, 'PIXELS helpers outside workspace'
@@ -271,7 +274,7 @@ expected_code_sizes = tuple(symbols[f'__phase_{profile}_size'] for profile in co
 assert code_sizes == expected_code_sizes, f'Code size table disagrees with overlay images: {code_sizes} != {expected_code_sizes}'
 assert phase_sizes['.phase.scenery'] == symbols['__phase_scenery_base_size']
 assert symbols['__phase_scenery_size'] == symbols['__phase_scenery_base_size'] + max(phase_sizes[name] for name in scenery_sections)
-print(f'PRG {len(data):,} bytes; resident headroom {0x3000-symbols["__resident_end"]} bytes')
+print(f'PRG {len(data):,} bytes; resident headroom {symbols["__segment0_start"]-symbols["__resident_end"]} bytes')
 print('Music: 4 built-in UltiSIDs; external score page 224 bytes')
 if kernel_sizes:
     largest = max(kernel_sizes, key=kernel_sizes.get)
@@ -281,13 +284,13 @@ if kernel_sizes:
 else:
     print(f'Music kernels: none linked; {symbols["__music_kernel_size"]}-byte slot at ${symbols["__music_kernel_start"]:04X} reserved')
 print(f'Validated music directory: ${music_directory.address:04X}-${music_directory.address+music_directory.size-1:04X}, {music_directory.size} BSS bytes outside IRQ-saved compiler frames')
-print('Startup checks8C00-90FF: retired before BOOT asset loading and rendering')
+print('Startup checks8E00-92FF: retired before BOOT asset loading and rendering')
 print('VIC bank 2: screen8000 bitmapA000-BF3F, guarded staged band commits; C000-C3FF quarter squares; E000-EF1F raster tails/masks; EF20-FF1F raster heads; FF20-FFF9 free RAM')
-print('Models8400-8BFF; overflow-cell pixel band8C00-90FF; GEOMETRY kernel scratch9100-91FF (PIXELS cell scratch9100-9128); cell codes9200-933F, cover/HUD9340-947F, palettes9480-94F7; segments9500-98FF')
+print('Models8400-8BFF; HUD sprites8C00-8DFF; overflow-cell pixel band8E00-92FF; GEOMETRY kernel scratch9300-93FF (PIXELS cell scratch9300-9328); cell codes9400-953F, cover/HUD9540-967F, palettes9680-96F7; segments2E00-2FFF and9700-98FF')
 print('Overlay3000-71FF; music kernel slot7200-74FF; main stackC400-C7FF; IRQ stack7500-75FF')
 print('PIXELS code3000-6F1F helpers6F20-71FF; sorted order7600-76FF; edge headsEF20-FF1F tailsE000-EBFF masksEC00-EF1F; commands stay in emission orderD000-DFFF')
 print(f'PIXELS prefix {symbols["__phase_pixels_prefix_size"]} bytes; helpers {symbols["__phase_pixels_aux_size"]} bytes; checksummed composition {symbols["__phase_pixels_size"]} bytes; runtime omits the raster-data gap')
-print('GEOMETRY code3000-71FF; projection cache8C00-8E7F and depth-sort keys/buckets8C00-8FFF share PIXELS band; sorted order7600-76FF')
+print('GEOMETRY code3000-71FF; projection cache8E00-907F and depth-sort keys/buckets8E00-91FF share PIXELS band; sorted order7600-76FF')
 print('SCENERY code3000-71FF; raw recordsD880-DFFF share GEOMETRY commands')
 print(f'SCENERY terrestrial prefix {symbols["__phase_scenery_terrain_size"]} bytes; complete prefix {symbols["__phase_scenery_base_size"]} bytes; largest decoration tail {symbols["__phase_scenery_size"]-symbols["__phase_scenery_base_size"]} bytes; ten padded images')
 print(f'GEOMETRY transition prefix {symbols["__phase_geometry_base_size"]} bytes; combat tail {symbols["__phase_geometry_size"]-symbols["__phase_geometry_base_size"]} bytes')
@@ -297,7 +300,7 @@ print('SIM runtime transfer sizes by profile0..7: ' + ', '.join(map(str, sim_loa
 print('OVL7 startup code sizes by directory order: ' + ', '.join(map(str, code_sizes)))
 print('REU 1 MiB: 744,832 reserved bytes; 303,744 unreserved bytes; music $0C0000-$0FFFFF')
 print('REU logical phase slots: ' + ', '.join(f'{phase_id:02X}=${symbols[f"__reu_{name}"]:06X}' for phase_id, name, expected in reu_layout))
-print(f'SIM helper code8C00-90FF: {symbols["__phase_sim_aux_size"]} bytes; reloaded before every SIM profile, shares retired startup/cache/band workspace')
+print(f'SIM helper code8E00-92FF: {symbols["__phase_sim_aux_size"]} bytes; reloaded before every SIM profile, shares retired startup/cache/band workspace')
 print(f'Victory GEOMETRY composed image {symbols["__phase_victory_size"]} bytes')
 
 print('PIXELS preparation scratch77A0-77BE: reused later by raster/packer; models remain intact')
@@ -306,5 +309,5 @@ if front_enabled:
 elif span_enabled:
     print('Span buffer: nextD000-D4FF inkD500-D9FF; retired commands after all edge preparation; no additional persistent RAM')
 print('PIXELS player coverage flag77AB: reset per band, persistent until the band finish')
-print('PIXELS cell metadata: coverage low nibble/HUD high nibble at $9340-$947F; HUD-seen $9128; overflow flags $7728-$774F; cover-clean $7750; cell writer zero page $F0-$FF; row walker $D0-$E0')
-print('PIXELS staging consumes cover9340-947F, screen7700-7727, overflow7728-774F; next band clears metadata; raster-safe copy publishes 400 bytes')
+print('PIXELS cell metadata: coverage low nibble/HUD high nibble at $9540-$967F; HUD-seen $9328; overflow flags $7728-$774F; cover-clean $7750; cell writer zero page $F0-$FF; row walker $D0-$E0')
+print('PIXELS staging consumes cover9540-967F, screen7700-7727, overflow7728-774F; next band clears metadata; raster-safe copy publishes 400 bytes')

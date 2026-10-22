@@ -154,7 +154,7 @@ def main():
         reu[offset:offset+len(code)] = code
         put(size_at, len(code))
         put(hash_at, checksum(code))
-        destination = 0x8c00 if name == 'sim-helpers' else 0x3000
+        destination = symbols['__phase_sim_aux_start'] if name == 'sim-helpers' else 0x3000
         print(f'{name:12} REU ${offset:06X} -> RAM ${destination:04X}: {len(code):5} bytes')
     for index, name in enumerate(('boot', 'sim', 'geometry', 'pixels', 'audio')):
         if name == 'sim':

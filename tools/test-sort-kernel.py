@@ -10,7 +10,7 @@ up to the 256-command capacity, including the single-command case that still
 records position 0 and the empty case that writes nothing, with and without
 scenery segments (the foreground [prefix, pivot) first, then the scenery
 prefix, then the rest). Guards surround
-the commands, the order page and the $8C00-$8FFF workspace. The JSON report
+the commands, the order page and the $8E00-$91FF workspace. The JSON report
 stays under target/sort-test.
 """
 import hashlib
@@ -30,7 +30,7 @@ builtins = max(dependencies.glob("libcompiler_builtins-*.rlib"), key=lambda p: p
 source = '''#![no_std]
 #[derive(Clone,Copy)] #[repr(C)]
 pub struct Triangle { x:[i16;3], y:[i16;3], depth:i16, color:u8, reserved:u8 }
-mod projection { pub fn begin_frame() { unsafe { core::ptr::write_bytes(0x8c00 as *mut u8,0,640); } } }
+mod projection { pub fn begin_frame() { unsafe { core::ptr::write_bytes(0x8e00 as *mut u8,0,640); } } }
 mod sort {
 '''
 sort_source = (root / "src/render/sort.rs").read_text()
@@ -60,8 +60,8 @@ harness = r'''
 typedef struct { int16_t x[3],y[3],depth; uint8_t color,reserved; } Triangle;
 extern void check_sort(Triangle*,uint16_t,uint8_t,uint8_t);
 #define ORDER ((volatile uint8_t*)%(order)#x)
-#define WORK_BELOW (*(volatile uint8_t*)0x8bff)
-#define WORK_ABOVE (*(volatile uint8_t*)0x9000)
+#define WORK_BELOW (*(volatile uint8_t*)0x8dff)
+#define WORK_ABOVE (*(volatile uint8_t*)0x9200)
 static struct { uint8_t before[16]; Triangle data[256]; uint8_t after[16]; } actual;
 static Triangle expected[256];
 static const uint16_t lengths[]={0,1,2,3,15,16,17,57,128,129,180,255,256};
@@ -140,8 +140,8 @@ subprocess.run([sdk / "mos-sim-clang", "-Os", "-mlto-zp=0", f"-Wa,-defsym,ORDER=
                 root / "target-c64/asm/sort.S", "-Wl,-Map=" + str(build / "check.map"), "-o", build / "check"], check=True)
 layout = (build / "check.map").read_text(encoding="utf-8", errors="replace")
 heap = re.search(r"^\s*([0-9a-f]+)\s+[0-9a-f]+\s+[0-9a-f]+\s+\d+\s+__heap_start", layout, re.M)
-if heap is None or int(heap.group(1), 16) > 0x8bff:
-    raise SystemExit(f"harness image reaches {heap.group(1) if heap else '?'}: overlaps the sort workspace at $8C00")
+if heap is None or int(heap.group(1), 16) > 0x8dff:
+    raise SystemExit(f"harness image reaches {heap.group(1) if heap else '?'}: overlaps the sort workspace at $8E00")
 result = subprocess.run([sdk / "mos-sim", "--cycles", build / "check"], text=True, capture_output=True, timeout=120)
 print(result.stdout.strip(), result.stderr.strip())
 report = {

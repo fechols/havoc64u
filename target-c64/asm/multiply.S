@@ -161,14 +161,14 @@ fast_mul8:
 ; RotationMatrix::compose: M = R_roll * R_pitch * R_yaw from the game's pair
 ; rotations, every product rounded by the resident Q8 core in the table order
 ; below, then each entry clamped to [-256, 256]. Operands live in 16-bit slots
-; at $9100: the six inputs, the constant 256, two temporaries and the nine
+; at $9300: the six inputs, the constant 256, two temporaries and the nine
 ; entries. Both mesh kernels live in GEOMETRY, the only phase that rotates
 ; vertices; the product core they call stays resident. The IRQ never touches
 ; this scratch.
-.set RM_SLOTS, $9100
-.set RM_OUT, $9124
-.set RM_INDEX, $9126
-.set RM_PROD, $9127
+.set RM_SLOTS, $9300
+.set RM_OUT, $9324
+.set RM_INDEX, $9326
+.set RM_PROD, $9327
 .section .phase.geometry,"ax",@progbits
 .globl fast_mesh_matrix
 .type fast_mesh_matrix,@function
@@ -318,15 +318,15 @@ fast_mesh_matrix:
 ; |v| << 8), added to or subtracted from a 24-bit accumulator by the XOR of the
 ; two signs. The shift takes the accumulator's upper two bytes and ORs in the
 ; shifted low byte, so only 8 - shift single-bit shifts run per row.
-.set RV_SHIFT, $9130
-.set RV_AV, $9131
-.set RV_SV, $9134
-.set RV_ACC, $9137
-.set RV_MIDX, $913a
-.set RV_J, $913b
-.set RV_ROW, $913c
-.set RV_AM, $913d
-.set RV_NEG, $913f
+.set RV_SHIFT, $9330
+.set RV_AV, $9331
+.set RV_SV, $9334
+.set RV_ACC, $9337
+.set RV_MIDX, $933a
+.set RV_J, $933b
+.set RV_ROW, $933c
+.set RV_AM, $933d
+.set RV_NEG, $933f
 .section .phase.geometry,"ax",@progbits
 .globl fast_rotate_vertex
 .type fast_rotate_vertex,@function

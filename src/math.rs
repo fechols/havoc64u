@@ -70,7 +70,7 @@ impl RotationMatrix {
             let mut m = [[0i16; 3]; 3];
             // SAFETY: the kernel performs exactly `compose` with the resident
             // product core; BOOT built its multiply table. It uses the free
-            // scratch at $9100 that no interrupt touches.
+            // scratch at $9300 that no interrupt touches.
             unsafe { fast_mesh_matrix(&sincos, &mut m) };
             Self { m }
         }

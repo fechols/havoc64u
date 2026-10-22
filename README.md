@@ -73,7 +73,7 @@ Your ship flies forward automatically. You steer around enemies, incoming shots,
 | Double-tap left or right within half a second | Barrel roll and dodge in that direction |
 | Fire at the title or after a run | Start a new game |
 | Space bar | Pause and resume the flight |
-| F | Toggle the frame-rate readout at the top right |
+| F | Toggle the frame-rate readout in the top-left HUD corner |
 
 Watch the weapon meter: **HOMING MISSILE** means your next shot tracks a random target ahead, switching targets when needed. Charge longer for stronger straight shots.
 

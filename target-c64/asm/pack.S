@@ -10,7 +10,7 @@
 ; rc4/5 and colors rc6/7 (band bases). rc2..13 are clobbered; rc14..19 are
 ; volatile; rc20..31 and the software stack are untouched.
 ; $77A0-$77FA is private main-thread scratch, never used by the audio IRQ.
-; The pixel band is the fixed workspace at $8C00 (rows 160 bytes apart).
+; The pixel band is the fixed workspace at $8E00 (rows 160 bytes apart).
 ; In-place contract: the cell's previous screen byte and color nibble are read
 ; at .Lpk_cell before any of the cell's outputs are written at .Lpk_attributes.
 ; The previous-screen and previous-color pointers may therefore equal the
@@ -64,7 +64,7 @@
 .set PK_BG, $ff
 ; The pixel band the quantizer reads (the mos-sim harness moves it).
 .ifndef PIXELS
-.set PIXELS, $8c00
+.set PIXELS, $8e00
 .endif
 
 .section .phase.pixels,"ax",@progbits

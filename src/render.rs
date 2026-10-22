@@ -835,7 +835,7 @@ impl RasterPass<'_> {
             // SAFETY: the kernel derives each marked triangle's persistent
             // head ($EF20 + 16 i) and prepared tail ($E000 + 12 i) from its
             // sorted position and paints through the cell writer; `pixels`
-            // is the fixed band at $8C00 that overflowed cells expand into.
+            // is the fixed band at $8E00 that overflowed cells expand into.
             unsafe {
                 fast_raster_band(
                     self.masks_mut()[band as usize].as_ptr(),
@@ -1576,7 +1576,7 @@ static FONT: [[u8; 5]; 43] = [
 
 #[inline(never)]
 #[cfg_attr(target_arch = "mos", link_section = ".phase.pixels")]
-fn glyph(c: u8) -> &'static [u8; 5] {
+pub(crate) fn glyph(c: u8) -> &'static [u8; 5] {
     let index = match c {
         b'A'..=b'Z' => c - b'A',
         b'a'..=b'z' => c - b'a',

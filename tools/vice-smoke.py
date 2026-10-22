@@ -131,6 +131,107 @@ def decoded_pixels(native, background):
     return bytes(pixels)
 
 
+def sprite_state(mon):
+    """Capture the VIC's actual sprite registers, pointers and pointed-to RAM.
+
+    This sidecar is independent of bitmap dumps: old 10,000/10,001-byte frame
+    comparisons keep their meaning, while previews include the floating HUD.
+    """
+    mon.command("bank io")
+    registers = list(mon.read(0xd000, 0x2f))
+    bank_base = ((~mon.integer(0xdd00, 1)) & 3) * 0x4000
+    screen_base = bank_base + (registers[0x18] >> 4) * 0x400
+    mon.command("bank ram")
+    pointers = list(mon.read(screen_base + 0x3f8, 8))
+    images = [mon.read(bank_base + pointer * 64, 64).hex() for pointer in pointers]
+    mon.command("bank cpu")
+    return dict(format="vic-sprites-v1", bank_base=bank_base, screen_base=screen_base,
+                origin=[24, 50], registers=registers, pointers=pointers, images=images)
+
+
+def sprite_visual_state(state):
+    """Only stable, display-relevant registers for deterministic comparisons.
+
+    Raster position, collision latches and unused bits are diagnostic data in
+    the sidecar, and must not make identical HUDs compare unequal.
+    """
+    registers = state["registers"]
+    indices = [*range(17), 0x15, 0x17, 0x1b, 0x1c, 0x1d, 0x25, 0x26, *range(0x27, 0x2f)]
+    enabled = registers[0x15]
+    values = [registers[index] if index < 0x27 or enabled & (1 << (index - 0x27)) else 0 for index in indices]
+    return dict(registers=values, pointers=state["pointers"],
+                images=[image if enabled & (1 << index) else None for index, image in enumerate(state["images"])])
+
+
+def composite_pixels(bitmap_pixels, state):
+    """320x200 hardware pixels, with scroll and foreground HUD sprites.
+
+    A full hardware-pixel grid retains odd X-scroll samples: rounding sprites
+    to the 160-pixel bitmap grid would lose half a multicolour pixel of shake.
+    The HUD configures every sprite in front of the bitmap.
+    """
+    if len(bitmap_pixels) != 32000 or state.get("format") != "vic-sprites-v1":
+        raise ValueError("Expected a 160x200 bitmap and vic-sprites-v1 sidecar")
+    registers = state["registers"]
+    dx, dy = registers[0x16] & 7, (registers[0x11] & 7) - 3
+    pixels = bytearray([registers[0x20] & 15]) * 64000
+    for y in range(200):
+        source_y = y - dy
+        if not 0 <= source_y < 200:
+            continue
+        for x in range(320):
+            source_x = x - dx
+            if 0 <= source_x < 320:
+                pixels[y * 320 + x] = bitmap_pixels[source_y * 160 + source_x // 2]
+    origin_x, origin_y = state["origin"]
+    for sprite in reversed(range(8)):
+        bit = 1 << sprite
+        if not registers[0x15] & bit:
+            continue
+        if registers[0x1b] & bit:
+            raise ValueError("HUD preview requires foreground sprite priority")
+        image = bytes.fromhex(state["images"][sprite])
+        if len(image) != 64:
+            raise ValueError("Sprite image must contain exactly 64 bytes")
+        left = registers[sprite * 2] + (256 if registers[0x10] & bit else 0) - origin_x
+        top = registers[sprite * 2 + 1] - origin_y
+        x_scale = 2 if registers[0x1d] & bit else 1
+        y_scale = 2 if registers[0x17] & bit else 1
+        multicolor = bool(registers[0x1c] & bit)
+        colors = (None, registers[0x25], registers[0x27 + sprite], registers[0x26])
+        for row in range(21 * y_scale):
+            y = top + row
+            if not 0 <= y < 200:
+                continue
+            for column in range(24 * x_scale):
+                x = left + column
+                if not 0 <= x < 320:
+                    continue
+                source_x = column // x_scale
+                byte = image[(row // y_scale) * 3 + source_x // 8]
+                code = ((byte >> (6 - (source_x // 2 % 4) * 2)) & 3) if multicolor else ((byte >> (7 - source_x % 8)) & 1)
+                if code:
+                    color = colors[code] if multicolor else registers[0x27 + sprite]
+                    pixels[y * 320 + x] = color & 15
+    return bytes(pixels)
+
+
+def sprite_shake_alignment(state):
+    """Verify all eight fixed origins follow the exact bitmap fine scroll."""
+    registers = state["registers"]
+    dx, dy = registers[0x16] & 7, (registers[0x11] & 7) - 3
+    actual = []
+    for sprite in range(8):
+        corner_x, corner_y = ((3, 4), (133, 4), (3, 175), (133, 175))[sprite // 2]
+        expected = (24 + corner_x * 2 + (sprite % 2) * 24 + dx, 50 + corner_y + dy)
+        position = (registers[sprite * 2] + (((registers[0x10] >> sprite) & 1) * 256),
+                    registers[sprite * 2 + 1])
+        if position != expected:
+            raise RuntimeError(f"Sprite {sprite} shake is {position}, expected {expected} for scroll {(dx, dy)}")
+        actual.append(position)
+    return dict(offset=[dx, dy], positions=actual)
+
+
 def capture(mon, syms, output, name):
     bank = mon.integer(syms["FRONT_BANK"], 1)
     if bank not in (2, 3):
@@ -170,12 +271,21 @@ def capture(mon, syms, output, name):
     png(output / f"{name}-native.png", rows, 160, 200)
     # VIC multicolor pixels are wide on a 4:3 display; retain both the exact
     # native grid and an aspect-correct preview for visual review.
-    wide_rows = [b"".join(row[x:x+3] * 4 for x in range(0, 480, 3)) for row in rows]
+    sprites = sprite_state(mon)
+    sprite_path = output / f"{name}-sprites.json"
+    sprite_path.write_text(json.dumps(sprites, indent=2) + "\n")
+    pixels = composite_pixels(decoded_pixels(native, background), sprites)
+    composite_rows = [b"".join(bytes(PALETTE[color]) for color in pixels[y*320:(y+1)*320]) for y in range(200)]
+    png(output / f"{name}-composited.png", composite_rows, 320, 200)
+    wide_rows = [b"".join(row[x:x+3] * 2 for x in range(0, 960, 3)) for row in composite_rows]
     png(output / f"{name}-preview.png", [wide_rows[y*200//480] for y in range(480)], 640, 480)
+    (output / f"{name}-preview.ppm").write_bytes(b"P6\n640 480\n255\n" + b"".join(wide_rows[y*200//480] for y in range(480)))
     (output / f"{name}-native.ppm").write_bytes(b"P6\n160 200\n255\n" + b"".join(rows))
     mon.command(f'screenshot "{(output / (name+"-vice.png")).as_posix()}" 2')
     return {"bank": bank, "native": str(path), "sha256": hashlib.sha256(native).hexdigest(),
-            "background": background, "nonzero_bitmap_bytes": sum(value != 0 for value in bitmap)}
+            "background": background, "nonzero_bitmap_bytes": sum(value != 0 for value in bitmap),
+            "sprites": str(sprite_path), "sprite_images_sha256": hashlib.sha256(b"".join(bytes.fromhex(image) for image in sprites["images"])).hexdigest(),
+            "composited_pixels_sha256": hashlib.sha256(pixels).hexdigest()}
 
 
 def counters(mon, syms):
@@ -186,7 +296,7 @@ def counters(mon, syms):
                         ("FRONT_BANK", 1), ("TEST_INPUT", 1), ("RENDER_SEGMENT", 1),
                         ("ENEMY_CODE_PROFILE", 1), ("ENEMY_MODEL_PROFILE", 1), ("MODEL_STREAM_BYTES", 2),
                         ("MUSIC_CUE", 1), ("MUSIC_ACTIVE_CUE", 1), ("MUSIC_PAGE", 1),
-                        ("MUSIC_UNDERRUNS", 2)):
+                        ("MUSIC_UNDERRUNS", 2), ("HUD_IMAGE_WRITES", 2), ("HUD_COMMITS", 2)):
         if name in syms:
             result[name.lower()] = mon.integer(syms[name], width)
     mon.command("bank io")
@@ -704,7 +814,7 @@ def streaming_checks(mon, syms, failures, elf, reu, dwarf_tool, output, result):
         # These are published platform cache addresses, not Rust struct offsets.
         mon.command("bank ram")
         views = []
-        for slot, address in enumerate((0x9500, 0x9700)):
+        for slot, address in enumerate((0x2e00, 0x9700)):
             cache = mon.read(address, 512)
             index = cache[4]
             if cache[:4] != format["segment_magic"] or index >= format["count"]:
@@ -1085,7 +1195,7 @@ def attract_checks(mon, syms, failures, elf, reu, dwarf_tool, output, result):
         frame["stack_guards"] = {name: mon.integer(syms[name], 1)
                                  for name in ("__stack_bottom", "__irq_stack_bottom")}
         frame["cache_sections"] = []
-        for address in (0x9500, 0x9700):
+        for address in (0x2e00, 0x9700):
             cache = mon.read(address, 512)
             if cache[4] >= format["count"] or cache != references[cache[4]]:
                 raise RuntimeError("Attract section cache differs from packaged bytes")
@@ -1493,6 +1603,85 @@ def pause_checks(mon, syms, failures, elf, dwarf_tool, output, result):
     observe("pause-checks-finished")
     result["passed"] = True
     print("PAUSE: paused gestures discarded, final-render queue drained, held controls resumed", flush=True)
+
+
+def hud_checks(mon, syms, failures, elf, dwarf_tool, output, result):
+    """Freeze simulation; prove real overlay cycles retain and lazily update HUD RAM."""
+    for symbol in ("HUD_IMAGE_WRITES", "HUD_COMMITS", "__hud_sprites_start", "__hud_sprites_end"):
+        if symbol not in syms:
+            raise RuntimeError(f"HUD checks require {symbol} in the matching ELF")
+    if (syms["__hud_sprites_start"], syms["__hud_sprites_end"]) != (0x8c00, 0x8e00):
+        raise RuntimeError("HUD image allocation is not the reserved eight-sprite range")
+    layout = dwarf_game_layout(elf, dwarf_tool, syms, output)
+    pause = resident_symbol(syms, "PAUSED")[1]
+    fps = resident_symbol(syms, "FPS_SHOWN")[1]
+    result.update(passed=False, monitor_assisted=True, excluded_from_timing=True,
+                  scope="Freeze simulation through ELF-derived PAUSED; validate real image RAM and byte-write counters across native frames.",
+                  state_patches=[], stable_frames=[])
+
+    def write(label, address, data):
+        mon.command("bank ram")
+        before = mon.read(address, len(data))
+        mon.command(f"> {address:04x} " + " ".join(f"{value:02x}" for value in data))
+        if mon.read(address, len(data)) != data:
+            raise RuntimeError(f"HUD fixture write failed: {label}")
+        mon.command("bank cpu")
+        result["state_patches"].append(dict(label=label, address=address, before=before.hex(), after=data.hex()))
+
+    def field(name, value):
+        item = layout["fields"][name]
+        write(name, layout["address"] + item["offset"], value.to_bytes(item["size"], "little"))
+
+    def observe():
+        mon.run_until(syms["frame_complete"], failures)
+        sample = counters(mon, syms)
+        sprites = sprite_state(mon)
+        registers = sprites["registers"]
+        if (registers[0x15] != 255 or registers[0x1c] != 255 or
+                any(registers[index] for index in (0x17, 0x1b, 0x1d)) or
+                [registers[0x25] & 15, registers[0x26] & 15] != [12, 1] or
+                sprites["pointers"] != list(range(0x30, 0x38))):
+            raise RuntimeError("HUD sprites lost enable, multicolour, priority, expansion, colours, or image pointers")
+        sample["alignment"] = sprite_shake_alignment(sprites)
+        sample["image_hashes"] = [hashlib.sha256(bytes.fromhex(image)).hexdigest() for image in sprites["images"]]
+        if any(sample.get(key, 0) for key in ("input_overflows", "frame_dropped", "music_underruns")):
+            raise RuntimeError("HUD fixture lost input, geometry, or music")
+        return sample
+
+    # Holding FIRE keeps displayed charge at zero; released FIRE charges even
+    # while paused, and a full charge intentionally blinks with FRAME_SERIAL.
+    mon.command("jpdb 1 $0f")
+    write("pause", pause, b"\x01")
+    write("hide-fps", fps, b"\x00")
+    field("shield", 100)
+    field("score", 123456)
+    # One frame publishes the new display; the next settles the held input and
+    # zero charge before measuring lazy updates.
+    observe()
+    baseline = observe()
+    result["baseline"] = baseline
+    for _ in range(6):
+        sample = observe()
+        result["stable_frames"].append(sample)
+        if any(sample[key] != baseline[key] for key in ("hud_image_writes", "hud_commits", "image_hashes")):
+            raise RuntimeError("Unchanged displayed HUD state rewrote or corrupted its sprite images")
+    field("score", 654321)
+    changed = observe()
+    delta = (changed["hud_image_writes"] - baseline["hud_image_writes"]) & 0xffff
+    commits = (changed["hud_commits"] - baseline["hud_commits"]) & 0xffff
+    if (not 0 < delta <= 128 or commits != 1 or
+            changed["image_hashes"][:2] == baseline["image_hashes"][:2] or
+            changed["image_hashes"][2:] != baseline["image_hashes"][2:]):
+        raise RuntimeError("Score update did not write exactly its dirty corner while preserving six other sprites")
+    result["score_update"] = dict(frame=changed, image_bytes_written=delta, corners_committed=commits)
+    result["capture"] = capture(mon, syms, output, "hud-lazy-update")
+    settled = observe()
+    if any(settled[key] != changed[key] for key in ("hud_image_writes", "hud_commits", "image_hashes")):
+        raise RuntimeError("Completed score update kept rewriting the HUD")
+    mon.command("jpdb 1 $1f")
+    write("resume", pause, b"\x00")
+    result["passed"] = True
+    print("HUD: eight fixed sprites retained across frames; unchanged state wrote zero bytes; score dirtied one corner", flush=True)
 
 
 def weapon_checks(mon, syms, failures, elf, dwarf_tool, output, result, video, package=None):
@@ -1940,6 +2129,8 @@ def weapon_checks(mon, syms, failures, elf, dwarf_tool, output, result, video, p
         mon.command("bank io")
         state.update(x=mon.integer(0xd016, 1) & 7, y=mon.integer(0xd011, 1) & 7,
                      border=mon.integer(0xd020, 1) & 15)
+        if "HUD_IMAGE_WRITES" in syms:
+            state["sprite_alignment"] = sprite_shake_alignment({"registers": list(mon.read(0xd000, 0x2f))})
         mon.command("bank cpu")
         scenario.setdefault("irq_samples", []).append(state)
         return state
@@ -1957,7 +2148,7 @@ def weapon_checks(mon, syms, failures, elf, dwarf_tool, output, result, video, p
         events = stores(trace_path, {effect["address"]: 0, syms["FRAME_SERIAL"]: 0})
         remaining, applied, publications = 0, (0, 3, 0), 0
         triggers, durations, phases = [], [], set()
-        changing_between_frames = shaken_publications = 0
+        changing_between_frames = shaken_publications = sprite_position_writes = 0
         previous_motion = None
         for event in events:
             address, value = event["address"], event["value"]
@@ -1984,6 +2175,17 @@ def weapon_checks(mon, syms, failures, elf, dwarf_tool, output, result, video, p
             elif address == 0xd020:
                 if value != applied[2]:
                     raise RuntimeError("Bomb border differs from its white/yellow/orange/red/black phase")
+            elif 0xd000 <= address <= 0xd010 and "HUD_IMAGE_WRITES" in syms:
+                if address == 0xd010:
+                    expected = 0xcc
+                else:
+                    sprite, axis = divmod(address - 0xd000, 2)
+                    corner_x, corner_y = ((3, 4), (133, 4), (3, 175), (133, 175))[sprite // 2]
+                    expected = ((24 + corner_x * 2 + (sprite % 2) * 24 + applied[0]) & 255
+                                if axis == 0 else 50 + corner_y + applied[1] - 3)
+                if value != expected:
+                    raise RuntimeError(f"Sprite shake register ${address:04x} wrote {value}, expected {expected}")
+                sprite_position_writes += 1
             elif address == syms["FRAME_SERIAL"]:
                 # Each completed frame increments the serial once; the single
                 # visible bank is updated in place while the shake runs.
@@ -1993,18 +2195,22 @@ def weapon_checks(mon, syms, failures, elf, dwarf_tool, output, result, video, p
             raise RuntimeError("Bomb trigger count or final neutral display state is incorrect")
         if expected_triggers:
             if (len(durations) != 1 or abs(durations[0] - 640) > 20 + video_ms
-                    or phases != set(range(16)) or not changing_between_frames or not shaken_publications):
+                    or phases != set(range(16)) or not changing_between_frames or not shaken_publications
+                    or ("HUD_IMAGE_WRITES" in syms and not sprite_position_writes)):
                 raise RuntimeError("Bomb duration, complete shake phases, between-frame motion, or active frame completion failed")
         elif phases or durations:
             raise RuntimeError("Empty-inventory double FIRE activated bomb presentation")
         scenario["presentation"] = {"trace": str(trace_path), "triggers": len(triggers),
             "completed_duration_ms": durations, "duration_tolerance_ms": 20 + video_ms,
             "shake_phases": sorted(phases), "motion_changes_between_frames": changing_between_frames,
+            "matching_sprite_position_writes": sprite_position_writes,
             "shaken_frame_completions": shaken_publications, "final_scroll_and_border": applied}
 
     mon.command("log off")
     for address in (0xd011, 0xd016, 0xd020):
         mon.command(f"trace store {address:04x} if @cpu:$01 == $35")
+    if "HUD_IMAGE_WRITES" in syms:
+        mon.command("trace store d000 d010 if @cpu:$01 == $35")
     for address in (effect["address"], syms["FRAME_SERIAL"]):
         mon.command(f"trace store {address:04x}")
     for name, inventory, retrigger in (("bomb-display-impulse", 1, False),
@@ -2403,6 +2609,8 @@ def main():
                         help="after timing, verify paused-input disposal and resume rebasing with monitor-assisted pause toggles")
     parser.add_argument("--weapon-checks", action="store_true",
                         help="after timing, verify damage flashes, homing missiles and raster-clocked bomb shake/flash with physical joystick input")
+    parser.add_argument("--hud-checks", action="store_true",
+                        help="after timing, freeze simulation and verify persistent sprite RAM, zero unchanged writes, and one-corner score updates")
     parser.add_argument("--attract-checks", action="store_true",
                         help="after timing, count a natural title/map tour and verify physical-input dismissal and fresh-FIRE relaunch")
     parser.add_argument("--music-checks", action="store_true",
@@ -2582,6 +2790,11 @@ def main():
             weapon_checks(mon, syms, failures, elf,
                           args.llvm_dwarfdump or args.llvm_nm.with_name("llvm-dwarfdump"),
                           output, report["weapon_checks"], args.video, reu.read_bytes())
+        if args.hud_checks:
+            report["hud_checks"] = {}
+            hud_checks(mon, syms, failures, elf,
+                       args.llvm_dwarfdump or args.llvm_nm.with_name("llvm-dwarfdump"),
+                       output, report["hud_checks"])
         if args.streaming_checks:
             report["streaming_checks"] = {"full_boss_health": report["full_boss_health"]}
             streaming_checks(mon, syms, failures, elf, reu,

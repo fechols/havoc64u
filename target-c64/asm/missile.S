@@ -30,45 +30,45 @@
 ; d = max(dz, closing), v = clamp(clamp(error, -512, 512) * closing / d, -12,
 ; 12) per axis, the product taken as a wrapping i16 and the division truncating
 ; toward zero (the quotient is bounded, so a subtraction loop replaces it);
-; dx += clamp(v - dx, -1, 1), likewise dy. Scratch at $9140-$917F is GEOMETRY's
+; dx += clamp(v - dx, -1, 1), likewise dy. Scratch at $9340-$937F is GEOMETRY's
 ; projection scratch, idle during SIM; no interrupt touches it.
 .zeropage __rc2
 .zeropage __rc3
 .zeropage __rc4
 .zeropage __rc5
-.set MS_ACT, $9140
-.set MS_SPEC, $9142
-.set MS_PX, $9144
-.set MS_PY, $9146
-.set MS_PZ, $9148
-.set MS_BZ, $914a
-.set MS_EC, $914c
-.set MS_BA, $914d
-.set MS_BL, $914e
-.set MS_BR, $914f
-.set MS_BC, $9150
-.set MS_DX, $9151
-.set MS_DY, $9152
-.set MS_TX, $9153
-.set MS_TY, $9155
-.set MS_TZ, $9157
-.set MS_TC, $9159
-.set MS_BEST, $915b
-.set MS_BESTC, $9161
-.set MS_PASS, $9163
-.set MS_COUNT, $9164
-.set MS_RANK, $9165
-.set MS_FOUND, $9167
-.set MS_DZ, $9168
-.set MS_SLOT, $916c
-.set MS_T, $916d
-.set MS_E, $9171
-.set MS_P, $9173
-.set MS_NEG, $9177
-.set MS_V, $9178
-.set MS_ARGS, $917a
-.set MS_LOCK, $917c
-.set MS_RNG, $917d
+.set MS_ACT, $9340
+.set MS_SPEC, $9342
+.set MS_PX, $9344
+.set MS_PY, $9346
+.set MS_PZ, $9348
+.set MS_BZ, $934a
+.set MS_EC, $934c
+.set MS_BA, $934d
+.set MS_BL, $934e
+.set MS_BR, $934f
+.set MS_BC, $9350
+.set MS_DX, $9351
+.set MS_DY, $9352
+.set MS_TX, $9353
+.set MS_TY, $9355
+.set MS_TZ, $9357
+.set MS_TC, $9359
+.set MS_BEST, $935b
+.set MS_BESTC, $9361
+.set MS_PASS, $9363
+.set MS_COUNT, $9364
+.set MS_RANK, $9365
+.set MS_FOUND, $9367
+.set MS_DZ, $9368
+.set MS_SLOT, $936c
+.set MS_T, $936d
+.set MS_E, $9371
+.set MS_P, $9373
+.set MS_NEG, $9377
+.set MS_V, $9378
+.set MS_ARGS, $937a
+.set MS_LOCK, $937c
+.set MS_RNG, $937d
 
 .section .phase.sim.missile,"ax",@progbits
 .globl fast_steer_missile

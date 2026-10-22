@@ -40,14 +40,14 @@ const EMPTY: Entry = Entry {
 };
 const _: [(); 10] = [(); core::mem::size_of::<Entry>()];
 
-const BAND_ADDRESS: usize = 0x8c00;
+const BAND_ADDRESS: usize = 0x8e00;
 const CACHE_ADDRESS: usize = BAND_ADDRESS;
 const CACHE_BYTES: usize = core::mem::size_of::<[Entry; 64]>();
 const _: () = {
     assert!(CACHE_BYTES == 640);
     assert!(CACHE_ADDRESS >= BAND_ADDRESS);
     assert!(CACHE_ADDRESS + CACHE_BYTES <= BAND_ADDRESS + crate::render::BAND_PIXELS);
-    assert!(BAND_ADDRESS + crate::render::BAND_PIXELS <= 0x9100);
+    assert!(BAND_ADDRESS + crate::render::BAND_PIXELS <= 0x9300);
 };
 
 /// GEOMETRY temporarily owns the first 640 bytes of the pixel-band workspace.

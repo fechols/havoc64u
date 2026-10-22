@@ -360,8 +360,8 @@ impl crate::render::Canvas for CellBand {
 }
 
 /// The target's band: the kernels in `target-c64/asm/cells.S` keep the same
-/// state in fixed RAM (`CODES` at $9200, metadata at $9340, palettes at $9480,
-/// overflow flags at $7728, the pixel form at $8C00), so this is a handle.
+/// state in fixed RAM (`CODES` at $9400, metadata at $9540, palettes at $9680,
+/// overflow flags at $7728, the pixel form at $8E00), so this is a handle.
 #[cfg(target_arch = "mos")]
 pub struct NativeCells;
 
@@ -382,7 +382,7 @@ impl NativeCells {
         // SAFETY: the kernel writes only the fixed PIXELS-phase cell state.
         unsafe { fast_cell_clear(color) };
     }
-    /// Stage the band's VIC bytes in fixed RAM: bitmap at $9340, screen at
+    /// Stage the band's VIC bytes in fixed RAM: bitmap at $9540, screen at
     /// $7700 and colors at $7728. The preceding attributes are read only;
     /// live color RAM needs I/O mapped in. Staging consumes the band's cover,
     /// metadata and overflow state. Publish it before calling `clear`, and

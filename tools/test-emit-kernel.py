@@ -4,7 +4,7 @@
 Usage: python3 tools/test-emit-kernel.py
 Requires LLVM-MOS's mos-sim-clang and mos-sim. The harness builds the
 quarter-square and projection tables, provides a RENDERER image and the
-vertex cache at $8C00, and compares fast_emit_triangle with a C transcription
+vertex cache at $8E00, and compares fast_emit_triangle with a C transcription
 of Renderer::project_triangle (projection through the cache, area and
 orientation culling, screen-edge rejection, the 256-command capacity with
 saturating drops, the exact depth average and the 16-byte command) over
@@ -31,7 +31,7 @@ struct Vec3 { int16_t x, y, z; };
 extern void fast_emit_triangle(const struct Vec3 points[3], uint8_t color, uint8_t flags);
 #define QLO ((uint8_t*)0xc000)
 #define QHI ((uint8_t*)0xc200)
-#define CACHE ((uint8_t*)0x8c00)
+#define CACHE ((uint8_t*)0x8e00)
 uint16_t PROJECT_X[128], PROJECT_Y[128];
 /* The resident renderer: header then 256 commands of 16 bytes. */
 uint8_t RENDERER[6 + 256 * 16];

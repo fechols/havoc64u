@@ -8,7 +8,8 @@ No game, clock, health, or benchmark writes occur during recording. Bombs and
 endings are excluded because bitmap reconstruction omits raster scroll/border
 effects. This is emulator footage, not a physical-hardware recording.
 
-Outputs manifest.json and per-scene scene.json, 160x200 native PNG frames,
+Outputs manifest.json and per-scene scene.json, 160x200 composited PNG frames,
+per-frame VIC sprite sidecars,
 640x480 aspect-correct screenshots, and 44.1 kHz stereo WAV. Paths in manifests
 are relative to the directory containing that manifest. Encoding is separate.
 """
@@ -121,7 +122,13 @@ def wav_metrics(path, trim_start, duration):
                 retained_channels=metrics, sha256=sha256(path))
 
 
-def pixels(native, background):
+def pixels(native, background, sprites=None):
+    if sprites is not None:
+        # This recorder rejects shake. Neutral HUD coordinates and unexpanded
+        # multicolour pixels align to the bitmap's two-hardware-pixel grid.
+        composed = vice.composite_pixels(vice.decoded_pixels(native, background), sprites)
+        return [b"".join(bytes(vice.PALETTE[color]) for color in composed[y*320:(y+1)*320:2])
+                for y in range(200)]
     bitmap, screen, colors = native[:8000], native[8000:9000], native[9000:]
     rows = []
     for y in range(200):
@@ -410,9 +417,12 @@ class Capture:
         native = b"".join(parts)
         if len(native) != 10000:
             raise RuntimeError("Incomplete native bitmap/screen/color data")
-        rows = pixels(native, background)
+        sprites = vice.sprite_state(self.mon)
+        rows = pixels(native, background, sprites)
         path = self.frames_dir / f"{index:06d}.png"
         vice.png(path, rows, 160, 200)
+        sprite_path = path.with_suffix(".sprites.json")
+        sprite_path.write_text(json.dumps(sprites, indent=2) + "\n")
         elapsed = (counters["bus_cycles"] - self.report["audio_start_cycle"]) / self.hz
         item = dict(path=path.relative_to(self.output).as_posix(), bus_cycles=counters["bus_cycles"],
                     seconds=elapsed, stage=state["stage_id"], mode=state["mode"],
@@ -423,7 +433,9 @@ class Capture:
                     roll_ticks=state.get("roll_ticks"), joystick=self.last_bits,
                     shield=state["shield"], lives=state["lives"], score=state["score"],
                     boss_left=state["boss_left"], boss_right=state["boss_right"], boss_core=state["boss_core"],
-                    native_sha256=hashlib.sha256(native).hexdigest())
+                    native_sha256=hashlib.sha256(native).hexdigest(),
+                    sprites=sprite_path.relative_to(self.output).as_posix(),
+                    composited_sha256=hashlib.sha256(b"".join(rows)).hexdigest())
         self.report["frames"].append(item)
         return elapsed, rows
 

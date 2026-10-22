@@ -342,7 +342,7 @@ fn hidden_bands_advance_edges_without_writing_dust_and_none_keeps_old_pixels() {
 }
 
 #[test]
-fn cockpit_is_painted_after_dust() {
+fn floating_cockpit_leaves_dust_visible_in_the_former_top_strip() {
     let status = Game::preview_at(12, 0).hud();
     let mut renderer = Renderer::new();
     renderer.begin(0);
@@ -353,10 +353,9 @@ fn cockpit_is_painted_after_dust() {
             let mut pixels = [0; BAND_PIXELS];
             renderer.render_band_with_ambient(0, &mut pixels, Some(&dust));
             assert_eq!(pixels[y as usize * 160 + x as usize], COLOR);
-            let mut without = [0; BAND_PIXELS];
+            let before_hud = pixels;
             hud::draw(0, &mut pixels, &status, 0);
-            hud::draw(0, &mut without, &status, 0);
-            assert_eq!(pixels, without);
+            assert_eq!(pixels, before_hud);
             checked = true;
             break;
         }

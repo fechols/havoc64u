@@ -7,22 +7,22 @@
 ; with z = 0 giving (80, 100). The signed 16x16 product comes from four
 ; unsigned partials of the resident fast_mul8 (quarter-square table at $C000)
 ; with the sign applied afterwards; the shift drops whole bytes first so at
-; most seven single-bit shifts run. Scratch at $9140-$9157 is free RAM that
+; most seven single-bit shifts run. Scratch at $9340-$9357 is free RAM that
 ; no interrupt touches. Projected points lie at or behind the near plane
 ; (z >= 8), so e >= -4 and every intermediate fits the host's i32.
 .zeropage __rc2
 .zeropage __rc3
 .zeropage __rc4
 .zeropage __rc5
-.set PJ_P, $9140
-.set PJ_E, $9146
-.set PJ_IDX, $9147
-.set PJ_U, $9148
-.set PJ_MAG, $914a
-.set PJ_NEG, $914c
-.set PJ_M, $914d
-.set PJ_T, $9151
-.set PJ_OUTI, $9154
+.set PJ_P, $9340
+.set PJ_E, $9346
+.set PJ_IDX, $9347
+.set PJ_U, $9348
+.set PJ_MAG, $934a
+.set PJ_NEG, $934c
+.set PJ_M, $934d
+.set PJ_T, $9351
+.set PJ_OUTI, $9354
 
 .section .phase.geometry,"ax",@progbits
 .globl fast_project

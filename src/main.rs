@@ -2,7 +2,7 @@ mod host;
 use havoc::{
     assets::*,
     game::{Game, InputSample, FIRE, TRANSITION_TICKS},
-    hud,
+    hud, hud_sprites,
     render::{self, Renderer},
     space_dust::SpaceDustFrame,
 };
@@ -68,6 +68,98 @@ fn ppm(frame: &[u8]) -> Vec<u8> {
     }
     out
 }
+
+/// Sidecar state uses actual VIC coordinates and bytes, just like native
+/// captures. Keep it separate from the longstanding bitmap-only .bin format.
+struct SpriteCapture {
+    registers: [u8; 47],
+    images: [[u8; 64]; 8],
+}
+
+impl SpriteCapture {
+    fn new(game: &Game, frame: u16) -> Self {
+        let display = hud_sprites::DisplayState::from_hud(&game.hud(), frame, None);
+        let mut capture = Self {
+            registers: [0; 47],
+            images: [[0; 64]; 8],
+        };
+        capture.registers[0x11] = 0x3b;
+        capture.registers[0x16] = 0x18;
+        capture.registers[0x18] = 0x08;
+        capture.registers[0x15] = display.enabled_mask();
+        capture.registers[0x1c] = 0xff;
+        capture.registers[0x25] = 12;
+        capture.registers[0x26] = 1;
+        for corner in 0..4u8 {
+            let mut images = [0; 128];
+            hud_sprites::render_corner(corner, &display, &mut images);
+            let (x, y) = hud_sprites::CORNER_POSITIONS[corner as usize];
+            for half in 0..2usize {
+                let sprite = corner as usize * 2 + half;
+                let vic_x = 24 + x as u16 * 2 + half as u16 * 24;
+                capture.registers[sprite * 2] = vic_x as u8;
+                capture.registers[sprite * 2 + 1] = 50 + y as u8;
+                capture.registers[0x10] |= ((vic_x >> 8) as u8) << sprite;
+                capture.registers[0x27 + sprite] = display.accent(corner);
+                capture.images[sprite].copy_from_slice(&images[half * 64..half * 64 + 64]);
+            }
+        }
+        capture
+    }
+
+    fn json(&self) -> String {
+        let images = self
+            .images
+            .iter()
+            .map(|image| {
+                format!(
+                    "\"{}\"",
+                    image.iter().map(|b| format!("{b:02x}")).collect::<String>()
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(",");
+        format!("{{\"format\":\"vic-sprites-v1\",\"bank_base\":32768,\"screen_base\":32768,\"origin\":[24,50],\"registers\":{:?},\"pointers\":[48,49,50,51,52,53,54,55],\"images\":[{}]}}\n", self.registers, images)
+    }
+
+    fn ppm(&self, frame: &[u8]) -> Vec<u8> {
+        let mut output = ppm(frame);
+        let header = b"P6\n640 480\n255\n".len();
+        for py in 0..480usize {
+            let y = py * 200 / 480;
+            for px in 0..640usize {
+                let x = px / 2;
+                // Lower numbered sprites win when nontransparent pixels overlap.
+                for sprite in 0..8usize {
+                    if self.registers[0x15] & (1 << sprite) == 0 {
+                        continue;
+                    }
+                    let sx = self.registers[sprite * 2] as i16
+                        + (((self.registers[0x10] >> sprite) & 1) as i16) * 256
+                        - 24;
+                    let sy = self.registers[sprite * 2 + 1] as i16 - 50;
+                    let dx = x as i16 - sx;
+                    let dy = y as i16 - sy;
+                    if !(0..24).contains(&dx) || !(0..21).contains(&dy) {
+                        continue;
+                    }
+                    let byte = self.images[sprite][dy as usize * 3 + dx as usize / 8];
+                    let code = (byte >> (6 - (dx as usize / 2 % 4) * 2)) & 3;
+                    let color = match code {
+                        0 => continue,
+                        1 => self.registers[0x25],
+                        2 => self.registers[0x27 + sprite],
+                        _ => self.registers[0x26],
+                    } & 15;
+                    let at = header + (py * 640 + px) * 3;
+                    output[at..at + 3].copy_from_slice(&render::PALETTE_RGB[color as usize]);
+                    break;
+                }
+            }
+        }
+        output
+    }
+}
 enum Snapshot {
     Title,
     Section(u8, u16),
@@ -128,7 +220,10 @@ fn snapshot(source: Snapshot, out: &Path) -> Result<(), Box<dyn std::error::Erro
     if let Some(p) = out.parent() {
         fs::create_dir_all(p)?;
     }
-    fs::write(out.with_extension("ppm"), ppm(&bytes))?;
+    let sprites = SpriteCapture::new(&game, hud_frame);
+    fs::write(out.with_extension("ppm"), sprites.ppm(&bytes))?;
+    fs::write(out.with_extension("bitmap.ppm"), ppm(&bytes))?;
+    fs::write(out.with_extension("sprites.json"), sprites.json())?;
     fs::write(out.with_extension("bin"), bytes)?;
     println!(
         "{}: {triangles} triangles, {dropped} dropped; {:?}",
@@ -309,7 +404,11 @@ fn kernel_fixtures(out: &Path) -> Result<(), Box<dyn std::error::Error>> {
             cases.join(",\n")
         ),
     )?;
-    println!("Wrote {} kernel fixtures to {}", cases.len(), path.display());
+    println!(
+        "Wrote {} kernel fixtures to {}",
+        cases.len(),
+        path.display()
+    );
     Ok(())
 }
 

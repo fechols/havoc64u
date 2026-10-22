@@ -3,7 +3,7 @@
 ; flags X. The native body of Renderer::project_triangle for the single
 ; resident Renderer at RENDERER (header: triangle_count u16, dropped u16,
 ; clear_color, padding; commands of 16 bytes from RENDERER+6 = $D000):
-;   project the three corners through the 64-entry vertex cache at $8C00
+;   project the three corners through the 64-entry vertex cache at $8E00
 ;     (entry: point x, y, z then screen x, y; a byte-mix index — the cache
 ;     is a memo keyed by the whole point, so the host's arithmetic hash in
 ;     projection::project_cached need not be reproduced; misses call
@@ -18,28 +18,28 @@
 ;   triangle_count += 1.
 ; Everything after the projection is the shared .Let_emit tail, which the
 ; mesh kernel below enters with projected corners of its own.
-; Scratch at $9158-$91CF is free RAM no interrupt touches.
+; Scratch at $9358-$93CF is free RAM no interrupt touches.
 .zeropage __rc2
 .zeropage __rc3
 .zeropage __rc4
 .zeropage __rc5
-.set CACHE, $8c00
-.set ET_POINTS, $9158
-.set ET_COLOR, $915a
-.set ET_FLAGS, $915b
-.set ET_CORNER, $915c
-.set ET_V, $915d
-.set ET_ENTRY, $9163
-.set ET_HASH, $9165
-.set ET_SX, $9167
-.set ET_SY, $916d
-.set ET_A, $9173
-.set ET_B, $9175
-.set ET_NEG, $9177
-.set ET_R, $9178
-.set ET_P1, $917c
-.set ET_SUM, $9180
-.set ET_COMMAND, $9184
+.set CACHE, $8e00
+.set ET_POINTS, $9358
+.set ET_COLOR, $935a
+.set ET_FLAGS, $935b
+.set ET_CORNER, $935c
+.set ET_V, $935d
+.set ET_ENTRY, $9363
+.set ET_HASH, $9365
+.set ET_SX, $9367
+.set ET_SY, $936d
+.set ET_A, $9373
+.set ET_B, $9375
+.set ET_NEG, $9377
+.set ET_R, $9378
+.set ET_P1, $937c
+.set ET_SUM, $9380
+.set ET_COMMAND, $9384
 
 .section .phase.geometry,"ax",@progbits
 .globl fast_emit_triangle
@@ -559,12 +559,12 @@ fast_emit_triangle:
 ; (b.z - a.z) with the bounded division (t <= 32768) and x = a.x +
 ; ((b.x - a.x) * t >> 15) with the host's arithmetic shift (the 17-bit
 ; difference times t through four quarter-square partials, a negative product
-; rounded toward minus infinity), likewise y; z = 8. Scratch at $91D0-$91FF.
-.set CL_POLY, $91d0
-.set CL_LEN, $91fa
-.set CL_IN, $91fb
-.set CL_COLOR, $91fe
-.set CL_FLAGS, $91ff
+; rounded toward minus infinity), likewise y; z = 8. Scratch at $93D0-$93FF.
+.set CL_POLY, $93d0
+.set CL_LEN, $93fa
+.set CL_IN, $93fb
+.set CL_COLOR, $93fe
+.set CL_FLAGS, $93ff
 .set CL_SRC, ET_POINTS
 .set CL_A, ET_SX
 .set CL_B, ET_SY
@@ -978,13 +978,13 @@ fast_clip_triangle:
 ; Returns `count` when every record was consumed. Commands written so far
 ; never reach an unread record (32 k < 2176 + 20 k), so no copy is needed.
 .set RECORDS, RENDERER + 6 + 2176
-.set RS_INDEX, $9188
-.set RS_COUNT, $9189
-.set RS_PX, $918a
-.set RS_PY, $918c
-.set RS_PTR, $918e
-.set RS_T, $9190
-.set RS_FLAGS, $9192
+.set RS_INDEX, $9388
+.set RS_COUNT, $9389
+.set RS_PX, $938a
+.set RS_PY, $938c
+.set RS_PTR, $938e
+.set RS_T, $9390
+.set RS_FLAGS, $9392
 .globl fast_replay_scenery
 .type fast_replay_scenery,@function
 fast_replay_scenery:
@@ -1125,7 +1125,7 @@ fast_replay_scenery:
 ; written back so the caller clips it and resumes at index + 1. face_count
 ; is returned when the walk is complete or the budget is exhausted.
 .set RECORDS_BASE, $e000
-.set EM_ARGS, $91a0
+.set EM_ARGS, $93a0
 .set EM_VERT, EM_ARGS+0
 .set EM_FACES, EM_ARGS+2
 .set EM_MATRIX, EM_ARGS+4
@@ -1140,14 +1140,14 @@ fast_replay_scenery:
 .set EM_OVERRIDE, EM_ARGS+22
 .set EM_FCOLOR, EM_ARGS+23
 .set EM_IDX, EM_ARGS+24
-.set EM_ARGPTR, $91bc
-.set EM_FACE, $91be
-.set EM_I, $91bf
-.set EM_REC, $91c0
-.set EM_NEAR, $91c6
-.set EM_VPTR, $91c7
-.set EM_T, $91c9
-.set EM_RESULT, $91cb
+.set EM_ARGPTR, $93bc
+.set EM_FACE, $93be
+.set EM_I, $93bf
+.set EM_REC, $93c0
+.set EM_NEAR, $93c6
+.set EM_VPTR, $93c7
+.set EM_T, $93c9
+.set EM_RESULT, $93cb
 .globl fast_emit_mesh
 .type fast_emit_mesh,@function
 fast_emit_mesh:

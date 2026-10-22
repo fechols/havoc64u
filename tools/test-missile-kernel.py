@@ -41,9 +41,9 @@ extern void fast_steer_missile(struct Args *args);
 #define QLO ((uint8_t*)0xc000)
 #define QHI ((uint8_t*)0xc200)
 /* the kernel's selection, read back from its scratch for a sharper comparison */
-#define MS_BEST ((volatile int16_t*)0x915b)
-#define MS_BESTC (*(volatile int16_t*)0x9161)
-#define MS_FOUND (*(volatile uint8_t*)0x9167)
+#define MS_BEST ((volatile int16_t*)0x935b)
+#define MS_BESTC (*(volatile int16_t*)0x9361)
+#define MS_FOUND (*(volatile uint8_t*)0x9367)
 static struct Actor actors[12];
 static uint8_t specs[3 * 8];
 static int16_t w16(int32_t v){ return (int16_t)(uint16_t)(uint32_t)v; }
@@ -123,7 +123,7 @@ static int check(struct Args *a){
       (unsigned long)checks,a->shot.x,a->shot.y,a->shot.z,a->dx,a->dy,mine.dx,mine.dy,kernel_found,MS_BEST[0],MS_BEST[1],MS_BEST[2],MS_BESTC,
       theirs.dx,theirs.dy,found,best.x,best.y,best.z,closing);
     printf(" lock/rng %u/%02x -> kernel %u/%02x reference %u/%02x\n",a->target,a->rng,mine.target,mine.rng,theirs.target,theirs.rng);
-    printf(" kernel scratch: d %d e %d p %u neg %02x v %d %d\n",*(volatile int16_t*)0x9168,*(volatile int16_t*)0x9171,*(volatile uint16_t*)0x9173,*(volatile uint8_t*)0x9177,*(volatile int8_t*)0x9178,*(volatile int8_t*)0x9179);
+    printf(" kernel scratch: d %d e %d p %u neg %02x v %d %d\n",*(volatile int16_t*)0x9368,*(volatile int16_t*)0x9371,*(volatile uint16_t*)0x9373,*(volatile uint8_t*)0x9377,*(volatile int8_t*)0x9378,*(volatile int8_t*)0x9379);
     printf(" boss active %u z %d left %u right %u core %u; bank count %u\n",a->boss_active,a->boss_z,a->boss_left,a->boss_right,a->boss_core,a->enemy_count);
     for(uint8_t i=0;i<12;i++) printf(" actor %u: kind %u hp %u flags %02x speed %u at (%d,%d,%d)\n",i,actors[i].kind,actors[i].hp,actors[i].flags,actors[i].approach_speed,actors[i].pos.x,actors[i].pos.y,actors[i].pos.z);
     return 1;
@@ -227,8 +227,8 @@ subprocess.run([sdk/"mos-sim-clang", "-Os", "-mlto-zp=0", build/"check.c", *asse
                 "-Wl,-Map=" + str(build/"check.map"), "-o", build/"check"], check=True)
 layout = (build/"check.map").read_text(encoding="utf-8", errors="replace")
 heap = re.search(r"^\s*([0-9a-f]+)\s+[0-9a-f]+\s+[0-9a-f]+\s+\d+\s+__heap_start", layout, re.M)
-if heap is None or int(heap.group(1), 16) > 0x913f:
-    raise SystemExit(f"harness image reaches {heap.group(1) if heap else '?'}: overlaps the kernel scratch at $9140")
+if heap is None or int(heap.group(1), 16) > 0x933f:
+    raise SystemExit(f"harness image reaches {heap.group(1) if heap else '?'}: overlaps the kernel scratch at $9340")
 result = subprocess.run([sdk/"mos-sim", "--cycles", build/"check"], text=True, capture_output=True, timeout=300)
 print(result.stdout.strip(), flush=True)
 print(result.stderr.strip(), flush=True)

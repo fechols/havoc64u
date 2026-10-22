@@ -10,6 +10,7 @@ pub mod audio;
 pub mod cells;
 pub mod game;
 pub mod hud;
+pub mod hud_sprites;
 pub mod math;
 pub mod music;
 pub mod presentation;

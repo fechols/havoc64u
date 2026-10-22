@@ -104,9 +104,9 @@ int main(void){
       printf(" sincos %d %d %d %d %d %d\n",sincos[0],sincos[1],sincos[2],sincos[3],sincos[4],sincos[5]);
       printf(" got  %d %d %d / %d %d %d / %d %d %d\n",got_m[0],got_m[1],got_m[2],got_m[3],got_m[4],got_m[5],got_m[6],got_m[7],got_m[8]);
       printf(" want %d %d %d / %d %d %d / %d %d %d\n",want_m[0],want_m[1],want_m[2],want_m[3],want_m[4],want_m[5],want_m[6],want_m[7],want_m[8]);
-      { const int16_t *slots=(const int16_t*)0x9100; printf(" slots in %d %d %d %d %d %d one %d t %d %d\n",slots[0],slots[1],slots[2],slots[3],slots[4],slots[5],slots[6],slots[7],slots[8]);
-        printf(" slots m %d %d %d / %d %d %d / %d %d %d index %u\n",slots[9],slots[10],slots[11],slots[12],slots[13],slots[14],slots[15],slots[16],slots[17],*(uint8_t*)0x9126);
-        printf(" out captured %04x actual %04x sincos actual %04x\n",*(uint16_t*)0x9124,(unsigned)(uintptr_t)got_m,(unsigned)(uintptr_t)sincos); }
+      { const int16_t *slots=(const int16_t*)0x9300; printf(" slots in %d %d %d %d %d %d one %d t %d %d\n",slots[0],slots[1],slots[2],slots[3],slots[4],slots[5],slots[6],slots[7],slots[8]);
+        printf(" slots m %d %d %d / %d %d %d / %d %d %d index %u\n",slots[9],slots[10],slots[11],slots[12],slots[13],slots[14],slots[15],slots[16],slots[17],*(uint8_t*)0x9326);
+        printf(" out captured %04x actual %04x sincos actual %04x\n",*(uint16_t*)0x9324,(unsigned)(uintptr_t)got_m,(unsigned)(uintptr_t)sincos); }
       return 2;}
     for(uint8_t r=0;r<4;r++){
       state=state*1664525u+1013904223u;

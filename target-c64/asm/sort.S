@@ -16,7 +16,7 @@
 ; command, with the low-byte counting fused in), the logical order is laid
 ; out in the ORDER page itself (dead until the second pass writes the
 ; result), the intermediate index list lives in IDXB and the 256 bucket
-; counts in COUNTS; all of it is the pixel-band workspace at $8C00-$8FFF,
+; counts in COUNTS; all of it is the pixel-band workspace at $8E00-$91FF,
 ; dead between the last projection and the first raster band. The high key
 ; byte spans few values in practice (depths below 4096), so its pass zeroes
 ; and prefixes only the range it saw.
@@ -29,10 +29,10 @@
 .zeropage __rc7
 .zeropage __rc8
 .zeropage __rc9
-.set KEYLO, $8c00
-.set KEYHI, $8d00
-.set IDXB, $8e00
-.set COUNTS, $8f00
+.set KEYLO, $8e00
+.set KEYHI, $8f00
+.set IDXB, $9000
+.set COUNTS, $9100
 ; The mos-sim harness relocates the output page.
 .ifndef ORDER
 .set ORDER, $7600

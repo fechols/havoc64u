@@ -1,6 +1,6 @@
 ; Publish one finished eight-line band without changing memory being fetched
 ; by the VIC. C ABI: band 0..24 in A; I/O mapped in, IRQs enabled on entry.
-; Staging: bitmap $9340..$947f, screen $7700..$7727, color $7728..$774f.
+; Staging: bitmap $9540..$967f, screen $7700..$7727, color $7728..$774f.
 ; The staging bytes and rc0/1, rc20..31 are preserved; rc2..15 are scratch.
 ;
 ; For every Y-scroll 0..7, band b can be fetched on lines 48+8*b through
@@ -102,7 +102,7 @@ publish_commit:
     ldy #0
 .Lpublish_page:
     .rept 8
-    lda $9340,y
+    lda $9540,y
     sta (__rc2),y
     iny
     .endr
@@ -110,7 +110,7 @@ publish_commit:
     inc __rc3
 .Lpublish_tail:
     .rept 8
-    lda $9440,y
+    lda $9640,y
     sta (__rc2),y
     iny
     .endr

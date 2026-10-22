@@ -145,7 +145,7 @@ def main():
         ("escaped-helper-pointer", lambda data: replace_target(data, pointer, auxiliary_name), "unsafe overlay references"),
         ("helpers-call-retired-startup", lambda data: replace_target(data, auxiliary_call, startup_name), "unsafe overlay references"),
         ("helpers-call-alternative-tail", lambda data: replace_target(data, auxiliary_call, "encounter_lowlands"), "unsafe overlay references"),
-        ("helpers-wrong-address", lambda data: auxiliary_header(data, 12, 0x8c01), "SIM helpers must fit"),
+        ("helpers-wrong-address", lambda data: auxiliary_header(data, 12, 0x8e01), "SIM helpers must fit"),
         ("helpers-outgrow-workspace", lambda data: auxiliary_header(data, 20, 0x501), "SIM helpers must fit"),
         ("helpers-not-reloaded", lambda data: replace_target(data, helper_dma, phase_loader_name), "SIM helper loader"),
         ("pixels-helpers-overlap-masks", lambda data: pixels_header(data, 12, 0x6f1f), "PIXELS helpers must fit"),
@@ -170,10 +170,22 @@ def main():
     for helper in ('__divsi3', '__udivsi3', '__mulsi3'):
         cases.append((f'forbidden-{helper}', lambda data, name=helper: rename_symbol(data, name),
                       'generic 32-bit helper linked'))
-    for value in (0x9127, 0x9129):
+    for name, value, expected in (
+        ('__hud_sprites_start', 0x8bff, 'incorrect HUD sprite allocation'),
+        ('__hud_sprites_end', 0x8e01, 'incorrect HUD sprite allocation'),
+        ('__segment0_start', 0x2dff, 'incorrect mission buffer allocation'),
+        ('__segment0_end', 0x3001, 'incorrect mission buffer allocation'),
+        ('__segment1_start', 0x96ff, 'incorrect mission buffer allocation'),
+        ('__segment1_end', 0x9901, 'incorrect mission buffer allocation'),
+        ('__resident_end', 0x2e01, 'resident code overlaps mission buffer at $2E00'),
+    ):
+        cases.append((f'ownership-{name}',
+                      lambda data, name=name, value=value: symbol_address(data, name, value),
+                      expected))
+    for value in (0x9327, 0x9329):
         cases.append((f'hud-seen-address-{value:04x}',
                       lambda data, value=value: symbol_address(data, '__cell_hud_seen', value),
-                      'HUD-seen flag must reuse cell scratch at $9128'))
+                      'HUD-seen flag must reuse cell scratch at $9328'))
     if span_enabled:
         for name, value in (('__span_buffer_start', 0xcfff),
                             ('__span_buffer_end', 0xda01),

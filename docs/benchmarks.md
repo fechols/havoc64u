@@ -2070,3 +2070,48 @@ one sample per case and do not establish physical-hardware timing.
 `target/reu-1m/performance-summary.json` links the complete baseline and compact
 reports. Both production and instrumented sound profiles pass the existing RAM
 and overlay limits; no limits were enlarged for the smaller REU.
+
+## Floating sprite HUD (2026-10-21)
+
+These measurements cover the initial HUD artwork, before its decorative
+backings were removed and the bomb count changed to yellow/gray rectangles.
+
+The four-corner HUD uses eight persistent sprites while all 25 bitmap bands
+render scenery. The baseline was built from the pre-change HEAD in
+`target/hud-baseline-source`; the candidate is `target/hud-bench-package`.
+Both use the same four-SID configuration. These calibrated VICE measurements
+use three samples per fixed fixture, zero simulation ticks, and report median
+frame times with retained palettes. The changed bitmap content is intentional.
+
+| Scene | PAL before / after | NTSC before / after |
+| --- | ---: | ---: |
+| Lowlands | 107.131 / 108.343 ms | 103.244 / 103.546 ms |
+| Carrier | 122.565 / 122.564 ms | 118.367 / 115.449 ms |
+| Asteroid belt enemies | 107.284 / 108.970 ms | 105.980 / 104.522 ms |
+
+The 400-tick held-fire run measured 7.814 to 7.668 FPS on PAL and 8.145 to
+8.039 FPS on NTSC. These runs advance with real time and are not identical
+per-frame workloads; the fixed fixtures above isolate matching scene state.
+This change provides full-screen scenery and independent HUD colors, without
+claiming a frame-rate gain. Physical-hardware timing remains unmeasured.
+
+Native traces measured a maximum protected sprite publication of 75 bus
+cycles: 1.190 PAL or 1.154 NTSC scanlines, below the two-line guard budget.
+Unchanged fixture repeats produced no sprite publications. Separate PAL/NTSC
+smoke checks verified six unchanged frames with zero image writes, a score
+change affecting only the top-left pair, and sprite positions matching every
+bomb-shake phase, retrigger, and return to rest.
+
+Before reports are `target/hud-before-bench-{pal,ntsc,space-pal,space-ntsc}/report.json`;
+after reports are `target/hud-bench-{pal,ntsc,space-pal,space-ntsc}/report.json`.
+Each records package hashes, cold and retained samples, and phase timings.
+The candidate's cold samples in those reports inherited HUD state from earlier
+samples and should not be used for matched-work timing comparisons; the
+retained-palette medians above already used a matching warmup.
+
+The current driver warms the sprite HUD with the identical fixture before
+every measured frame, then clears bitmap attributes when cold palettes are
+requested. Reports record `sprite_hud_setup: matching-fixture-warmup-v1` and
+per-frame HUD commit/image-write deltas, which must both remain zero. Cold
+baseline reports with the former inherited HUD state are rejected and must be
+regenerated with the current driver.

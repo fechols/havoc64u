@@ -3,6 +3,8 @@
 
 Build with scripts/build-benchmark.sh. Fixtures use matching ELF/DWARF layouts,
 live 50 Hz audio, fixed simulation work, and a common VIC raster starting line.
+Sprite HUDs are warmed with the same fixture before every measured frame;
+the cold/retained palette choice applies only to bitmap attributes.
 The separate real-time pass retains ordinary scheduling and physical FIRE.
 """
 import argparse
@@ -360,6 +362,44 @@ def validate_pixels_transfers(transfers, symbols):
     return {"prefix_bytes": prefix, "helper_bytes": helper, "gap_skipped": True}
 
 
+def hud_commit_profile(text, symbols, cycles_per_line):
+    """Dirty-corner copies may be absent; each observed copy must stay bounded."""
+    names = ("hud_publish_guard", "hud_publish_commit", "hud_publish_done")
+    if not all(name in symbols for name in names):
+        return None
+    guard, begin, done = (symbols[name] for name in names)
+    events = sorted((cycle, label) for label, address in (("guard", guard), ("begin", begin), ("done", done))
+                    for cycle in execution_cycles(text, address))
+    guarded = started = None
+    durations, protected, attempts = [], [], 0
+    for cycle, label in events:
+        if label == "guard":
+            if started is not None:
+                raise RuntimeError("HUD guard interrupted an unfinished image copy")
+            guarded = cycle
+            attempts += 1
+        elif label == "begin":
+            if guarded is None or started is not None:
+                raise RuntimeError("HUD image copy lacks its final protected raster check")
+            started = cycle
+        else:
+            if started is None:
+                raise RuntimeError("HUD image copy ended without an entry")
+            durations.append(cycle - started)
+            protected.append(cycle - guarded)
+            guarded = started = None
+    if guarded is not None or started is not None or len(durations) > 4:
+        raise RuntimeError("HUD trace has an incomplete copy or more than four dirty corners")
+    limit = 2 * cycles_per_line
+    if any(duration <= 0 or duration >= limit for duration in protected):
+        raise RuntimeError(f"HUD image commit exceeded its two-scanline bound ({limit} cycles): {protected}")
+    return dict(copies=len(durations), duration_bus_cycles=durations,
+                protected_duration_bus_cycles=protected, guard_attempts=attempts,
+                guard_retries=attempts - len(durations), max_protected_bus_cycles=max(protected, default=0),
+                max_protected_scanlines=max(protected, default=0) / cycles_per_line,
+                limit_bus_cycles_exclusive=limit)
+
+
 def native_bytes(mon, syms):
     bank = mon.integer(syms["FRONT_BANK"], 1)
     bitmap, screen = (0xe000, 0xc000) if bank == 3 else (0xa000, 0x8000)
@@ -451,6 +491,8 @@ def main():
                       command=sys.argv, driver_checkout_revision=subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip(),
                       driver_checkout_status=subprocess.check_output(["git", "status", "--short"], cwd=ROOT, text=True))
         syms = vice.symbols(elf, args.llvm_nm)
+        has_sprite_hud = "HUD_COMMITS" in syms
+        report["sprite_hud_setup"] = "matching-fixture-warmup-v1" if has_sprite_hud else "bitmap-only"
         for name in ("BENCH_TICKS", "BENCH_RUNTIME", "benchmark_frame_begin", "benchmark_frame_ready", "geometry_complete"):
             if name not in syms:
                 raise RuntimeError(f"Package is not an instrumented benchmark build: missing {name}")
@@ -549,7 +591,7 @@ def main():
         if sid_count == 4:
             mon.command("trace store d440 d478 if @cpu:$01 == $35")
         mon.command(f"trace exec {audio_tick_address:04x}")
-        for name in ("publish_guard", "publish_commit", "publish_done"):
+        for name in ("publish_guard", "publish_commit", "publish_done", "hud_publish_guard", "hud_publish_commit", "hud_publish_done"):
             if name in syms:
                 # These addresses belong to the shared overlay window.
                 mon.command(f"trace exec {syms[name]:04x} if @cpu:${syms['PROF_PHASE']:04x} == $07")
@@ -624,7 +666,7 @@ def main():
                 word(syms["ENEMY_CODE_PROFILE"], code_profile, 1)
             write(runtime_address, runtime)
             for slot, section in enumerate(sections):
-                write(0x9500+slot*512, segment_image[0x2000+section*2048:0x2200+section*2048])
+                write(syms.get(f"__segment{slot}_start", 0x9500 + slot * 512), segment_image[0x2000+section*2048:0x2200+section*2048])
             for name, size, value in (("CLOCK_MS", 2, 0), ("INPUT_HEAD", 1, 0), ("INPUT_TAIL", 1, 0), ("LAST_BITS", 1, fixture["input_bits"])):
                 word(vice.resident_symbol(syms, name)[1], value, size)
             for name, size, value in (("AUDIO_TICKS", 2, 0), ("INPUT_OVERFLOWS", 2, 0), ("FRAME_SERIAL", 2, 32),
@@ -709,6 +751,13 @@ def main():
             trace = path.read_text(errors="replace")
             end["audio_service_cycles"] = execution_cycles(trace, audio_tick_address)
             end["scanout_commits"] = scanout_commit_profile(trace, syms, 63 if args.video == "pal" else 65)
+            end["hud_image_commits"] = hud_commit_profile(trace, syms, 63 if args.video == "pal" else 65)
+            if has_sprite_hud:
+                for counter in ("hud_commits", "hud_image_writes"):
+                    end[counter + "_delta"] = (end[counter] - start[counter]) & 0xffff
+                if (end["hud_commits_delta"] or end["hud_image_writes_delta"]
+                        or end["hud_image_commits"]["copies"]):
+                    raise RuntimeError("Measured frame changed the warmed sprite HUD")
             end["sid"] = vice.sid_summary(path, events, sid_count)
             if any(not end["sid"][chip]["gate_on"] for chip in ("left_d400", "right_d420")):
                 raise RuntimeError("Measured frame did not service live music on both SID chips")
@@ -722,6 +771,7 @@ def main():
             end["stack_guards"] = {name: mon.integer(syms[name], 1) for name in ("__stack_bottom", "__irq_stack_bottom")}
             mon.command("bank cpu")
             native = native_bytes(mon, syms)
+            sprites = vice.sprite_state(mon)
             # Renderer-private classification flags are not geometry: bits
             # 2/4 identify cached sky/orientation, 32/64 identify the terrain
             # visibility pass. Compare every coordinate, color, depth and
@@ -734,6 +784,9 @@ def main():
                        native_pixels_sha256=digest(decoded_pixels(native)),
                        native_screen_sha256=digest(native[8000:9000]), native_color_sha256=digest(native[9000:10000]),
                        native_background=native[10000],
+                       sprite_state_sha256=semantic_hash(vice.sprite_visual_state(sprites)),
+                       sprite_images_sha256=digest(b"".join(bytes.fromhex(image) for image in sprites["images"])),
+                       composited_pixels_sha256=digest(vice.composite_pixels(decoded_pixels(native), sprites)),
                        clear_color=clear_color)
             if capture_image:
                 end["capture"] = vice.capture(mon, syms, folder, "frame")
@@ -766,9 +819,10 @@ def main():
                         phase = sample_index % 3
                         folder = output / f"{fixture['name']}-{ticks}-{palette}" / str(sample_index)
                         folder.mkdir(parents=True, exist_ok=True)
-                        if palette == "retained":
-                            # Render the same post-simulation state once so the
-                            # visible screen and color RAM hold its palette.
+                        if palette == "retained" or has_sprite_hud:
+                            # Warm the identical post-simulation HUD for every
+                            # sample, independent of earlier fixtures. The final
+                            # seed still clears bitmap attributes for cold cases.
                             seed(fixture, ticks, True, phase)
                             finish_timer_seed()
                             mon.run_until(syms["frame_complete"], failures)
@@ -780,8 +834,8 @@ def main():
                             if sample["simulation_ticks"] != expected_ticks:
                                 raise RuntimeError("Code/model reentry skipped or duplicated fixed simulation ticks")
                         sample.update(initial=seeded, cia_phase=phase)
-                        if case["samples"] and any(sample[key] != case["samples"][0][key] for key in ("geometry_sha256", "game_sha256", "native_sha256")):
-                            raise RuntimeError("Identical fixture repeats changed geometry, game state, or pixels")
+                        if case["samples"] and any(sample[key] != case["samples"][0][key] for key in ("geometry_sha256", "game_sha256", "native_sha256", "sprite_state_sha256")):
+                            raise RuntimeError("Identical fixture repeats changed geometry, game state, bitmap pixels, or visible sprites")
                         case["samples"].append(sample)
                         mon.run_until(syms["benchmark_frame_ready"], failures)
                     case.update(median_cycles=statistics.median(sample["bus_cycles_delta"] for sample in case["samples"]),
@@ -789,8 +843,12 @@ def main():
                                 max_audio_lateness_ms=max(sample["max_audio_lateness_ms"] for sample in case["samples"]))
                     reference = baseline_cases.get((fixture["name"], ticks, palette))
                     if reference:
+                        if (palette == "cold" and reference["samples"][0].get("hud_image_commits") is not None
+                                and baseline.get("sprite_hud_setup") != "matching-fixture-warmup-v1"):
+                            raise RuntimeError("Cold baseline has unseeded sprite HUD state; rerun it with the current driver")
                         comparison_failures = []
-                        for key in report["comparison"]["required_equality"]:
+                        equality = report["comparison"]["required_equality"] + (["sprite_state_sha256"] if "sprite_state_sha256" in reference["samples"][0] else [])
+                        for key in equality:
                             if case["samples"][0][key] != reference["samples"][0][key]:
                                 comparison_failures.append(f"Baseline comparison failed for {fixture['name']}/{ticks}/{palette}: {key}")
                         if not comparison_failures:

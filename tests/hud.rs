@@ -55,160 +55,6 @@ fn frame(hud_state: &Hud, frame: u16) -> Vec<u8> {
 }
 
 #[test]
-fn fps_readout_formats_tenths_right_of_the_boss_panel_in_band_one_only() {
-    for (tenths, text) in [
-        (0, b" 0.0 FPS"),
-        (62, b" 6.2 FPS"),
-        (123, b"12.3 FPS"),
-        (999, b"99.9 FPS"),
-        (65535, b"99.9 FPS"),
-    ] {
-        let mut actual = [6; 1280];
-        hud::draw_fps(1, &mut actual, tenths);
-        let mut expected = [6; 1280];
-        draw_text(1, &mut expected, 128, 9, text, 1);
-        assert_eq!(actual, expected, "tenths {tenths}");
-        assert!(actual != [6; 1280]);
-        // Only columns beside the boss panel (x >= 126) may change.
-        for row in 0..8 {
-            assert!(actual[row * 160..row * 160 + 126].iter().all(|&p| p == 6));
-        }
-    }
-    for band in (0..25).filter(|&band| band != 1) {
-        let mut untouched = [6; 1280];
-        hud::draw_fps(band, &mut untouched, 62);
-        assert_eq!(untouched, [6; 1280], "band {band}");
-    }
-    // The readout survives the boss panel and the cockpit's HUD precedence.
-    let mut hud_state = state(Mode::Playing);
-    hud_state.boss_shield = 50;
-    let mut pixels = [6; 1280];
-    hud::draw(1, &mut pixels, &hud_state, 0);
-    hud::draw_fps(1, &mut pixels, 62);
-    let mut reference = [6; 1280];
-    hud::draw(1, &mut reference, &hud_state, 0);
-    draw_text(1, &mut reference, 128, 9, b" 6.2 FPS", 1);
-    assert_eq!(pixels, reference);
-    assert!(pixels.iter().any(|&p| p == (HUD_INK | 1)));
-}
-
-#[test]
-fn cockpit_leaves_playfield_untouched_and_displays_resource_levels() {
-    let pixels = frame(&state(Mode::Playing), 0);
-    assert!(pixels[8 * 160..185 * 160].iter().all(|&p| p == 6));
-    assert_eq!(pixels[194 * 160 + 3], HUD_INK | 13);
-    assert_eq!(pixels[194 * 160 + 47], HUD_INK | 13);
-    assert_eq!(pixels[194 * 160 + 48], 11);
-    assert_eq!(pixels[194 * 160 + 129], HUD_INK | 7);
-    assert_eq!(pixels[194 * 160 + 136], HUD_INK | 7);
-    assert_eq!(pixels[194 * 160 + 143], 11);
-}
-
-#[test]
-fn all_level_names_fit_between_score_and_lives_in_every_cockpit_mode() {
-    for mode in [
-        Mode::Playing,
-        Mode::Transition,
-        Mode::Respawning,
-        Mode::GameOver,
-    ] {
-        for (section, name) in LEVEL_NAMES.iter().enumerate() {
-            for (score, lives, digits, life) in [
-                (0, 0, b"000000", b'0'),
-                (999_999, 3, b"999999", b'3'),
-                (u32::MAX, u8::MAX, b"999999", b'9'),
-            ] {
-                let mut status = state(mode);
-                status.section = section as u8;
-                status.score = score;
-                status.lives = lives;
-                let mut pixels = [6; 1280];
-                hud::draw(0, &mut pixels, &status, 0);
-
-                // Compare each complete field independently: no name may
-                // overwrite a score digit or the unchanged lives display.
-                let name_x = (160 - (name.len() * 4 - 1)) / 2;
-                assert!(name_x >= 48 && name_x + name.len() * 4 - 1 <= 111);
-                let mut expected = [0; 1280];
-                draw_text(0, &mut expected, 1, 2, b"SCORE", 12);
-                draw_text(0, &mut expected, 23, 2, digits, 1);
-                draw_text(0, &mut expected, name_x as i16, 2, name, 1);
-                draw_text(0, &mut expected, 115, 2, b"LIVES", 12);
-                draw_text(0, &mut expected, 143, 2, &[life], 1);
-                assert_eq!(
-                    pixels, expected,
-                    "{mode:?}, section {section}, score {score}, lives {lives}"
-                );
-            }
-        }
-    }
-}
-
-#[cfg(feature = "host-tools")]
-#[test]
-fn crossing_keeps_the_outgoing_name_until_arrival_for_all_seventeen_boundaries() {
-    use havoc::game::{Game, TRANSITION_TICKS};
-
-    for section in 0..SEGMENT_COUNT - 1 {
-        for tick in [
-            0,
-            TRANSITION_TICKS / 2,
-            TRANSITION_TICKS - 1,
-            TRANSITION_TICKS,
-        ] {
-            let status = Game::preview_transition(section, tick).hud();
-            let expected_section = section + u8::from(tick == TRANSITION_TICKS);
-            assert_eq!(status.section, expected_section);
-            assert_eq!(
-                status.mode,
-                if tick == TRANSITION_TICKS {
-                    Mode::Playing
-                } else {
-                    Mode::Transition
-                }
-            );
-            let image = frame(&status, 0);
-            let mut expected = [0; 1280];
-            let name = LEVEL_NAMES[expected_section as usize];
-            draw_text(
-                0,
-                &mut expected,
-                ((160 - (name.len() * 4 - 1)) / 2) as i16,
-                2,
-                name,
-                1,
-            );
-            for row in 0..8 {
-                assert_eq!(
-                    &image[row * 160 + 48..row * 160 + 111],
-                    &expected[row * 160 + 48..row * 160 + 111],
-                    "section {section}, crossing tick {tick}"
-                );
-            }
-        }
-    }
-}
-
-#[test]
-fn scenic_flight_retains_cockpit_without_obscuring_the_landscape() {
-    let playing = frame(&state(Mode::Playing), 0);
-    let mut status = state(Mode::Transition);
-    status.distance = 30_000;
-    let transit = frame(&status, 0);
-    assert_eq!(&transit[..8 * 160], &playing[..8 * 160]);
-    assert_eq!(&transit[184 * 160..], &playing[184 * 160..]);
-    assert!(transit[8 * 160..184 * 160].iter().all(|&pixel| pixel == 6));
-    status.mode = Mode::Playing;
-    status.section = 1;
-    // The incoming section starts its own distance count at zero.
-    status.distance = 0;
-    let arrived = frame(&status, 0);
-    assert!(arrived[29 * 160..51 * 160]
-        .iter()
-        .any(|&pixel| pixel & HUD_INK != 0));
-}
-
-#[test]
 fn title_has_large_lettering_and_keeps_the_ship_visible() {
     let pixels = frame(&state(Mode::Title), 0);
     assert!(
@@ -223,56 +69,6 @@ fn title_has_large_lettering_and_keeps_the_ship_visible() {
         .iter()
         .any(|&p| p == HUD_INK | 1));
     assert_ne!(pixels, frame(&state(Mode::Title), 16));
-}
-
-#[test]
-fn sector_banner_expires_and_boss_meter_uses_normalized_health() {
-    let mut status = state(Mode::Playing);
-    status.distance = 0;
-    let first = frame(&status, 0);
-    assert!(first[29 * 160..51 * 160].iter().any(|&p| p & HUD_INK != 0));
-    status.distance = 800;
-    let expired = frame(&status, 0);
-    assert!(expired[29 * 160..51 * 160].iter().all(|&p| p == 6));
-    assert_eq!(&first[..1280], &expired[..1280]);
-    assert!(expired[..1280]
-        .chunks_exact(160)
-        .any(|row| row[48..111].contains(&(HUD_INK | 1))));
-    status.boss_shield = 20;
-    let boss = frame(&status, 0);
-    assert_eq!(boss[14 * 160 + 70], HUD_INK | 10);
-    assert_eq!(boss[14 * 160 + 79], HUD_INK | 10);
-    assert_eq!(boss[14 * 160 + 80], 11);
-}
-
-#[test]
-fn all_eighteen_sector_numbers_and_five_boss_labels_remain_distinct() {
-    let mut sectors = Vec::new();
-    for stage in 0..SEGMENT_COUNT {
-        let mut status = state(Mode::Playing);
-        status.section = stage;
-        status.distance = 0;
-        let image = frame(&status, 0);
-        let number = image[33 * 160..38 * 160].to_vec();
-        assert!(
-            !sectors.contains(&number),
-            "duplicate sector number {stage}"
-        );
-        sectors.push(number);
-    }
-    let mut labels = Vec::new();
-    for kind in 1..=5 {
-        let mut status = state(Mode::Playing);
-        status.boss_kind = kind;
-        status.boss_shield = 100;
-        let image = frame(&status, 0);
-        let label: Vec<_> = (13..18)
-            .flat_map(|y| image[y * 160 + 14..y * 160 + 66].iter().copied())
-            .collect();
-        assert!(!labels.contains(&label), "duplicate boss label {kind}");
-        assert_eq!(image[14 * 160 + 70], HUD_INK | 8);
-        labels.push(label);
-    }
 }
 
 #[test]
@@ -369,8 +165,8 @@ fn attract_labels_identify_each_map_without_cockpit_or_boss_panels() {
 }
 
 #[test]
-fn every_level_top_strip_survives_native_packing_and_previous_cell_palettes() {
-    for mode in [Mode::Playing, Mode::Attract] {
+fn attract_names_survive_native_packing_and_previous_cell_palettes() {
+    for mode in [Mode::Attract] {
         for section in 0..SEGMENT_COUNT {
             let mut status = state(mode);
             status.section = section;
@@ -448,5 +244,80 @@ fn every_mode_survives_native_bitmap_packing_with_readable_ink() {
                 );
             }
         }
+    }
+}
+
+#[test]
+fn persistent_readouts_and_level_names_never_replace_playfield_pixels() {
+    for mode in [Mode::Playing, Mode::Transition] {
+        for section in 0..SEGMENT_COUNT {
+            let mut status = state(mode);
+            status.section = section;
+            status.boss_shield = 100;
+            status.charge = 255;
+            assert!(frame(&status, 16).iter().all(|&pixel| pixel == 6));
+        }
+    }
+    for mode in [Mode::Respawning, Mode::GameOver] {
+        let pixels = frame(&state(mode), 0);
+        assert!(pixels[..8 * 160].iter().all(|&pixel| pixel == 6));
+        assert!(pixels[184 * 160..].iter().all(|&pixel| pixel == 6));
+    }
+}
+
+#[cfg(feature = "host-tools")]
+#[test]
+fn every_crossing_keeps_world_visible_and_announces_arrival() {
+    use havoc::game::{Game, TRANSITION_TICKS};
+    for section in 0..SEGMENT_COUNT - 1 {
+        for tick in [
+            0,
+            TRANSITION_TICKS / 2,
+            TRANSITION_TICKS - 1,
+            TRANSITION_TICKS,
+        ] {
+            let status = Game::preview_transition(section, tick).hud();
+            let arrived = tick == TRANSITION_TICKS;
+            assert_eq!(status.section, section + u8::from(arrived));
+            assert_eq!(
+                status.mode,
+                if arrived {
+                    Mode::Playing
+                } else {
+                    Mode::Transition
+                }
+            );
+            let image = frame(&status, 0);
+            assert!(image[..8 * 160].iter().all(|&pixel| pixel == 6));
+            assert!(image[184 * 160..].iter().all(|&pixel| pixel == 6));
+            assert_eq!(
+                image[29 * 160..51 * 160]
+                    .iter()
+                    .any(|&pixel| pixel & HUD_INK != 0),
+                arrived
+            );
+        }
+    }
+}
+
+#[test]
+fn sector_banner_expires_and_all_eighteen_numbers_remain_distinct() {
+    let mut sectors = Vec::new();
+    for section in 0..SEGMENT_COUNT {
+        let mut status = state(Mode::Playing);
+        status.section = section;
+        status.distance = 0;
+        let image = frame(&status, 0);
+        assert!(image[29 * 160..51 * 160]
+            .iter()
+            .any(|&pixel| pixel & HUD_INK != 0));
+        let number = image[33 * 160..38 * 160].to_vec();
+        assert!(
+            !sectors.contains(&number),
+            "duplicate sector number {section}"
+        );
+        sectors.push(number);
+        status.distance = 800;
+        assert!(frame(&status, 0).iter().all(|&pixel| pixel == 6));
     }
 }

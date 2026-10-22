@@ -34,7 +34,7 @@ struct Vec3 { int16_t x, y, z; };
 extern void fast_clip_triangle(const struct Vec3 points[3], uint8_t color, uint8_t flags);
 #define QLO ((uint8_t*)0xc000)
 #define QHI ((uint8_t*)0xc200)
-#define CACHE ((uint8_t*)0x8c00)
+#define CACHE ((uint8_t*)0x8e00)
 uint16_t PROJECT_X[128], PROJECT_Y[128];
 uint8_t RENDERER[6 + 256 * 16];
 static uint8_t reference_renderer[6 + 256 * 16];

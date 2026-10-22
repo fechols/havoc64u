@@ -4,7 +4,7 @@
 ; is the VIC background ($D021), which shows the frame's clear colour, so the
 ; clear colour and unpainted pixels need no slot; a cell asked for a fourth
 ; other colour (after recycling slots whose colour no longer appears in any
-; row) is expanded into the pixel band at $8C00 and finished by the classic
+; row) is expanded into the pixel band at $8E00 and finished by the classic
 ; per-pixel quantizer (fast_pack_cell in pack.S).
 ;
 ; Slots store keys: the colour XOR the clear colour. The clear colour is key
@@ -14,10 +14,10 @@
 ; code selects).
 ;
 ; State, PIXELS phase only:
-;   CODES  $9200  8 rows x 40 cells, bits 7..6 = leftmost pixel, slot k = k*$55
-;   COVER  $9340  8 rows x 40 masks: low nibble terrain, high nibble HUD;
+;   CODES  $9400  8 rows x 40 cells, bits 7..6 = leftmost pixel, slot k = k*$55
+;   COVER  $9540  8 rows x 40 masks: low nibble terrain, high nibble HUD;
 ;                bits 3 and 7 = leftmost pixel
-;   PAL0/1/2 $9480/$94A8/$94D0  slot keys per cell, 0 = free ($FF x 3 once
+;   PAL0/1/2 $9680/$96A8/$96D0  slot keys per cell, 0 = free ($FF x 3 once
 ;                                the cell lives in the pixel band)
 ;   HUDS   $7700  screen-byte staging only
 ;   OVER   $7728  per cell, nonzero once the cell lives in the pixel band
@@ -28,7 +28,7 @@
 ;   zero page $F0-$FF: the span's inputs and the hot per-cell temporaries;
 ;   $FE holds the span colour's key and $FF the band's clear colour (pack.S
 ;   reads it as the quantizer's background)
-;   scratch $9100-$912F (GEOMETRY's kernel scratch, idle during PIXELS) for
+;   scratch $9300-$932F (GEOMETRY's kernel scratch, idle during PIXELS) for
 ;   the rare paths (spill, pixel form, glyphs, finish)
 ; Zero page: rc8/9 and rc10/11 hold the current CODES and COVER row (the
 ; raster steps them with its rows; the HUD entries set them per call); the
@@ -47,13 +47,13 @@
 ; The mos-sim harnesses relocate the band state and the two small tables (their
 ; own tables and images occupy the production addresses).
 .ifndef CODES
-.set CODES, $9200
+.set CODES, $9400
 .endif
 .ifndef COVER
-.set COVER, $9340
+.set COVER, $9540
 .endif
 .ifndef PAL0
-.set PAL0, $9480
+.set PAL0, $9680
 .endif
 .set PAL1, PAL0+40
 .set PAL2, PAL0+80
@@ -67,10 +67,10 @@
 .set COVER_CLEAN, $7750
 .endif
 .ifndef PIXELS
-.set PIXELS, $8c00
+.set PIXELS, $8e00
 .endif
 .ifndef CS_SCRATCH
-.set CS_SCRATCH, $9100
+.set CS_SCRATCH, $9300
 .endif
 .set CS_ROW, $f0
 .set CS_FIRST, $f1
