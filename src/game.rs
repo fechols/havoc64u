@@ -2154,13 +2154,12 @@ impl Game {
             if a.kind != 0 && a.pos.z >= ACTOR_RETIRE_Z {
                 sink.color_override =
                     u8::from(self.actor_hit_flash_ticks[i] > ENEMY_HIT_FLASH_TICKS);
-                // Authored ground guns and their proxies are terrain-clear:
-                // Lowlands fits the flight corridor; Fortress lies above its
-                // low shoulders. Its first spawn follows the Canyon bridge.
-                // Wall batteries, boss turrets and obstacles keep normal order.
-                sink.extra_flags = if a.kind == assets::TURRET
-                    && self.stage_info.theme < 10
-                    && matches!(self.stage_info.enemy_profile, 0 | 2 | 3)
+                // Ground hazards and mounted enemies stay visible over terrain,
+                // including their shallow embedded bases and diamond proxies.
+                // Orbital hazards and boss-mounted units keep normal ordering.
+                sink.extra_flags = if self.stage_info.theme < 10
+                    && (matches!(a.kind, assets::ROCK | assets::BUILDING)
+                        || (a.kind == assets::TURRET && self.stage_info.boss_kind == 0))
                 {
                     TERRAIN_CLEAR_GEOMETRY
                 } else {

@@ -299,7 +299,7 @@ Or from Linux/WSL:
 bash scripts/build.sh
 ```
 
-The complete build tests the host with and without music kernels, bakes assets, links one C64 program, audits memory and overlays, and produces matching `havoc.prg`, `havoc.reu`, and `havoc.cfg` files in `dist/`. It also creates `havoc-v0.1.0.zip` with the three runtime files, launch instructions, and license. The native build uses `target-c64/target`. Generated packages are ignored by Git; cloning the repository does not supply `dist/`.
+The complete build tests the host with and without music kernels, bakes assets, links one C64 program, audits memory and overlays, and produces matching `havoc.prg`, `havoc.reu`, and `havoc.cfg` files in `dist/`. It also creates `havoc-v0.1.1.zip` with the three runtime files, launch instructions, and license. The native build uses `target-c64/target`. Generated packages are ignored by Git; cloning the repository does not supply `dist/`.
 
 After changing assets, bake with `cargo +stable run --release -- bake dist`, then run `bash scripts/build-target.sh`. The bake step alone does not produce executable overlays. Use the full build script to run checks and produce the release ZIP. On Windows, `scripts/build-windows.ps1` runs the same build through WSL; its optional output directory receives the single package and ZIP. SID-profile arguments and the `four-sid` Cargo feature have been removed.
 
@@ -450,24 +450,29 @@ The 2026-10-21 README refresh is preserved under `target/readme-refresh-20261021
 
 ## Terrain visibility coverage
 
-The player hull/exhaust, ordinary-stage tracked guns and Fortress bunkers use the
-`TERRAIN_CLEAR_GEOMETRY` command flag (`0x20`). Their authored geometry is proven
-to lie in front of every exterior terrain face along the camera ray. The flag
+The player hull/exhaust, terrestrial rocks and buildings, and ordinary-stage
+mounted enemies (including Canyon wall batteries) use the
+`TERRAIN_CLEAR_GEOMETRY` command flag (`0x20`). This is an intentional visibility
+priority over exterior terrain, including the shallow embedded bases of rocks
+and buildings. Their positions and collision bounds remain unchanged. The flag
 survives near clipping and preparation without changing the 16-byte command or
 12-byte tail. Drawing these faces sets pixel bit `0x40`; ordinary foreground
 writes replace the color while retaining that coverage, and tagged exterior
-terrain skips covered pixels. Canyon wall batteries, boss turrets, buildings,
-rocks, effects and other actors keep normal foreground ordering.
+terrain skips covered pixels. Boss turrets, orbital hazards, airborne enemies,
+effects and decorative scenery receive no protection. All foreground objects
+retain their normal ordering relative to one another.
 
 The hull stays inside X -136..137 and above world Y -103 for all 256 roll angles;
 tracked guns fit the same minimum 145-unit lane. Fortress bunkers reach X +/-158
 but stay at Y >= -98, above the conservative campaign shoulder envelope
 `495*(y+105) = 240*(abs(x)-145)`. Authored ground enemies spawn after their incoming
 terrain blend finishes. Transitions clear actors, and attract previews use their
-stage's terrain style. Tests cover all eight stages with ordinary ground enemies,
-the original twelve terrain sequences and eleven terrestrial crossings, plus orbital coverage tests. They enforce these bounds,
-spawn timing and terrain separation. Do not assign this flag to arbitrary
-meshes or below-ground objects without establishing the same visibility proof.
+stage's terrain style. These geometric bounds still apply to the ship, tracked
+guns and bunkers; rocks and buildings intentionally use the broader visibility
+policy even where their bases extend below the floor. Tests cover terrestrial
+ground actors and their proxies, the original twelve terrain sequences and
+eleven terrestrial crossings, plus orbital exclusions. Extend this policy only
+to actor classes intended to remain visible through terrain.
 
 Only lane, shoulder, outer-cap and runway strips carry `EXTERIOR_TERRAIN` (`0x40`
 in commands/tails). Wildlife and transport strips remain ordinary geometry. The

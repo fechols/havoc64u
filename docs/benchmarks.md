@@ -14,6 +14,54 @@ and REU capacity matching the package when reproducing a historical run.
 Current span summaries require only four-SID PAL and NTSC results. Use
 `--historical-dual-sid` to validate archived matrices containing both SID profiles.
 
+## Ground obstacle visibility: 2026-10-22
+
+The terrain-coverage rule now includes terrestrial rocks, buildings and ordinary
+mounted enemies, including Canyon wall batteries. It applies to full meshes and
+distance/budget proxies, intentionally exposing shallow embedded bases. The
+painter remains the default; the optional span backends still reproduce painter
+ordering and do not provide per-pixel depth correction.
+
+The actual first Lowlands rock at stage tick 458, position `(-70, -110, 336)`,
+loses all 259 of its visible pixels to terrain without protection. Native
+captures restore all 259 pixels on PAL and NTSC; a Foundry building fixture
+restores 176. The host regression follows the first authored rock from spawn to
+retirement, and the campaign sweep covers 165,888 combinations of ground actors,
+camera heights, scroll phases, depths and proxy choices. Silhouette checks use
+coverage rather than nonblack ink, so black rock facets are included.
+
+Both untouched production packages pass memory, overlay, IRQ and package
+checks. Nine fixtures, cold/retained palettes, three CIA phases, both video
+standards and before/after builds produce 216 native captures. Every capture
+matches all 10,000 display bytes and its background against independent Python
+Q16 edge walking followed by the production Rust cell writer and HUD. Ordered
+geometry matches after removing visibility metadata; gameplay state is identical
+apart from live paused-input timestamps in 72 frame pairs.
+
+| Measurement | PAL | NTSC |
+| --- | ---: | ---: |
+| Mean render-frame time change | +0.400% | +0.334% |
+| Largest case render-frame time change | +1.746% | +2.541% |
+
+All 36 paired fixture/palette medians retain at least 95% of baseline throughput.
+These are calibrated VICE measurements of paused production render frames with
+live audio and three CIA phases. They exclude simulation work, and the starting
+raster line is uncontrolled. The standard instrumented benchmark cannot link
+even the clean baseline because instrumentation exceeds resident memory; no
+runtime or layout workaround was introduced. These results are not physical
+hardware measurements or a full simulation benchmark.
+
+Host checks pass 362 tests with music kernels, 184 no-default-feature library
+tests, and both optional span renderer suites. Each library configuration retains
+its intentionally ignored native fixture exporter. Native negative audits pass
+142 layout and 76 overlay cases. Resident headroom stays at 226 bytes; GEOMETRY
+grows by 13 bytes and PIXELS is unchanged.
+
+The frozen source, production packages, captures and validation scripts are under
+`target/ground-visibility`. `production-comparison.json` records paired timing,
+geometry, state and package hashes; `native-oracle.json` records image matches.
+Generated evidence is not committed.
+
 ## Span-renderer optimizations: 2026-10-21
 
 Both optimized renderers are correct in the measured matrix, but neither beats

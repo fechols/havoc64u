@@ -1156,6 +1156,117 @@ fn cue_change_keeps_old_music_until_ready_then_uses_one_gate_low_tick() {
 }
 
 #[test]
+fn boundary_cue_change_waits_without_reporting_starvation() {
+    for standard in [VideoStandard::Pal, VideoStandard::Ntsc] {
+        // Exercise requests before, at, and after the old page's release tick.
+        for elapsed in [78, 79, 80] {
+            let mut first = fixture(MusicState::Title);
+            first[6] = 1;
+            first[7] = 5;
+            seal(&mut first);
+            let mut successor = first;
+            successor[5] = 1;
+            successor[6] = 0;
+            successor[EVENT_OFFSET + 1] = 1;
+            seal(&mut successor);
+            let (mut player, mut bus) = ready_player(&first, standard);
+            player
+                .publish_page(player.page_request().unwrap(), &successor)
+                .unwrap();
+            for _ in 0..elapsed {
+                player.tick(&mut bus, &successor);
+            }
+            let held = lead(&bus);
+            assert!(held.1);
+            assert_eq!(player.underruns(), 0);
+
+            // The old successor was ready; changing cues intentionally discards
+            // it while the foreground loads the new opening across IRQ ticks.
+            player.set_music(MusicState::Canyon);
+            assert_eq!(
+                player.page_request(),
+                Some(PageRequest {
+                    cue: MusicState::Canyon,
+                    page: 0,
+                })
+            );
+            player.queue(event(Effect::Fire, 0));
+            for _ in 0..3 {
+                player.tick(&mut bus, &[0xff; PAGE_SIZE]);
+                assert_eq!(lead(&bus), held);
+                assert_eq!(player.current_cue(), MusicState::Title);
+                assert_eq!(player.underruns(), 0, "{standard:?}, tick {elapsed}");
+            }
+            assert_ne!(bus.registers[0][18] & 1, 0, "effects keep playing");
+
+            let mut opening = fixture(MusicState::Canyon);
+            opening[EVENT_OFFSET + 1] = 72;
+            seal(&mut opening);
+            player
+                .publish_page(player.page_request().unwrap(), &opening)
+                .unwrap();
+            player.tick(&mut bus, &opening);
+            assert_eq!(player.current_cue(), MusicState::Canyon);
+            assert!(!lead(&bus).1, "a new cue retains its gate-low tick");
+            player.tick(&mut bus, &opening);
+            assert_eq!(lead(&bus), (note_frequency(standard, 72), true));
+            assert_eq!(player.underruns(), 0);
+        }
+    }
+}
+
+#[test]
+fn canceled_boundary_cue_change_still_reports_missing_successor_once() {
+    for standard in [VideoStandard::Pal, VideoStandard::Ntsc] {
+        let mut first = fixture(MusicState::Title);
+        first[6] = 1;
+        first[7] = 5;
+        seal(&mut first);
+        let mut successor = first;
+        successor[5] = 1;
+        successor[6] = 0;
+        successor[EVENT_OFFSET + 1] = 72;
+        seal(&mut successor);
+        let (mut player, mut bus) = ready_player(&first, standard);
+        player
+            .publish_page(player.page_request().unwrap(), &successor)
+            .unwrap();
+        for _ in 0..79 {
+            player.tick(&mut bus, &successor);
+        }
+        let held = lead(&bus);
+        player.set_music(MusicState::Canyon);
+        player.tick(&mut bus, &[0xff; PAGE_SIZE]);
+        assert_eq!(player.underruns(), 0);
+
+        // Canceling the switch now requires the discarded old successor again.
+        // That real starvation must not be hidden by the earlier cue-change wait.
+        player.set_music(MusicState::Title);
+        assert_eq!(
+            player.page_request(),
+            Some(PageRequest {
+                cue: MusicState::Title,
+                page: 1,
+            })
+        );
+        for _ in 0..4 {
+            player.tick(&mut bus, &[0xff; PAGE_SIZE]);
+            assert_eq!(lead(&bus), held);
+            assert_eq!(player.underruns(), 1);
+        }
+        player
+            .publish_page(player.page_request().unwrap(), &successor)
+            .unwrap();
+        player.tick(&mut bus, &successor);
+        assert!(!lead(&bus).1);
+        player.tick(&mut bus, &successor);
+        assert_eq!(player.current_page(), 1);
+        assert_eq!(lead(&bus), (note_frequency(standard, 72), true));
+        assert_eq!(player.underruns(), 1);
+    }
+}
+
+#[test]
 fn repeated_cue_selection_keeps_transport_and_reset_requests_its_opening() {
     let mut first = fixture(MusicState::Title);
     first[6] = 1;

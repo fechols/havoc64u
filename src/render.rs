@@ -3,8 +3,8 @@
 //! Camera coordinates are integer world units, +X right, +Y up, +Z forward.
 //! A face whose normal points toward the camera is front-facing. Bit 7 in a
 //! band pixel marks HUD ink that must take precedence during cell quantization.
-//! Bit 6 remembers coverage by geometry proven to be in front of the terrain
-//! (the player and authored ground enemies). Exterior terrain cannot erase it;
+//! Bit 6 remembers coverage by terrain-protected geometry (the player and
+//! selected terrestrial enemies and obstacles). Exterior terrain cannot erase it;
 //! ordinary foreground still paints normally and retains the bit.
 
 #[cfg(not(target_arch = "mos"))]

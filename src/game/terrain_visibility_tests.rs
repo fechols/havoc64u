@@ -4,7 +4,7 @@
 #[cfg(feature = "host-tools")]
 mod terrain_visibility {
     use super::*;
-    use crate::render::{Renderer, BAND_PIXELS};
+    use crate::render::{Renderer, BAND_PIXELS, TERRAIN_CLEAR_INK};
     use crate::{EXTERIOR_TERRAIN, TERRAIN_CLEAR_GEOMETRY};
     use std::vec::Vec;
 
@@ -94,9 +94,9 @@ mod terrain_visibility {
             assert_eq!(isolated_pass.next_band(&mut expected, true), Some(band));
             assert_eq!(scene_pass.next_band(&mut actual, true), Some(band));
             for (&hull, &composite) in expected.iter().zip(&actual) {
-                // The authored hull/exhaust/targets use nonzero colors; isolated
-                // clear is black. Metadata bits do not influence this oracle.
-                if hull & 15 != 0 {
+                // Coverage identifies the isolated silhouette, including the
+                // black rock facets that are indistinguishable from clear ink.
+                if hull & TERRAIN_CLEAR_INK != 0 {
                     ship_pixels += 1;
                     covered_pixels += usize::from((hull & 15) != (composite & 15));
                 }
@@ -227,15 +227,12 @@ mod terrain_visibility {
     }
 
     #[test]
-    fn foreground_protection_includes_only_ship_and_authored_ground_targets() {
-        for level in 0..12 {
+    fn foreground_protection_includes_only_ship_and_terrestrial_ground_actors() {
+        for level in 0..assets::SEGMENT_COUNT {
             let models = enemies::authored::model_bank(level);
             let bank = AssetBank::new(&models).unwrap();
             let mut game = running();
-            set_rail(&mut game, level as u16 * SECTION_TICKS);
-            game.actors[0] = enemy(assets::BUILDING, 70, -110, 500);
-            game.actors[1] = enemy(assets::TURRET, 90, -90, 700);
-            game.actors[2] = enemy(assets::ROCK, -70, -110, 600);
+            set_rail(&mut game, level as u32 * SECTION_TICKS as u32);
             game.shots[0] = Shot {
                 pos: Vec3 {
                     x: 0,
@@ -266,37 +263,54 @@ mod terrain_visibility {
             let mut capture = Capture::default();
             game.render_foreground(&mut capture, &bank, 174);
             let count = ship_faces(&bank) as usize;
-            let target_end = capture.0.len() - bank.face_count(assets::ROCK) as usize;
-            let target_start = target_end - bank.face_count(assets::TURRET) as usize;
-            assert!(capture.0.len() > count + 10);
+            assert!(capture.0.len() > count);
             assert!(capture.0[..count]
                 .iter()
                 .all(|face| face.2 & TERRAIN_CLEAR_GEOMETRY != 0));
-            assert!(capture.0[count..target_start]
-                .iter()
-                .all(|face| face.2 & (TERRAIN_CLEAR_GEOMETRY | EXTERIOR_TERRAIN) == 0));
-            let expected = if matches!(game.stage_info.enemy_profile, 0 | 2 | 3) {
-                TERRAIN_CLEAR_GEOMETRY
-            } else {
-                0
-            };
-            assert!(capture.0[target_start..target_end]
-                .iter()
-                .all(|face| face.2 & (TERRAIN_CLEAR_GEOMETRY | EXTERIOR_TERRAIN) == expected));
-            assert!(capture.0[target_end..]
-                .iter()
-                .all(|face| face.2 & (TERRAIN_CLEAR_GEOMETRY | EXTERIOR_TERRAIN) == 0));
             assert!(capture.0[count..]
                 .iter()
-                .flat_map(|face| face.0)
-                .any(|p| p.y + game.scenery_camera_y() < -105));
-
-            // Boss guns reuse the same mesh ID, but belong to the carrier,
-            // not to the authored ground placement that the proof covers.
-            game.actors = [Actor::EMPTY; ACTORS];
+                .all(|face| face.2 & (TERRAIN_CLEAR_GEOMETRY | EXTERIOR_TERRAIN) == 0));
             game.shots = [Shot::EMPTY; SHOTS];
             game.explosions.fill(Explosion::EMPTY);
             game.pickups = [Pickup::EMPTY; 4];
+
+            // Exercise each kind as a full mesh, a distance proxy and a forced
+            // proxy. Boss-stage slot three is a side unit, never a ground gun.
+            for (kind, protected) in [
+                (assets::BUILDING, level < 12),
+                (assets::ROCK, level < 12),
+                (assets::TURRET, level < 12 && !matches!(level, 3 | 7 | 11)),
+                (assets::FIGHTER, false),
+                (assets::DIVER, false),
+            ] {
+                for (z, limit) in [(500, 174), (1201, 174), (500, 2)] {
+                    game.actors[0] = enemy(kind, -70, -110, z);
+                    let actor = combat_capture(&game, &bank, limit);
+                    assert!(!actor.0.is_empty());
+                    let expected = if protected { TERRAIN_CLEAR_GEOMETRY } else { 0 };
+                    assert!(
+                        actor
+                            .0
+                            .iter()
+                            .all(|face| face.2 & (TERRAIN_CLEAR_GEOMETRY | EXTERIOR_TERRAIN)
+                                == expected),
+                        "stage {level}, kind {kind}, z {z}, budget {limit}"
+                    );
+                    // Small orbital debris shares ROCK's ID and must remain
+                    // ordinary foreground even when its proxy is selected.
+                    if level >= 12 && kind == assets::ROCK {
+                        game.actors[0].flags = assets::SMALL_DEBRIS;
+                        let debris = combat_capture(&game, &bank, limit);
+                        assert!(debris
+                            .0
+                            .iter()
+                            .all(|face| face.2 & (TERRAIN_CLEAR_GEOMETRY | EXTERIOR_TERRAIN) == 0));
+                    }
+                }
+            }
+
+            // Boss guns use the same model ID but retain normal ordering.
+            game.actors = [Actor::EMPTY; ACTORS];
             game.boss_started = true;
             game.boss_defeated = false;
             game.boss_left = 1;
@@ -502,10 +516,7 @@ mod terrain_visibility {
                     let present = game.actors.iter().any(|actor| actor.kind == assets::TURRET);
                     assert_eq!(present, elapsed == first_tick);
                 }
-                assert_eq!(
-                    game.scenery_ticks(),
-                    first_tick
-                );
+                assert_eq!(game.scenery_ticks(), first_tick);
                 assert_fortress_terrain_outside(&game, &segment);
             }
             for rail in
@@ -545,53 +556,172 @@ mod terrain_visibility {
     }
 
     #[test]
+    fn first_lowland_rock_keeps_its_full_silhouette_through_the_actual_approach() {
+        let bank = test_bank(0);
+        let bytes = mission_segment(0);
+        let segment = Segment::new(&bytes).unwrap();
+        let first = (0..segment.spawn_count())
+            .map(|i| segment.spawn(i))
+            .find(|spawn| spawn.kind == assets::ROCK)
+            .unwrap();
+        assert_eq!((first.distance, first.x, first.y), (2200, -70, -110));
+        let first_tick = (first.distance + 7) / 8;
+        let mut game = running();
+        set_rail(&mut game, first_tick);
+        game.spawn_actor(first, 0, &bank);
+        assert_eq!(game.actors[0].hp, 255);
+        let mut visible_frames = 0;
+        let mut previously_obscured = 0;
+        for elapsed in 0..=234 {
+            set_rail(&mut game, first_tick + elapsed);
+            if game.actors[0].kind == 0 {
+                break;
+            }
+            assert_eq!((game.actors[0].pos.x, game.actors[0].pos.y), (-70, -110));
+            let target = combat_capture(&game, &bank, 174);
+            let terrain = terrain_capture(&game, &segment);
+            let (visible, covered) = compare_geometry(&target.0, &terrain.0, false);
+            visible_frames += usize::from(visible > 0);
+            assert_eq!(
+                covered,
+                0,
+                "first rock at tick {}, z {}: {covered}/{visible}",
+                first_tick + elapsed,
+                game.actors[0].pos.z
+            );
+            previously_obscured += compare_geometry(&target.0, &terrain.0, true).1;
+            game.update_actors(&bank);
+        }
+        assert!(visible_frames > 100);
+        assert!(
+            previously_obscured > 0,
+            "the authored rock approach must reproduce the old terrain overdraw"
+        );
+        assert_eq!(
+            game.actors[0].kind, 0,
+            "the approach must reach actor retirement"
+        );
+    }
+
+    #[test]
+    fn black_obstacle_facets_count_as_protected_silhouette() {
+        let bank = test_bank(4);
+        let bytes = mission_segment(4);
+        let segment = Segment::new(&bytes).unwrap();
+        let mut game = running();
+        set_rail(&mut game, 4 * SECTION_TICKS + 34);
+        game.actors[0] = enemy(assets::ROCK, -70, -110, 400);
+        let mut target = combat_capture(&game, &bank, 174);
+        assert!(
+            target.0.iter().any(|face| face.1 == 0),
+            "Ashen Wastes rocks include authored black facets"
+        );
+        let terrain = terrain_capture(&game, &segment);
+        let (visible, covered) = compare_geometry(&target.0, &terrain.0, false);
+        assert!(visible > 0);
+        assert_eq!(covered, 0);
+
+        // An all-black copy has the exact same silhouette. A nonzero-color
+        // visibility oracle would silently count none of these pixels.
+        for face in &mut target.0 {
+            face.1 = 0;
+        }
+        assert_eq!(compare_geometry(&target.0, &terrain.0, false), (visible, 0));
+        // A deliberately late, screen-filling exterior face must reject black
+        // protected pixels just as it rejects the authored colored facets.
+        let exterior = [(
+            [
+                Vec3 {
+                    x: -200,
+                    y: -100,
+                    z: 100,
+                },
+                Vec3 {
+                    x: 200,
+                    y: -100,
+                    z: 100,
+                },
+                Vec3 {
+                    x: 0,
+                    y: 200,
+                    z: 100,
+                },
+            ],
+            5,
+            TWO_SIDED | EXTERIOR_TERRAIN,
+        )];
+        assert_eq!(compare_geometry(&target.0, &exterior, false), (visible, 0));
+        assert_eq!(
+            compare_geometry(&target.0, &exterior, true),
+            (visible, visible)
+        );
+    }
+
+    #[test]
     fn terrain_preserves_ground_targets_at_all_scroll_phases_depths_and_chase_heights() {
         let mut cases_with_visible_pixels = 0;
-        for level in [0, 1, 4, 5, 6] {
+        for level in [0, 1, 2, 4, 5, 6, 8, 9, 10] {
             let bank = test_bank(level);
             let bytes = mission_segment(level);
             let segment = Segment::new(&bytes).unwrap();
-            let x = if level == 0 { 95 } else { 90 };
-            // Include near clipping, full meshes at their far cutoff, ordinary
-            // far proxies, and the same proxy forced by a tight face budget.
-            for (z, limit) in [
-                (80, 174),
-                (120, 174),
-                (180, 174),
-                (280, 174),
-                (400, 174),
-                (800, 174),
-                (1200, 174),
-                (1201, 174),
-                (1800, 174),
-                (400, 2),
-            ] {
-                for side in [-1, 1] {
-                    for player_y in [-65, 0, 65] {
-                        for phase in 0..64 {
-                            for mode in [Mode::Playing, Mode::Attract] {
-                                let mut game = running();
-                                game.mode = mode;
-                                set_rail(&mut game, level as u16 * SECTION_TICKS + 320 + phase);
-                                game.player.y = player_y;
-                                game.actors[0] = enemy(assets::TURRET, side * x, -90, z);
-                                let target = combat_capture(&game, &bank, limit);
-                                let terrain = terrain_capture(&game, &segment);
-                                assert!(target
-                                    .0
-                                    .iter()
-                                    .all(|face| face.2 & TERRAIN_CLEAR_GEOMETRY != 0));
-                                let (visible, covered) =
-                                    compare_geometry(&target.0, &terrain.0, false);
-                                cases_with_visible_pixels += usize::from(visible > 0);
-                                assert_eq!(covered, 0, "section {level}, z {z}, budget {limit}, x {}, player_y {player_y}, phase {phase}, mode {mode:?}: {covered}/{visible}", side*x);
+            // Derive each stage's actual ground actors from its encounter page:
+            // this includes Canyon batteries, crystal spires and buildings.
+            let mut ground = Vec::new();
+            for index in 0..segment.spawn_count() {
+                let spawn = segment.spawn(index);
+                if matches!(spawn.kind, assets::TURRET | assets::ROCK | assets::BUILDING)
+                    && !ground.iter().any(|s: &Spawn| s.kind == spawn.kind)
+                {
+                    ground.push(spawn);
+                }
+            }
+            assert_eq!(ground.len(), 2);
+            for spawn in ground {
+                // Include near clipping, full meshes at their far cutoff, ordinary
+                // far proxies, and the same proxy forced by a tight face budget.
+                for (z, limit) in [
+                    (8, 174),
+                    (24, 174),
+                    (80, 174),
+                    (120, 174),
+                    (180, 174),
+                    (280, 174),
+                    (400, 174),
+                    (800, 174),
+                    (1200, 174),
+                    (1201, 174),
+                    (1800, 174),
+                    (400, 2),
+                ] {
+                    for side in [-1, 1] {
+                        for player_y in [-65, 0, 65] {
+                            for phase in 0..64 {
+                                for mode in [Mode::Playing, Mode::Attract] {
+                                    let mut game = running();
+                                    game.mode = mode;
+                                    set_rail(&mut game, level as u16 * SECTION_TICKS + 320 + phase);
+                                    game.player.y = player_y;
+                                    let x = side * spawn.x.abs();
+                                    game.spawn_actor(Spawn { x, ..spawn }, 0, &bank);
+                                    game.actors[0].pos.z = z;
+                                    let target = combat_capture(&game, &bank, limit);
+                                    let terrain = terrain_capture(&game, &segment);
+                                    assert!(target
+                                        .0
+                                        .iter()
+                                        .all(|face| face.2 & TERRAIN_CLEAR_GEOMETRY != 0));
+                                    let (visible, covered) =
+                                        compare_geometry(&target.0, &terrain.0, false);
+                                    cases_with_visible_pixels += usize::from(visible > 0);
+                                    assert_eq!(covered, 0, "section {level}, kind {}, z {z}, budget {limit}, x {x}, player_y {player_y}, phase {phase}, mode {mode:?}: {covered}/{visible}", spawn.kind);
+                                }
                             }
                         }
                     }
                 }
             }
         }
-        assert!(cases_with_visible_pixels > 10_000);
+        assert!(cases_with_visible_pixels > 20_000);
     }
 
     fn assert_visible(game: &Game, bank: &AssetBank<'_>, segment: &Segment<'_>, pose: u8) {

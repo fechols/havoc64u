@@ -32,8 +32,8 @@ pub struct Vec3 {
 }
 
 pub const TWO_SIDED: u8 = 1;
-// Geometry proven above/in front of every exterior terrain face preserves
-// its coverage against terrain without changing other foreground ordering.
+// The player and selected ground actors preserve their coverage against exterior
+// terrain, including embedded bases, without changing other foreground ordering.
 pub(crate) const TERRAIN_CLEAR_GEOMETRY: u8 = 0x20;
 pub(crate) const EXTERIOR_TERRAIN: u8 = 0x40;
 pub trait GeometrySink {

@@ -590,7 +590,9 @@ impl AudioEngine {
                 if self.row as usize == PAGE_ROWS && !self.ready {
                     // Stall before the release tick. Held notes and SFX continue;
                     // count one underrun per incident, not once per timer tick.
-                    if !self.waiting {
+                    // A cue change deliberately discards the old prefetched
+                    // page, so waiting for its new opening is not starvation.
+                    if !self.waiting && self.playing == self.music {
                         self.underruns = self.underruns.saturating_add(1);
                         self.waiting = true;
                     }

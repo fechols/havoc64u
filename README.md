@@ -43,7 +43,7 @@ Screenshots: **original v0.1.0 four-SID build**, captured in a PAL emulator.
 
 ## Download and launch
 
-**[Download H.A.V.O.C. v0.1.0](https://github.com/fechols/havoc64u/releases/download/v0.1.0/havoc-v0.1.0.zip)** — the complete eighteen-stage campaign and full four-SID score in one package. It uses the C64 Ultimate's built-in UltiSIDs; no extra chips or hardware installation needed.
+**[Download H.A.V.O.C. v0.1.1](https://github.com/fechols/havoc64u/releases/download/v0.1.1/havoc-v0.1.1.zip)** — the complete eighteen-stage campaign and full four-SID score in one package. It uses the C64 Ultimate's built-in UltiSIDs; no extra chips or hardware installation needed.
 
 You need a **C64 Ultimate running at 64 MHz**, **1 MiB of REU memory**, and a joystick connected to **port 2**. The supplied configuration sets the speed, memory, and sound routing. A stock C64 cannot run the game.
 
@@ -88,7 +88,7 @@ Wait fifteen seconds at the title for scenery and music previews. Move or press 
 
 ## Help
 
-See the [setup and troubleshooting guide](docs/hardware.md) for help getting started, or the [release notes](https://github.com/fechols/havoc64u/releases/tag/v0.1.0) for what's new. Found a problem? [Report it](https://github.com/fechols/havoc64u/issues) with your hardware, video standard, and what happened.
+See the [setup and troubleshooting guide](docs/hardware.md) for help getting started, or the [release notes](https://github.com/fechols/havoc64u/releases/tag/v0.1.1) for what's new. Found a problem? [Report it](https://github.com/fechols/havoc64u/issues) with your hardware, video standard, and what happened.
 
 ## License
 
