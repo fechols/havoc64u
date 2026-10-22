@@ -39,6 +39,8 @@ const BOSS_START_TICKS: u16 = 1000;
 const SPACE_BOSS_START_TICKS: u16 = 2500;
 const ATTRACT_TICKS: u16 = 750;
 const ACTORS: usize = 12;
+const ENEMY_HIT_FLASH_TICKS: u8 = 10;
+const ENEMY_HIT_FLASH_PENDING: u8 = ENEMY_HIT_FLASH_TICKS * 2 + 1;
 const SHOTS: usize = 24;
 const MISSILE_SEED: u8 = 0xa5;
 const AUDIO_CAPACITY: usize = 8;
@@ -233,8 +235,8 @@ impl Controls {
         roll_pending: 0,
         start_pending: false,
     };
-    // The reticle needs charge while GEOMETRY is loaded. Sampling performs the
-    // timer arithmetic in SIM and leaves this byte available in every phase.
+    // The HUD reads charge outside SIM. Sampling performs the timer arithmetic
+    // in SIM and leaves this byte available in every phase.
     #[inline(always)]
     fn charge(&self) -> u8 {
         self.cached_charge
@@ -378,7 +380,15 @@ pub struct Game {
     // Two four-bit locks per byte: 0 none, 1..12 actors, 13..15 boss parts.
     missile_targets: [u8; SHOTS / 2],
     missile_rng: u8,
+    // Separate feedback state preserves the native 16-byte Actor ABI:
+    // 0 ready, 1..10 normal recovery, 11..20 white, 21 awaiting its first frame.
+    actor_hit_flash_ticks: [u8; ACTORS],
+    boss_hit_flash_ticks: u8,
+    damage_feedback_tick: u16,
 }
+
+#[cfg(target_arch = "mos")]
+const _: () = assert!(core::mem::size_of::<Game>() <= 640);
 
 impl Default for Game {
     fn default() -> Self {
@@ -409,6 +419,9 @@ impl Game {
             shots: [Shot::EMPTY; SHOTS],
             missile_targets: [0; SHOTS / 2],
             missile_rng: MISSILE_SEED,
+            actor_hit_flash_ticks: [0; ACTORS],
+            boss_hit_flash_ticks: 0,
+            damage_feedback_tick: 0,
             pickups: [Pickup::EMPTY; 4],
             explosions: [Explosion::EMPTY; 6],
             audio: [AudioEvent {
@@ -669,8 +682,9 @@ impl Game {
         self.presentation_event = PresentationEvent::None;
         event
     }
+    // Resident queue writer: shared by SIM and its encounter/terminal tails,
+    // leaving room for damage feedback in the composed simulation overlay.
     #[inline(never)]
-    #[cfg_attr(target_arch = "mos", link_section = ".phase.sim")]
     fn sound(&mut self, effect: Effect, x: i16) {
         // Keep the live previews audible as music only.
         if self.mode == Mode::Attract {
@@ -750,6 +764,33 @@ impl Game {
         self.stage_info = StageInfo::FIRST;
         self.missile_rng = MISSILE_SEED;
     }
+    /// Prepare damage feedback once after simulation catch-up, before drawing
+    /// a frame. Render methods remain read-only so repeated captures agree.
+    /// Each phase gets ten 20 ms ticks from its first rendered frame; catch-up
+    /// may extend a phase, but cannot skip white or the normal-color recovery.
+    #[inline(never)]
+    #[cfg_attr(target_arch = "mos", link_section = ".phase.geometry")]
+    pub fn prepare_damage_feedback_frame(&mut self) {
+        let elapsed = self
+            .ticks
+            .wrapping_sub(self.damage_feedback_tick)
+            .min(ENEMY_HIT_FLASH_TICKS as u16) as u8;
+        self.damage_feedback_tick = self.ticks;
+        for flash in &mut self.actor_hit_flash_ticks {
+            advance_enemy_hit_flash(flash, elapsed);
+        }
+        advance_enemy_hit_flash(&mut self.boss_hit_flash_ticks, elapsed);
+    }
+    #[inline(never)]
+    fn damage_actor(&mut self, index: usize, damage: u8) -> u8 {
+        let previous = self.actors[index].hp;
+        let hp = previous.saturating_sub(damage);
+        self.actors[index].hp = hp;
+        if hp < previous && self.actor_hit_flash_ticks[index] == 0 {
+            self.actor_hit_flash_ticks[index] = ENEMY_HIT_FLASH_PENDING;
+        }
+        hp
+    }
     /// One 20 ms simulation step. Feed every captured input sample first.
     /// `bank` must belong to `segment_index()` before this step. If the step
     /// changes stages, select the new bank and call `bind_stage` with its checked
@@ -787,6 +828,9 @@ impl Game {
                     self.lives = (self.lives + 1).min(3);
                 }
                 self.actors = [Actor::EMPTY; ACTORS];
+                self.actor_hit_flash_ticks = [0; ACTORS];
+                self.boss_hit_flash_ticks = 0;
+                self.damage_feedback_tick = self.ticks;
                 self.missile_targets = [0; SHOTS / 2];
                 self.pickups = [Pickup::EMPTY; 4];
                 for shot in &mut self.shots {
@@ -929,6 +973,8 @@ impl Game {
                     self.spawn_segment = self.segment_index();
                     self.spawn_cursor = 0;
                     self.boss_started = false;
+                    self.boss_hit_flash_ticks = 0;
+                    self.damage_feedback_tick = self.ticks;
                     self.boss_defeated = false;
                     self.boss_z = 1800;
                     self.boss_left = BOSS_SIDE_HP;
@@ -1140,6 +1186,7 @@ impl Game {
                 flags: spawn.flags,
                 approach_speed: if obstacle { 8 } else { spec.speed },
             };
+            self.actor_hit_flash_ticks[slot] = 0;
         }
     }
     #[cfg(not(target_arch = "mos"))]
@@ -1313,8 +1360,7 @@ impl Game {
                     let target_x = target.pos.x;
                     s.kind = 0;
                     if target_hp != 255 {
-                        self.actors[a].hp = self.actors[a].hp.saturating_sub(s.damage);
-                        if self.actors[a].hp == 0 {
+                        if self.damage_actor(a, s.damage) == 0 {
                             self.kill_actor(a, bank);
                         } else {
                             self.sound(Effect::Hit, target_x);
@@ -1346,13 +1392,17 @@ impl Game {
                             BOSS_TURRET_RADIUS,
                         )
                     {
-                        *turret_hp = turret_hp.saturating_sub(s.damage);
+                        damage_boss_part(turret_hp, s.damage, &mut self.boss_hit_flash_ticks);
                         hit = true;
                     } else if swept_z(old_z, s.pos.z, self.boss_z + BOSS_CORE_Z, BOSS_HIT_DEPTH)
                         && close_xy(s.pos, Vec3 { x: 0, y: 0, z: 0 }, BOSS_CORE_RADIUS)
                     {
                         if self.boss_left == 0 && self.boss_right == 0 {
-                            self.boss_core = self.boss_core.saturating_sub(s.damage);
+                            damage_boss_part(
+                                &mut self.boss_core,
+                                s.damage,
+                                &mut self.boss_hit_flash_ticks,
+                            );
                         }
                         hit = true;
                     }
@@ -1668,18 +1718,17 @@ impl Game {
             if self.actors[i].kind == assets::ROCK && self.stage_info.theme >= 10 {
                 self.kill_actor(i, bank);
             } else if self.actors[i].kind != 0 && self.actors[i].hp != 255 {
-                self.actors[i].hp = self.actors[i].hp.saturating_sub(8);
-                if self.actors[i].hp == 0 {
+                if self.damage_actor(i, 8) == 0 {
                     self.kill_actor(i, bank);
                 }
             }
         }
         if self.boss_started && !self.boss_defeated {
             let open = self.boss_left == 0 && self.boss_right == 0;
-            self.boss_left = self.boss_left.saturating_sub(8);
-            self.boss_right = self.boss_right.saturating_sub(8);
+            damage_boss_part(&mut self.boss_left, 8, &mut self.boss_hit_flash_ticks);
+            damage_boss_part(&mut self.boss_right, 8, &mut self.boss_hit_flash_ticks);
             if open {
-                self.boss_core = self.boss_core.saturating_sub(8);
+                damage_boss_part(&mut self.boss_core, 8, &mut self.boss_hit_flash_ticks);
             }
             self.check_boss_death();
         }
@@ -1747,6 +1796,9 @@ impl Game {
         self.spawn_segment = self.segment_index();
         self.spawn_cursor = 0;
         self.actors = [Actor::EMPTY; ACTORS];
+        self.actor_hit_flash_ticks = [0; ACTORS];
+        self.boss_hit_flash_ticks = 0;
+        self.damage_feedback_tick = self.ticks;
         self.shots = [Shot::EMPTY; SHOTS];
         self.missile_targets = [0; SHOTS / 2];
         self.pickups = [Pickup::EMPTY; 4];
@@ -1849,6 +1901,7 @@ impl Game {
     }
     /// Emit only constant-color triangles. The host and C64 use the same scene.
     /// Host reference ordering: foreground commands precede scenery at equal depth.
+    /// Call `prepare_damage_feedback_frame` after catch-up before rendering.
     #[cfg(not(target_arch = "mos"))]
     pub fn render(
         &self,
@@ -1908,6 +1961,8 @@ impl Game {
         };
         crate::victory::emit(&mut budget, bank, self.menu_ticks, self.ticks);
     }
+    /// Draw prepared foreground state without advancing presentation timers.
+    /// Call `prepare_damage_feedback_frame` once before drawing a new frame.
     #[inline(never)]
     #[cfg_attr(target_arch = "mos", link_section = ".phase.geometry")]
     pub fn render_foreground(
@@ -1987,37 +2042,6 @@ impl Game {
             }
         }
         sink.extra_flags = 0;
-        // World-space aiming reticle, held on the player's firing line.
-        if matches!(self.mode, Mode::Playing | Mode::Transition) {
-            let center = Vec3 {
-                x: self.player.x,
-                y: self.player.y,
-                z: 800,
-            };
-            let color = if self.controls.charge() == 255 { 7 } else { 15 };
-            for side in [-1, 1] {
-                let x = center.x + side * 15;
-                tri(
-                    sink,
-                    Vec3 {
-                        x,
-                        y: center.y - 7,
-                        z: center.z,
-                    },
-                    Vec3 {
-                        x: x + side * 2,
-                        y: center.y,
-                        z: center.z,
-                    },
-                    Vec3 {
-                        x,
-                        y: center.y + 7,
-                        z: center.z,
-                    },
-                    color,
-                );
-            }
-        }
         if self.mode == Mode::Victory {
             return;
         } else if self.mode == Mode::Transition {
@@ -2064,6 +2088,7 @@ impl Game {
     #[cfg_attr(target_arch = "mos", link_section = ".phase.geometry.combat")]
     fn render_combat(&self, sink: &mut SceneBudget<'_, impl GeometrySink>, bank: &AssetBank<'_>) {
         if self.boss_started && !self.boss_defeated {
+            sink.color_override = u8::from(self.boss_hit_flash_ticks > ENEMY_HIT_FLASH_TICKS);
             emit_mesh(
                 sink,
                 bank,
@@ -2122,10 +2147,13 @@ impl Game {
                     if self.ticks & 8 == 0 { 7 } else { 2 },
                 );
             }
+            sink.color_override = 0;
         }
         self.render_effects(sink);
         for (i, a) in self.actors.iter().enumerate() {
             if a.kind != 0 && a.pos.z >= ACTOR_RETIRE_Z {
+                sink.color_override =
+                    u8::from(self.actor_hit_flash_ticks[i] > ENEMY_HIT_FLASH_TICKS);
                 // Authored ground guns and their proxies are terrain-clear:
                 // Lowlands fits the flight corridor; Fortress lies above its
                 // low shoulders. Its first spawn follows the Canyon bridge.
@@ -2183,6 +2211,7 @@ impl Game {
                     );
                 }
                 sink.extra_flags = 0;
+                sink.color_override = 0;
             }
         }
     }
@@ -2292,6 +2321,28 @@ impl Game {
             true,
         );
     }
+}
+
+// Resident: used by projectile and bomb damage without duplicating the health
+// comparison and timer update in the crowded SIM overlay.
+#[inline(never)]
+fn damage_boss_part(hp: &mut u8, damage: u8, flash: &mut u8) {
+    let previous = *hp;
+    *hp = hp.saturating_sub(damage);
+    if *hp < previous && *flash == 0 {
+        *flash = ENEMY_HIT_FLASH_PENDING;
+    }
+}
+
+#[inline(always)]
+fn advance_enemy_hit_flash(flash: &mut u8, elapsed: u8) {
+    *flash = if *flash == ENEMY_HIT_FLASH_PENDING {
+        ENEMY_HIT_FLASH_TICKS * 2
+    } else if *flash > ENEMY_HIT_FLASH_TICKS {
+        flash.saturating_sub(elapsed).max(ENEMY_HIT_FLASH_TICKS)
+    } else {
+        flash.saturating_sub(elapsed)
+    };
 }
 
 struct SceneBudget<'a, S: GeometrySink> {
@@ -2577,3 +2628,6 @@ fn bomb_pickup(sink: &mut impl GeometrySink, p: Vec3) {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod damage_flash_tests;

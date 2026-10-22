@@ -548,7 +548,7 @@ impl havoc::GeometrySink for CapturedGeometry {
 
 #[cfg(feature = "host-tools")]
 #[test]
-fn attract_renders_the_game_world_without_the_ship_exhaust_or_reticle() {
+fn attract_renders_the_game_world_without_the_ship_or_exhaust() {
     let sections = empty_sections();
     let segment = Segment::new(&sections[0]).unwrap();
     let bank = test_bank(0);
@@ -559,7 +559,7 @@ fn attract_renders_the_game_world_without_the_ship_exhaust_or_reticle() {
     let mut preview_scene = CapturedGeometry::default();
     playing.render(&mut normal_scene, &bank, &segment);
     attract.render(&mut preview_scene, &bank, &segment);
-    let player_faces = bank.face_count(havoc::assets::PLAYER) as usize + 4;
+    let player_faces = bank.face_count(havoc::assets::PLAYER) as usize + 2;
     assert_eq!(preview_scene.0, normal_scene.0[player_faces..]);
     assert!(!preview_scene.0.is_empty());
 }
@@ -625,18 +625,16 @@ fn chase_camera_translates_foreground_without_moving_world_geometry_or_backdrop(
     playing.render(&mut playing_geometry, &bank, &segment);
 
     // Starting via ordinary fire leaves the ship, terrain and animation at
-    // their initial world positions. Only gameplay adds two reticle faces;
+    // their initial world positions. Both modes draw the same geometry;
     // all 14 final backdrop faces remain fixed in camera space.
-    let reticle_start = bank.face_count(PLAYER) as usize + 2;
-    assert_eq!(playing_geometry.0.len(), title_geometry.0.len() + 2);
+    assert_eq!(playing_geometry.0.len(), title_geometry.0.len());
     for (index, &(vertices, color, flags)) in title_geometry.0.iter().enumerate() {
-        let gameplay_index = index + usize::from(index >= reticle_start) * 2;
         let shifted = if index >= title_geometry.0.len() - 14 {
             vertices
         } else {
             vertices.map(|p| Vec3 { y: p.y - 40, ..p })
         };
-        assert_eq!(playing_geometry.0[gameplay_index], (shifted, color, flags));
+        assert_eq!(playing_geometry.0[index], (shifted, color, flags));
     }
     let mut world_ship = CapturedGeometry::default();
     emit_mesh(
@@ -665,7 +663,7 @@ fn chase_camera_translates_foreground_without_moving_world_geometry_or_backdrop(
 
 #[cfg(feature = "host-tools")]
 #[test]
-fn chase_camera_reveals_carrier_and_reticle_and_keeps_controlled_hull_on_screen() {
+fn chase_camera_reveals_carrier_and_keeps_controlled_hull_on_screen() {
     use havoc::{
         assets::{CARRIER, PLAYER},
         emit_mesh,
@@ -680,7 +678,7 @@ fn chase_camera_reveals_carrier_and_reticle_and_keeps_controlled_hull_on_screen(
     let mut geometry = CapturedGeometry::default();
     carrier.render(&mut geometry, &bank, &carrier_segment);
     let ship_faces = bank.face_count(PLAYER) as usize;
-    let carrier_start = ship_faces + 4; // Exhaust and aiming reticle each use two faces.
+    let carrier_start = ship_faces + 2; // Exhaust uses two faces.
     let bounds = |faces: &[([havoc::Vec3; 3], u8, u8)]| {
         faces
             .iter()
@@ -691,14 +689,9 @@ fn chase_camera_reveals_carrier_and_reticle_and_keeps_controlled_hull_on_screen(
     let player_y = bounds(&geometry.0[..ship_faces]);
     let target_y =
         bounds(&geometry.0[carrier_start..carrier_start + bank.face_count(CARRIER) as usize]);
-    let reticle_y = bounds(&geometry.0[ship_faces + 2..carrier_start]);
     assert!(
         player_y.0 > target_y.1,
         "player {player_y:?} must not conceal carrier {target_y:?}"
-    );
-    assert!(
-        reticle_y.0 >= 105 && reticle_y.1 <= 110,
-        "reticle remains on the distant firing line: {reticle_y:?}"
     );
     assert!(player_y.0 >= 120 && player_y.1 <= 145);
 

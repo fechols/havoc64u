@@ -9,11 +9,12 @@ use havoc::{
 use std::{env, fs, path::Path};
 
 fn frame(
-    game: &Game,
+    game: &mut Game,
     bank: &AssetBank<'_>,
     segment: &Segment<'_>,
     number: u16,
 ) -> (Vec<u8>, u16, u16) {
+    game.prepare_damage_feedback_frame();
     let mut r = Renderer::new();
     r.begin(game.sky_color());
     game.render(&mut r, bank, segment);
@@ -174,7 +175,7 @@ fn snapshot(source: Snapshot, out: &Path) -> Result<(), Box<dyn std::error::Erro
         Snapshot::Victory(elapsed_ticks) => *elapsed_ticks,
         _ => 0,
     };
-    let game = match source {
+    let mut game = match source {
         Snapshot::Title => Game::new(),
         Snapshot::Victory(elapsed_ticks) => Game::preview_victory(elapsed_ticks),
         Snapshot::Transition(section, elapsed_ticks) => {
@@ -216,7 +217,7 @@ fn snapshot(source: Snapshot, out: &Path) -> Result<(), Box<dyn std::error::Erro
     let data = host::segment_bank(game.segment_index());
     let segment = Segment::new(&data).unwrap();
     let bank = AssetBank::new(&models[game.segment_index() as usize]).unwrap();
-    let (bytes, triangles, dropped) = frame(&game, &bank, &segment, hud_frame);
+    let (bytes, triangles, dropped) = frame(&mut game, &bank, &segment, hud_frame);
     if let Some(p) = out.parent() {
         fs::create_dir_all(p)?;
     }

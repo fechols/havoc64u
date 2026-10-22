@@ -1766,7 +1766,7 @@ def weapon_checks(mon, syms, failures, elf, dwarf_tool, output, result, video, p
             or "irq_entry" not in syms):
         raise RuntimeError("Bomb checks require the one-byte BombEffect and resident irq_entry")
     result.update(passed=False, monitor_assisted=True, excluded_from_timing=True,
-                  scope="Seeded encounters and cleared actors/projectiles; damage runs through hostile-shot collision. Charge timers, missiles and bombs use real elapsed time and physical joystick FIRE. No hit-flash, bomb-effect timer or shot-pending writes.",
+                  scope="Seeded encounters and cleared actors/projectiles; damage runs through real projectile collision. Sustained enemy/boss damage checks restore paused poses for exact color comparisons. Charge timers, missiles and bombs use real elapsed time and physical joystick FIRE. No hit-flash, bomb-effect timer or shot-pending writes.",
                   layout=layout, arrays=arrays, renderer=renderer, triangle=triangle, bomb_effect=effect, scenarios=[])
 
     def read_field(name):
@@ -1890,6 +1890,177 @@ def weapon_checks(mon, syms, failures, elf, dwarf_tool, output, result, video, p
                  "player.x": 0, "player.y": 0, level: 0, "shield": 100, "score": 0, "kills": 0, "bomb_kills": 0,
                  "roll_ticks": 0, "roll_cooldown": 0, "invulnerability": 0,
                  "boss_started": 0, "boss_defeated": 0}, clear=("actors", "shots", "pickups", "explosions"))
+
+    def damage_feedback_checks():
+        """Keep hitting real targets through both visible feedback phases."""
+        actor_feedback = fields.get("actor_hit_flash_ticks", {})
+        boss_feedback = fields.get("boss_hit_flash_ticks", {})
+        if (actor_feedback.get("type") != f"u8[{arrays['actors']['count']}]"
+                or boss_feedback.get("type") != "u8"):
+            raise RuntimeError("Damage feedback checks require one byte per target")
+        boss_feedback["size"] = 1
+        feedback_address = layout["address"] + actor_feedback["offset"]
+        paused_address = resident_symbol(syms, "PAUSED")[1]
+
+        def pause(scenario, value):
+            mon.command("bank ram")
+            write_bytes(scenario, "PAUSED", paused_address, bytes([int(value)]))
+            mon.command("bank cpu")
+
+        def frame(scenario, geometry=False):
+            current = observe(scenario, geometry)
+            mon.command("bank ram")
+            current["actor_feedback"] = list(mon.read(feedback_address, arrays["actors"]["count"]))
+            current["boss_feedback"] = read_field("boss_hit_flash_ticks")
+            mon.command("bank cpu")
+            return current
+
+        def signature(command):
+            return tuple(command["x"] + command["y"] + [command["depth"]])
+
+        def mesh_reference(blank, populated):
+            background = {signature(command) for command in blank["triangles"]}
+            mesh = {signature(command): command["color"] for command in populated["triangles"]
+                    if signature(command) not in background}
+            if len(mesh) < 2 or not any(color != 1 for color in mesh.values()):
+                raise RuntimeError("Cannot isolate a colored feedback target mesh")
+            return mesh
+
+        def colors(scenario, mesh, current, white, pulse):
+            actual = {signature(command): command["color"] for command in current["triangles"]}
+            core_color = 7 if current["game"]["ticks"] & 8 == 0 else 2
+            if any(actual.get(key) != (1 if white else core_color if key in pulse else color)
+                   for key, color in mesh.items()):
+                raise RuntimeError(f"{scenario['name']}: target mesh does not match its feedback phase")
+            scenario.setdefault("geometry_checks", []).append(dict(white=white, triangles=len(mesh)))
+
+        def stage(scenario, index):
+            pause(scenario, False)
+            seed(scenario, {"rail_ticks": index * 3750 + 625,
+                            "spawn_segment": index, "spawn_cursor": 255,
+                            "player.x": 0, "player.y": 0, level: 0,
+                            "shield": 100, "invulnerability": 255,
+                            "boss_started": 0, "boss_defeated": 0,
+                            **result["full_boss_health"]},
+                 clear=("actors", "shots", "pickups", "explosions"))
+            for _ in range(25):
+                current = frame(scenario)
+                if (current.get("render_segment") == index and not current["boss_feedback"]
+                        and not any(current["actor_feedback"])):
+                    break
+            else:
+                raise RuntimeError("Previous feedback did not expire or target stage did not load")
+            scenario["enemy_bank"] = enemy_bank_check(mon, syms, package, index)
+            pause(scenario, True)
+            return frame(scenario, True)
+
+        def sustained_hits(scenario, mesh, target, shot, pose=None, pulse=()):
+            def hp(sample):
+                return sample["actors"][0]["hp"] if target == "actor" else sample["game"][target]
+
+            previous = frame(scenario)
+            phases, phase_tick, last_phase = [], None, None
+            for index in range(32):
+                seed(scenario, clear=("shots", "explosions"))
+                seed_element(scenario, "shots", 0, dict(kind=1, damage=1, **shot))
+                pause(scenario, False)
+                # Resume first rebases the input clock; that publication can
+                # contain no simulation ticks and must not consume this hit.
+                for _ in range(4):
+                    live = frame(scenario)
+                    if live["game"]["ticks"] != previous["game"]["ticks"]:
+                        break
+                if hp(live) != hp(previous) - 1:
+                    raise RuntimeError(f"{scenario['name']}: sustained projectile did not cause exactly one damage")
+                state = live["actor_feedback"][0] if target == "actor" else live["boss_feedback"]
+                unrelated = (live["actor_feedback"][1:] + [live["boss_feedback"]]
+                             if target == "actor" else live["actor_feedback"])
+                if not 0 <= state <= 20 or any(unrelated):
+                    raise RuntimeError("Feedback state was not prepared or leaked to another actor")
+                phase, tick = "white" if state > 10 else "normal", live["game"]["ticks"]
+                if phase != last_phase:
+                    if last_phase is not None and ((tick - phase_tick) & 0xffff) < 10:
+                        raise RuntimeError(f"{scenario['name']}: {last_phase} lasted less than ten simulation ticks")
+                    if phase == "white" and state != 20:
+                        raise RuntimeError("New damage feedback did not begin with a complete white phase")
+                    phases.append(phase)
+                    last_phase, phase_tick = phase, tick
+                elif state > 10:
+                    previous_state = (previous["actor_feedback"][0] if target == "actor"
+                                      else previous["boss_feedback"])
+                    if state >= previous_state:
+                        raise RuntimeError("Repeated damage restarted or stalled the white phase")
+                pause(scenario, True)
+                if pose is not None:
+                    seed_element(scenario, "actors", 0, pose)
+                shown = frame(scenario, True)
+                shown_state = shown["actor_feedback"][0] if target == "actor" else shown["boss_feedback"]
+                if shown_state != state or shown["game"]["ticks"] != tick:
+                    raise RuntimeError("Paused rendering advanced damage feedback")
+                colors(scenario, mesh, shown, state > 10, pulse)
+                scenario.setdefault("feedback_sequence", []).append(dict(tick=tick, state=state, hp=hp(live)))
+                if len(phases) <= 3 and (len(scenario.get("captures", [])) < len(phases)):
+                    scenario.setdefault("captures", []).append(capture(
+                        mon, syms, output, f"{scenario['name']}-{len(phases)}-{phase}"))
+                if phases == ["white", "normal", "white"]:
+                    return
+                previous = shown
+            raise RuntimeError("Sustained damage did not alternate white, normal, white")
+
+        for depth, label in ((900, "mesh"), (1500, "proxy")):
+            scenario = {"name": f"enemy-{label}-sustained-damage-alternates"}
+            result["scenarios"].append(scenario)
+            blank = stage(scenario, 0)
+            pose = {"pos.x": 0, "pos.y": 0, "pos.z": depth,
+                    "origin_x": 0, "origin_y": 0, "age": 0}
+            seed_element(scenario, "actors", 0, dict(kind=1, hp=100, **pose))
+            mesh = mesh_reference(blank, frame(scenario, True))
+            sustained_hits(scenario, mesh, "actor", {"pos.x": 0, "pos.y": 0, "pos.z": depth - 20}, pose)
+            finish(scenario)
+
+        for index in (3, 7, 11, 16, 17):
+            scenario = {"name": f"boss-{index}-sustained-damage-alternates"}
+            result["scenarios"].append(scenario)
+            blank = stage(scenario, index)
+            seed(scenario, {"boss_started": 1, "boss_z": 680})
+            mesh = mesh_reference(blank, frame(scenario, True))
+            # An absorbed core shot must neither start feedback nor change HP.
+            seed_element(scenario, "shots", 0,
+                         {"kind": 1, "damage": 1, "pos.x": 0, "pos.y": 0, "pos.z": 450})
+            pause(scenario, False)
+            for _ in range(4):
+                blocked = frame(scenario)
+                if blocked["shots"][0]["kind"] == 0:
+                    break
+            if (blocked["shots"][0]["kind"] != 0 or blocked["boss_feedback"]
+                    or blocked["game"]["boss_core"] != result["full_boss_health"]["boss_core"]):
+                raise RuntimeError("Shielded core lost health or triggered damage feedback")
+            pause(scenario, True)
+            sustained_hits(scenario, mesh, "boss_left", {"pos.x": -130, "pos.y": 30, "pos.z": 530})
+            finish(scenario)
+
+            scenario = {"name": f"boss-{index}-exposed-core-damage-alternates"}
+            result["scenarios"].append(scenario)
+            blank = stage(scenario, index)
+            seed(scenario, {"boss_started": 1, "boss_z": 680, "boss_left": 0, "boss_right": 0})
+            mesh = mesh_reference(blank, frame(scenario, True))
+            # Only the exposed core has a normal-color pulse. Derive its two
+            # triangles by covering it, preserving every hull color check.
+            seed(scenario, {"boss_left": 1})
+            covered = {signature(command) for command in frame(scenario, True)["triangles"]}
+            core = set(mesh) - covered
+            if len(core) != 2:
+                raise RuntimeError("Cannot isolate the exposed core's two animated triangles")
+            seed(scenario, {"boss_left": 0})
+            sustained_hits(scenario, mesh, "boss_core", {"pos.x": 0, "pos.y": 0, "pos.z": 450}, pulse=core)
+            finish(scenario)
+
+        # Restore the original player-hit fixture without modifying feedback.
+        stage(setup, 0)
+        pause(setup, False)
+        seed(setup, {"invulnerability": 0})
+
+    damage_feedback_checks()
 
     flash = {"name": "actual-hit-white-hull-flashes", "captures": []}
     result["scenarios"].append(flash)

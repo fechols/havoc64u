@@ -1013,7 +1013,8 @@ unsafe fn prepare_scenery(current: u8, sounds: &mut TransitionAudio) -> u8 {
 #[inline(never)]
 unsafe fn prepare_geometry(scenery_count: u8, bank: &AssetBank<'_>) {
     havoc::projection::begin_frame();
-    let game = GAME.assume_init_ref();
+    let game = GAME.assume_init_mut();
+    game.prepare_damage_feedback_frame();
     let renderer = RENDERER.assume_init_mut();
     let [parallax_x, parallax_y] = game.sky_parallax();
     // Detail markers 5-8 split GEOMETRY work for the profilers; 0 ends it.

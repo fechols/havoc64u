@@ -302,7 +302,7 @@ const fn test_bank_bytes(level: u8) -> [u8; assets::COMMON_SIZE] {
     data[assets::MODEL_DATA_OFFSET + 12] = 15;
     data
 }
-fn test_bank(level: u8) -> AssetBank<'static> {
+pub(super) fn test_bank(level: u8) -> AssetBank<'static> {
     #[cfg(feature = "host-tools")]
     {
         static BANKS: std::sync::OnceLock<
@@ -383,7 +383,7 @@ fn music_follows_stage_boss_crossing_and_result_identity() {
     assert_eq!(game.music_state(), MusicState::Title);
 }
 
-fn empty_segment(index: u8) -> [u8; assets::SEGMENT_SIZE] {
+pub(super) fn empty_segment(index: u8) -> [u8; assets::SEGMENT_SIZE] {
     let mut bytes = [0; assets::SEGMENT_SIZE];
     bytes[..4].copy_from_slice(b"SMS2");
     bytes[4] = index;
@@ -1579,8 +1579,11 @@ fn crystal_cave_has_an_unbroken_roof_side_walls_and_visible_hanging_crystals() {
 #[test]
 fn resident_state_fits_budget() {
     assert_eq!(core::mem::size_of::<PresentationEvent>(), 1);
+    // Host C alignment adds eight bytes relative to the byte-aligned MOS
+    // layout. The native compile-time assertion and ELF audit enforce 640.
+    let alignment_padding = if cfg!(target_arch = "mos") { 0 } else { 8 };
     assert!(
-        core::mem::size_of::<Game>() <= 640,
+        core::mem::size_of::<Game>() <= 640 + alignment_padding,
         "{}",
         core::mem::size_of::<Game>()
     );
@@ -4346,7 +4349,7 @@ fn white_hit_flash_preserves_ship_and_exhaust_geometry_without_recoloring_the_sc
         assert_eq!(
             actual.faces[hull_faces..actual.count],
             normal.faces[hull_faces..normal.count],
-            "flash timer {timer} changed exhaust, reticle or terrain"
+            "flash timer {timer} changed exhaust or terrain"
         );
     }
     g.hit_flash_ticks = 0;
@@ -4364,7 +4367,7 @@ fn white_hit_flash_preserves_ship_and_exhaust_geometry_without_recoloring_the_sc
         let dead = capture(&g, &bank, &segment);
         assert_eq!(
             dead.count,
-            normal.count - hull_faces - 2 - 2,
+            normal.count - hull_faces - 2,
             "destroyed ships retain the existing death sequence"
         );
     }
@@ -4559,7 +4562,7 @@ fn saturated_bridge_weapons_preserve_foreground_and_match_staged_rendering() {
     let data = model_bank_for_tests();
     let bank = AssetBank::new(&data).unwrap();
     let hull_faces = bank.face_count(assets::PLAYER) as u16 + 2; // Ship and exhaust.
-    let essential_faces = hull_faces + 2 + SHOTS as u16 * 2 + 6 * 2;
+    let essential_faces = hull_faces + SHOTS as u16 * 2 + 6 * 2;
     let mut direct = Renderer::new();
     let mut staged = Renderer::new();
     let mut isolated_ship = Renderer::new();
