@@ -3,7 +3,7 @@ use havoc::{
     hud,
     render::{Renderer, BAND_PIXELS},
     space_dust::{SpaceDustFrame, COLOR, SPECK_COUNT},
-    GeometrySink, Vec3, TWO_SIDED,
+    GeometrySink, Vec3,
 };
 use std::collections::BTreeSet;
 
@@ -20,8 +20,7 @@ fn lifetime_tick(index: usize, generation: u8, phase: u8) -> u16 {
 fn rendering_ticks() -> impl Iterator<Item = u16> {
     // Retain every early phase, then exercise later headings and clock rollover.
     (0..=256).chain([
-        0x0101, 0x017f, 0x01ff, 0x1234, 0x7fff, 0x8000, 0xff00, 0xff7f, 0xfffe,
-        0xffff, 0, 1,
+        0x0101, 0x017f, 0x01ff, 0x1234, 0x7fff, 0x8000, 0xff00, 0xff7f, 0xfffe, 0xffff, 0, 1,
     ])
 }
 
@@ -117,10 +116,9 @@ fn rays_stay_straight_accelerate_and_leave_view_before_respawning() {
                 previous_radius = radius;
                 // Quarter-radius rounding moves a coordinate by at most 3/4 pixel.
                 // Changing a live particle's heading fails this comparison.
-                for (actual, direction) in [
-                    (displacement.0, heading.0),
-                    (displacement.1, heading.1),
-                ] {
+                for (actual, direction) in
+                    [(displacement.0, heading.0), (displacement.1, heading.1)]
+                {
                     assert!(
                         (actual * 32 - direction * radius).abs() <= 24,
                         "particle {index} changed ray at tick {ticks}"
@@ -262,8 +260,8 @@ fn packed_vic_frames_preserve_single_gray_specks_without_double_buffer_trails() 
 
 fn rectangle(renderer: &mut Renderer, color: u8) {
     let v = |x, y| Vec3 { x, y, z: 128 };
-    renderer.triangle(v(-32, -32), v(-32, 32), v(32, 32), color, TWO_SIDED);
-    renderer.triangle(v(-32, -32), v(32, 32), v(32, -32), color, TWO_SIDED);
+    renderer.triangle(v(-32, -32), v(-32, 32), v(32, 32), color, 0);
+    renderer.triangle(v(-32, -32), v(32, 32), v(32, -32), color, 0);
     renderer.finish();
 }
 

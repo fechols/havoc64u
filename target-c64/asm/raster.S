@@ -401,17 +401,21 @@ fast_raster_rows:
 .Lrr_rows_\name:
     lda \left+3
     bmi .Lrr_left_zero_\name
-    bne .Lrr_skip_\name
+    beq .Lrr_left_high_\name
+    jmp .Lrr_skip_\name
+.Lrr_left_high_\name:
     lda \left+2
     cmp #160
-    bcs .Lrr_skip_\name
     bcc .Lrr_left_ok_\name
+    jmp .Lrr_skip_\name
 .Lrr_left_zero_\name:
     lda #0
 .Lrr_left_ok_\name:
     sta CS_FIRST
     lda \right+3
-    bmi .Lrr_skip_\name
+    bpl .Lrr_right_high_\name
+    jmp .Lrr_skip_\name
+.Lrr_right_high_\name:
     bne .Lrr_right_full_\name
     lda \right+2
     cmp #160
@@ -420,8 +424,11 @@ fast_raster_rows:
     lda #160
 .Lrr_right_ok_\name:
     cmp CS_FIRST
-    bcc .Lrr_skip_\name
-    beq .Lrr_skip_\name
+    bcc .Lrr_empty_\name
+    bne .Lrr_nonempty_\name
+.Lrr_empty_\name:
+    jmp .Lrr_skip_\name
+.Lrr_nonempty_\name:
     sta CS_END
 .ifdef SPAN_BUFFER
 .ifdef SPAN_FRONT
@@ -576,6 +583,22 @@ fast_raster_band:
     sta RR_INDEX
     jmp .Lrb_next_byte
 .Lrb_triangle:
+    jsr .Lrb_pointers
+.ifdef SPAN_FRONT
+    lda RR_PAINT
+    cmp #2
+    bne .Lrb_run_core
+    ldy #11
+    lda (__rc6),y
+    and #$20
+    bne .Lrb_walk
+    jmp .Lrb_after_core
+.Lrb_run_core:
+.endif
+.Lrb_walk:
+    jsr .Lrr_core
+    jmp .Lrb_after_core
+.Lrb_pointers:
     ; head = RASTER_HEADS + 16 i (the heads follow the masks at $EF20)
     lda RR_INDEX
     lsr
@@ -636,17 +659,7 @@ fast_raster_band:
     inc __rc7
 .Lrb_tail_ready:
 .endif
-.ifdef SPAN_FRONT
-    lda RR_PAINT
-    cmp #2
-    bne .Lrb_run_core
-    ldy #11
-    lda (__rc6),y
-    and #$20
-    beq .Lrb_after_core
-.Lrb_run_core:
-.endif
-    jsr .Lrr_core
+    rts
 .Lrb_after_core:
 .ifdef SPAN_FRONT
     lda RR_PAINT

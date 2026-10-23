@@ -19,6 +19,7 @@ import subprocess
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 BUILD = ROOT / "target/raster-prep-test"
 SDK = pathlib.Path(os.environ.get("LLVM_MOS", str(pathlib.Path.home() / ".local/llvm-mos"))) / "bin"
+os.environ.setdefault("RUST_TARGET_PATH", str(pathlib.Path.home() / ".local/rust-mos-targets"))
 
 
 def item(source, declaration):
@@ -152,9 +153,10 @@ def main():
     ])
     source = f'''#![no_std]
 #![allow(dead_code, private_interfaces)]
-#[derive(Clone,Copy)] pub struct Vec3 {{ pub x:i16,pub y:i16,pub z:i16 }}
+#[derive(Clone,Copy)] #[repr(C)] pub struct Vec3 {{ pub x:i16,pub y:i16,pub z:i16 }}
 #[path="{ROOT / 'src/math.rs'}"] mod math;
-const POSITIVE_AREA:u8=4;
+const TERRAIN_CLEAR_GEOMETRY:u8=0x20;
+const EXTERIOR_TERRAIN:u8=0x40;
 {items}
 #[no_mangle] pub unsafe extern "C" fn check_prepare(input:*const Triangle,head:*mut RasterHead,tail:*mut RasterTail) {{
     // Match RasterPass::raster_pass: preserve the old command before replacing
@@ -175,9 +177,16 @@ const POSITIVE_AREA:u8=4;
     cases = []
     for index, (x, y) in enumerate(fixtures()):
         area = (x[1] - x[0]) * (y[2] - y[0]) - (y[1] - y[0]) * (x[2] - x[0])
+        # Production emission rejects nonpositive faces. Keep each fixture's
+        # shape and cyclic ordering, but make its winding valid for preparation.
+        if area == 0:
+            continue
+        if area < 0:
+            x[1], x[2] = x[2], x[1]
+            y[1], y[2] = y[2], y[1]
         color = index & 15
         # STATIC_SKY must not leak into raster color or orientation flags.
-        flags = (4 if area > 0 else 0) | (2 if index & 1 else 0) | ((index & 3) << 5)
+        flags = (2 if index & 1 else 0) | ((index & 7) << 5)
         cases.append((struct.pack("<7h2B", *x, *y, 100, color, flags), expected(x, y, color, flags)))
     (BUILD / "check.c").write_text(HARNESS)
     outputs = []

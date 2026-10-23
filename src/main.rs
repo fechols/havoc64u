@@ -17,8 +17,8 @@ fn frame(
     game.prepare_damage_feedback_frame();
     let mut r = Renderer::new();
     r.begin(game.sky_color());
-    game.render(&mut r, bank, segment);
-    r.finish();
+    let mut shadows = havoc::shadow::ShadowFrame::new();
+    game.render_with_shadows(&mut r, &mut shadows, bank, segment);
     let status = game.hud();
     let mut dust = SpaceDustFrame::EMPTY;
     let ambient = dust.prepare(status.section, status.mode, game.animation_ticks());

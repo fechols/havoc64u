@@ -68,6 +68,7 @@ assert (symbols['__staged_color_start'],symbols['__staged_color_end'])==(0x7728,
 # stay empty.
 assert symbols['__zp_bss_size']==0 and symbols['__zp_data_size']==0, 'compiler zero-page statics would collide with the PIXELS kernels'
 assert (symbols['__raster_heads_start'],symbols['__raster_heads_end'])==(0xef20,0xff20)
+assert (symbols['__shadow_frame_start'],symbols['__shadow_frame_end'])==(0xe800,0xff20), 'incorrect persistent shadow frame allocation'
 assert (symbols['__scenery_records_start'],symbols['__scenery_records_end'])==(0xd880,0xe000)
 assert 0 < symbols['__phase_scenery_base_size'] < symbols['__phase_scenery_size'] <= 0x4200
 assert symbols['__phase_scenery_base_end'] == 0x3000 + symbols['__phase_scenery_base_size']
@@ -114,6 +115,8 @@ used=[]
 phase_sizes={}
 kernel_sizes={}
 assert symbols['__raster_heads_end'] <= 0xff20, 'raster heads must leave the CPU vectors free'
+assert 0 < symbols['__phase_shadow_finalize_size'] < symbols['__phase_shadow_size'], 'SHADOW finalization prefix must be shorter than the full setup image'
+assert symbols['__phase_shadow_finalize_end'] == 0x3000 + symbols['__phase_shadow_finalize_size'], 'SHADOW finalization prefix boundary mismatch'
 assert symbols['__irq_stack_bottom'] == 0x7500 and symbols['__irq_stack'] == 0x7600, 'IRQ stack must be the measured 256-byte reservation'
 assert 0x7200 <= symbols['__music_kernel_start'] and symbols['__music_kernel_start'] + symbols['__music_kernel_size'] <= symbols['__irq_stack_bottom'], 'music kernel slot must sit between the overlay window and the IRQ stack'
 for line in listing.splitlines():
@@ -123,14 +126,20 @@ for line in listing.splitlines():
     if 'A' not in flags or not size:continue
     if name.startswith('.phase.'):
         phase_sizes[name]=size
-    if name == '.phase.sim_aux':
+    if name in ('.phase.sim_aux', '.phase.scenery_aux'):
         assert address == 0x8e00 and 0 < size <= 0x500, name
-        assert size == symbols['__phase_sim_aux_size'], name
+        assert size == symbols['__phase_sim_aux_size' if name == '.phase.sim_aux' else '__phase_scenery_aux_prefix_size'], name
+    elif name == '.phase.scenery_extra':
+        assert address == 0xe000 and 0 < size <= 0x800, 'SCENERY extra helpers overlap shadow frame'
+        assert size == symbols['__phase_scenery_extra_size'], name
     elif name == '.phase.pixels_aux':
         assert address == 0x6f20 and 0 < size <= 0x2e0, 'PIXELS helpers outside workspace'
         assert size == symbols['__phase_pixels_aux_size'], 'PIXELS helper size mismatch'
+    elif name == '.phase.render_aux':
+        assert address == 0x6f20 and 0 < size <= 0x2e0, 'projection helpers outside workspace'
+        assert size == symbols['__phase_render_aux_size'], 'projection helper size mismatch'
     elif name == '.phase.victory':
-        assert address == symbols['victory_geometry'] and address + size <= 0x7200, name
+        assert address == symbols['victory_geometry'] and address + size <= 0x6f20, name
     elif name in enemy_sections or name == '.phase.terminal':
         assert address == symbols['encounter_step'] and 0 < size <= symbols['__phase_enemy_size'], name
         assert address + size <= 0x7200, name
@@ -139,8 +148,8 @@ for line in listing.splitlines():
         assert 0 < size <= symbols['__phase_scenery_size'] - symbols['__phase_scenery_base_size'], name
         assert address + size <= 0x7200, name
     elif name.startswith('.phase.'):
-        assert name in {'.phase.boot','.phase.sim','.phase.geometry','.phase.pixels','.phase.audio','.phase.scenery'},name
-        limit=0x3f20 if name=='.phase.pixels' else 0x4200
+        assert name in {'.phase.boot','.phase.sim','.phase.geometry','.phase.pixels','.phase.audio','.phase.scenery','.phase.shadow'},name
+        limit=0x3f20 if name in ('.phase.pixels','.phase.geometry','.phase.shadow') else 0x4200
         assert address==0x3000 and size<=limit,name
     elif name.startswith('.music.kernel.'):
         assert address == symbols['music_kernel_tick'] == symbols['__music_kernel_start'], f'{name} must link at the kernel slot'
@@ -153,7 +162,7 @@ for line in listing.splitlines():
         used.append((name,address,address+size))
     print(f'{name:18} ${address:04X}-${address+size-1:04X} {size:5} bytes')
 # Linker bases are the source for both packaging and the runtime address table.
-# Validate the fixed v10 map independently, including each full reserved slot.
+# Validate the fixed v12 map independently, including each full reserved slot.
 reu_layout = (
     (1, 'boot', 0x10000),
     (2, 'sim_lowlands', 0x20000),
@@ -179,6 +188,8 @@ reu_layout = (
     (28, 'scenery_shipyard', 0x7a000),
     (29, 'scenery_carrier', 0x85000),
     (30, 'scenery_gate', 0x8a000),
+    (31, 'shadow', 0x95000),
+    (33, 'scenery_helpers', 0xaa000),
 )
 assert symbols['__reu_size'] == 0x1000000, 'incorrect 16 MiB REU image size'
 assert symbols['__reu_digital_music'] == 0x100000, 'incorrect digital music address'
@@ -209,12 +220,12 @@ for phase_id, name, expected in reu_layout:
     assert symbols[f'__reu_{name}'] == expected, f'incorrect {name} REU slot address'
 
 reu_table = symbols['__code_reu_pages']
-assert symbols['__code_reu_pages_end'] - reu_table == 31, 'incorrect REU address table size'
-assert any(name == '.tables' and start <= reu_table and reu_table + 31 <= end
+assert symbols['__code_reu_pages_end'] - reu_table == 34, 'incorrect REU address table size'
+assert any(name == '.tables' and start <= reu_table and reu_table + 34 <= end
            for name,start,end in used), 'REU address table must remain in resident tables'
 reu_table_offset = reu_table - 0x0801 + 2
-reu_pages = data[reu_table_offset:reu_table_offset+31]
-expected_reu_pages = bytearray(31)
+reu_pages = data[reu_table_offset:reu_table_offset+34]
+expected_reu_pages = bytearray(34)
 for phase_id, name, expected in reu_layout:
     expected_reu_pages[phase_id] = symbols[f'__reu_{name}'] >> 12
 assert reu_pages == expected_reu_pages, 'REU address table disagrees with linked slots'
@@ -231,6 +242,10 @@ phase_loads = {
     '.phase.boot': symbols['__reu_boot'],
     '.phase.sim': symbols['__reu_sim_lowlands'],
     '.phase.geometry': symbols['__reu_geometry'],
+    '.phase.render_aux': symbols['__reu_geometry'] + 0x3f20,
+    '.phase.shadow': symbols['__reu_shadow'],
+    '.phase.scenery_aux': symbols['__reu_scenery_helpers'],
+    '.phase.scenery_extra': symbols['__reu_scenery_helpers'] + 0x500,
     '.phase.pixels': symbols['__reu_pixels'],
     '.phase.pixels_aux': symbols['__reu_pixels'] + 0x3f20,
     '.phase.audio': symbols['__reu_audio'],
@@ -266,17 +281,17 @@ expected_load_sizes = tuple(phase_sizes['.phase.sim'] + phase_sizes[name]
                             for name in [*(f'.phase.enemy.{level}' for level in enemy_profiles), '.phase.terminal'])
 assert sim_load_sizes == expected_load_sizes, f'SIM load table disagrees with profile images: {sim_load_sizes} != {expected_load_sizes}'
 code_table = symbols['__code_sizes']
-assert any(name == '.startup_checks' and start <= code_table and code_table + 48 <= end
+assert any(name == '.startup_checks' and start <= code_table and code_table + 52 <= end
            for name,start,end in used), 'Code size table must remain in startup checks'
 code_offset = code_table - 0x0801 + 2
 code_sizes = tuple(int.from_bytes(data[code_offset+i:code_offset+i+2], 'little')
-                   for i in range(0,48,2))
+                   for i in range(0,52,2))
 # This order is the startup OVL7 walk: five original phases, wildlife,
 # three ordinary SIM profiles, victory, terminal, three bosses, two scenic
 # tails, then the separately addressed SIM helpers, ascent and six space tails.
 code_profiles = ('boot', 'sim', 'geometry', 'pixels', 'audio', 'scenery',
                  'sim', 'sim', 'sim', 'victory', 'sim', 'sim', 'sim', 'sim',
-                 'scenery', 'scenery', 'sim_aux', *(['scenery'] * 7))
+                 'scenery', 'scenery', 'sim_aux', *(['scenery'] * 7), 'shadow', 'scenery_aux')
 expected_code_sizes = tuple(symbols[f'__phase_{profile}_size'] for profile in code_profiles)
 assert code_sizes == expected_code_sizes, f'Code size table disagrees with overlay images: {code_sizes} != {expected_code_sizes}'
 assert phase_sizes['.phase.scenery'] == symbols['__phase_scenery_base_size']
@@ -297,10 +312,12 @@ print('Models8400-8BFF; HUD sprites8C00-8DFF; overflow-cell pixel band8E00-92FF;
 print('Overlay3000-71FF; music kernel slot7200-74FF; main stackC400-C7FF; IRQ stack7500-75FF')
 print('PIXELS code3000-6F1F helpers6F20-71FF; sorted order7600-76FF; edge headsEF20-FF1F tailsE000-EBFF masksEC00-EF1F; commands stay in emission orderD000-DFFF')
 print(f'PIXELS prefix {symbols["__phase_pixels_prefix_size"]} bytes; helpers {symbols["__phase_pixels_aux_size"]} bytes; checksummed composition {symbols["__phase_pixels_size"]} bytes; runtime omits the raster-data gap')
-print('GEOMETRY code3000-71FF; projection cache8E00-907F and depth-sort keys/buckets8E00-91FF share PIXELS band; sorted order7600-76FF')
+print('GEOMETRY/SHADOW code3000-6F1F; shared projection6F20-7132; projection cache8E00-907F and depth sorting8E00-91FF share PIXELS band; sorted order7600-76FF')
 print('SCENERY code3000-71FF; raw recordsD880-DFFF share GEOMETRY commands')
+print(f'SCENERY helpers: {symbols["__phase_scenery_aux_prefix_size"]} bytes at8E00 and {symbols["__phase_scenery_extra_size"]} bytes atE000; both retire before GEOMETRY; persistent shadow frameE800-FF1F')
+print(f'SHADOW full {symbols["__phase_shadow_size"]} bytes; disabled prefix {symbols["__phase_shadow_finalize_size"]} bytes; one transfer per frame')
 print(f'SCENERY terrestrial prefix {symbols["__phase_scenery_terrain_size"]} bytes; complete prefix {symbols["__phase_scenery_base_size"]} bytes; largest decoration tail {symbols["__phase_scenery_size"]-symbols["__phase_scenery_base_size"]} bytes; ten padded images')
-print(f'GEOMETRY transition prefix {symbols["__phase_geometry_base_size"]} bytes; combat tail {symbols["__phase_geometry_size"]-symbols["__phase_geometry_base_size"]} bytes')
+print(f'GEOMETRY transition prefix {symbols["__phase_geometry_base_size"]} bytes; combat tail {symbols["__phase_geometry_prefix_size"]-symbols["__phase_geometry_base_size"]} bytes; shared projection {symbols["__phase_render_aux_size"]} bytes')
 print(f'AUDIO runtime prefix {symbols["__phase_audio_runtime_size"]} bytes; startup-only validation tail {symbols["__phase_audio_size"]-symbols["__phase_audio_runtime_size"]} bytes; startup verifies the full image')
 print(f'SIM common prefix {symbols["__phase_sim_base_size"]} bytes; largest simulation tail {symbols["__phase_enemy_size"]} bytes; eight padded images {symbols["__phase_sim_size"]} bytes each')
 print('SIM runtime transfer sizes by profile0..7: ' + ', '.join(map(str, sim_load_sizes)))
@@ -311,7 +328,7 @@ print('REU logical phase slots: ' + ', '.join(f'{phase_id:02X}=${symbols[f"__reu
 print(f'SIM helper code8E00-92FF: {symbols["__phase_sim_aux_size"]} bytes; reloaded before every SIM profile, shares retired startup/cache/band workspace')
 print(f'Victory GEOMETRY composed image {symbols["__phase_victory_size"]} bytes')
 
-print('PIXELS preparation scratch77A0-77BE: reused later by raster/packer; models remain intact')
+print('Raster preparation scratch77A0-77BE: reused later by PIXELS raster/packer; models remain intact')
 if front_enabled:
     print('Front spans: nextD000-D4FF endD500-D9FF; row heads77AC-77B3; retired commands/preparation scratch after all edge preparation')
 elif span_enabled:

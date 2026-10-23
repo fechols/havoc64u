@@ -98,6 +98,11 @@ def main():
         overlays += (("ascent", 24, 88), ("asteroid", 25, 92), ("moon", 26, 96),
                      ("graveyard", 27, 100), ("shipyard", 28, 104),
                      ("space-carrier", 29, 108), ("gate", 30, 112))
+    if package_format['version'] >= 0x534d0c00:
+        overlays += (("shadow", 31, 116),
+                     ("scenery-helpers", 33, 58))
+        cases += [("shared-projection-code", overlay_offsets[3] + 0x3f20, "REU CODE CHECKSUM FAILED"),
+                  ("scenery-extra-code", overlay_offsets[33] + 0x500, "REU CODE CHECKSUM FAILED")]
     # The split PIXELS image authenticates its unused gap as well as its
     # separately loaded helper tail. Neither region enters the main PRG.
     if int.from_bytes(image[0x10a:0x10c], "little") > 0x3f20:

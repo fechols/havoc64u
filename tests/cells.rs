@@ -35,8 +35,8 @@ fn cell_band_shows_the_pixel_band_of_every_scene() {
         let segment = Segment::new(&segment_data).unwrap();
         let mut renderer = Renderer::new();
         renderer.begin(game.sky_color());
-        game.render(&mut renderer, &bank, &segment);
-        renderer.finish();
+        let mut shadows = havoc::shadow::ShadowFrame::new();
+        game.render_with_shadows(&mut renderer, &mut shadows, &bank, &segment);
         let status = game.hud();
         let mut dust = SpaceDustFrame::EMPTY;
         let ambient = dust.prepare(status.section, status.mode, game.animation_ticks());

@@ -209,8 +209,8 @@ fn ship_relief_has_one_attached_footprint_and_an_unbroken_outward_upper_hull() {
             indices,
             [
                 top_index[a as usize],
-                top_index[c as usize],
-                top_index[b as usize]
+                top_index[b as usize],
+                top_index[c as usize]
             ]
         );
         let [a, b, c] = indices.map(|index| bank.vertex(MEDAL, index));

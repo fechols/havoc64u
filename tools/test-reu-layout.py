@@ -14,7 +14,7 @@ def layout():
     addresses = (0x10000, 0x20000, 0x30000, 0x40000, 0x50000, 0x70000,
                  0x80000, 0x90000, 0xa0000, 0x15000, 0x1a000, 0x25000,
                  0x2a000, 0x35000, 0x3a000, 0x55000, 0x5a000, 0x60000,
-                 0x65000, 0x6a000, 0x75000, 0x7a000, 0x85000, 0x8a000)
+                 0x65000, 0x6a000, 0x75000, 0x7a000, 0x85000, 0x8a000, 0x95000, 0xaa000)
     symbols = {'__reu_size': 0x1000000, '__reu_code_slot_size': 0x4200,
                '__reu_models': 0xb0000, '__reu_music': 0xc0000,
                '__reu_digital_music': 0x100000, '__reu_digital_ring': 0xfe0000,
@@ -52,10 +52,10 @@ class ReuLayout(unittest.TestCase):
 
     def test_complete_package_fits_with_full_music_and_code_reservations(self):
         offsets, allocations = packer.checked_layout(layout())
-        self.assertEqual(len(offsets), 24)
+        self.assertEqual(len(offsets), 26)
         # Code, models and music as before, plus the SMK1 directory and
         # twenty-one 768-byte kernel images between the models and the score.
-        self.assertEqual(sum(end - start for start, end, _ in allocations), 744832 + 256 + 21 * 0x300 + 0xf00000)
+        self.assertEqual(sum(end - start for start, end, _ in allocations), 744832 + 2 * 0x4200 + 256 + 21 * 0x300 + 0xf00000)
         self.assertFalse(any(start < 0xc0000 and end > 0xbfc00 for start, end, _ in allocations))
         self.assertIn((0xb9000, 0xb9000 + 256 + 21 * 0x300, 'music kernels'), allocations)
 

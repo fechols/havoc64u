@@ -48,7 +48,7 @@ fast_bounded_division:
 ; Exact signed Q16 edge slope: (dx * 65536) / positive dy, toward zero.
 ; ABI dx A/X, dy rc2/3; return A/X/rc2/3. Only volatile rc2..10 used.
 ; A 16-bit divisor and known zero low half avoid general signed32/32 division.
-.section .phase.pixels.edge_step,"ax",@progbits
+.section .phase.shadow.final.edge_step,"ax",@progbits
 .globl fast_edge_step
 .type fast_edge_step,@function
 fast_edge_step:

@@ -44,9 +44,9 @@ static ERROR_MUSIC_CHECKSUM: [u8; 22] = *b"INVALID MUSIC CHECKSUM";
 #[link_section = ".phase.audio.data"]
 static ERROR_MUSIC_KERNEL: [u8; 20] = *b"INVALID MUSIC KERNEL";
 
+mod digital;
 #[cfg(feature = "music-kernels")]
 mod kernels;
-mod digital;
 
 #[link_section = ".renderer"]
 #[no_mangle]
@@ -209,8 +209,11 @@ extern "C" {
     fn hud_apply_scroll(scroll: u8);
     static __phase_boot_size: u8;
     static __phase_sim_aux_size: u8;
-    static __phase_geometry_size: u8;
+    static __phase_geometry_prefix_size: u8;
     static __phase_geometry_base_size: u8;
+    static __phase_render_aux_size: u8;
+    static __phase_shadow_size: u8;
+    static __phase_shadow_finalize_size: u8;
     static __phase_victory_size: u8;
     fn victory_geometry(game: *const (), renderer: *mut Renderer, bank: *const ());
     static __phase_pixels_prefix_size: u8;
@@ -218,6 +221,8 @@ extern "C" {
     static __phase_audio_size: u8;
     static __phase_audio_runtime_size: u8;
     static __phase_scenery_size: u8;
+    static __phase_scenery_aux_prefix_size: u8;
+    static __phase_scenery_extra_size: u8;
     static __phase_scenery_terrain_size: u8;
     static __phase_scenery_base_size: u8;
     static __phase_scenery_base_end: u8;
@@ -225,8 +230,8 @@ extern "C" {
     static __resident_end: u8;
     static __startup_checks_start: u8;
     static __startup_checks_end: u8;
-    static __code_sizes: [u16; 24];
-    static __code_reu_pages: [u8; 31];
+    static __code_sizes: [u16; 26];
+    static __code_reu_pages: [u8; 34];
     static __sim_load_sizes: [u16; 8];
     #[cfg(feature = "music-kernels")]
     static __music_kernel_start: u8;
@@ -473,9 +478,11 @@ unsafe fn check_code_package() {
     {
         fail(&ERROR_RESIDENT_PAIR)
     }
-    for index in 0..24 {
+    for index in 0..26 {
         let size = sizes[index];
-        let size_offset = if index >= 11 {
+        let size_offset = if index == 25 {
+            58
+        } else if index >= 11 {
             64 + (index - 11) * 4
         } else if index >= 6 {
             38 + (index - 6) * 4
@@ -495,7 +502,9 @@ unsafe fn check_code_package() {
             fail(&ERROR_CODE_SIZE)
         }
         load_phase(
-            if index >= 11 {
+            if index == 25 {
+                33
+            } else if index >= 11 {
                 index as u8 + 7
             } else if index >= 9 {
                 index as u8 + 3
@@ -531,7 +540,11 @@ unsafe fn load_initial_assets() {
     // Validate every segment's structure before play. Later transfers check
     // their complete runtime prefix against these validated package hashes.
     for level in 0..assets::SEGMENT_COUNT {
-        dma(assets::SEGMENTS_OFFSET + level as u32 * 2048, segment_address(0), 512);
+        dma(
+            assets::SEGMENTS_OFFSET + level as u32 * 2048,
+            segment_address(0),
+            512,
+        );
         let bytes = segment_data(0);
         if assets::checksum(bytes) != SEGMENT_CHECKSUMS[level as usize]
             || bytes[4] != level
@@ -584,7 +597,11 @@ unsafe fn copy_model_bank(level: u8) {
 }
 #[inline(always)]
 fn segment_address(slot: u8) -> u16 {
-    if slot == 0 { 0x2e00 } else { 0x9700 }
+    if slot == 0 {
+        0x2e00
+    } else {
+        0x9700
+    }
 }
 unsafe fn segment_data(slot: u8) -> &'static [u8] {
     core::slice::from_raw_parts(segment_address(slot) as *const u8, 512)
@@ -966,7 +983,11 @@ unsafe fn load_music_kernel(cue: havoc::audio::MusicState) {
         Err(_) => fail(&ERROR_MUSIC_KERNEL),
     };
     if size != 0 {
-        dma(music::kernel_image_offset(base, cue as u8, capacity), slot, size);
+        dma(
+            music::kernel_image_offset(base, cue as u8, capacity),
+            slot,
+            size,
+        );
         let image = core::slice::from_raw_parts(slot as *const u8, size as usize);
         if assets::checksum(image) != expected {
             fail(&ERROR_MUSIC_KERNEL)
@@ -1068,10 +1089,8 @@ unsafe fn update_fps_overlay(mode: havoc::game::Mode) {
     let elapsed = ticks.wrapping_sub(FPS_WINDOW_START);
     if elapsed >= 50 {
         // frames * 50 Hz / ticks, in tenths; frames stay far below 130.
-        FPS_TENTHS = havoc::math::div_u32_u16(
-            (FPS_WINDOW_FRAMES.min(130) as u16 * 500) as u32,
-            elapsed,
-        );
+        FPS_TENTHS =
+            havoc::math::div_u32_u16((FPS_WINDOW_FRAMES.min(130) as u16 * 500) as u32, elapsed);
         FPS_WINDOW_START = ticks;
         FPS_WINDOW_FRAMES = 0;
     }
@@ -1100,7 +1119,10 @@ unsafe fn update_fps_overlay(mode: havoc::game::Mode) {
     // Pause only has meaning while flying; elsewhere the key is ignored and
     // a stale pause cannot survive, because no tick runs while it is set.
     if pressed & 1 != 0
-        && matches!(mode, havoc::game::Mode::Playing | havoc::game::Mode::Transition)
+        && matches!(
+            mode,
+            havoc::game::Mode::Playing | havoc::game::Mode::Transition
+        )
     {
         PAUSED = !PAUSED;
     }
@@ -1119,6 +1141,18 @@ unsafe fn update_fps_overlay(mode: havoc::game::Mode) {
 #[link_section = ".phase.scenery"]
 #[inline(never)]
 unsafe fn prepare_scenery(current: u8, sounds: &mut TransitionAudio) -> u8 {
+    io_on();
+    dma(
+        (__code_reu_pages[33] as u32) << 12,
+        0x8e00,
+        core::ptr::addr_of!(__phase_scenery_aux_prefix_size) as u16,
+    );
+    dma(
+        ((__code_reu_pages[33] as u32) << 12) + 0x500,
+        0xe000,
+        core::ptr::addr_of!(__phase_scenery_extra_size) as u16,
+    );
+    io_off();
     let game = GAME.assume_init_ref();
     let data = segment_data(current);
     // Telemetry only: tools read the section whose scenery is being drawn.
@@ -1159,7 +1193,13 @@ unsafe fn prepare_scenery(current: u8, sounds: &mut TransitionAudio) -> u8 {
     enable_irq();
     let renderer = RENDERER.assume_init_mut();
     renderer.begin(game.sky_color());
-    let mut stage = renderer.scenery_stage();
+    let shadows = havoc::shadow::native_frame();
+    shadows.reset();
+    let mut stage = if game.shadow_ground_y().is_some() {
+        renderer.scenery_stage_with_shadows(shadows)
+    } else {
+        renderer.scenery_stage()
+    };
     game.stage_scenery(&mut stage, &Segment::from_validated(data));
     stage.count()
 }
@@ -1167,6 +1207,13 @@ unsafe fn prepare_scenery(current: u8, sounds: &mut TransitionAudio) -> u8 {
 #[link_section = ".phase.geometry"]
 #[inline(never)]
 unsafe fn prepare_geometry(scenery_count: u8, bank: &AssetBank<'_>) {
+    io_on();
+    dma(
+        ((__code_reu_pages[3] as u32) << 12) + 0x3f20,
+        0x6f20,
+        core::ptr::addr_of!(__phase_render_aux_size) as u16,
+    );
+    io_off();
     havoc::projection::begin_frame();
     let game = GAME.assume_init_mut();
     game.prepare_damage_feedback_frame();
@@ -1176,7 +1223,7 @@ unsafe fn prepare_geometry(scenery_count: u8, bank: &AssetBank<'_>) {
     wr(core::ptr::addr_of_mut!(PROF_DETAIL), 5);
     let prefix = renderer.project_scenery(scenery_count, parallax_x, parallax_y);
     wr(core::ptr::addr_of_mut!(PROF_DETAIL), 6);
-    game.render_foreground(renderer, bank, 174.min(233 - scenery_count as u16));
+    game.render_foreground(renderer, bank, 174.min(renderer.remaining_commands()));
     wr(core::ptr::addr_of_mut!(PROF_DETAIL), 7);
     renderer.scenery_last(prefix);
     if game.mode() == havoc::game::Mode::Victory {
@@ -1187,10 +1234,47 @@ unsafe fn prepare_geometry(scenery_count: u8, bank: &AssetBank<'_>) {
         );
     }
     wr(core::ptr::addr_of_mut!(PROF_DETAIL), 8);
-    renderer.finish();
     wr(core::ptr::addr_of_mut!(PROF_DETAIL), 0);
+}
+
+#[link_section = ".phase.shadow.entry"]
+#[inline(never)]
+unsafe fn prepare_shadows(enabled: bool) {
+    if enabled {
+        setup_shadows();
+    }
+    let renderer = RENDERER.assume_init_mut();
+    let shadows = havoc::shadow::native_frame();
+    if enabled {
+        shadows.finish(renderer);
+    } else {
+        shadows.finish_without_shadows(renderer);
+    }
     FRAME_TRIANGLES = renderer.triangle_count;
     FRAME_DROPPED = renderer.dropped;
+    geometry_complete();
+    renderer.prepare_raster();
+}
+
+// Only the full image may enter this tail. Disabled levels load just the
+// guarded entry plus ordinary sorting/preparation, and always pass false.
+#[link_section = ".phase.shadow"]
+#[inline(never)]
+unsafe fn setup_shadows() {
+    let shadows = havoc::shadow::native_frame();
+    let bank = AssetBank::from_validated(core::slice::from_raw_parts(
+        0x8400 as *const u8,
+        assets::MODEL_SIZE,
+    ));
+    let game = GAME.assume_init_ref();
+    if let Some(ground_y) = game.shadow_ground_y() {
+        game.collect_shadow_casters(shadows, &bank);
+        shadows.render_unsorted(
+            RENDERER.assume_init_mut(),
+            ground_y,
+            havoc::shadow::SHADOW_COLOR,
+        );
+    }
 }
 
 // This entry replaces the combat tail at the same execution address. The
@@ -1210,9 +1294,15 @@ pub unsafe extern "C" fn medal_geometry(game: *const (), renderer: *mut Renderer
 #[inline(never)]
 unsafe fn update_sprite_hud(status: &Hud) {
     let next = hud_sprites::DisplayState::from_hud(
-        status, FRAME_SERIAL, if FPS_SHOWN { Some(FPS_TENTHS) } else { None },
+        status,
+        FRAME_SERIAL,
+        if FPS_SHOWN { Some(FPS_TENTHS) } else { None },
     );
-    let dirty = next.changed_corners(if HUD_VALID { Some(HUD_STATE.assume_init_ref()) } else { None });
+    let dirty = next.changed_corners(if HUD_VALID {
+        Some(HUD_STATE.assume_init_ref())
+    } else {
+        None
+    });
     for corner in 0..4u8 {
         if dirty & (1 << corner) != 0 {
             let images = &mut *(0x8e00 as *mut [u8; 128]);
@@ -1615,7 +1705,7 @@ pub unsafe extern "C" fn main() -> i32 {
         } else if status.mode == havoc::game::Mode::Transition {
             core::ptr::addr_of!(__phase_geometry_base_size) as u16
         } else {
-            core::ptr::addr_of!(__phase_geometry_size) as u16
+            core::ptr::addr_of!(__phase_geometry_prefix_size) as u16
         };
         load_phase(
             if status.mode == havoc::game::Mode::Victory {
@@ -1635,7 +1725,18 @@ pub unsafe extern "C" fn main() -> i32 {
             prepare_geometry(scenery_count, &bank);
         }
         io_on();
-        geometry_complete();
+        let shadows_enabled = GAME.assume_init_ref().shadow_ground_y().is_some();
+        load_phase(
+            31,
+            if shadows_enabled {
+                core::ptr::addr_of!(__phase_shadow_size) as u16
+            } else {
+                core::ptr::addr_of!(__phase_shadow_finalize_size) as u16
+            },
+        );
+        io_off();
+        prepare_shadows(shadows_enabled);
+        io_on();
         load_phase(4, core::ptr::addr_of!(__phase_pixels_prefix_size) as u16);
         wr(core::ptr::addr_of_mut!(PROF_PHASE), 7);
         io_off();

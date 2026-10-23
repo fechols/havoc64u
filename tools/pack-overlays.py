@@ -20,6 +20,8 @@ CODE_IMAGES = (
     ('scenery-moon', 'scenery_moon', 26), ('scenery-graveyard', 'scenery_graveyard', 27),
     ('scenery-shipyard', 'scenery_shipyard', 28),
     ('scenery-carrier', 'scenery_carrier', 29), ('scenery-gate', 'scenery_gate', 30),
+    ('shadow', 'shadow', 31),
+    ('scenery-helpers', 'scenery_helpers', 33),
 )
 
 # Per-song music kernels in cue order; Lost Wing (cue 6) plays without one.
@@ -139,15 +141,15 @@ def main():
     reu = bytearray(reu_path.read_bytes())
     offsets, allocations = checked_layout(symbols)
     assert len(reu) == symbols['__reu_size'], 'REU image must contain exactly 16 MiB'
-    assert int.from_bytes(reu[4:8], 'little') == 0x534d0a00, 'expected v10 package'
+    assert int.from_bytes(reu[4:8], 'little') == 0x534d0c00, 'expected v12 package'
     digital = validate_digital_payload(reu)
     for name, metadata in digital.items():
         print(f'digital {name}: {metadata["asset_bytes"]:,} bytes, {metadata["sample_rate"]} Hz stereo; shared 128 KiB mutable PCM ring')
     table_at = 2 + symbols['__code_reu_pages'] - 0x801
-    expected_pages = bytearray(31)
+    expected_pages = bytearray(34)
     for name, _, logical_id in CODE_IMAGES:
         expected_pages[logical_id] = offsets[name] >> 12
-    assert image[table_at:table_at + 31] == expected_pages, 'REU code address table disagrees with linker'
+    assert image[table_at:table_at + 34] == expected_pages, 'REU code address table disagrees with linker'
     assert reu[symbols['__reu_music']:symbols['__reu_music'] + 4] == b'SMU3', 'music address disagrees with baker'
     directory = bytearray(128)
     directory[:4] = b'OVL7'
@@ -166,12 +168,20 @@ def main():
         reu[offset:offset+len(code)] = code
         put(size_at, len(code))
         put(hash_at, checksum(code))
-        destination = symbols['__phase_sim_aux_start'] if name == 'sim-helpers' else 0x3000
+        destination = 0x8e00 if name in ('sim-helpers', 'scenery-helpers') else 0x3000
         print(f'{name:12} REU ${offset:06X} -> RAM ${destination:04X}: {len(code):5} bytes')
     for index, name in enumerate(('boot', 'sim', 'geometry', 'pixels', 'audio')):
         if name == 'sim':
             continue
         code = extract(name)
+        if name == 'geometry':
+            assert len(code) == symbols['__phase_geometry_prefix_size'] <= 0x3f20
+            auxiliary = extract('render_aux')
+            assert len(auxiliary) == symbols['__phase_render_aux_size'] <= 0x2e0
+            assert symbols['__phase_render_aux_start'] == 0x6f20
+            assert symbols['__phase_render_aux_load'] == offsets['geometry'] + 0x3f20
+            code = code.ljust(0x3f20, b'\0') + auxiliary
+            (elf.parent / 'phase-geometry-composed.bin').write_bytes(code)
         if name == 'pixels':
             assert len(code) == symbols['__phase_pixels_prefix_size'] <= 0x3f20
             auxiliary = extract('pixels_aux')
@@ -213,6 +223,14 @@ def main():
     auxiliary = extract('sim_aux')
     assert len(auxiliary) == symbols['__phase_sim_aux_size'] and len(auxiliary) <= 0x500
     package('sim-helpers', auxiliary, 84, 86)
+    package('shadow', extract('shadow'), 116, 118)
+    auxiliary = extract('scenery_aux')
+    assert len(auxiliary) == symbols['__phase_scenery_aux_prefix_size'] <= 0x500
+    extra = extract('scenery_extra')
+    assert len(extra) == symbols['__phase_scenery_extra_size'] <= 0x800
+    auxiliary = auxiliary.ljust(0x500, b'\0') + extra
+    assert len(auxiliary) == symbols['__phase_scenery_aux_size']
+    package('scenery-helpers', auxiliary, 58, 60)
     assert packaged == set(offsets), 'missing code image'
     def span(start, end): return image[2+start-0x801:2+end-0x801]
     put(24, checksum(span(0x801, symbols['__resident_end'])))

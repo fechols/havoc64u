@@ -54,7 +54,7 @@
 .set CS_KEY, $fe
 .set CS_CLEAR, $ff
 
-.section .text.span_front_row_pointers,"ax",@progbits
+.section .phase.pixels.span_front_row_pointers,"ax",@progbits
 .globl span_front_row_pointers
 .type span_front_row_pointers,@function
 span_front_row_pointers:
@@ -87,7 +87,7 @@ span_front_row_pointers:
 ; scene writes/spills: this is a noncommitting union of all TC geometry.
 ; Preserves the high HUD nibble, all CS inputs, imaginary registers and walker
 ; state. Dirties COVER_CLEAN so the next cell clear resets the seeded union.
-.section .text.span_front_cover_prepared,"ax",@progbits
+.section .phase.pixels.span_front_cover_prepared,"ax",@progbits
 .globl span_front_cover_prepared
 .type span_front_cover_prepared,@function
 span_front_cover_prepared:
@@ -149,7 +149,7 @@ span_front_cover_prepared:
 ; from the holes. SF_SCAN advances, SF_LIMIT and SF_MODE stay fixed. Carry
 ; clear means no accepted pixels remain. Uses only E1..EF and cell temporaries
 ; F6..F9; the overlay caller may freely call cell_rows between iterations.
-.section .text.span_front_next,"ax",@progbits
+.section .phase.pixels.span_front_next,"ax",@progbits
 .globl span_front_next
 .type span_front_next,@function
 span_front_next:

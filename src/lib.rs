@@ -19,6 +19,7 @@ pub mod presentation;
 pub mod projection;
 pub mod render;
 pub mod scenery;
+pub mod shadow;
 #[cfg(feature = "host-tools")]
 pub mod soundtrack;
 pub mod space_dust;
@@ -33,13 +34,27 @@ pub struct Vec3 {
     pub z: i16,
 }
 
-pub const TWO_SIDED: u8 = 1;
 // The player and selected ground actors preserve their coverage against exterior
 // terrain, including embedded bases, without changing other foreground ordering.
 pub(crate) const TERRAIN_CLEAR_GEOMETRY: u8 = 0x20;
 pub(crate) const EXTERIOR_TERRAIN: u8 = 0x40;
 pub trait GeometrySink {
     fn triangle(&mut self, a: Vec3, b: Vec3, c: Vec3, color: u8, flags: u8);
+    /// Avoid building decorative silhouettes when this scene has no shadow plane.
+    fn shadow_enabled(&self) -> bool {
+        false
+    }
+    /// Decorative objects register a value-only silhouette while their overlay is loaded.
+    fn shadow_caster(&mut self, _caster: shadow::Caster) {}
+    /// Projected sinks expose transactions; authoring-only captures do not.
+    fn checkpoint(&self) -> Option<render::Checkpoint> {
+        None
+    }
+    fn rollback(&mut self, _: render::Checkpoint) {
+        panic!("geometry sink does not support transactions");
+    }
+    /// Preserve foreground-first tie order when scenery was projected first.
+    fn scenery_last(&mut self, _: u16) {}
     /// Draw one mesh instance. The default is the reference path below; the
     /// native scene sink overrides it with the asm mesh kernel.
     #[allow(clippy::too_many_arguments)]
@@ -106,7 +121,6 @@ pub fn emit_mesh_reference(
     for index in 0..(bank.vertex_count(id) as usize).min(CACHED_VERTICES) {
         vertices[index] = transformed_mesh_vertex(bank, &transform, index as u8);
     }
-    let flags = if bank.one_sided(id) { 0 } else { TWO_SIDED };
     for face in 0..bank.face_count(id) {
         let (indices, color) = bank.face(id, face);
         let mut points = [Vec3 { x: 0, y: 0, z: 0 }; 3];
@@ -118,7 +132,7 @@ pub fn emit_mesh_reference(
                 transformed_mesh_vertex(bank, &transform, index)
             };
         }
-        sink.triangle(points[0], points[1], points[2], color, flags);
+        sink.triangle(points[0], points[1], points[2], color, 0);
     }
 }
 

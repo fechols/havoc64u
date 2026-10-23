@@ -1,6 +1,6 @@
 use havoc::{
-    assets::{AssetBank, MAX_MESH_SHIFT, MESH_ONE_SIDED, MODEL_COUNT, MODEL_DATA_OFFSET},
-    emit_mesh, math, GeometrySink, Vec3, TWO_SIDED,
+    assets::{AssetBank, MAX_MESH_SHIFT, MODEL_COUNT, MODEL_DATA_OFFSET},
+    emit_mesh, math, GeometrySink, Vec3,
 };
 
 #[allow(dead_code)]
@@ -16,9 +16,9 @@ impl GeometrySink for Capture {
     }
 }
 
-/// A bank whose nine meshes all share the given stored vertices, shift and
-/// one-sided flag, with two faces: (0, 1, 2) and (2, last, 0).
-fn bank_bytes(points: &[[i8; 3]], shift: u8, one_sided: bool) -> Vec<u8> {
+/// A bank whose nine meshes share the stored vertices and shift, with two
+/// faces: (0, 1, 2) and (2, last, 0). Descriptor byte seven stays reserved.
+fn bank_bytes(points: &[[i8; 3]], shift: u8) -> Vec<u8> {
     let mut bytes = baked_assets::model_bank(0).to_vec();
     let faces = MODEL_DATA_OFFSET + points.len() * 3;
     for id in 0..MODEL_COUNT as usize {
@@ -28,7 +28,7 @@ fn bank_bytes(points: &[[i8; 3]], shift: u8, one_sided: bool) -> Vec<u8> {
         bytes[at + 3] = 2;
         bytes[at + 4..at + 6].copy_from_slice(&(faces as u16).to_le_bytes());
         bytes[at + 6] = shift;
-        bytes[at + 7] = if one_sided { MESH_ONE_SIDED } else { 0 };
+        bytes[at + 7] = 0;
     }
     for (index, point) in points.iter().enumerate() {
         for (axis, value) in point.iter().enumerate() {
@@ -53,11 +53,10 @@ fn check_mesh(bank: &AssetBank<'_>, angles: [u8; 3], half: bool, position: Vec3)
             z: rotated.z.saturating_add(position.z),
         }
     };
-    let flags = if bank.one_sided(0) { 0 } else { TWO_SIDED };
     let expected: Vec<_> = (0..2)
         .map(|face| {
             let (indices, color) = bank.face(0, face);
-            (indices.map(direct), color, flags)
+            (indices.map(direct), color, 0)
         })
         .collect();
     let mut actual = Capture::default();
@@ -83,8 +82,8 @@ fn test_points(count: usize) -> Vec<[i8; 3]> {
 fn matrix_mesh_rotation_matches_the_direct_reference_for_every_vertex_count() {
     for vertices in [4, 32, 40, 128] {
         let points = test_points(vertices);
-        for (shift, one_sided) in [(0, false), (1, true), (MAX_MESH_SHIFT, false)] {
-            let bytes = bank_bytes(&points, shift, one_sided);
+        for shift in [0, 1, MAX_MESH_SHIFT] {
+            let bytes = bank_bytes(&points, shift);
             let bank = AssetBank::new(&bytes).unwrap();
             let position = Vec3 {
                 x: 80,
@@ -114,7 +113,7 @@ fn matrix_mesh_rotation_matches_the_direct_reference_for_every_vertex_count() {
 fn identity_rotation_reproduces_stored_coordinates_and_saturates_translation() {
     let points = [[-128i8, 127, -1], [127, -128, 0], [-1, 1, 1], [0, 0, -1]];
     for shift in 0..=MAX_MESH_SHIFT {
-        let bytes = bank_bytes(&points, shift, false);
+        let bytes = bank_bytes(&points, shift);
         let bank = AssetBank::new(&bytes).unwrap();
         // With no rotation the matrix is the Q8 identity, so every stored
         // coordinate comes back exactly scaled by the mesh shift.
@@ -151,7 +150,11 @@ fn composed_matrix_stays_within_q8_unit_bounds_and_matches_single_axis_pairs() {
         let yaw = math::RotationMatrix::new(angle, 0, 0);
         assert_eq!(yaw.m, [[c, 0, s], [0, 256, 0], [-s, 0, c]], "yaw {angle}");
         let pitch = math::RotationMatrix::new(0, angle, 0);
-        assert_eq!(pitch.m, [[256, 0, 0], [0, c, -s], [0, s, c]], "pitch {angle}");
+        assert_eq!(
+            pitch.m,
+            [[256, 0, 0], [0, c, -s], [0, s, c]],
+            "pitch {angle}"
+        );
         let roll = math::RotationMatrix::new(0, 0, angle);
         assert_eq!(roll.m, [[c, -s, 0], [s, c, 0], [0, 0, 256]], "roll {angle}");
     }

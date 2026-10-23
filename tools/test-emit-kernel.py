@@ -52,7 +52,7 @@ static void reference(uint8_t *r, const struct Vec3 p[3], uint8_t color, uint8_t
   int16_t sx[3], sy[3];
   for(uint8_t i=0;i<3;i++){ int16_t out[2]; project(&p[i],out); sx[i]=out[0]; sy[i]=out[1]; }
   int32_t area=((int32_t)sx[1]-sx[0])*((int32_t)sy[2]-sy[0])-((int32_t)sy[1]-sy[0])*((int32_t)sx[2]-sx[0]);
-  if(area==0||(area<0&&!(flags&1)))return;
+  if(area<=0)return;
   if((sx[0]<=0&&sx[1]<=0&&sx[2]<=0)||(sx[0]>=160&&sx[1]>=160&&sx[2]>=160)||
      (sy[0]<=0&&sy[1]<=0&&sy[2]<=0)||(sy[0]>=200&&sy[1]>=200&&sy[2]>=200))return;
   uint16_t count=(uint16_t)(r[0]|r[1]<<8);
@@ -61,7 +61,7 @@ static void reference(uint8_t *r, const struct Vec3 p[3], uint8_t color, uint8_t
   uint16_t depth=(uint16_t)(sum/3);
   uint8_t *c=r+6+count*16;
   for(uint8_t i=0;i<3;i++){ c[i*2]=(uint8_t)sx[i]; c[i*2+1]=(uint8_t)(sx[i]>>8); c[6+i*2]=(uint8_t)sy[i]; c[7+i*2]=(uint8_t)(sy[i]>>8); }
-  c[12]=(uint8_t)depth; c[13]=(uint8_t)(depth>>8); c[14]=color&15; c[15]=(flags&0x62)|(area>0?4:0);
+  c[12]=(uint8_t)depth; c[13]=(uint8_t)(depth>>8); c[14]=color&15; c[15]=flags&0x62;
   count++; r[0]=(uint8_t)count; r[1]=(uint8_t)(count>>8);
 }
 static uint32_t checks, emitted;
@@ -88,6 +88,18 @@ int main(void){
   uint16_t square=0;
   for(uint16_t n=0;n<512;n++){QLO[n]=(uint8_t)square;QHI[n]=(uint8_t)(square>>8);square=(uint16_t)(square+((n+1)>>1));}
   for(uint16_t i=0;i<128;i++){uint32_t d=i+128; PROJECT_X[i]=(uint16_t)((80ul*32768ul+d/2)/d); PROJECT_Y[i]=(uint16_t)((133ul*32768ul+d/2)/d);}
+  /* No flag bit can bypass winding rejection; accepted commands retain only
+     scene metadata, never the former positive-area bit. */
+  for(uint16_t flags=0;flags<256;flags++){
+    struct Vec3 front[3]={{-40,-30,200},{10,50,220},{60,-30,200}};
+    struct Vec3 back[3]={front[0],front[2],front[1]};
+    struct Vec3 line[3]={front[0],front[0],front[2]};
+    begin_frame();
+    if(check(front,7,(uint8_t)flags)||check(back,7,(uint8_t)flags)||check(line,7,(uint8_t)flags))return 1;
+    if(RENDERER[0]!=1||RENDERER[1]||RENDERER[2]||RENDERER[3]||RENDERER[21]!=(flags&0x62)){
+      printf("FAIL unconditional culling flags=%u\n",flags);return 1;
+    }
+  }
   uint32_t state=0x7f4a7c15u;
   /* Frames of random triangles: game-like spans, shared vertices to exercise
      cache hits, both orientations, every flag bit, colours 0..255. */
@@ -113,11 +125,15 @@ int main(void){
   /* Capacity: fill all 256 commands, then drops saturate. */
   begin_frame();
   for(uint16_t t=0;t<300;t++){
-    struct Vec3 p[3]={{(int16_t)(-40+(t&7)),-30,200},{60,-30,(int16_t)(200+(t&15))},{10,50,220}};
+    struct Vec3 p[3]={{(int16_t)(-40+(t&7)),-30,200},{10,50,220},{60,-30,(int16_t)(200+(t&15))}};
     if(check(p,7,1))return 1;
   }
+  if(RENDERER[0]||RENDERER[1]!=1||RENDERER[2]!=44||RENDERER[3]){
+    puts("FAIL complete command capacity was not exercised");return 1;
+  }
   reference_renderer[2]=0xfe; reference_renderer[3]=0xff; RENDERER[2]=0xfe; RENDERER[3]=0xff;
-  for(uint16_t t=0;t<4;t++){ struct Vec3 p[3]={{-40,-30,200},{60,-30,200},{10,50,220}}; if(check(p,7,1))return 1; }
+  for(uint16_t t=0;t<4;t++){ struct Vec3 p[3]={{-40,-30,200},{10,50,220},{60,-30,200}}; if(check(p,7,1))return 1; }
+  if(RENDERER[2]!=0xff||RENDERER[3]!=0xff){puts("FAIL drops did not saturate");return 1;}
   printf("PASS %lu emissions checked, %lu commands written\n",(unsigned long)checks,(unsigned long)emitted);
   return 0;
 }

@@ -38,12 +38,16 @@ pub const MODEL_COUNT: u8 = 9;
 pub const ENEMY_SPECS_OFFSET: usize = 16 + MODEL_COUNT as usize * 8;
 pub const ENEMY_SPEC_SIZE: usize = 8;
 pub const MODEL_DATA_OFFSET: usize = ENEMY_SPECS_OFFSET + 3 * ENEMY_SPEC_SIZE;
+pub const SHADOW_SPECS_OFFSET: usize = MODEL_SIZE - 128;
+pub const SHADOW_SPEC_SIZE: usize = 12;
+// Version 12 reserves the final 128 model bytes for checked SMA6 shadow shapes.
+// Version 11 uses SMA5 models with outward winding and unconditional backface culling.
 // Version 10 preserves stereo digital tracks in a 16 MiB REU with a 128 KiB PCM ring.
 // Version 9 added mono digital tracks and a mutable PCM ring in an 8 MiB REU.
 // Version 8 packed code and music into the unchanged first MiB.
 // Version 7 stores mesh vertices as i8 with a per-mesh shift (SMA4 banks);
 // version 6 extended the checked campaign through orbital combat and the gate.
-pub const PACKAGE_ID: u32 = 0x534D0A00;
+pub const PACKAGE_ID: u32 = 0x534D0C00;
 pub const PLAYER: u8 = 0;
 pub const FIGHTER: u8 = 1;
 pub const DIVER: u8 = 2;
@@ -55,8 +59,6 @@ pub const ROCK: u8 = 7;
 pub const MEDAL: u8 = 8;
 /// A ROCK encounter is a small shootable fragment instead of a solid obstacle.
 pub const SMALL_DEBRIS: u8 = 2;
-/// Per-mesh descriptor flag (byte 7): cull back faces instead of drawing both sides.
-pub const MESH_ONE_SIDED: u8 = 1;
 /// Largest per-mesh coordinate shift: `i8` vertices in units of up to eight.
 pub const MAX_MESH_SHIFT: u8 = 3;
 /// Bytes per stored vertex: `i8` x, y, z in units of `1 << shift`.
@@ -177,6 +179,26 @@ pub struct EnemySpec {
     pub render_mode: u8,
 }
 
+/// Baked top-down footprint. Heading is a quarter turn from +Z toward +X;
+/// dimensions and offsets are already in the mesh's scaled world units.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ShadowSpec {
+    pub family: u8,
+    pub heading: u8,
+    pub offset_x: i16,
+    pub offset_z: i16,
+    pub half_x: u16,
+    pub half_z: u16,
+    pub reserved: u16,
+}
+const _: [(); SHADOW_SPEC_SIZE] = [(); core::mem::size_of::<ShadowSpec>()];
+
+#[inline(always)]
+unsafe fn shadow_word(data: &[u8], at: usize) -> u16 {
+    u16::from_le_bytes([*data.get_unchecked(at), *data.get_unchecked(at + 1)])
+}
+
 pub struct AssetBank<'a> {
     data: &'a [u8],
 }
@@ -187,7 +209,7 @@ impl<'a> AssetBank<'a> {
         if data.len() != COMMON_SIZE && data.len() != MODEL_SIZE {
             return Err(AssetError::Size);
         }
-        if &data[..4] != b"SMA4" {
+        if &data[..4] != b"SMA6" {
             return Err(AssetError::Magic);
         }
         if data[4] != MODEL_COUNT {
@@ -220,12 +242,12 @@ impl<'a> AssetBank<'a> {
             if vc == 0
                 || vc > 128
                 || vo < MODEL_DATA_OFFSET
-                || vo > MODEL_SIZE
-                || fo > MODEL_SIZE
+                || vo > SHADOW_SPECS_OFFSET
+                || fo > SHADOW_SPECS_OFFSET
                 || fo < vo + vc * VERTEX_BYTES
-                || fo + fc * 4 > MODEL_SIZE
+                || fo + fc * 4 > SHADOW_SPECS_OFFSET
                 || data[d + 6] > MAX_MESH_SHIFT
-                || data[d + 7] > MESH_ONE_SIDED
+                || data[d + 7] != 0
             {
                 return Err(AssetError::Bounds);
             }
@@ -238,6 +260,27 @@ impl<'a> AssetBank<'a> {
                     return Err(AssetError::Index);
                 }
             }
+            let shadow = bank.shadow_spec(id);
+            if shadow.family > 4
+                || shadow.heading > 3
+                || shadow.reserved != 0
+                || shadow.offset_x < -1024
+                || shadow.offset_x > 1024
+                || shadow.offset_z < -1024
+                || shadow.offset_z > 1024
+                || shadow.half_x > 1024
+                || shadow.half_z > 1024
+                || (shadow.family != 0 && (shadow.half_x == 0 || shadow.half_z == 0))
+                || (shadow.family == 0 && shadow != ShadowSpec::default())
+            {
+                return Err(AssetError::Bounds);
+            }
+        }
+        if data[SHADOW_SPECS_OFFSET + MODEL_COUNT as usize * SHADOW_SPEC_SIZE..MODEL_SIZE]
+            .iter()
+            .any(|&byte| byte != 0)
+        {
+            return Err(AssetError::Bounds);
         }
         Ok(bank)
     }
@@ -290,6 +333,26 @@ impl<'a> AssetBank<'a> {
         }
     }
     #[inline(always)]
+    pub fn shadow_spec(&self, id: u8) -> ShadowSpec {
+        if id >= MODEL_COUNT {
+            return ShadowSpec::default();
+        }
+        let at = SHADOW_SPECS_OFFSET + id as usize * SHADOW_SPEC_SIZE;
+        // SAFETY: both constructors retain the complete validated model bank.
+        // The guarded ID selects one aligned, fixed-size little-endian record.
+        unsafe {
+            ShadowSpec {
+                family: *self.data.get_unchecked(at),
+                heading: *self.data.get_unchecked(at + 1),
+                offset_x: shadow_word(self.data, at + 2) as i16,
+                offset_z: shadow_word(self.data, at + 4) as i16,
+                half_x: shadow_word(self.data, at + 6),
+                half_z: shadow_word(self.data, at + 8),
+                reserved: shadow_word(self.data, at + 10),
+            }
+        }
+    }
+    #[inline(always)]
     pub fn vertex_count(&self, id: u8) -> u8 {
         if id < MODEL_COUNT {
             // SAFETY: validated banks contain all MODEL_COUNT descriptors.
@@ -315,16 +378,6 @@ impl<'a> AssetBank<'a> {
             unsafe { *self.data.get_unchecked(22 + id as usize * 8) }
         } else {
             0
-        }
-    }
-    /// Whether the mesh culls its back faces (`MESH_ONE_SIDED`).
-    #[inline(always)]
-    pub fn one_sided(&self, id: u8) -> bool {
-        if id < MODEL_COUNT {
-            // SAFETY: validated banks contain all MODEL_COUNT descriptors.
-            unsafe { *self.data.get_unchecked(23 + id as usize * 8) & MESH_ONE_SIDED != 0 }
-        } else {
-            false
         }
     }
     /// The stored `i8` x, y, z bytes of one vertex, before the mesh shift.

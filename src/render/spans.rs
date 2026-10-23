@@ -291,14 +291,21 @@ mod tests {
         assert_eq!(band.stats.splits, 0);
         band.geometry_span(0, 20, 140, 3 | crate::TERRAIN_CLEAR_GEOMETRY);
         let before = band.stats;
-        for flags in [3, 3 | crate::TERRAIN_CLEAR_GEOMETRY, 5 | crate::EXTERIOR_TERRAIN] {
+        for flags in [
+            3,
+            3 | crate::TERRAIN_CLEAR_GEOMETRY,
+            5 | crate::EXTERIOR_TERRAIN,
+        ] {
             band.geometry_span(0, 31, 129, flags);
         }
         assert_eq!(band.stats.noop_spans, before.noop_spans + 3);
         assert_eq!(band.stats.splits, before.splits);
         band.geometry_span(0, 0, 160, 7);
         validate(&band);
-        assert_eq!(band.runs[0], 3, "ordinary ink must retain coverage boundaries");
+        assert_eq!(
+            band.runs[0], 3,
+            "ordinary ink must retain coverage boundaries"
+        );
         band.geometry_span(0, 0, 160, 6 | crate::TERRAIN_CLEAR_GEOMETRY);
         validate(&band);
         assert_eq!(band.runs[0], 1);
@@ -367,9 +374,16 @@ mod tests {
         let mut band = SpanBand::new(0);
         let mut expected = [0; BAND_PIXELS];
         for (first, end, flags) in [
-            (0, 160, 3), (0, 1, 2), (159, 160, 4), (1, 159, 5),
-            (17, 143, 0x20), (20, 140, 8), (0, 160, 0x45),
-            (80, 81, 0x67), (80, 80, 0), (160, 160, 0),
+            (0, 160, 3),
+            (0, 1, 2),
+            (159, 160, 4),
+            (1, 159, 5),
+            (17, 143, 0x20),
+            (20, 140, 8),
+            (0, 160, 0x45),
+            (80, 81, 0x67),
+            (80, 80, 0),
+            (160, 160, 0),
         ] {
             band.geometry_span(7, first, end, flags);
             reference(&mut expected, 7, first, end, flags);
@@ -385,7 +399,7 @@ mod tests {
 
     #[test]
     fn full_triangle_capacity_dust_and_hidden_bands_match_the_classic_reference() {
-        use super::super::{prepare_triangle, raster_rows, Renderer, Triangle, POSITIVE_AREA, TRIANGLE_CAPACITY};
+        use super::super::{prepare_triangle, raster_rows, Renderer, Triangle, TRIANGLE_CAPACITY};
         use crate::{game::Mode, space_dust::SpaceDustFrame};
         let mut random = 0x329a_fae1u32;
         let mut next = || {
@@ -405,8 +419,11 @@ mod tests {
                     * (triangle.y[2] as i32 - triangle.y[0] as i32)
                     - (triangle.y[1] as i32 - triangle.y[0] as i32)
                         * (triangle.x[2] as i32 - triangle.x[0] as i32);
-                triangle.reserved = ((index & 3) as u8) << 5
-                    | if area > 0 { POSITIVE_AREA } else { 0 };
+                if area < 0 {
+                    triangle.x.swap(1, 2);
+                    triangle.y.swap(1, 2);
+                }
+                triangle.reserved = ((index & 3) as u8) << 5;
                 triangle.color = (next() & 15) as u8;
                 triangle.depth = (next() & 3) as i16;
                 renderer.triangles[index] = triangle;
@@ -420,25 +437,49 @@ mod tests {
                 renderer.render_band_with_ambient(band, &mut expected[band as usize], ambient);
                 let mut actual = [0; BAND_PIXELS];
                 let stats = renderer.render_band_spans(band, &mut actual, ambient);
-                assert_eq!(actual, expected[band as usize], "count {count}, band {band}");
+                assert_eq!(
+                    actual, expected[band as usize],
+                    "count {count}, band {band}"
+                );
                 assert!(stats.emitted_pixels <= BAND_PIXELS as u32);
                 assert!(stats.peak_runs <= WIDTH as u16);
             }
             for band in [25, 255] {
                 let mut actual = [0; BAND_PIXELS];
-                assert_eq!(renderer.render_band_spans(band, &mut actual, ambient).input_spans, 0);
+                assert_eq!(
+                    renderer
+                        .render_band_spans(band, &mut actual, ambient)
+                        .input_spans,
+                    0
+                );
                 assert_eq!(actual, [6; BAND_PIXELS]);
             }
-            let mut prepared = renderer.triangles.map(|triangle| prepare_triangle(&triangle));
+            let mut prepared = renderer
+                .triangles
+                .map(|triangle| prepare_triangle(&triangle));
             let mut pass = renderer.raster_pass().unwrap();
             for band in 0..25 {
                 let paint = band % 3 != 1;
                 let mut actual = [0xa5; BAND_PIXELS];
                 let previous_stats = pass.span_stats();
-                assert_eq!(pass.next_band_with_ambient(&mut actual, paint, ambient), Some(band));
-                assert_eq!(actual, if paint { expected[band as usize] } else { [0xa5; BAND_PIXELS] });
+                assert_eq!(
+                    pass.next_band_with_ambient(&mut actual, paint, ambient),
+                    Some(band)
+                );
+                assert_eq!(
+                    actual,
+                    if paint {
+                        expected[band as usize]
+                    } else {
+                        [0xa5; BAND_PIXELS]
+                    }
+                );
                 if !paint {
-                    assert_eq!(pass.span_stats(), previous_stats, "hidden bands do no composition work");
+                    assert_eq!(
+                        pass.span_stats(),
+                        previous_stats,
+                        "hidden bands do no composition work"
+                    );
                 }
                 for (index, (head, tail)) in prepared[..count].iter_mut().enumerate() {
                     raster_rows(head, tail, band * 8, |_, _, _, _| {});

@@ -1,5 +1,5 @@
 use havoc::render::{draw_bar, draw_text, pack_band, Renderer, HUD_INK, NEAR};
-use havoc::{GeometrySink, Vec3, TWO_SIDED};
+use havoc::{GeometrySink, Vec3};
 
 #[allow(dead_code)]
 #[path = "../src/host.rs"]
@@ -60,29 +60,36 @@ fn adjacent_triangles_cover_rectangle_without_cracks_or_spill() {
 #[test]
 fn near_plane_clips_and_backfaces_are_culled() {
     let mut renderer = Renderer::new();
+    // Clipping preserves the outward winding: one rear vertex leaves a quad,
+    // two leave a triangle. Reversing any case must cull every output piece.
+    for (points, commands) in [
+        ([v(-32, -32, 128), v(0, 32, 128), v(32, -32, 128)], 1),
+        ([v(-16, -16, NEAR / 2), v(0, 16, 64), v(16, -16, 64)], 2),
+        (
+            [v(-16, -16, NEAR / 2), v(0, 16, 64), v(16, -16, NEAR / 2)],
+            1,
+        ),
+    ] {
+        renderer.begin(0);
+        renderer.triangle(points[0], points[1], points[2], 2, 0);
+        assert_eq!(renderer.triangle_count, commands);
+        assert!(frame(&renderer).contains(&2));
+        for flags in 0..=u8::MAX {
+            renderer.begin(0);
+            renderer.triangle(points[0], points[2], points[1], 2, flags);
+            assert_eq!(renderer.triangle_count, 0, "flags {flags} bypassed culling");
+            assert_eq!(renderer.dropped, 0);
+        }
+    }
     renderer.begin(0);
-    // One vertex behind the plane leaves a quad: two clipped commands.
-    renderer.triangle(v(-16, -16, NEAR / 2), v(0, 16, 64), v(16, -16, 64), 2, 0);
-    assert_eq!(renderer.triangle_count, 2);
-    assert!(frame(&renderer).contains(&2));
-    renderer.begin(0);
-    // Two vertices behind the plane leave a single clipped command.
-    renderer.triangle(v(-16, -16, NEAR / 2), v(0, 16, 64), v(16, -16, NEAR / 2), 2, 0);
-    assert_eq!(renderer.triangle_count, 1);
-    renderer.begin(0);
-    renderer.triangle(v(-32, -32, 128), v(32, -32, 128), v(0, 32, 128), 2, 0);
-    assert_eq!(renderer.triangle_count, 0);
     renderer.triangle(
-        v(-32, -32, 128),
-        v(32, -32, 128),
-        v(0, 32, 128),
+        v(-20, -20, 0),
+        v(0, 20, NEAR / 2),
+        v(20, -20, NEAR - 1),
         2,
-        TWO_SIDED,
+        0,
     );
-    assert_eq!(renderer.triangle_count, 1);
-    renderer.begin(0);
-    renderer.triangle(v(-20, -20, 0), v(0, 20, NEAR / 2), v(20, -20, NEAR - 1), 2, TWO_SIDED);
-    renderer.triangle(v(0, 0, 128), v(0, 0, 128), v(0, 0, 128), 2, TWO_SIDED);
+    renderer.triangle(v(0, 0, 128), v(0, 0, 128), v(0, 0, 128), 2, 0);
     assert_eq!(renderer.triangle_count, 0);
 }
 
@@ -128,7 +135,7 @@ fn extreme_offscreen_geometry_is_safe() {
         v(0, i16::MAX, i16::MAX),
         v(i16::MAX, i16::MIN, 32),
         2,
-        TWO_SIDED,
+        0,
     );
     renderer.finish();
     assert!(frame(&renderer).iter().all(|&pixel| pixel < 16));
@@ -296,7 +303,7 @@ fn cached_mesh_transforms_match_direct_reference_emissions() {
                         direct(indices[1]),
                         direct(indices[2]),
                         color,
-                        TWO_SIDED,
+                        0,
                     )
                 })
                 .collect();

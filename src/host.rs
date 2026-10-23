@@ -4,8 +4,14 @@ use std::{boxed::Box, format, fs, path::Path, println, vec, vec::Vec};
 
 /// Reproducible compressed source; the large MP3 is not required to build.
 pub const DIGITAL_TRACKS: [(digital::Track, &[u8]); 2] = [
-    (digital::Track::GalacticDash, include_bytes!("../assets/music/galactic-dash.dlt")),
-    (digital::Track::HammondRocker, include_bytes!("../assets/music/hammond-rocker.dlt")),
+    (
+        digital::Track::GalacticDash,
+        include_bytes!("../assets/music/galactic-dash.dlt"),
+    ),
+    (
+        digital::Track::HammondRocker,
+        include_bytes!("../assets/music/hammond-rocker.dlt"),
+    ),
 ];
 
 /// All campaign choices are authored here and baked into independently checked
@@ -391,6 +397,7 @@ const SPACE_HAZARDS: [&[(u16, i16, i16, bool)]; 6] = [
 pub fn stage_info(index: u8) -> StageInfo {
     CAMPAIGN[index as usize].info
 }
+#[cfg(test)]
 pub fn stage_name(index: u8) -> &'static str {
     CAMPAIGN[index as usize].name
 }
@@ -415,7 +422,7 @@ pub fn common_bank() -> [u8; COMMON_SIZE] {
 pub fn model_bank(level: u8) -> [u8; MODEL_SIZE] {
     assert!(level < SEGMENT_COUNT);
     let mut b = [0; MODEL_SIZE];
-    b[..4].copy_from_slice(b"SMA4");
+    b[..4].copy_from_slice(b"SMA6");
     b[4] = MODEL_COUNT;
     b[5] = level;
     let info = stage_info(level);
@@ -647,6 +654,7 @@ pub fn model_bank(level: u8) -> [u8; MODEL_SIZE] {
     customize_stage_models(info, &mut models);
     let medal = medal_model(&models[PLAYER as usize]);
     models.push(medal);
+    finish_model_surfaces(info, &mut models);
     // Bake the larger combat meshes so the C64 retains identity transforms and
     // the existing model-bank size. Slot three also supplies the boss turrets.
     for id in FIGHTER..=CARRIER {
@@ -664,9 +672,8 @@ pub fn model_bank(level: u8) -> [u8; MODEL_SIZE] {
         b[d + 2] = vertices.len() as u8;
         b[d + 3] = faces.len() as u8;
         b[d + 6] = shift;
-        // The solid medallion has consistently outward-facing triangles;
-        // culling its concealed faces also avoids painter-order artifacts.
-        b[d + 7] = if id == MEDAL as usize { MESH_ONE_SIDED } else { 0 };
+        // SMA6 renders every face with backface culling; byte seven is reserved.
+        b[d + 7] = 0;
         for vertex in vertices {
             for v in vertex {
                 b[cursor] = quantize_coordinate(*v, shift) as u8;
@@ -678,13 +685,126 @@ pub fn model_bank(level: u8) -> [u8; MODEL_SIZE] {
             b[cursor..cursor + 4].copy_from_slice(face);
             cursor += 4;
         }
+        let (family, heading) = match id as u8 {
+            PLAYER => (1, 0),
+            FIGHTER => (1, 2),
+            DIVER => (3, 2),
+            CARRIER => (2, 0),
+            ROCK if info.theme >= 10 => (3, 0),
+            _ => (0, 0),
+        };
+        if family != 0 {
+            // Use the final quantized geometry, including enemy/boss scaling.
+            let extent = |axis| {
+                let mut min = i16::MAX;
+                let mut max = i16::MIN;
+                for vertex in vertices {
+                    let value = (quantize_coordinate(vertex[axis], shift) as i16) << shift;
+                    min = min.min(value);
+                    max = max.max(value);
+                }
+                let center = (min + max) / 2;
+                (center, (center - min).max(max - center) as u16)
+            };
+            let (x, half_x) = extent(0);
+            let (z, half_z) = extent(2);
+            let at = SHADOW_SPECS_OFFSET + id * SHADOW_SPEC_SIZE;
+            b[at] = family;
+            b[at + 1] = heading;
+            put16(&mut b, at + 2, x as u16);
+            put16(&mut b, at + 4, z as u16);
+            put16(&mut b, at + 6, half_x);
+            put16(&mut b, at + 8, half_z);
+        }
     }
-    assert!(cursor <= MODEL_SIZE, "model bank exceeds resident arena");
+    assert!(
+        cursor <= SHADOW_SPECS_OFFSET,
+        "model bank overlaps shadow descriptors"
+    );
     AssetBank::new(&b).expect("generated model bank");
     b
 }
 
 type Model = (Vec<[i16; 3]>, Vec<[u8; 4]>);
+
+/// Finish the explicitly authored surfaces before coordinate quantization.
+/// Thin wings and gun plates have real reverse-wound back faces; solid hulls
+/// have closed outward surfaces. No rendering exception is stored in the bank.
+fn finish_model_surfaces(info: StageInfo, models: &mut [Model]) {
+    fn reverse(model: &mut Model) {
+        for face in &mut model.1 {
+            face.swap(1, 2);
+        }
+    }
+    fn backs(model: &mut Model, faces: core::ops::Range<usize>) {
+        for index in faces {
+            let mut face = model.1[index];
+            face.swap(1, 2);
+            model.1.push(face);
+        }
+    }
+    fn cap(model: &mut Model, color: u8) {
+        model.1.extend([[0, 1, 2, color], [0, 2, 3, color]]);
+    }
+
+    // The medal was built from the original player winding above. Preserve its
+    // established relief while correcting the flying ship's inward shell.
+    reverse(&mut models[PLAYER as usize]);
+    reverse(&mut models[CRYSTAL as usize]);
+
+    if info.theme < 10 {
+        let fighter = &mut models[FIGHTER as usize];
+        match info.enemy_profile {
+            1 => backs(fighter, 4..10),
+            2 => {
+                backs(fighter, 10..12);
+                let color = fighter.1[0][3];
+                cap(fighter, color);
+            }
+            3 => {
+                let color = fighter.1[9][3];
+                fighter.1.extend([[0, 7, 4, color], [3, 5, 7, color]]);
+            }
+            _ => {}
+        }
+        if info.enemy_profile == 1 {
+            backs(&mut models[DIVER as usize], 2..4);
+        }
+        let rock = &mut models[ROCK as usize];
+        let color = rock.1[5][3];
+        cap(rock, color);
+    }
+
+    let turret = &mut models[TURRET as usize];
+    if info.enemy_profile == 1 {
+        // The wall battery's mounting plate is its rear (+Z) cap.
+        reverse(turret);
+    } else {
+        backs(turret, 10..11);
+    }
+    let color = turret.1[2][3];
+    cap(turret, color);
+
+    let building = &mut models[BUILDING as usize];
+    let color = building.1[2][3];
+    cap(building, color);
+
+    let carrier = &mut models[CARRIER as usize];
+    match info.boss_kind {
+        4 => {} // Four already closed, outward-facing Dreadnought boxes.
+        5 => reverse(carrier),
+        _ => {
+            // Replace the internal front rectangle with the pointed nose's
+            // complete surface; the nose and bottom originally faced inward.
+            let color = carrier.1[1][3];
+            for face in &mut carrier.1[12..17] {
+                face.swap(1, 2);
+            }
+            carrier.1.drain(..2);
+            carrier.1.push([4, 5, 9, color]);
+        }
+    }
+}
 
 /// Round half away from zero so mirrored vertices stay exactly symmetric.
 pub fn quantize_coordinate(value: i16, shift: u8) -> i8 {
@@ -694,7 +814,10 @@ pub fn quantize_coordinate(value: i16, shift: u8) -> i8 {
     } else {
         (magnitude + (1 << (shift - 1))) >> shift
     };
-    assert!(rounded <= 127, "coordinate {value} does not fit shift {shift}");
+    assert!(
+        rounded <= 127,
+        "coordinate {value} does not fit shift {shift}"
+    );
     if value < 0 {
         -(rounded as i8)
     } else {
@@ -1212,8 +1335,8 @@ fn medal_model(player: &Model) -> Model {
     }
     for (face, color) in [(0, 7), (1, 7), (4, 7), (5, 8), (6, 7), (7, 8)] {
         let [a, b, c, _] = player.1[face];
-        // PLAYER renders two-sided; reverse its upper winding for the solid
-        // medal's backface culling. Shaded aft facets show the cockpit ridge.
+        // The source player shell is still inward here, before surface finishing.
+        // Reverse its upper winding for the medal's outward cockpit relief.
         faces.push([
             top_index[a as usize],
             top_index[c as usize],
@@ -1670,10 +1793,7 @@ pub fn bake(out: &Path) -> Result<(), Box<dyn std::error::Error>> {
     put16(&mut reu, PACKAGE_CHECKSUM_OFFSET, check);
     check_package(&reu)?;
     fs::write(out.join("havoc.reu"), &reu)?;
-    fs::write(
-        out.join("havoc.cfg"),
-        include_str!("../config/havoc.cfg"),
-    )?;
+    fs::write(out.join("havoc.cfg"), include_str!("../config/havoc.cfg"))?;
     let mut report = format!("H.A.V.O.C. package {PACKAGE_ID:08X}\n16 MiB REU; common {COMMON_OFFSET:06X} (3072 bytes; 2048 resident model bytes); eighteen checked 2048-byte stage model banks at {MODEL_BANKS_OFFSET:06X}; 64-byte model directory at {MODEL_DIRECTORY_OFFSET:06X}; eighteen 2048-byte segments at {SEGMENTS_OFFSET:06X}, each with a checksummed 512-byte runtime prefix (up to 62 encounters)\nEighteen 75-second stages, seventeen 8-second crossings: 24:46 scheduled gameplay plus victory reveal. Five bosses: Gorge Warden, Citadel Heart, Carrier, Dreadnought, Gate Guardian.\nFour enemy movement families with distinct terrestrial and orbital meshes; authored three-dimensional debris fields and an orbital ascent.\n{} SIDs: {} music voices + 2 effects voices. {} original cues; {} bytes of paged score data at {MUSIC_OFFSET:06X}.\nHammond Rocker title/attract music at $500000 and Galactic Dash victory/title/attract music at $100000: 24 kHz stereo compressed DLT3; shared mutable 128 KiB PCM ring at $FE0000.\n", music::SID_COUNT, music::MUSIC_VOICES, music::CUE_COUNT, score.len());
     for (index, design) in CAMPAIGN.iter().enumerate() {
         report.push_str(&format!(

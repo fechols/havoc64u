@@ -18,7 +18,7 @@ def main():
     span_enabled = "span_compose" in names or front_enabled
     original = prg.read_bytes()
     tables = (("__sim_load_sizes", 8, "SIM load table disagrees", "SIM profile"),
-              ("__code_sizes", 24, "Code size table disagrees", "OVL7 image"))
+              ("__code_sizes", 26, "Code size table disagrees", "OVL7 image"))
 
     def check(path, image=source):
         return subprocess.run([sys.executable, str(checker), str(image), str(path)],
@@ -46,7 +46,7 @@ def main():
                     print(f"Rejected {label} {profile} length {length + delta}")
         reu_table = next(symbol for symbol in elf.symbols if symbol.name == "__code_reu_pages")
         reu_offset = reu_table.address - int.from_bytes(original[:2], "little") + 2
-        for phase_id in range(31):
+        for phase_id in range(34):
             data = bytearray(original)
             data[reu_offset + phase_id] ^= 1
             damaged.write_bytes(data)
@@ -117,7 +117,11 @@ def main():
             ("__reu_scenery_gate", 0x8a001, "gate REU slot must be 4 KiB aligned"),
             ("__reu_scenery_gate", 0x8c000, "gate REU slot crosses a 64 KiB bank"),
             ("__reu_scenery_gate", 0x88000, "gate REU slot overlaps scenery_carrier"),
-            ("__reu_scenery_gate", 0x95000, "incorrect scenery_gate REU slot address"),
+            ("__reu_scenery_gate", 0x95000, "shadow REU slot overlaps scenery_gate"),
+            ("__shadow_frame_start", 0xe7ff, "incorrect persistent shadow frame allocation"),
+            ("__shadow_frame_end", 0xff21, "incorrect persistent shadow frame allocation"),
+            ("__phase_shadow_finalize_size", 0, "SHADOW finalization prefix must be shorter"),
+            ("__phase_shadow_finalize_end", 0x3001, "SHADOW finalization prefix boundary mismatch"),
             ("__code_reu_pages_end", reu_table.address + 30, "incorrect REU address table size"),
             *((name, value, "span buffer must reuse exactly") for name, value in (
                 ("__span_buffer_start", 0xcfff),

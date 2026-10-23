@@ -62,8 +62,8 @@ def release_contents(package_dir, root=ROOT):
     if len(prg) <= 2 or prg[:2] != b"\x01\x08":
         raise ValueError("Expected a native PRG loading at $0801")
     if (len(reu) != 16 * 1024 * 1024 or reu[:4] != b"SM64" or reu[17] != 4
-            or int.from_bytes(reu[4:8], "little") != 0x534d0a00):
-        raise ValueError("Expected a v10 16 MiB four-SID REU package")
+            or int.from_bytes(reu[4:8], "little") != 0x534d0c00):
+        raise ValueError("Expected a v12 16 MiB four-SID REU package")
     return contents
 
 

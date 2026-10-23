@@ -106,7 +106,7 @@ class EmulatorAudioTests(unittest.TestCase):
             package.mkdir()
             image = bytearray(16 * 1024 * 1024)
             image[:4] = b"SM64"
-            image[4:8] = (0x534d0a00).to_bytes(4, "little")
+            image[4:8] = (0x534d0b00).to_bytes(4, "little")
             image[16:18] = bytes((18, 4))
             (package / "havoc.reu").write_bytes(image)
             result = subprocess.run(

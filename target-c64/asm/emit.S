@@ -8,13 +8,12 @@
 ;     is a memo keyed by the whole point, so the host's arithmetic hash in
 ;     projection::project_cached need not be reproduced; misses call
 ;     fast_project in place);
-;   area = (x1-x0)(y2-y0) - (y1-y0)(x2-x0); zero -> nothing; negative without
-;     TWO_SIDED (bit 0) -> nothing;
+;   area = (x1-x0)(y2-y0) - (y1-y0)(x2-x0); nonpositive -> nothing;
 ;   all x <= 0, all x >= 160, all y <= 0 or all y >= 200 -> nothing;
 ;   256 commands -> dropped += 1 (saturating) -> nothing;
 ;   depth = (z0 + z1 + z2) / 3 (exact, by the 85 h + (h + l) / 3 identity);
 ;   command = x[3], y[3], depth, color & 15,
-;             (flags & (STATIC_SKY | TERRAIN_CLEAR | EXTERIOR = $62)) | (area > 0 ? 4 : 0);
+;             flags & (STATIC_SKY | TERRAIN_CLEAR | EXTERIOR = $62);
 ;   triangle_count += 1.
 ; Everything after the projection is the shared .Let_emit tail, which the
 ; mesh kernel below enters with projected corners of its own.
@@ -255,9 +254,6 @@ fast_emit_triangle:
     beq .Let_done
     lda ET_P1+3
     bpl .Let_oriented
-    lda ET_FLAGS
-    and #1
-    bne .Let_oriented
 .Let_done:
     rts
 .Let_oriented:
@@ -425,10 +421,6 @@ fast_emit_triangle:
     iny
     lda ET_FLAGS
     and #$62
-    ldx ET_P1+3
-    bmi .Let_write_reserved
-    ora #4
-.Let_write_reserved:
     sta (__rc4),y
     inc RENDERER
     bne .Let_counted
@@ -1102,28 +1094,28 @@ fast_replay_scenery:
 ; uint8_t fast_emit_mesh(MeshArgs *args, uint8_t start)
 ; C ABI: args rc2/3, start A; returns in A. The native body of the scene
 ; sink's mesh path (SceneBudget::mesh): one mesh instance is transformed once
-; and its faces index the results. MeshArgs (repr(C), 27 bytes):
+; and its faces index the results. MeshArgs (repr(C), 23 bytes):
 ;    0 vertices   *const i8[3]      stored vertex bytes
 ;    2 faces      *const u8[4]      three indices and a colour per face
 ;    4 matrix     *const i16[9]     row-major Q8 rotation
 ;    6 position   Vec3              model origin in world space
 ;   12 camera_y   i16               chase camera height
-;   14 count      u16  (in/out)     faces the scene budget has accepted
-;   16 limit      u16               the scene budget
-;   18 vertex_count, 19 face_count, 20 shift (RotationMatrix::apply, 5..9)
-;   21 flags                        TWO_SIDED | the sink's extra flags
-;   22 color                        colour override (0 = the face's own)
-;   23 face_color (out), 24 indices[3] (out): the face handed back for clipping
+;   14 vertex_count, 15 face_count, 16 shift (RotationMatrix::apply, 5..9)
+;   17 flags                        the sink's scene metadata flags
+;   18 color                        colour override (0 = the face's own)
+;   19 face_color (out), 20 indices[3] (out): the face handed back for clipping
 ; With start = 0 every vertex is rotated with fast_rotate_vertex, translated
 ; with saturating adds, lowered by camera_y and stored as a 16-byte record at
 ; $E000 + 16 * index (x, y, z, screen x, screen y, projected flag): the raster
-; tails live there but are idle until PIXELS. Faces then run from `start`:
-; while count < limit each face takes one budget unit; a face with all three
+; tails live there but are idle until PIXELS. Every face runs from `start`:
+; a face with all three
 ; depths at or behind the near plane (z >= 8) projects any corner not yet
 ; projected and enters .Let_emit; one entirely in front is dropped; a mixed
 ; face stops the walk and its index is returned with its colour and indices
 ; written back so the caller clips it and resumes at index + 1. face_count
-; is returned when the walk is complete or the budget is exhausted.
+; is returned only when the walk is complete. The bounded renderer counts
+; surviving commands and physical overflow; the caller may roll back the whole
+; mesh and substitute a proxy after checking its projected command budget.
 .set RECORDS_BASE, $e000
 .set EM_ARGS, $93a0
 .set EM_VERT, EM_ARGS+0
@@ -1131,15 +1123,13 @@ fast_replay_scenery:
 .set EM_MATRIX, EM_ARGS+4
 .set EM_POS, EM_ARGS+6
 .set EM_CAMY, EM_ARGS+12
-.set EM_COUNT, EM_ARGS+14
-.set EM_LIMIT, EM_ARGS+16
-.set EM_VC, EM_ARGS+18
-.set EM_FC, EM_ARGS+19
-.set EM_SHIFT, EM_ARGS+20
-.set EM_FLAGS, EM_ARGS+21
-.set EM_OVERRIDE, EM_ARGS+22
-.set EM_FCOLOR, EM_ARGS+23
-.set EM_IDX, EM_ARGS+24
+.set EM_VC, EM_ARGS+14
+.set EM_FC, EM_ARGS+15
+.set EM_SHIFT, EM_ARGS+16
+.set EM_FLAGS, EM_ARGS+17
+.set EM_OVERRIDE, EM_ARGS+18
+.set EM_FCOLOR, EM_ARGS+19
+.set EM_IDX, EM_ARGS+20
 .set EM_ARGPTR, $93bc
 .set EM_FACE, $93be
 .set EM_I, $93bf
@@ -1156,7 +1146,7 @@ fast_emit_mesh:
     sta EM_ARGPTR
     lda __rc3
     sta EM_ARGPTR+1
-    ldy #26
+    ldy #22
 .Lem_copy_args:
     lda (__rc2),y
     sta EM_ARGS,y
@@ -1246,21 +1236,9 @@ fast_emit_mesh:
 .Lem_faces:
     lda EM_FACE
     cmp EM_FC
-    bcc .Lem_budget
+    bcc .Lem_face_record
     jmp .Lem_finish
-.Lem_budget:
-    ; the scene budget: count < limit admits the face and counts it
-    lda EM_COUNT
-    cmp EM_LIMIT
-    lda EM_COUNT+1
-    sbc EM_LIMIT+1
-    bcc .Lem_admit
-    jmp .Lem_finish
-.Lem_admit:
-    inc EM_COUNT
-    bne .Lem_counted
-    inc EM_COUNT+1
-.Lem_counted:
+.Lem_face_record:
     ; face record = faces + 4 * face
     lda #0
     sta EM_T+1
@@ -1400,23 +1378,17 @@ fast_emit_mesh:
     lda EM_FC
 .Lem_return:
     sta EM_RESULT
-    ; write back count and the face handed to the caller
+    ; write back the face handed to the caller
     lda EM_ARGPTR
     sta __rc2
     lda EM_ARGPTR+1
     sta __rc3
-    ldy #14
-    lda EM_COUNT
-    sta (__rc2),y
-    iny
-    lda EM_COUNT+1
-    sta (__rc2),y
-    ldy #23
+    ldy #19
 .Lem_write_face:
     lda EM_ARGS,y
     sta (__rc2),y
     iny
-    cpy #27
+    cpy #23
     bne .Lem_write_face
     lda EM_RESULT
     rts

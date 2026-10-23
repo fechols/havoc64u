@@ -5,14 +5,296 @@ VICE build used by `tools/vice-smoke.py`. These are emulator measurements, not
 claims about physical C64 Ultimate frame rates. The package is read-only during
 measurement; its PRG, REU, and ELF hashes are recorded and checked afterward.
 
-Current package ID `$534D0800` uses a 1 MiB REU image and four built-in UltiSIDs,
-with music at `$0C0000-$0FFFFF` and code overlays packed into the lower banks.
-Recorded measurements below retain their original package layouts and hashes;
-earlier 16 MiB results do not measure the relocated loader. Use the configuration
-and REU capacity matching the package when reproducing a historical run.
+Current package ID `$534D0C00` uses SMA6 model banks, a 16 MiB REU image, four
+built-in UltiSIDs for gameplay and stereo digital title/attract/victory music.
+Code, models and SID scores retain their first-MiB addresses. Recorded measurements
+below retain their original package layouts and hashes; use the configuration
+and REU capacity matching each package when reproducing a historical run.
 
 Current span summaries require only four-SID PAL and NTSC results. Use
 `--historical-dual-sid` to validate archived matrices containing both SID profiles.
+
+## Uniform dark gray shadows: 2026-10-23
+
+All enabled levels and terrestrial crossings now use C64 dark gray 11. The
+per-level color settings and lookup are removed; only the three-byte enable
+mask remains. Space Carrier still enables shadows, while the other orbital
+levels, ascent and orbital crossings retain their existing disabled behavior.
+The flat plane, silhouette generation, command ordering and raster path are
+unchanged. The shared constant is `SHADOW_COLOR` in `src/shadow.rs`.
+
+Host integration checks require ink 11 across all eighteen stages and all
+seventeen crossings, including entry, midpoint, exit and intermediate ticks.
+Native build, capture and release evidence is under `target/gray-shadow/`.
+The SHADOW image returns to 10,936 bytes, and its 2,874-byte disabled-frame
+prefix is byte-identical to the black-ink baseline. Table headroom returns to
+14 bytes; resident headroom remains 64 bytes. Native layout, overlay and asset
+checks pass.
+The measurements below preserve the previous builds for comparison.
+
+## Per-level shadow colors: 2026-10-23 (superseded)
+
+This intermediate build used a fixed palette ink selected per level: green in
+Lowland Approach, blue in the cave and coastal levels, brown in the canyons,
+purple in Meteor Reach, and dark gray in the industrial levels and Space
+Carrier. The complete color table is in `docs/hardware.md`. Enablement and
+projection are unchanged. The authored eighteen-entry configuration packs into
+three enable bytes and nine color bytes; the ink is decoded once per enabled
+frame. Matching ground colors intentionally hide parts of a silhouette.
+
+The matched 300-sample PAL/NTSC matrix preserves every ordinary command byte
+and every shadow coordinate, flag and ordering position. Only shadow ink
+changes. Summed case-median render cycles change **-0.085% PAL / +0.066% NTSC**
+against the black-ink flat-ground build, from 6,687,511 to 6,681,852 PAL and
+6,634,179 to 6,638,573 NTSC. Raster phase is uncontrolled, so these small changes
+do not establish a speed improvement or regression.
+
+Against the original surface-aware implementation, complete render-frame cost
+is **43.98% lower on PAL / 43.99% lower on NTSC**. Removed added shadow cost is
+**89.90% / 90.03%**; disabled overhead remains within **3.43% / 2.11%** of the
+culling-only baseline. All three engineering targets still pass. The main
+matrix plus 36 additional PAL samples covers every enabled level, with zero
+command drops, input overflows or music underruns and both stack guards intact.
+Captures from all thirteen enabled levels were visually reviewed.
+
+The full SHADOW image grows by 139 bytes to **11,075 bytes**. The disabled-frame
+prefix remains **2,874 bytes** with the same instructions, apart from relocated
+call/jump addresses. Shadow scratch, Renderer and Game sizes are unchanged.
+The configuration uses nine additional table bytes, leaving five bytes free;
+resident headroom remains 64 bytes. Default, deferred-span and front-to-back
+native builds pass layout, overlay and asset checks. The full host suite,
+shadow tests for both optional raster backends, and release/campaign-tool
+suites pass.
+
+Frozen production binaries and native captures are in `target/colored-shadow/`:
+`production/`, `pal/`, `ntsc/`, and `level-colors-pal/`. Comparisons are recorded
+in `versus-black-{pal,ntsc}.json` and `versus-surface-{pal,ntsc}.json`. Use
+`tools/compare-shadow-benchmarks.py --shadow-colors-only` against the black-ink
+reports to assert that all geometry remains identical. Use
+`--no-shadow-baseline` and `--enforce-targets` against the surface-aware reports
+to repeat the performance acceptance checks. The release ZIP is verified
+against the frozen colored binaries in `target/colored-shadow/release-report.json`.
+
+## Flat-ground black shadows: 2026-10-23 (baseline)
+
+This baseline shadow path draws each recognizable baked silhouette once
+at world Y = -105, in solid black. Lowland Approach through Carrier Assault and
+Space Carrier enable it; the other space levels, ascent, and orbital crossings
+skip generation. Surface lookup, plane math, occluder subtraction, parent
+grouping and parent-span raster clipping have been removed. Ordinary geometry
+retains its stable order and shadows form an unsorted suffix. Every caster
+still rolls back atomically if the remaining command space is insufficient.
+
+The matched 300-sample production matrix retains the same 25 scenes, cold and
+retained palettes, three CIA phases, live audio, and PAL/NTSC configurations as
+the previous implementation. Simulation is paused; these are complete render
+frame timings in calibrated VICE, not physical-machine or full-simulation FPS.
+The sum of the 50 case medians falls **43.93% on PAL and 44.03% on NTSC**.
+Relative to the unchanged culling-only baseline, **89.80% / 90.11% of added
+shadow cost is removed**, leaving aggregate frame overhead of **9.77% / 9.45%**.
+Every case improves: the smallest reduction is 24.81% PAL and 25.04% NTSC.
+Disabled cases stay within 3.31% PAL and 1.89% NTSC of culling-only timings.
+All three engineering targets pass: remove at least 75% of added shadow cost,
+keep disabled overhead below 5%, and allow no regression greater than 3%.
+
+| Retained-palette scene | Ordinary + flat-shadow commands | PAL cycles surface-aware -> flat | NTSC cycles surface-aware -> flat |
+| --- | ---: | ---: | ---: |
+| Lowlands | 43 + 4 | 166,567 -> 112,404 | 165,464 -> 110,454 |
+| Missiles | 101 + 33 | 292,791 -> 163,408 | 290,616 -> 161,599 |
+| Full pools | 207 + 48 | 328,194 -> 223,363 | 324,783 -> 222,234 |
+| Ascent crossing, tick 200 | 19 + 0 | 170,375 -> 112,480 | 170,947 -> 111,276 |
+| Space Carrier enemies | 60 + 17 | 340,991 -> 148,879 | 338,527 -> 148,061 |
+| Citadel Heart | 69 + 8 | 466,869 -> 147,288 | 461,733 -> 145,360 |
+| Dreadnought | 78 + 22 | 783,000 -> 167,628 | 778,090 -> 166,333 |
+
+All 300 samples preserve the exact ordered ordinary command bytes and have
+zero geometry drops, input overflows, or music underruns, with both stack
+guards intact. Benchmark captures record the ordinary prefix count before
+raster preparation retires shadow scratch; no color or removed shadow marker
+is used to classify commands.
+
+An additional 108 PAL samples fill the gameplay pools in every one of the 18
+stages. They also preserve every ordinary command exactly, report no drops or
+input/audio failures, and retain both stack guards. The worst retained-palette
+case is Space Carrier at 240,089 cycles with all 256 command slots occupied;
+insufficient room omits whole optional silhouettes. The matched dense matrix
+uses 41.8% fewer summed median cycles than the surface-aware version. Evidence
+is in `target/flat-shadow/full-pools-pal/` and `full-pools-comparison-pal.json`.
+
+Native scratch falls from 5,768 to **711 bytes**. Enabled frames transfer one
+10,936-byte SHADOW image instead of 38,308 bytes across setup/draw/helper/final
+transfers; disabled frames transfer only the 2,874-byte ordinary finalization
+prefix. Renderer, Game, command and model-bank sizes are unchanged. Default,
+deferred-span and front-to-back native builds pass memory and overlay audits.
+Host suites cover all raster configurations and music kernels. Native clipping,
+emission, mesh, preparation and span tests pass; negative audits reject 157
+damaged layouts and 84 damaged overlay arrangements.
+Boot checks also reject all 137 corrupted-package cases, including code and
+padding corruption in each of the 26 executable images. Release packaging
+and campaign-tool suites pass; `dist/havoc-v0.1.2.zip` contains the exact frozen
+production binaries, verified in `target/flat-shadow/release-report.json`.
+
+Frozen production artifacts and reports are under `target/flat-shadow/`:
+`production/`, `pal/`, `ntsc/`, and `comparison-{pal,ntsc}.json`. The old reports
+remain under `target/shadow-native-check/adjacency-{pal,ntsc}`; the no-shadow
+baseline is `target/culling-native-check/candidate-final-{pal,ntsc}`.
+`tools/bench-shadows.py` generates the captures. Compare against the old shadow
+report with `tools/compare-shadow-benchmarks.py`, supplying
+`--no-shadow-baseline` and `--enforce-targets` to reproduce the acceptance checks.
+
+## Surface-aware silhouette shadows: 2026-10-23 (superseded)
+
+The following measurements describe the earlier implementation, preserved for
+comparison with the flat-ground replacement above.
+
+Fixed baked silhouettes project straight down onto terrain and solid scenery.
+They use the actual spare capacity after ordinary clipping and culling, with
+whole-caster rollback when the remaining commands or bounded polygon workspace
+cannot hold a complete result. There is no additional shadow-command cap.
+All 300 matched PAL/NTSC samples preserve every ordinary command exactly,
+including ordering, coordinates, depth, color and flags. The 256-command pool,
+16-byte commands, 4,102-byte Renderer, 637-byte Game and 2,048-byte model banks
+retain their sizes. SMA6 reserves the final 128 model-bank bytes for nine baked
+shadow descriptors; ordinary vertices and faces are unchanged from the culling
+baseline.
+
+`tools/bench-shadows.py` measures the untouched production package with simulation
+paused and live audio, using the same 25 scenes, cold/retained palettes and three
+CIA phases as the culling-only production candidate. Complete frame timings
+include transfers, geometry, rasterization and publication; raster phase is
+uncontrolled. `tools/compare-shadow-benchmarks.py` compares the actual ordered
+ordinary commands, not merely their counts. These are calibrated VICE render
+measurements, not physical-machine or full-simulation timings.
+
+The feature has a substantial cost: the sum of the 50 case medians rises 95.77%
+on PAL and 95.55% on NTSC, approximately 1.96 times the culling-only frame cost.
+The median individual increase is 65.57% PAL and 64.22% NTSC. Large silhouettes
+over several solid surfaces cost considerably more than ordinary flight. Setup
+and overlay transfers also cost time when a scene produces no shadow commands.
+
+| Retained-palette scene | Ordinary + shadow commands | PAL bus cycles before → after | NTSC bus cycles before → after |
+| --- | ---: | ---: | ---: |
+| Lowlands | 43 + 8 | 101,534 → 166,567 | 100,581 → 165,464 |
+| Missiles | 101 + 110 | 143,834 → 292,791 | 143,650 → 290,616 |
+| Full pools | 207 + 48 | 193,353 → 328,194 | 191,576 → 324,783 |
+| Ascent crossing, tick 200 | 19 + 0 | 109,848 → 170,375 | 109,345 → 170,947 |
+| Citadel Heart | 69 + 96 | 134,169 → 466,869 | 133,105 → 461,733 |
+| Dreadnought | 78 + 161 | 142,776 → 783,000 | 140,704 → 778,090 |
+
+The final implementation precomputes exact strict-XZ receiver overlap masks
+per coplanar group, excluding touching terrain tiles from occlusion subtraction.
+It reuses each group's lifted and clipped footprint, specializes horizontal
+receivers and small arithmetic coefficients, and reloads only the 4,434-byte
+sorting/preparation prefix for finalization. Earlier unoptimized builds took
+about three million cycles in Citadel and exhausted input/audio service capacity;
+those builds are superseded. The final Citadel frame takes about 467 thousand
+cycles and passes every guard.
+
+All final 300 scene samples have zero geometry drops, input overflows or music
+underruns and preserve both stack guards. Dense full-pool fixtures across all
+18 stages add 108 PAL samples, including authored stage metadata and boss models.
+The worst is stage 16 at 858,631 cycles and 44 audio ticks; the command high-water
+mark is exactly 256, with no overflow or starvation. This bounds the tested
+campaign workload, not arbitrary future geometry. Workspace is finite at 48
+receivers, 64 casters, 32 fragments and 12 corners per fragment.
+
+Victory start, mid-fade, arrival and hold add 48 PAL/NTSC samples. All preserve
+clock and stack guards with zero drops or input/audio faults; the final-space
+configuration has no receiving ground and emits no shadow commands. Native
+memory and overlay negative suites reject 163 and 86 damaged fixtures,
+respectively, including finalization-prefix transfer and unloaded-tail errors.
+
+Host validation passes 416 default tests with one existing exporter ignored;
+shadow core, overlap-oracle, affine-plane, stacked-surface, atomic rollback and
+scene-preservation checks pass across all three raster backends. Native default,
+deferred-span and front-to-back builds pass memory and overlay ownership audits.
+All three assembled raster paths pass exact attached-parent clipping fixtures,
+including index 255, absent parent bands, covered bands and one edge-state advance.
+Arithmetic checks cover 4,321 signed16 products and 4,576 checked signed32-by-signed16
+products through both overlay ABIs. Package tests cover SMA6 metadata and corrupted
+shadow/helper images.
+
+The final setup/draw images use 15,998/15,927 bytes below shared projection at
+`$6F20`; draw helpers use 1,949 of 2,048 bytes at `$E000`. Resident headroom is
+59 bytes and the largest SCENERY composition uses 16,892 of 16,896 bytes.
+No memory ceiling is raised. The 27 checked code images reserve 16,540,544 REU
+bytes in total with existing music/data reservations, leaving 236,672 unreserved.
+The release archive `dist/havoc-v0.1.2.zip` is rebuilt and verified against the
+matched PRG, REU and configuration.
+
+Final evidence is under `target/shadow-native-check`: `adjacency-production/`
+is the captured package, `adjacency-{pal,ntsc}/report.json` holds the complete
+matrix, `comparison-{pal,ntsc}.json` checks exact ordinary geometry and timing,
+and `adjacency-full-pools-pal/report.json` holds all-stage stress. Optional backend
+packages and smoke reports are under `feature-{spans,front}`. Victory reports are
+`victory-{pal,ntsc}/report.json`; final code-corruption checks are in
+`adjacency-corruption/summary.json`. The comparison
+baseline is `target/culling-native-check/candidate-final-production`, with its
+matching `candidate-final-{pal,ntsc}` reports. Generated evidence is not committed.
+
+## Unconditional backface culling: 2026-10-23
+
+Every host and native triangle now requires positive projected area. Meshes,
+terrain and decorative geometry have corrected authored winding, with explicit
+backs or caps where needed. SMA5 reserves descriptor byte 7 as zero and rejects
+the old sidedness flag. Command metadata no longer stores orientation; raster
+preparation derives edge orientation from the positive-winding invariant and
+vertex-sort parity. No framebuffer, command size or allocation grows.
+
+Foreground admission counts emitted commands after clipping, culling and screen
+rejection. It retains the 174-command ceiling within the 256-command array, using
+the actual projected scenery count. Complete object attempts are transactional:
+an over-budget mesh restores command and overflow counts before a complete proxy
+is attempted. Later active actors retain their proxy allowance. This avoids
+partial models and allows culled faces to fund additional visible detail.
+
+The comparison uses the production baseline at commit `c07d99f` and a rebuilt
+production candidate. Twenty-five scenes, cold/retained palettes and three CIA
+phases on PAL and NTSC produce 300 paired frame samples. These calibrated VICE
+captures keep live audio with simulation paused. Frame time includes geometry,
+rasterization, transfers and publication; raster start is uncontrolled. They are
+render-frame diagnostics, not physical-hardware or full-simulation measurements.
+
+| Measurement | Commands before -> after | PAL frame-time change | NTSC frame-time change |
+| --- | ---: | ---: | ---: |
+| All 50 scene/palette case medians, mean | varies | -1.66% | -1.88% |
+| Gate Guardian, retained palette | 124 -> 80 | -10.77% | -10.70% |
+| Dreadnought, retained palette | 124 -> 78 | -5.11% | -6.82% |
+| Graveyard hazards, retained palette | 148 -> 80 | -7.86% | -6.49% |
+| Missiles, retained palette | 122 -> 101 | -3.35% | -2.87% |
+| Full pools, retained palette | 206 -> 207 | +6.94% | +7.47% |
+
+Full pools renders more detail: the baseline fits one full actor and eleven
+proxies; the candidate fits all twelve full models. Culling removes 28 player
+and boss commands, which fund 28 additional actor commands. Foreground usage
+stays at 169, while raw foreground submissions rise from 169 to 264 and eleven
+additional mesh transforms run. This is a workload increase, not an equal-work
+speed comparison. The largest cold/retained slowdown is 7.80% PAL and 8.07% NTSC.
+
+All captures pass command, stack, audio, input and package guards with no dropped
+geometry. Every emitted triangle has positive area and only the permitted
+metadata bits. Roll, inversion, climb and dive captures match baseline pixels;
+separate inspection covers corrected hulls and connected cloud/crystal fans.
+Host tests cover every terrestrial transition tick, clipping amplification,
+exact-budget acceptance, rollback at both limits, whole-proxy fallback and all
+eighteen model banks. All 383 default host tests pass. Library suites also pass
+with no default features (204), music kernels (218), deferred spans (224) and
+front-to-back spans (227); each retains the intentionally ignored native fixture
+exporter. Native emit, clipping, mesh, preparation and optional span kernels pass
+their independent reference checks.
+
+Production memory and overlay audits pass without changing their limits.
+GEOMETRY uses 15,073 bytes; the largest scenery composition uses 16,095 of
+16,896 bytes. Resident headroom is 60 bytes, and the tightest 2,048-byte model
+bank has 483 bytes free. The matched PRG/REU/configuration archive is regenerated
+and verified.
+
+Evidence is under `target/culling-native-check`: `production-comparison-final.json`
+records package hashes and paired timings, `candidate-final-{pal,ntsc}/report.json`
+records final native checks, and `budget-{baseline,candidate}.txt` records the
+full-pools detail change. The capture and comparison scripts are preserved there;
+the baseline source and package are under `target/culling-baseline/source`.
+Generated evidence is not committed. Projected shadows remain a subsequent change.
 
 ## Ground obstacle visibility: 2026-10-22
 

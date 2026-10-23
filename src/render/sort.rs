@@ -51,7 +51,7 @@ pub(super) fn set_segments(prefix: u8, pivot: u8) {
 }
 
 #[inline(never)]
-#[cfg_attr(target_arch = "mos", link_section = ".phase.geometry")]
+#[cfg_attr(target_arch = "mos", link_section = ".phase.shadow.final")]
 pub(super) fn depth_sort(triangles: &mut [Triangle]) {
     #[cfg(target_arch = "mos")]
     {
@@ -68,9 +68,7 @@ pub(super) fn depth_sort(triangles: &mut [Triangle]) {
             let segments = u16::from_le_bytes(SORT_SEGMENTS);
             fast_depth_sort(triangles.as_mut_ptr(), triangles.len() as u16, segments);
         }
-        // finish() may be followed by triangle insertion, so cache tags must
-        // not retain key/index bytes masquerading as projected vertices.
-        crate::projection::begin_frame();
+        // SHADOW is complete; the projection cache is retired until next frame.
     }
     #[cfg(not(target_arch = "mos"))]
     {
@@ -85,6 +83,12 @@ pub(super) fn depth_sort(triangles: &mut [Triangle]) {
 #[inline(never)]
 #[cfg(not(target_arch = "mos"))]
 fn sort_with_scratch(triangles: &mut [Triangle], scratch: &mut Scratch) {
+    sort_indices(triangles, scratch);
+    apply_order(triangles, scratch);
+}
+
+#[cfg(not(target_arch = "mos"))]
+fn sort_indices(triangles: &[Triangle], scratch: &mut Scratch) {
     debug_assert!(triangles.len() <= 256);
     let count = triangles.len();
     for index in 0..count {
@@ -111,6 +115,11 @@ fn sort_with_scratch(triangles: &mut [Triangle], scratch: &mut Scratch) {
             scratch.positions[bucket] += 1;
         }
     }
+}
+
+#[cfg(not(target_arch = "mos"))]
+fn apply_order(triangles: &mut [Triangle], scratch: &mut Scratch) {
+    let count = triangles.len();
     // Four passes leave destination->source indices in first. Each command is
     // moved at most once; all 256 index values are valid, so use visited bits.
     scratch.visited.fill(0);

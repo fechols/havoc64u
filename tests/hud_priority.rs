@@ -70,7 +70,7 @@ fn hud_and_terrain_metadata_are_per_pixel_before_and_after_spill() {
 #[cfg(feature = "span-buffer")]
 #[test]
 fn overwritten_hud_gauge_matches_between_painter_and_spans() {
-    use havoc::{cells::unpack_band, render::{draw_bar, pack_band, Renderer}, GeometrySink, Vec3, TWO_SIDED};
+    use havoc::{cells::unpack_band, render::{draw_bar, pack_band, Renderer}, GeometrySink, Vec3};
 
     fn corner(x: i16, y: i16, z: i16) -> Vec3 {
         let wx = (-3000..=3000).find(|&wx| havoc::projection::project(Vec3 { x: wx, y: 0, z }).0 == x).unwrap();
@@ -79,8 +79,8 @@ fn overwritten_hud_gauge_matches_between_painter_and_spans() {
     }
     fn rect(renderer: &mut Renderer, x0: i16, y0: i16, x1: i16, y1: i16, z: i16, color: u8) {
         let [a, b, c, d] = [corner(x0, y0, z), corner(x1, y0, z), corner(x1, y1, z), corner(x0, y1, z)];
-        renderer.triangle(a, b, c, color, TWO_SIDED);
-        renderer.triangle(a, c, d, color, TWO_SIDED);
+        renderer.triangle(a, b, c, color, 0);
+        renderer.triangle(a, c, d, color, 0);
     }
 
     let mut renderer = Renderer::new();

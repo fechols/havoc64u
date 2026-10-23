@@ -41,7 +41,7 @@
 .endif
 .set RR_PLAYER_SEEN, RR_SCRATCH+11
 
-.section .text.span_row_pointers,"ax",@progbits
+.section .phase.pixels.span_row_pointers,"ax",@progbits
 .globl span_row_pointers
 .type span_row_pointers,@function
 span_row_pointers:
@@ -69,7 +69,7 @@ span_row_pointers:
     .byte >(SPAN_INK+640), >(SPAN_INK+800), >(SPAN_INK+960), >(SPAN_INK+1120)
 .size span_row_pointers, .-span_row_pointers
 
-.section .text.span_compose,"ax",@progbits
+.section .phase.pixels.span_compose,"ax",@progbits
 .globl span_compose
 .type span_compose,@function
 span_compose:

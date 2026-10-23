@@ -81,9 +81,9 @@ C = r'''
 #include <stdio.h>
 extern uint8_t preparation_abi(const uint8_t*,uint8_t*,uint8_t*,uint8_t);
 static const int16_t triangles[4][8]={
-  {-8191,8191,0,-8191,8191,100,100,0x040e},
+  {-8191,8191,0,-8191,8191,100,100,0x000e},
   {0,160,0,0,0,200,100,0x0001},
-  {81,80,80,-8191,-8190,8191,100,0x040f},
+  {81,80,80,-8191,8191,-8190,100,0x000f},
   {20,80,130,-100,-50,-1,100,0x0002}};
 int main(void) {
   /* the quarter-square table of the resident multiply, as BOOT builds it */

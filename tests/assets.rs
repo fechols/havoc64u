@@ -120,6 +120,7 @@ fn views_return_safe_empty_values_for_unknown_meshes_and_records() {
     assert_eq!(bank.face_count(255), 0);
     assert_eq!(bank.vertex(255, 255), havoc::Vec3::default());
     assert_eq!(bank.face(255, 255), ([0; 3], 0));
+    assert_eq!(bank.shadow_spec(255), ShadowSpec::default());
     let bytes = baked_assets::segment_bank(3);
     let segment = Segment::new(&bytes).unwrap();
     assert_eq!(segment.spawn(255).kind, 0);
@@ -210,11 +211,21 @@ fn digital_payload_is_checked_but_runtime_pcm_ring_is_mutable() {
     let mut bytes = package();
     for (track, _) in baked_assets::DIGITAL_TRACKS {
         let descriptor = track.descriptor();
-        for offset in [0, 21, 22, 32, 80, descriptor.metadata.stream_offset as usize,
-            descriptor.metadata.crc_offset as usize] {
+        for offset in [
+            0,
+            21,
+            22,
+            32,
+            80,
+            descriptor.metadata.stream_offset as usize,
+            descriptor.metadata.crc_offset as usize,
+        ] {
             let address = descriptor.asset_offset as usize + offset;
             bytes[address] ^= 1;
-            assert!(baked_assets::check_package(&bytes).is_err(), "{track:?} byte {offset}");
+            assert!(
+                baked_assets::check_package(&bytes).is_err(),
+                "{track:?} byte {offset}"
+            );
             bytes[address] ^= 1;
         }
     }
@@ -373,7 +384,7 @@ fn stage_model_banks_keep_twenty_six_distinct_enemy_shapes_and_shared_player_ass
         assert_eq!(bank.enemy_count(), if info.boss_kind != 0 { 2 } else { 3 });
         for kind in 1..=bank.enemy_count() {
             assert!(bank.vertex_count(kind) <= 10);
-            assert!(bank.face_count(kind) <= 12);
+            assert!(bank.face_count(kind) <= 16);
             let shape: Vec<_> = (0..bank.vertex_count(kind))
                 .map(|index| bank.vertex(kind, index))
                 .collect();
@@ -424,7 +435,7 @@ fn stage_model_banks_keep_twenty_six_distinct_enemy_shapes_and_shared_player_ass
 }
 
 #[test]
-fn enlarged_enemy_meshes_keep_ground_bases_and_original_model_budgets() {
+fn completed_enemy_surfaces_keep_ground_bases_and_original_vertex_bounds() {
     let check = |bank: &AssetBank<'_>, mesh, counts, expected_min, expected_max| {
         assert_eq!((bank.vertex_count(mesh), bank.face_count(mesh)), counts);
         let mut min = [i16::MAX; 3];
@@ -449,16 +460,16 @@ fn enlarged_enemy_meshes_keep_ground_bases_and_original_model_budgets() {
     for (level, mesh, counts, min, max) in [
         (0, FIGHTER, (6, 8), [-40, -10, -45], [40, 15, 37]),
         (0, DIVER, (5, 6), [-27, -15, -48], [27, 27, 30]),
-        (0, TURRET, (9, 11), [-30, -8, -42], [30, 31, 30]),
-        (2, FIGHTER, (8, 10), [-57, -10, -42], [57, 7, 39]),
-        (2, DIVER, (7, 8), [-51, -25, -52], [51, 51, 43]),
-        (2, TURRET, (9, 12), [-22, -42, -51], [22, 42, 21]),
-        (6, FIGHTER, (10, 12), [-48, -10, -57], [48, 16, 33]),
+        (0, TURRET, (9, 14), [-30, -8, -42], [30, 31, 30]),
+        (2, FIGHTER, (8, 16), [-57, -10, -42], [57, 7, 39]),
+        (2, DIVER, (7, 10), [-51, -25, -52], [51, 51, 43]),
+        (2, TURRET, (9, 14), [-22, -42, -51], [22, 42, 21]),
+        (6, FIGHTER, (10, 16), [-48, -10, -57], [48, 16, 33]),
         (6, DIVER, (6, 8), [-18, -12, -72], [18, 13, 51]),
-        (6, TURRET, (9, 11), [-51, -8, -58], [51, 26, 37]),
-        (11, FIGHTER, (8, 10), [-45, -15, -42], [45, 19, 37]),
+        (6, TURRET, (9, 14), [-51, -8, -58], [51, 26, 37]),
+        (11, FIGHTER, (8, 12), [-45, -15, -42], [45, 19, 37]),
         (11, DIVER, (6, 8), [-25, -18, -63], [25, 40, 40]),
-        (11, TURRET, (9, 11), [-40, -16, -56], [40, 36, 40]),
+        (11, TURRET, (9, 14), [-40, -16, -56], [40, 36, 40]),
     ] {
         let bytes = baked_assets::model_bank(level);
         check(&AssetBank::new(&bytes).unwrap(), mesh, counts, min, max);
@@ -472,15 +483,251 @@ fn enlarged_enemy_meshes_keep_ground_bases_and_original_model_budgets() {
             7 => ([-176, -40, -156], [176, 116, 136]),
             _ => ([-170, -32, -172], [170, 76, 160]),
         };
-        check(&bank, CARRIER, (10, 17), min, max);
+        check(&bank, CARRIER, (10, 16), min, max);
         // Player, pickups and scenery preserve their original dimensions.
         check(&bank, PLAYER, (8, 12), [-36, -7, -27], [36, 12, 36]);
         check(&bank, CRYSTAL, (6, 8), [-13, -20, -13], [13, 20, 13]);
-        check(&bank, BUILDING, (8, 10), [-22, 0, -22], [22, 60, 22]);
+        check(&bank, BUILDING, (8, 12), [-22, 0, -22], [22, 60, 22]);
         if !matches!(level, 1 | 4) {
-            check(&bank, ROCK, (6, 6), [-32, 0, -30], [35, 42, 30]);
+            check(&bank, ROCK, (6, 8), [-32, 0, -30], [35, 42, 30]);
         }
     }
+}
+
+#[test]
+fn every_quantized_model_has_outward_solids_and_explicit_thin_panel_backs() {
+    use std::collections::BTreeMap;
+
+    for level in 0..SEGMENT_COUNT {
+        let bytes = baked_assets::model_bank(level);
+        let bank = AssetBank::new(&bytes).unwrap();
+        let info = preview_stage_info(level);
+        // The medal has its own closed-component and attached-relief tests.
+        for mesh in 0..MEDAL {
+            let faces: Vec<_> = (0..bank.face_count(mesh))
+                .map(|face| bank.face(mesh, face))
+                .collect();
+            let mut panel = vec![false; faces.len()];
+            let mut pairs = 0;
+            for (index, &(indices, color)) in faces.iter().enumerate() {
+                if panel[index] {
+                    continue;
+                }
+                let [a, b, c] = indices.map(|vertex| bank.vertex(mesh, vertex));
+                let ab = [b.x - a.x, b.y - a.y, b.z - a.z].map(i64::from);
+                let ac = [c.x - a.x, c.y - a.y, c.z - a.z].map(i64::from);
+                assert_ne!(
+                    [
+                        ab[1] * ac[2] - ab[2] * ac[1],
+                        ab[2] * ac[0] - ab[0] * ac[2],
+                        ab[0] * ac[1] - ab[1] * ac[0],
+                    ],
+                    [0; 3],
+                    "stage {level}, mesh {mesh}, face {index} collapsed when quantized"
+                );
+                let reverse = [indices[0], indices[2], indices[1]];
+                if let Some(back) = (index + 1..faces.len()).find(|&other| {
+                    !panel[other]
+                        && (0..3).any(|offset| {
+                            (0..3).all(|corner| {
+                                faces[other].0[corner] == reverse[(corner + offset) % 3]
+                            })
+                        })
+                }) {
+                    assert_eq!(faces[back].1, color, "thin panels retain their material");
+                    panel[index] = true;
+                    panel[back] = true;
+                    pairs += 1;
+                }
+            }
+            let expected_pairs = match mesh {
+                FIGHTER if info.theme < 10 && info.enemy_profile == 1 => 6,
+                FIGHTER if info.theme < 10 && info.enemy_profile == 2 => 2,
+                DIVER if info.theme < 10 && info.enemy_profile == 1 => 2,
+                TURRET if info.enemy_profile != 1 => 1,
+                _ => 0,
+            };
+            assert_eq!(pairs, expected_pairs, "stage {level}, mesh {mesh}");
+
+            let mut edges = BTreeMap::<(u8, u8), Vec<(usize, i8)>>::new();
+            for (face, &(indices, _)) in faces.iter().enumerate() {
+                if panel[face] {
+                    continue;
+                }
+                for [a, b] in [
+                    [indices[0], indices[1]],
+                    [indices[1], indices[2]],
+                    [indices[2], indices[0]],
+                ] {
+                    edges
+                        .entry((a.min(b), a.max(b)))
+                        .or_default()
+                        .push((face, if a < b { 1 } else { -1 }));
+                }
+            }
+            for (edge, uses) in &edges {
+                assert!(
+                    uses.len() == 2 && uses[0].1 == -uses[1].1,
+                    "stage {level}, mesh {mesh}, solid edge {edge:?}: {uses:?}"
+                );
+            }
+            let mut visited = panel;
+            for start in 0..faces.len() {
+                if visited[start] {
+                    continue;
+                }
+                let mut pending = vec![start];
+                let mut volume = 0i64;
+                while let Some(face) = pending.pop() {
+                    if visited[face] {
+                        continue;
+                    }
+                    visited[face] = true;
+                    let [a, b, c] = faces[face].0.map(|index| {
+                        let point = bank.vertex(mesh, index);
+                        [point.x, point.y, point.z].map(i64::from)
+                    });
+                    volume += a[0] * (b[1] * c[2] - b[2] * c[1])
+                        + a[1] * (b[2] * c[0] - b[0] * c[2])
+                        + a[2] * (b[0] * c[1] - b[1] * c[0]);
+                    for uses in edges.values() {
+                        if uses[0].0 == face {
+                            pending.push(uses[1].0);
+                        } else if uses[1].0 == face {
+                            pending.push(uses[0].0);
+                        }
+                    }
+                }
+                assert!(volume > 0, "stage {level}, mesh {mesh} has an inward solid");
+            }
+        }
+    }
+}
+
+#[test]
+fn sma6_banks_reserve_shadow_tail_and_reject_old_culling_contracts() {
+    for level in 0..SEGMENT_COUNT {
+        let bytes = baked_assets::model_bank(level);
+        assert_eq!(&bytes[..4], b"SMA6");
+        for mesh in 0..MODEL_COUNT {
+            let descriptor = 16 + mesh as usize * 8;
+            assert_eq!(bytes[descriptor + 7], 0);
+            let end = u16_at(&bytes, descriptor + 4) as usize + bytes[descriptor + 3] as usize * 4;
+            assert!(
+                end <= SHADOW_SPECS_OFFSET,
+                "stage {level}, mesh {mesh} exceeds its bank"
+            );
+            for old_flags in [1, 255] {
+                let mut bad = bytes;
+                bad[descriptor + 7] = old_flags;
+                assert!(matches!(AssetBank::new(&bad), Err(AssetError::Bounds)));
+            }
+        }
+        let mut old = bytes;
+        old[..4].copy_from_slice(b"SMA5");
+        assert!(matches!(AssetBank::new(&old), Err(AssetError::Magic)));
+    }
+    let mut previous_package = header();
+    put32(&mut previous_package, 4, 0x534D0B00);
+    seal_header(&mut previous_package);
+    assert_eq!(validate_header(&previous_package), Err(AssetError::Version));
+}
+
+#[test]
+fn shadow_descriptors_cover_scaled_quantized_mesh_bounds_in_every_bank() {
+    assert_eq!(SHADOW_SPECS_OFFSET, 1920);
+    assert_eq!(SHADOW_SPEC_SIZE, 12);
+    for level in 0..SEGMENT_COUNT {
+        let bytes = baked_assets::model_bank(level);
+        let bank = AssetBank::new(&bytes).unwrap();
+        for id in 0..MODEL_COUNT {
+            let shape = bank.shadow_spec(id);
+            let expected = match id {
+                PLAYER => (1, 0),
+                FIGHTER => (1, 2),
+                DIVER => (3, 2),
+                CARRIER => (2, 0),
+                ROCK if level >= 12 => (3, 0),
+                _ => (0, 0),
+            };
+            assert_eq!(
+                (shape.family, shape.heading),
+                expected,
+                "level {level}, mesh {id}"
+            );
+            if shape.family == 0 {
+                assert_eq!(shape, ShadowSpec::default());
+                continue;
+            }
+            let points: Vec<_> = (0..bank.vertex_count(id))
+                .map(|v| bank.vertex(id, v))
+                .collect();
+            for (center, half, values) in [
+                (
+                    shape.offset_x,
+                    shape.half_x,
+                    points.iter().map(|p| p.x).collect::<Vec<_>>(),
+                ),
+                (
+                    shape.offset_z,
+                    shape.half_z,
+                    points.iter().map(|p| p.z).collect::<Vec<_>>(),
+                ),
+            ] {
+                let min = *values.iter().min().unwrap();
+                let max = *values.iter().max().unwrap();
+                assert!(half > 0);
+                assert!(center - half as i16 <= min && center + half as i16 >= max);
+                assert!((half * 2) as i16 - (max - min) <= 1, "tight baked extent");
+            }
+        }
+        assert!(
+            bytes[SHADOW_SPECS_OFFSET + MODEL_COUNT as usize * SHADOW_SPEC_SIZE..]
+                .iter()
+                .all(|&v| v == 0)
+        );
+    }
+}
+
+#[test]
+fn malformed_shadow_records_padding_and_mesh_overlap_are_rejected() {
+    let good = baked_assets::model_bank(0);
+    for (offset, value) in [
+        (SHADOW_SPECS_OFFSET, 5),
+        (SHADOW_SPECS_OFFSET + 1, 4),
+        (SHADOW_SPECS_OFFSET + 10, 1),
+        (
+            SHADOW_SPECS_OFFSET + TURRET as usize * SHADOW_SPEC_SIZE + 1,
+            1,
+        ),
+        (
+            SHADOW_SPECS_OFFSET + MODEL_COUNT as usize * SHADOW_SPEC_SIZE,
+            1,
+        ),
+        (MODEL_SIZE - 1, 1),
+    ] {
+        let mut bad = good;
+        bad[offset] = value;
+        assert!(
+            matches!(AssetBank::new(&bad), Err(AssetError::Bounds)),
+            "offset {offset}"
+        );
+    }
+    for (offset, value) in [
+        (2, 0x8000),
+        (4, 1025),
+        (6, 0),
+        (8, 0),
+        (6, 1025),
+        (8, 0xffff),
+    ] {
+        let mut bad = good;
+        put16(&mut bad, SHADOW_SPECS_OFFSET + offset, value);
+        assert!(matches!(AssetBank::new(&bad), Err(AssetError::Bounds)));
+    }
+    let mut bad = good;
+    put16(&mut bad, 20, SHADOW_SPECS_OFFSET as u16 - 3);
+    assert!(matches!(AssetBank::new(&bad), Err(AssetError::Bounds)));
 }
 
 #[test]
@@ -682,7 +929,12 @@ fn eighteen_stage_profiles_cover_terrestrial_and_orbital_campaign_with_contiguou
     assert_eq!(DIGITAL_RING_OFFSET, havoc::digital::RING_OFFSET);
     assert_eq!(DIGITAL_RING_OFFSET + DIGITAL_RING_SIZE, REU_SIZE);
     assert!(havoc::digital::ASSET_BYTES <= DIGITAL_MUSIC_CAPACITY);
-    assert!(havoc::digital::Track::HammondRocker.descriptor().asset_bytes <= DIGITAL_VICTORY_CAPACITY);
+    assert!(
+        havoc::digital::Track::HammondRocker
+            .descriptor()
+            .asset_bytes
+            <= DIGITAL_VICTORY_CAPACITY
+    );
     let mut bosses = Vec::new();
     for stage in 0..SEGMENT_COUNT {
         let bytes = baked_assets::segment_bank(stage);
@@ -787,7 +1039,7 @@ fn orbital_meshes_fit_the_unchanged_cache_and_keep_tumbling_obstacles_centered()
         assert_eq!(low, -high);
         let used =
             u16_at(&bytes, 20 + MEDAL as usize * 8) as usize + bank.face_count(MEDAL) as usize * 4;
-        assert!(used <= MODEL_SIZE);
+        assert!(used <= SHADOW_SPECS_OFFSET);
         if level == 16 {
             let (front, rear) = extent(CARRIER, |v| v.z);
             assert!(

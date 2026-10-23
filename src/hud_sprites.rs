@@ -73,8 +73,9 @@ impl DisplayState {
     }
 
     /// VIC sprite-enable bits. Menus can show the score pair as an FPS chip.
-    /// These two tiny register helpers stay resident to spare the PIXELS bank.
+    /// Register helpers execute with the PIXELS overlay loaded.
     #[inline(never)]
+    #[cfg_attr(target_arch = "mos", link_section = ".phase.pixels")]
     pub fn enabled_mask(&self) -> u8 {
         if self.flags & COCKPIT != 0 {
             0xff
@@ -87,6 +88,7 @@ impl DisplayState {
 
     /// Both sprites in a corner use this individual VIC palette colour.
     #[inline(never)]
+    #[cfg_attr(target_arch = "mos", link_section = ".phase.pixels")]
     pub fn accent(&self, corner: u8) -> u8 {
         match corner {
             0 => 3,

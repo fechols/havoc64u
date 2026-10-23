@@ -47,7 +47,7 @@ class ReleasePackageTests(unittest.TestCase):
         (self.package / "havoc.prg").write_bytes(b"\x01\x08native fixture")
         reu = bytearray(16 * 1024 * 1024)
         reu[:4] = b"SM64"
-        reu[4:8] = (0x534d0a00).to_bytes(4, "little")
+        reu[4:8] = (0x534d0c00).to_bytes(4, "little")
         reu[17] = 4
         (self.package / "havoc.reu").write_bytes(reu)
         (self.root / "docs/launch.txt").write_bytes(b"Launch instructions\n")

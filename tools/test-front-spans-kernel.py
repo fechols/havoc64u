@@ -55,8 +55,8 @@ extern void fast_cell_stage(const uint8_t*,const uint8_t*);
 #define MASK ((uint8_t*)0xec00)
 /* Simulator C stack grows down from $FFF0, overlapping production head255.
    Relocate the heads while retaining the production base's low-byte carry. */
-#define NATIVE_HEADS ((struct Head*)0x8020)
-#define NATIVE_TAILS ((struct Tail*)0xc000)
+#define NATIVE_HEADS ((struct Head*)0xbc20)
+#define NATIVE_TAILS ((struct Tail*)0x9020)
 #define RECORD (*(volatile uint8_t*)0xab40)
 #define BAD_ABI (*(volatile uint8_t*)0xab41)
 #define COLOR_DISTANCE (*(uint16_t (*)[16][16])0xa400)
@@ -209,7 +209,7 @@ int main(void){
       if(check_pixels()||check_quantized()){printf(" group %u band %u\n",group,band);return 4;}
     }
   }
-  printf("PASS front spans: %lu checks, %lu input spans, %lu noncommitting coverage walks; 256 fixtures in multi-triangle bands\n",(unsigned long)checks,(unsigned long)submitted,(unsigned long)prepasses);
+  printf("PASS front spans: %lu checks, %lu input spans, %lu noncommitting coverage walks; 256 fixtures\n",(unsigned long)checks,(unsigned long)submitted,(unsigned long)prepasses);
   return 0;
 }
 '''
@@ -239,13 +239,14 @@ test_cover:
 defines={'SPAN_BUFFER':1,'SPAN_FRONT':1,'HUDS':0x9f00,'OVER':0x9f28,
          'COVER_CLEAN':0x9f50,'PIXELS':0xb000,'RR_SCRATCH':0x9f60,'PK_SCRATCH':0x9fa0,
          'CODES':0xa800,'COVER':0xa940,'PAL0':0xaa80,'CS_SCRATCH':0xab00,
-         'RASTER_HEADS':0x8020,'RASTER_TAILS':0xc000}
+         'RASTER_HEADS':0xbc20,'RASTER_TAILS':0x9020,
+}
 subprocess.run([sdk/'mos-sim-clang','-Oz','-mlto-zp=0',*(f'-Wa,-defsym,{k}={v}' for k,v in defines.items()),
                 '-Wl,--defsym=COLOR_DISTANCE=0xa400',build/'check.c',build/'wrapper.S',assemblies[0],
                 build/'cells.S',*assemblies[2:],'-Wl,-Map='+str(build/'check.map'),'-o',build/'check'],check=True)
 layout=(build/'check.map').read_text()
 heap=re.search(r'^\s*([0-9a-f]+)\s+[0-9a-f]+\s+[0-9a-f]+\s+\d+\s+__heap_start',layout,re.M)
-if heap is None or int(heap.group(1),16)>0x8020:raise SystemExit('front harness overlaps relocated raster heads')
+if heap is None or int(heap.group(1),16)>0x9020:raise SystemExit('front harness overlaps relocated raster tails')
 result=subprocess.run([sdk/'mos-sim','--cycles',build/'check'],text=True,capture_output=True,timeout=300)
 print(result.stdout.strip());print(result.stderr.strip())
 if result.returncode or 'PASS front spans:' not in result.stdout:raise SystemExit(result.returncode or 'front harness incomplete')

@@ -3,7 +3,7 @@
 use super::{Decoration, SceneSink};
 #[cfg(target_arch = "mos")]
 use crate::GeometrySink;
-use crate::{Vec3, TWO_SIDED};
+use crate::Vec3;
 
 #[cfg_attr(target_arch = "mos", link_section = ".phase.scenery.space_shared.data")]
 static STARS: [[i16; 2]; 10] = [
@@ -37,17 +37,17 @@ fn stars(sink: &mut SceneSink<'_>) {
         sink.triangle(
             Vec3 { x, y, z: 3000 },
             Vec3 {
-                x: x + 45,
-                y,
-                z: 3000,
-            },
-            Vec3 {
                 x,
                 y: y + 45,
                 z: 3000,
             },
+            Vec3 {
+                x: x + 45,
+                y,
+                z: 3000,
+            },
             15,
-            TWO_SIDED | crate::game::STATIC_SKY,
+            crate::game::STATIC_SKY,
         );
     }
 }
@@ -55,8 +55,29 @@ fn stars(sink: &mut SceneSink<'_>) {
 #[inline(never)]
 #[cfg_attr(target_arch = "mos", link_section = ".phase.scenery.space_shared")]
 fn quad(sink: &mut SceneSink<'_>, p: [Vec3; 4], color: u8) {
-    sink.triangle(p[0], p[1], p[2], color, TWO_SIDED);
-    sink.triangle(p[0], p[2], p[3], color, TWO_SIDED);
+    sink.triangle(p[0], p[1], p[2], color, 0);
+    sink.triangle(p[0], p[2], p[3], color, 0);
+}
+
+/// A physical thin panel has separate front and back surfaces. Both use the
+/// ordinary one-sided renderer; there is no material or renderer exemption.
+#[inline(never)]
+#[cfg_attr(target_arch = "mos", link_section = ".phase.scenery.shipyard")]
+fn panel(sink: &mut SceneSink<'_>, p: [Vec3; 4], color: u8) {
+    let back = [p[0], p[3], p[2], p[1]];
+    quad(sink, p, color);
+    quad(sink, back, color);
+}
+
+/// Author the exposed upper surface of a deck or mirrored floor strip.
+#[inline(always)]
+fn deck(sink: &mut SceneSink<'_>, p: [Vec3; 4], color: u8) {
+    let points = if p[0].x < p[1].x {
+        [p[0], p[3], p[2], p[1]]
+    } else {
+        p
+    };
+    quad(sink, points, color);
 }
 
 /// During a crossing both environments travel completely below the viewport.
@@ -73,7 +94,7 @@ fn drop(context: &Decoration) -> i16 {
 }
 
 #[inline(never)]
-#[cfg_attr(target_arch = "mos", link_section = ".phase.scenery.space_shared")]
+#[cfg_attr(target_arch = "mos", link_section = ".phase.scenery_extra")]
 fn clock(context: &Decoration) -> u16 {
     if context.elapsed >= 200 && context.elapsed < 400 {
         context.elapsed.wrapping_sub(400)
@@ -102,7 +123,7 @@ fn planet(sink: &mut SceneSink<'_>, x: i16, y: i16, radius: i16, color: u8) {
                 z: 2800,
             },
             if i < 4 { color } else { 6 },
-            TWO_SIDED,
+            0,
         );
     }
 }
@@ -110,6 +131,14 @@ fn planet(sink: &mut SceneSink<'_>, x: i16, y: i16, radius: i16, color: u8) {
 #[inline(never)]
 #[cfg_attr(target_arch = "mos", link_section = ".phase.scenery.space_shared")]
 fn rock(sink: &mut SceneSink<'_>, center: Vec3, radius: i16, color: u8) {
+    if sink.shadow_enabled() {
+        sink.shadow_caster(crate::shadow::Caster {
+            center,
+            half_x: radius,
+            half_z: radius,
+            shape: 3,
+        });
+    }
     let top = Vec3 {
         y: center.y + radius,
         ..center
@@ -138,8 +167,8 @@ fn rock(sink: &mut SceneSink<'_>, center: Vec3, radius: i16, color: u8) {
     ];
     for i in 0..4usize {
         let next = (i + 1) & 3;
-        sink.triangle(top, ring[i], ring[next], color, TWO_SIDED);
-        sink.triangle(bottom, ring[next], ring[i], 11, TWO_SIDED);
+        sink.triangle(top, ring[i], ring[next], color, 0);
+        sink.triangle(bottom, ring[next], ring[i], 11, 0);
     }
 }
 
@@ -199,7 +228,7 @@ pub fn scenic_ascent(sink: &mut SceneSink<'_>, context: &Decoration) {
                     z: 1700,
                 },
                 14,
-                TWO_SIDED,
+                0,
             );
         }
     }
@@ -265,93 +294,75 @@ pub fn scenic_moon(sink: &mut SceneSink<'_>, context: &Decoration) {
     }
 }
 
-#[inline(never)]
-#[cfg_attr(target_arch = "mos", link_section = ".phase.scenery.space_shared")]
-fn hull(sink: &mut SceneSink<'_>, x: i16, y: i16, z: i16, color: u8) {
-    // Long broken hull: sloping top, torn bow and one exposed side.
-    let a = Vec3 { x: x - 100, y, z };
-    let b = Vec3 { x: x + 100, y, z };
-    let c = Vec3 {
-        x: x + 65,
-        y: y + 90,
-        z: z + 620,
-    };
-    let d = Vec3 {
-        x: x - 65,
-        y: y + 90,
-        z: z + 620,
-    };
-    quad(sink, [a, b, c, d], color);
-    quad(
-        sink,
-        [a, d, Vec3 { y: d.y - 160, ..d }, Vec3 { y: a.y - 120, ..a }],
-        11,
-    );
-    sink.triangle(
-        a,
-        b,
-        Vec3 {
-            x,
-            y: y - 120,
-            z: z - 100,
-        },
-        8,
-        TWO_SIDED,
-    );
-    sink.triangle(
-        d,
-        c,
-        Vec3 {
-            x: x + 210,
-            y: y + 140,
-            z: z + 770,
-        },
-        12,
-        TWO_SIDED,
-    );
-}
+// Identical closed wreck geometry is authored once, using each environment's
+// original facet palette.
+#[cfg_attr(target_arch = "mos", link_section = ".phase.scenery.space_shared.data")]
+static HULL_POINTS: [[i16; 3]; 8] = [
+    [-100, 0, 0],
+    [100, 0, 0],
+    [65, 90, 620],
+    [-65, 90, 620],
+    [65, -70, 620],
+    [-65, -70, 620],
+    [0, -120, -100],
+    [210, 140, 770],
+];
+#[cfg_attr(target_arch = "mos", link_section = ".phase.scenery.space_shared.data")]
+static HULL_FACES: [[u8; 4]; 12] = [
+    [0, 3, 2, 0],
+    [0, 2, 1, 0],
+    [0, 6, 5, 1],
+    [0, 5, 3, 1],
+    [1, 2, 4, 1],
+    [1, 4, 6, 1],
+    [0, 1, 6, 2],
+    [6, 4, 5, 1],
+    [3, 5, 4, 3],
+    [3, 4, 2, 3],
+    [3, 2, 7, 4],
+    [3, 7, 2, 4],
+];
 
-#[inline(never)]
-#[cfg_attr(target_arch = "mos", link_section = ".phase.scenery.graveyard")]
-fn graveyard_hull(sink: &mut SceneSink<'_>, x: i16, y: i16, z: i16) {
-    // A closed body keeps both inward sides visible against the starfield.
-    let a = Vec3 { x: x - 100, y, z };
-    let b = Vec3 { x: x + 100, y, z };
-    let c = Vec3 {
-        x: x + 65,
-        y: y + 90,
-        z: z + 620,
+// Each compact decoder remains in its own loaded tail. A shared decoder would
+// enlarge every terrestrial scenery image even though it never draws wrecks.
+macro_rules! wreck {
+    ($name:ident, $section:literal, $palette:expr) => {
+        #[inline(never)]
+        #[cfg_attr(target_arch = "mos", link_section = $section)]
+        fn $name(sink: &mut SceneSink<'_>, x: i16, y: i16, z: i16) {
+            if sink.shadow_enabled() {
+                sink.shadow_caster(crate::shadow::Caster {
+                    center: Vec3 {
+                        x: x + 55,
+                        y: y + 10,
+                        z: z + 335,
+                    },
+                    half_x: 155,
+                    half_z: 435,
+                    shape: 2,
+                });
+            }
+            for face in HULL_FACES {
+                let points: [Vec3; 3] = core::array::from_fn(|corner| {
+                    let p = HULL_POINTS[face[corner] as usize];
+                    Vec3 {
+                        x: x + p[0],
+                        y: y + p[1],
+                        z: z + p[2],
+                    }
+                });
+                let color = $palette[face[3] as usize];
+                sink.triangle(points[0], points[1], points[2], color, 0);
+            }
+        }
     };
-    let d = Vec3 {
-        x: x - 65,
-        y: y + 90,
-        z: z + 620,
-    };
-    let lower_c = Vec3 { y: c.y - 160, ..c };
-    let lower_d = Vec3 { y: d.y - 160, ..d };
-    let bow = Vec3 {
-        x,
-        y: y - 120,
-        z: z - 100,
-    };
-    quad(sink, [a, b, c, d], 15);
-    quad(sink, [a, d, lower_d, bow], 12);
-    quad(sink, [b, bow, lower_c, c], 12);
-    sink.triangle(b, a, bow, 8, TWO_SIDED);
-    sink.triangle(bow, lower_d, lower_c, 12, TWO_SIDED);
-    quad(sink, [d, c, lower_c, lower_d], 12);
-    sink.triangle(
-        d,
-        c,
-        Vec3 {
-            x: x + 210,
-            y: y + 140,
-            z: z + 770,
-        },
-        15,
-        TWO_SIDED,
-    );
 }
+wreck!(hull, ".phase.scenery.carrier", [15, 11, 8, 12, 12]);
+wreck!(
+    graveyard_hull,
+    ".phase.scenery.graveyard",
+    [15, 12, 8, 12, 15]
+);
 
 #[inline(never)]
 #[cfg_attr(target_arch = "mos", no_mangle)]
@@ -393,9 +404,21 @@ pub fn scenic_shipyard(sink: &mut SceneSink<'_>, context: &Decoration) {
     let ticks = clock(context);
     for i in 0..3u16 {
         let z = 2150 - ((ticks.wrapping_add(i * 85) & 255) * 8) as i16;
+        if sink.shadow_enabled() {
+            sink.shadow_caster(crate::shadow::Caster {
+                center: Vec3 {
+                    x: 0,
+                    y: 105 - travel,
+                    z: z + 120,
+                },
+                half_x: 710,
+                half_z: 120,
+                shape: 2,
+            });
+        }
         for side in [-1i16, 1] {
             let x = side * 290;
-            quad(
+            panel(
                 sink,
                 [
                     Vec3 {
@@ -422,7 +445,7 @@ pub fn scenic_shipyard(sink: &mut SceneSink<'_>, context: &Decoration) {
                 12,
             );
             // Blue photovoltaic wings project outwards from each gantry.
-            quad(
+            panel(
                 sink,
                 [
                     Vec3 {
@@ -449,7 +472,7 @@ pub fn scenic_shipyard(sink: &mut SceneSink<'_>, context: &Decoration) {
                 6,
             );
         }
-        quad(
+        panel(
             sink,
             [
                 Vec3 {
@@ -488,7 +511,7 @@ pub fn scenic_carrier(sink: &mut SceneSink<'_>, context: &Decoration) {
     let offset = ((ticks & 63) * 8) as i16;
     for i in 0..4i16 {
         let z = 40 + i * 512 - offset;
-        quad(
+        deck(
             sink,
             [
                 Vec3 {
@@ -519,7 +542,7 @@ pub fn scenic_carrier(sink: &mut SceneSink<'_>, context: &Decoration) {
             },
         );
         for side in [-1i16, 1] {
-            quad(
+            deck(
                 sink,
                 [
                     Vec3 {
@@ -558,7 +581,7 @@ pub fn scenic_carrier(sink: &mut SceneSink<'_>, context: &Decoration) {
             } else {
                 330
             };
-            hull(sink, x, -40 - travel, z, 15);
+            hull(sink, x, -40 - travel, z);
         }
     }
 }
@@ -595,7 +618,7 @@ pub fn scenic_gate(sink: &mut SceneSink<'_>, context: &Decoration) {
     }
     // Twin power conduits lead toward the separate, destructible gate boss.
     for side in [-1i16, 1] {
-        quad(
+        deck(
             sink,
             [
                 Vec3 {

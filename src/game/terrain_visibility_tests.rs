@@ -21,7 +21,7 @@ mod terrain_visibility {
     const POSITIONS: [(i16, i16); 5] = [(-100, -65), (100, -65), (-100, 65), (100, 65), (0, 0)];
 
     fn ship_faces(bank: &AssetBank<'_>) -> u16 {
-        bank.face_count(assets::PLAYER) as u16 + 2
+        bank.face_count(assets::PLAYER) as u16 + 4
     }
 
     fn put_faces(renderer: &mut Renderer, faces: &[Face], remove_flags: u8) {
@@ -448,7 +448,7 @@ mod terrain_visibility {
                         (spawn.x, spawn.y)
                     );
                 }
-                for (z, limit, count) in [(400, 174, 11), (1201, 174, 2), (400, 2, 2)] {
+                for (z, limit, count) in [(400, 174, bank.face_count(assets::TURRET) as usize), (1201, 174, 2), (400, 2, 2)] {
                     game.actors[0].pos.z = z;
                     let target = combat_capture(&game, &bank, limit);
                     assert_eq!(target.0.len(), count);
@@ -637,18 +637,18 @@ mod terrain_visibility {
                     z: 100,
                 },
                 Vec3 {
-                    x: 200,
-                    y: -100,
-                    z: 100,
-                },
-                Vec3 {
                     x: 0,
                     y: 200,
                     z: 100,
                 },
+                Vec3 {
+                    x: 200,
+                    y: -100,
+                    z: 100,
+                },
             ],
             5,
-            TWO_SIDED | EXTERIOR_TERRAIN,
+            EXTERIOR_TERRAIN,
         )];
         assert_eq!(compare_geometry(&target.0, &exterior, false), (visible, 0));
         assert_eq!(

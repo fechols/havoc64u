@@ -564,7 +564,12 @@ fn attract_renders_the_game_world_without_the_ship_or_exhaust() {
     let mut preview_scene = CapturedGeometry::default();
     playing.render(&mut normal_scene, &bank, &segment);
     attract.render(&mut preview_scene, &bank, &segment);
-    let player_faces = bank.face_count(havoc::assets::PLAYER) as usize + 2;
+    // Two exhaust planes each author a front and back face. Both pairs belong
+    // to the ship even though projection accepts only one side of each plane.
+    let player_faces = bank.face_count(havoc::assets::PLAYER) as usize + 4;
+    assert!(normal_scene.0[..player_faces]
+        .iter()
+        .all(|face| face.2 & TERRAIN_CLEAR_SCENE_FLAG != 0));
     assert_eq!(preview_scene.0, normal_scene.0[player_faces..]);
     assert!(!preview_scene.0.is_empty());
 }
@@ -575,7 +580,7 @@ fn scenic_terrain_keeps_the_centered_player_visible_through_every_band_phase() {
     use havoc::{render::Renderer, GeometrySink};
     for section in 0..SEGMENT_COUNT {
         let bank = test_bank(section);
-        let player_faces = bank.face_count(havoc::assets::PLAYER) as usize + 2;
+        let player_faces = bank.face_count(havoc::assets::PLAYER) as usize + 4;
         let bytes = baked_assets::segment_bank(section);
         let segment = Segment::new(&bytes).unwrap();
         for distance in (0..512).step_by(8) {
@@ -586,12 +591,15 @@ fn scenic_terrain_keeps_the_centered_player_visible_through_every_band_phase() {
             let mut scene = Renderer::new();
             player.begin(0);
             scene.begin(game.sky_color());
-            for (index, &(points, color, flags)) in geometry.0.iter().enumerate() {
-                scene.triangle(points[0], points[1], points[2], color, flags);
-                if index < player_faces {
-                    player.triangle(points[0], points[1], points[2], color, flags);
-                }
+            // Exercise the runtime's projection-aware scenery/foreground
+            // ordering, against the complete isolated hull and both exhausts.
+            game.render(&mut scene, &bank, &segment);
+            for &(points, color, flags) in &geometry.0[..player_faces] {
+                assert_ne!(flags & TERRAIN_CLEAR_SCENE_FLAG, 0);
+                player.triangle(points[0], points[1], points[2], color, flags);
             }
+            assert!(player.triangle_count > 0);
+            assert_eq!(scene.dropped, 0, "section {section}, distance {distance}");
             player.finish();
             scene.finish();
             for band in 14..19 {
@@ -683,7 +691,13 @@ fn chase_camera_reveals_carrier_and_keeps_controlled_hull_on_screen() {
     let mut geometry = CapturedGeometry::default();
     carrier.render(&mut geometry, &bank, &carrier_segment);
     let ship_faces = bank.face_count(PLAYER) as usize;
-    let carrier_start = ship_faces + 2; // Exhaust uses two faces.
+    let carrier_start = ship_faces + 4; // Two exhaust planes, each with a back.
+    assert!(geometry.0[..carrier_start]
+        .iter()
+        .all(|face| face.2 & TERRAIN_CLEAR_SCENE_FLAG != 0));
+    assert!(geometry.0[carrier_start..carrier_start + bank.face_count(CARRIER) as usize]
+        .iter()
+        .all(|face| face.2 & TERRAIN_CLEAR_SCENE_FLAG == 0));
     let bounds = |faces: &[([havoc::Vec3; 3], u8, u8)]| {
         faces
             .iter()

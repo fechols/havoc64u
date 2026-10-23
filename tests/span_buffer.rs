@@ -38,8 +38,8 @@ fn every_scene_matches_raw_pixels_and_decoded_cells_with_identical_previous_pale
             let segment = Segment::new(&data).unwrap();
             let mut renderer = Renderer::new();
             renderer.begin(game.sky_color());
-            game.render(&mut renderer, &bank, &segment);
-            renderer.finish();
+            let mut shadows = havoc::shadow::ShadowFrame::new();
+            game.render_with_shadows(&mut renderer, &mut shadows, &bank, &segment);
             let status = game.hud();
             let mut dust = SpaceDustFrame::EMPTY;
             let ambient = dust.prepare(status.section, status.mode, game.animation_ticks());
@@ -99,8 +99,8 @@ fn consecutive_scene_frames_report_independent_palette_history_differences() {
         for frame in 0..8 {
             let mut renderer = Renderer::new();
             renderer.begin(game.sky_color());
-            game.render(&mut renderer, &bank, &segment);
-            renderer.finish();
+            let mut shadows = havoc::shadow::ShadowFrame::new();
+            game.render_with_shadows(&mut renderer, &mut shadows, &bank, &segment);
             let status = game.hud();
             let mut dust = SpaceDustFrame::EMPTY;
             let ambient = dust.prepare(status.section, status.mode, game.animation_ticks());

@@ -1,4 +1,5 @@
 use super::*;
+use std::vec::Vec;
 
 #[test]
 fn orbital_debris_is_bomb_destructible_but_cannot_farm_enemy_rewards() {
@@ -186,8 +187,8 @@ fn planar_effects_preserve_ordered_vertices_colors_and_flags() {
                         assert_eq!(
                             actual.0,
                             [
-                                ([left, top, right], color, TWO_SIDED),
-                                ([left, right, bottom], color, TWO_SIDED),
+                                ([left, top, right], color, 0),
+                                ([left, right, bottom], color, 0),
                             ]
                         );
                     }
@@ -200,9 +201,9 @@ fn planar_effects_preserve_ordered_vertices_colors_and_flags() {
                     let upper_right = Vec3 { y: y + r, ..right };
                     let bottom = Vec3 { x, y: y - r, z };
                     expected.extend_from_slice(&[
-                        ([upper_left, upper_right, right], color, TWO_SIDED),
-                        ([upper_left, right, left], color, TWO_SIDED),
-                        ([left, right, bottom], color, TWO_SIDED),
+                        ([upper_left, upper_right, right], color, 0),
+                        ([upper_left, right, left], color, 0),
+                        ([left, right, bottom], color, 0),
                     ]);
                 }
                 let mut actual = Capture::default();
@@ -234,8 +235,8 @@ fn planar_effects_preserve_ordered_vertices_colors_and_flags() {
                         z,
                     };
                     expected.extend_from_slice(&[
-                        ([upper_left, upper_right, lower_right], color, TWO_SIDED),
-                        ([upper_left, lower_right, lower_left], color, TWO_SIDED),
+                        ([upper_left, upper_right, lower_right], color, 0),
+                        ([upper_left, lower_right, lower_left], color, 0),
                     ]);
                 }
                 let mut actual = Capture::default();
@@ -253,7 +254,7 @@ const fn test_bank_bytes(level: u8) -> [u8; assets::COMMON_SIZE] {
     data[0] = b'S';
     data[1] = b'M';
     data[2] = b'A';
-    data[3] = b'4';
+    data[3] = b'6';
     data[4] = assets::MODEL_COUNT;
     data[5] = level;
     let info = assets::STAGE_INFOS[level as usize];
@@ -1110,12 +1111,11 @@ impl GeometrySink for TerrainCapture {
     fn triangle(&mut self, a: Vec3, b: Vec3, c: Vec3, color: u8, flags: u8) {
         assert_eq!(
             flags,
-            TWO_SIDED
-                | if flags & STATIC_SKY != 0 {
-                    STATIC_SKY
-                } else {
-                    crate::EXTERIOR_TERRAIN
-                }
+            0 | if flags & STATIC_SKY != 0 {
+                STATIC_SKY
+            } else {
+                crate::EXTERIOR_TERRAIN
+            }
         );
         assert!(
             self.count < self.faces.len(),
@@ -1281,8 +1281,24 @@ fn clouds_remain_in_the_sky_behind_scenery_with_shared_facet_edges() {
             let first = backdrop_face(theme, 5 + cloud * 3).0;
             let second = backdrop_face(theme, 6 + cloud * 3).0;
             let third = backdrop_face(theme, 7 + cloud * 3).0;
-            assert_eq!((first[0], first[2]), (second[0], second[1]));
-            assert_eq!((second[0], second[2]), (third[0], third[1]));
+            for (a, b) in [(first, second), (second, third)] {
+                let shared: Vec<_> = a.iter().copied().filter(|p| b.contains(p)).collect();
+                assert_eq!(
+                    shared.len(),
+                    2,
+                    "adjacent cloud facets share one complete edge"
+                );
+                let edge = (0..3)
+                    .find_map(|i| {
+                        let pair = (a[i], a[(i + 1) % 3]);
+                        (shared.contains(&pair.0) && shared.contains(&pair.1)).then_some(pair)
+                    })
+                    .unwrap();
+                assert!(
+                    (0..3).any(|i| (b[i], b[(i + 1) % 3]) == (edge.1, edge.0)),
+                    "camera-facing neighbors traverse their shared edge in opposite directions"
+                );
+            }
         }
     }
 }
@@ -1370,14 +1386,14 @@ fn clouds_are_visible_and_nearer_geometry_occludes_them() {
             z: p.z / 2,
         });
         // Submit the nearer triangle first to exercise the depth sort.
-        renderer.triangle(near[0], near[1], near[2], 6, TWO_SIDED);
-        renderer.triangle(cloud[0], cloud[1], cloud[2], color, TWO_SIDED);
+        renderer.triangle(near[0], near[1], near[2], 6, 0);
+        renderer.triangle(cloud[0], cloud[1], cloud[2], color, 0);
         assert_eq!(renderer.triangle_count, 2);
         renderer.finish();
         let mut cloud_only = crate::render::Renderer::new();
-        cloud_only.triangle(cloud[0], cloud[1], cloud[2], color, TWO_SIDED);
+        cloud_only.triangle(cloud[0], cloud[1], cloud[2], color, 0);
         let mut near_only = crate::render::Renderer::new();
-        near_only.triangle(near[0], near[1], near[2], 6, TWO_SIDED);
+        near_only.triangle(near[0], near[1], near[2], 6, 0);
         let mut overlap = 0;
         for band in 0..25 {
             let mut actual = [0; crate::render::BAND_PIXELS];
@@ -1437,13 +1453,7 @@ fn section_themes_are_distinct_compact_and_keep_all_backdrop_facets_cacheable() 
         renderer.begin(game.sky_color());
         for face in 0..14 {
             let (points, color) = backdrop_face(theme, face);
-            renderer.triangle(
-                points[0],
-                points[1],
-                points[2],
-                color,
-                TWO_SIDED | STATIC_SKY,
-            );
+            renderer.triangle(points[0], points[1], points[2], color, STATIC_SKY);
         }
         assert_eq!(
             renderer.triangle_count, 14,
@@ -1724,7 +1734,7 @@ fn lowered_horizons_overlap_terrain_at_every_scroll_phase_and_camera_extreme() {
                     y: point.y - parallax_y,
                     ..point
                 });
-                horizon.triangle(points[0], points[1], points[2], 1, TWO_SIDED);
+                horizon.triangle(points[0], points[1], points[2], 1, 0);
             }
             let horizon_bottom = occupied_rows(&horizon, true);
             for phase in 0..1024 {
@@ -1733,7 +1743,7 @@ fn lowered_horizons_overlap_terrain_at_every_scroll_phase_and_camera_extreme() {
                 let mut ground = crate::render::Renderer::new();
                 for (points, _) in &terrain.faces[..terrain.count - 14] {
                     let points = points.map(|point| camera_point(point, camera_y));
-                    ground.triangle(points[0], points[1], points[2], 1, TWO_SIDED);
+                    ground.triangle(points[0], points[1], points[2], 1, 0);
                 }
                 let ground_top = occupied_rows(&ground, false);
                 for column in 0..160 {
@@ -1758,7 +1768,7 @@ fn crystal_cave_has_an_unbroken_roof_side_walls_and_visible_hanging_crystals() {
     for face in 0..5 {
         let (points, color) = backdrop_face(4, face);
         assert!([6, 11].contains(&color));
-        roof.triangle(points[0], points[1], points[2], 1, TWO_SIDED);
+        roof.triangle(points[0], points[1], points[2], 1, 0);
     }
     roof.finish();
     let mut silhouette = [0; 160 * 200];
@@ -1781,13 +1791,17 @@ fn crystal_cave_has_an_unbroken_roof_side_walls_and_visible_hanging_crystals() {
         .iter()
         .all(|&p| p == 0));
     for cluster in 0..3 {
-        let first = backdrop_face(4, 5 + cluster * 3).0;
-        let last = backdrop_face(4, 7 + cluster * 3).0;
-        for root in [first[0], last[2]] {
+        let points: Vec<_> = (0..3)
+            .flat_map(|facet| backdrop_face(4, 5 + cluster * 3 + facet).0)
+            .collect();
+        let left_root = *points.iter().min_by_key(|p| p.x).unwrap();
+        let right_root = *points.iter().max_by_key(|p| p.x).unwrap();
+        for root in [left_root, right_root] {
             let (x, y) = crate::projection::project(root);
             assert_eq!(silhouette[y as usize * 160 + x as usize], 1);
         }
-        let (tip_x, tip_y) = crate::projection::project(first[2]);
+        let tip = *points.iter().min_by_key(|p| p.y).unwrap();
+        let (tip_x, tip_y) = crate::projection::project(tip);
         assert_eq!(silhouette[tip_y as usize * 160 + tip_x as usize], 0);
         assert!(tip_y >= 60, "crystals must visibly hang into the opening");
     }
@@ -2218,7 +2232,7 @@ fn victory_world_keeps_only_the_frozen_ship_and_scenery_until_blackout() {
     game.render_foreground(&mut foreground, &bank, 174);
     assert_eq!(
         foreground.0.len(),
-        bank.face_count(assets::PLAYER) as usize + 2
+        bank.face_count(assets::PLAYER) as usize + 4
     );
     let mut scenery = Capture::default();
     game.render_scenery(&mut scenery, &segment);
@@ -2265,7 +2279,7 @@ fn victory_host_and_native_staging_match_through_fade_reveal_and_idle() {
         };
         let [dx, dy] = game.sky_parallax();
         let prefix = staged.project_scenery(raw_count, dx, dy);
-        game.render_foreground(&mut staged, &bank, 174.min(233 - raw_count as u16));
+        game.render_foreground(&mut staged, &bank, 174.min(256 - prefix));
         staged.scenery_last(prefix);
         staged.fade_scene(game.victory_ticks());
         game.render_medal(&mut staged, &bank);
@@ -2317,8 +2331,14 @@ fn joystick_vertical_axis_follows_direction_and_opposing_inputs_cancel() {
         reached[slot] = g.player.y;
         assert_eq!(g.player.x, 0);
     }
-    assert!(reached[0] > 20, "a held stick reaches cruising climb: {reached:?}");
-    assert!((reached[0] + reached[1]).abs() <= 1, "mirrored axes: {reached:?}");
+    assert!(
+        reached[0] > 20,
+        "a held stick reaches cruising climb: {reached:?}"
+    );
+    assert!(
+        (reached[0] + reached[1]).abs() <= 1,
+        "mirrored axes: {reached:?}"
+    );
     assert_eq!(reached[2], 0);
 }
 #[test]
@@ -2337,7 +2357,10 @@ fn released_roll_pushes_the_ship_sideways_and_does_not_snap_back() {
             previous = g.player.x * sign;
             assert!(g.flight.vel[0] * sign > 0);
         }
-        assert!((30..=50).contains(&previous), "spin displacement {previous}");
+        assert!(
+            (30..=50).contains(&previous),
+            "spin displacement {previous}"
+        );
         let mut settled = None;
         for _ in 0..100 {
             g.tick(&segment, &test_bank(g.segment_index()));
@@ -2350,8 +2373,14 @@ fn released_roll_pushes_the_ship_sideways_and_does_not_snap_back() {
         // The coast after the spin roughly doubles the displacement, then the
         // ship rests exactly, level, without drifting.
         assert_eq!(settled, Some(previous));
-        assert!((50..=70).contains(&previous), "settled displacement {previous}");
-        assert_eq!((g.flight.vel, g.flight.bank, g.flight.pitch), ([0, 0], 0, 0));
+        assert!(
+            (50..=70).contains(&previous),
+            "settled displacement {previous}"
+        );
+        assert_eq!(
+            (g.flight.vel, g.flight.bank, g.flight.pitch),
+            ([0, 0], 0, 0)
+        );
         assert_eq!(g.roll_ticks, 0);
         assert_eq!(g.roll_cooldown, 0);
     }
@@ -2370,8 +2399,13 @@ fn dodge_keeps_horizontal_vertical_and_fire_controls_live() {
     assert!(g.player.y > 5);
     let shots: std::vec::Vec<_> = g.shots.iter().filter(|shot| shot.kind == 1).collect();
     assert!(shots.len() >= 2);
-    assert!(shots.iter().all(|shot| shot.pos.x >= 0 && shot.pos.x <= g.player.x));
-    assert!(shots.iter().any(|shot| shot.pos.x > 0), "fire uses the displaced position");
+    assert!(shots
+        .iter()
+        .all(|shot| shot.pos.x >= 0 && shot.pos.x <= g.player.x));
+    assert!(
+        shots.iter().any(|shot| shot.pos.x > 0),
+        "fire uses the displaced position"
+    );
     assert!(g.flight.bank < 0, "banked into the turn");
     assert!(g.flight.pitch < 0, "nose up while climbing");
     let (x, vx) = (g.player.x, g.flight.vel[0]);
@@ -2454,7 +2488,8 @@ fn sidestep_avoids_old_lane_scenery_but_can_hit_the_new_lane() {
     }
     let lane = probe.player.x;
     assert!(lane > 35, "the sidestep clears a rock's radius: {lane}");
-    for (rolling, obstacle_x, expected_shield) in [(false, 0, 70), (true, 0, 100), (true, lane, 70)] {
+    for (rolling, obstacle_x, expected_shield) in [(false, 0, 70), (true, 0, 100), (true, lane, 70)]
+    {
         let mut g = running();
         g.actors[0] = Actor {
             pos: Vec3 {
@@ -3152,12 +3187,21 @@ fn remembered_instants_survive_the_clock_wrapping_many_times() {
     }
     assert!(!g.controls.right_armed && !g.controls.fire_armed);
     sample(&mut g, RIGHT, ms + 20);
-    assert_eq!(g.controls.roll_pending, 0, "a tap twenty minutes later is a first tap");
+    assert_eq!(
+        g.controls.roll_pending, 0,
+        "a tap twenty minutes later is a first tap"
+    );
     sample(&mut g, 0, ms + 40);
     sample(&mut g, RIGHT, ms + 60);
-    assert_eq!(g.controls.roll_pending, 1, "the second tap within the window rolls");
+    assert_eq!(
+        g.controls.roll_pending, 1,
+        "the second tap within the window rolls"
+    );
     sample(&mut g, FIRE, ms + 80);
-    assert!(!g.controls.bomb_pending, "an ancient fire tap is not half of a double tap");
+    assert!(
+        !g.controls.bomb_pending,
+        "an ancient fire tap is not half of a double tap"
+    );
     assert_eq!(g.controls.shot_charge, 255);
 }
 #[test]
@@ -3712,6 +3756,13 @@ fn scaled_ram_boxes_include_depth_while_obstacles_keep_their_original_depth() {
 #[cfg(feature = "host-tools")]
 fn actors_fly_through_the_near_plane_until_their_mesh_is_fully_behind_it() {
     use crate::render::{Renderer, NEAR};
+    #[derive(Default)]
+    struct Count(usize);
+    impl GeometrySink for Count {
+        fn triangle(&mut self, _: Vec3, _: Vec3, _: Vec3, _: u8, _: u8) {
+            self.0 += 1;
+        }
+    }
     for level in [0, 2, 6, 12] {
         let bank = test_bank(level);
         for kind in (1..=bank.enemy_count()).chain([assets::ROCK, assets::BUILDING]) {
@@ -3722,18 +3773,18 @@ fn actors_fly_through_the_near_plane_until_their_mesh_is_fully_behind_it() {
                 ACTOR_RETIRE_Z + front < NEAR,
                 "level {level} kind {kind} can still be visible when retired"
             );
-            // Straddling the plane keeps a clipped remainder; fully behind it
-            // the renderer rejects every face until the sim retires the actor.
+            // A straddling solid still reaches clipping, but can have no
+            // front-facing remainder when the camera is inside its hull.
             let straddle = NEAR - front + 16;
             assert!(
                 straddle + back < NEAR,
                 "level {level} kind {kind} fixture does not straddle"
             );
             for (z, drawn) in [
-                (80, true),
-                (straddle, true),
-                (NEAR - front - 1, false),
-                (ACTOR_RETIRE_Z, false),
+                (80, Some(true)),
+                (straddle, None),
+                (NEAR - front - 1, Some(false)),
+                (ACTOR_RETIRE_Z, Some(false)),
             ] {
                 let mut g = running();
                 g.actors[0] = enemy(kind, 0, 0, z);
@@ -3750,11 +3801,32 @@ fn actors_fly_through_the_near_plane_until_their_mesh_is_fully_behind_it() {
                     },
                     &bank,
                 );
-                assert_eq!(
-                    renderer.triangle_count > 0,
-                    drawn,
-                    "level {level} kind {kind} at z {z}"
-                );
+                if let Some(drawn) = drawn {
+                    assert_eq!(
+                        renderer.triangle_count > 0,
+                        drawn,
+                        "level {level} kind {kind} at z {z}"
+                    );
+                } else {
+                    let mut authored = Count::default();
+                    g.render_combat(
+                        &mut SceneBudget {
+                            sink: &mut authored,
+                            count: 0,
+                            limit: 174,
+                            camera_y: 0,
+                            color_override: 0,
+                            extra_flags: 0,
+                        },
+                        &bank,
+                    );
+                    assert_eq!(
+                        authored.0,
+                        bank.face_count(kind) as usize,
+                        "straddling actors must still submit their complete hull"
+                    );
+                }
+                assert_eq!(renderer.dropped, 0);
             }
         }
     }
@@ -3810,7 +3882,11 @@ fn scaled_enemy_proxies_cover_distant_and_budget_limited_rendering() {
         }
     }
     for level in 0..assets::SEGMENT_COUNT {
-        let bank = test_bank(level);
+        // Give the lightweight descriptor-only fixtures enough authored faces
+        // to exercise the budget fallback as well as the distance fallback.
+        let mut bytes = model_bank_for_tests();
+        bytes[5] = level;
+        let bank = AssetBank::new(&bytes).unwrap();
         for kind in (1..=bank.enemy_count()).chain([assets::ROCK, assets::BUILDING]) {
             for (z, limit) in [(1800, 174), (700, 2)] {
                 let mut g = running();
@@ -4342,8 +4418,7 @@ fn full_eighteen_stage_campaign_is_winnable_with_regular_joystick_input() {
             _ => {}
         }
         if g.roll_ticks > 0 {
-            bits = (bits & !(LEFT | RIGHT))
-                | if g.roll_direction < 0 { LEFT } else { RIGHT };
+            bits = (bits & !(LEFT | RIGHT)) | if g.roll_direction < 0 { LEFT } else { RIGHT };
         }
         if g.boss_started && matches!(tick % 200, 0 | 2) {
             bits &= !FIRE;
@@ -4549,7 +4624,7 @@ fn model_bank_for_tests() -> [u8; assets::COMMON_SIZE] {
         }
         data[directory + 4..directory + 6].copy_from_slice(&(cursor as u16).to_le_bytes());
         for _ in 0..data[directory + 3] {
-            data[cursor..cursor + 4].copy_from_slice(&[0, 1, 2, 15]);
+            data[cursor..cursor + 4].copy_from_slice(&[0, 2, 1, 15]);
             cursor += 4;
         }
     }
@@ -4620,7 +4695,7 @@ fn white_hit_flash_preserves_ship_and_exhaust_geometry_without_recoloring_the_sc
         let dead = capture(&g, &bank, &segment);
         assert_eq!(
             dead.count,
-            normal.count - hull_faces - 2,
+            normal.count - hull_faces - 4,
             "destroyed ships retain the existing death sequence"
         );
     }
@@ -4689,7 +4764,7 @@ fn fully_occupied_scene_keeps_critical_geometry_inside_command_budget() {
                 scenery.cloud_faces, 9,
                 "busy scenes retain every cloud facet"
             );
-            assert!(scenery.total <= 233);
+            assert!(scenery.total <= 174 + crate::render::SCENERY_CAPACITY);
             renderer.begin(g.sky_color());
             g.render(&mut renderer, &bank, &segment);
             renderer.finish();
@@ -4784,7 +4859,7 @@ fn real_enemy_rosters_fit_saturated_and_near_scenes_with_identical_staged_pixels
                 };
                 let [dx, dy] = g.sky_parallax();
                 let prefix = staged.project_scenery(raw_count, dx, dy);
-                g.render_foreground(&mut staged, &bank, 174.min(233 - raw_count as u16));
+                g.render_foreground(&mut staged, &bank, 174.min(256 - prefix));
                 staged.scenery_last(prefix);
                 staged.finish();
                 assert_eq!(
@@ -4867,10 +4942,10 @@ fn saturated_bridge_weapons_preserve_foreground_and_match_staged_rendering() {
                         game.stage_scenery(&mut stage, &segment);
                         stage.count()
                     };
-                    let foreground_limit = 174.min(233 - raw_count as u16);
-                    assert!(foreground_limit >= essential_faces);
                     let [dx, dy] = game.sky_parallax();
                     let prefix = staged.project_scenery(raw_count, dx, dy);
+                    let foreground_limit = 174.min(256 - prefix);
+                    assert!(foreground_limit >= essential_faces);
                     game.render_foreground(&mut staged, &bank, foreground_limit);
                     staged.scenery_last(prefix);
                     staged.finish();

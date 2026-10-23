@@ -2,7 +2,7 @@
 //! Decorative crossings deliberately have no gameplay objects or collision state.
 use crate::assets::{Segment, StageInfo};
 use crate::game::STATIC_SKY;
-use crate::{GeometrySink, Vec3, EXTERIOR_TERRAIN, TWO_SIDED};
+use crate::{GeometrySink, Vec3, EXTERIOR_TERRAIN};
 mod space;
 
 /// Native scenery always writes the renderer's bounded staging buffer. Keeping
@@ -64,13 +64,14 @@ fn cave_entry_darkens_with_its_midpoint_facets() {
     assert_eq!(sky_color(4, Some((1, 200))), 12);
 }
 
-/// The shared foreground budget always leaves enough room for the complete world.
+/// Bound on authored scenery records before culling and near-plane clipping.
+/// This limits staging; the projected count determines foreground capacity.
 #[inline(always)]
 pub fn raw_face_limit(transition: Option<(u8, u16)>) -> u16 {
     if transition.is_some() {
         80
     } else {
-        54
+        70
     }
 }
 
@@ -95,13 +96,13 @@ fn weight(elapsed: u16) -> i16 {
 }
 
 #[inline(never)]
-#[cfg_attr(target_arch = "mos", link_section = ".phase.scenery")]
+#[cfg_attr(target_arch = "mos", link_section = ".phase.scenery_aux")]
 fn blend(a: i16, b: i16, amount: i16) -> i16 {
     a + crate::math::mul_q8(b - a, amount)
 }
 
 #[inline(never)]
-#[cfg_attr(target_arch = "mos", link_section = ".phase.scenery")]
+#[cfg_attr(target_arch = "mos", link_section = ".phase.scenery_aux")]
 pub(crate) fn terrain_palette(style: u8) -> u16 {
     TERRAIN_PALETTES[style as usize]
 }
@@ -134,7 +135,7 @@ static HEIGHT_RISE: [u8; 50] = [
 ];
 
 #[inline(never)]
-#[cfg_attr(target_arch = "mos", link_section = ".phase.scenery")]
+#[cfg_attr(target_arch = "mos", link_section = ".phase.scenery_extra")]
 pub(crate) fn terrain_height(row: u16, right: bool, style: u8) -> i16 {
     let phase = row.wrapping_add(if right { 7 } else { 0 });
     let height = PROFILE[(phase & 15) as usize];
@@ -193,11 +194,10 @@ fn row_at(row: u16, start: u16, info: &StageInfo, legacy: bool) -> Row {
 
 #[inline(never)]
 #[cfg_attr(target_arch = "mos", link_section = ".phase.scenery")]
-fn triangle(sink: &mut SceneSink<'_>, points: [Vec3; 3], color: u8, camera_y: i16) {
-    let points = points.map(|mut point| {
+fn triangle(sink: &mut SceneSink<'_>, mut points: [Vec3; 3], color: u8, camera_y: i16) {
+    for point in &mut points {
         point.y = point.y.saturating_sub(camera_y);
-        point
-    });
+    }
     // This private helper packs the exterior tag above the palette nibble to
     // keep its native calling convention compact. Public emissions stay separate.
     sink.triangle(
@@ -205,7 +205,7 @@ fn triangle(sink: &mut SceneSink<'_>, points: [Vec3; 3], color: u8, camera_y: i1
         points[1],
         points[2],
         color & 15,
-        TWO_SIDED | (color & EXTERIOR_TERRAIN),
+        color & EXTERIOR_TERRAIN,
     );
 }
 
@@ -227,7 +227,7 @@ fn strip(
         y: y0[0],
         z: z[0],
     };
-    let b = Vec3 {
+    let mut b = Vec3 {
         x: x1[0],
         y: y1[0],
         z: z[0],
@@ -237,19 +237,34 @@ fn strip(
         y: y1[1],
         z: z[1],
     };
-    let d = Vec3 {
+    let mut d = Vec3 {
         x: x0[1],
         y: y0[1],
         z: z[1],
     };
-    triangle(sink, [a, b, c], colors[0] | flags, camera_y);
-    triangle(sink, [a, c, d], colors[1] | flags, camera_y);
+    // Terrain is an upper surface. Mirrored shoulders have opposite X order;
+    // author both with an upward normal, independently of the camera.
+    let mut colors = colors;
+    // Use both ends: a cap can have zero width at just one transition row.
+    if flags & EXTERIOR_TERRAIN != 0 && x0[0] + x0[1] < x1[0] + x1[1] {
+        core::mem::swap(&mut b, &mut d);
+        colors.swap(0, 1);
+    }
+    let points = [a, b, c, d];
+    for face in 0..2 {
+        triangle(
+            sink,
+            [points[0], points[face + 1], points[face + 2]],
+            colors[face] | flags,
+            camera_y,
+        );
+    }
 }
 
 // Keep both sides in one native body. Inlining this sizeable strip setup into
 // the two-element side loop duplicates its branch and argument-marshalling code.
 #[inline(never)]
-#[cfg_attr(target_arch = "mos", link_section = ".phase.scenery")]
+#[cfg_attr(target_arch = "mos", link_section = ".phase.scenery_extra")]
 fn emit_side(
     sink: &mut SceneSink<'_>,
     first: &Row,
@@ -349,7 +364,7 @@ pub fn emit(
 /// Move the clock by complete terrain periods. Heights repeat every sixteen
 /// rows and alternating floor shades every two, so this preserves old pixels.
 #[inline(never)]
-#[cfg_attr(target_arch = "mos", link_section = ".phase.scenery")]
+#[cfg_attr(target_arch = "mos", link_section = ".phase.scenery_aux")]
 fn stage_origin(section: u8, legacy: bool) -> u16 {
     if section == 0 {
         0
@@ -436,7 +451,7 @@ fn land(sink: &mut SceneSink<'_>, context: &Decoration, drop: i16) {
         }
         // STATIC_SKY marks the far backdrop for the projector's parallax
         // drift, also while a crossing blends it, so the drift never jumps.
-        sink.triangle(points[0], points[1], points[2], color, TWO_SIDED | STATIC_SKY);
+        sink.triangle(points[0], points[1], points[2], color, STATIC_SKY);
     }
 }
 
@@ -469,18 +484,18 @@ pub(crate) static CLOUD_COLORS: [[u8; 2]; 10] = [
 #[cfg_attr(target_arch = "mos", link_section = ".phase.scenery.data")]
 #[rustfmt::skip]
 pub(crate) static HORIZONS: [[[i8; 2]; 15]; 10] = [
-    [[-88, -34], [-33, -34], [-60, 17], [-45, -34], [3, -34], [-27, 9], [-8, -34], [40, -34], [12, 14], [26, -34], [73, -34], [51, 7], [61, -34], [88, -34], [74, 12]],
-    [[-88, -34], [-7, -34], [-30, 21], [-88, -34], [-30, 21], [-73, 21], [6, -34], [88, -34], [75, 18], [6, -34], [75, 18], [25, 18], [-18, -34], [18, -34], [1, 4]],
-    [[-88, -34], [-12, -34], [-12, 16], [-88, -34], [-12, 16], [-88, 16], [10, -34], [88, -34], [88, 12], [10, -34], [88, 12], [10, 12], [-15, -34], [15, -34], [-9, 24]],
-    [[-88, -34], [-4, -34], [-40, 3], [-88, -34], [-40, 3], [-88, 3], [4, -34], [88, -34], [88, 0], [4, -34], [88, 0], [50, 0], [-14, -34], [14, -34], [3, 5]],
+    [[-88, -34], [-60, 17], [-33, -34], [-45, -34], [-27, 9], [3, -34], [-8, -34], [12, 14], [40, -34], [26, -34], [51, 7], [73, -34], [61, -34], [74, 12], [88, -34]],
+    [[-88, -34], [-30, 21], [-7, -34], [-88, -34], [-73, 21], [-30, 21], [6, -34], [75, 18], [88, -34], [6, -34], [25, 18], [75, 18], [-18, -34], [1, 4], [18, -34]],
+    [[-88, -34], [-12, 16], [-12, -34], [-88, -34], [-88, 16], [-12, 16], [10, -34], [88, 12], [88, -34], [10, -34], [10, 12], [88, 12], [-15, -34], [-9, 24], [15, -34]],
+    [[-88, -34], [-40, 3], [-4, -34], [-88, -34], [-88, 3], [-40, 3], [4, -34], [88, 0], [88, -34], [4, -34], [50, 0], [88, 0], [-14, -34], [3, 5], [14, -34]],
     // Cave: two sloping walls meet a connected, three-facet ceiling. The
     // farther hanging crystals are naturally masked where they enter the rock.
-    [[-88, -34], [-48, 58], [-88, 127], [-88, 127], [-48, 58], [0, 74], [-88, 127], [0, 74], [88, 127], [0, 74], [48, 58], [88, 127], [48, 58], [88, -34], [88, 127]],
-    [[-88, -34], [-24, -34], [-54, 30], [-88, -34], [-54, 30], [-72, 12], [-30, -34], [46, -34], [12, 22], [28, -34], [88, -34], [68, 27], [28, -34], [68, 27], [48, 8]],
-    [[-88, -34], [-30, -34], [-30, 21], [-88, -34], [-30, 21], [-88, 21], [-35, -34], [35, -34], [-3, 30], [26, -34], [88, -34], [88, 16], [26, -34], [88, 16], [26, 16]],
-    [[-88, -34], [-20, -34], [-20, 24], [-88, -34], [-20, 24], [-88, 8], [20, -34], [88, -34], [88, 8], [20, -34], [88, 8], [20, 24], [-24, -34], [24, -34], [0, 32]],
-    [[-88, -34], [-24, -34], [-49, 9], [-64, -34], [-4, -34], [-21, 24], [-8, -34], [46, -34], [28, 5], [21, -34], [88, -34], [67, 20], [55, -34], [88, -34], [81, 7]],
-    [[-88, -34], [-26, -34], [-54, 18], [-61, -34], [-5, -34], [-21, 6], [-10, -34], [34, -34], [5, 29], [18, -34], [77, -34], [51, 15], [60, -34], [88, -34], [81, 26]],
+    [[-88, -34], [-88, 127], [-48, 58], [-88, 127], [0, 74], [-48, 58], [-88, 127], [88, 127], [0, 74], [0, 74], [88, 127], [48, 58], [48, 58], [88, 127], [88, -34]],
+    [[-88, -34], [-54, 30], [-24, -34], [-88, -34], [-72, 12], [-54, 30], [-30, -34], [12, 22], [46, -34], [28, -34], [68, 27], [88, -34], [28, -34], [48, 8], [68, 27]],
+    [[-88, -34], [-30, 21], [-30, -34], [-88, -34], [-88, 21], [-30, 21], [-35, -34], [-3, 30], [35, -34], [26, -34], [88, 16], [88, -34], [26, -34], [26, 16], [88, 16]],
+    [[-88, -34], [-20, 24], [-20, -34], [-88, -34], [-88, 8], [-20, 24], [20, -34], [88, 8], [88, -34], [20, -34], [20, 24], [88, 8], [-24, -34], [0, 32], [24, -34]],
+    [[-88, -34], [-49, 9], [-24, -34], [-64, -34], [-21, 24], [-4, -34], [-8, -34], [28, 5], [46, -34], [21, -34], [67, 20], [88, -34], [55, -34], [81, 7], [88, -34]],
+    [[-88, -34], [-54, 18], [-26, -34], [-61, -34], [-21, 6], [-5, -34], [-10, -34], [5, 29], [34, -34], [18, -34], [51, 15], [77, -34], [60, -34], [81, 26], [88, -34]],
 ];
 #[cfg_attr(target_arch = "mos", link_section = ".phase.scenery.data")]
 pub(crate) static CLOUD_CENTERS: [[[i8; 3]; 3]; 10] = [
@@ -501,7 +516,9 @@ pub(crate) static CLOUD_OUTLINES: [[[i8; 2]; 5]; 10] = [
     [[-37, 0], [-18, 5], [10, 9], [37, 2], [29, -6]],
     [[-46, 0], [-28, 15], [7, 16], [46, 1], [38, -7]],
     [[-33, 0], [-19, 5], [7, 7], [33, 1], [25, -5]],
-    [[-16, 0], [-11, -48], [0, -68], [8, -38], [18, 0]],
+    // Start at the left shoulder and follow the same clockwise outline as
+    // cloud fans. Shared vertices stay shared while clouds become crystals.
+    [[-11, -48], [-16, 0], [18, 0], [8, -38], [0, -68]],
     [[-42, 0], [-28, 9], [7, 12], [42, 1], [33, -8]],
     [[-35, 0], [-21, 12], [8, 13], [35, 1], [28, -7]],
     [[-30, 0], [-18, 8], [5, 11], [30, 1], [21, -6]],
@@ -691,19 +708,23 @@ static CREATURE_POINTS: [[i8; 3]; 25] = [
 ];
 #[cfg_attr(target_arch = "mos", link_section = ".phase.scenery.wildlife.data")]
 static CREATURE_FACES: [[u8; 4]; 12] = [
-    [0, 1, 2, 0],
-    [0, 2, 3, 0],
-    [3, 2, 4, 1],
-    [3, 4, 5, 1],
-    [6, 7, 8, 0],
-    [6, 8, 9, 1],
-    [10, 11, 12, 0],
-    [10, 12, 13, 1],
-    [3, 14, 15, 0],
+    [0, 2, 1, 0],
+    [0, 3, 2, 0],
+    [3, 4, 2, 1],
+    [3, 5, 4, 1],
+    [6, 8, 7, 0],
+    [6, 9, 8, 1],
+    [10, 12, 11, 0],
+    [10, 13, 12, 1],
+    [3, 15, 14, 0],
     [16, 17, 18, 1],
     [19, 20, 21, 1],
-    [22, 23, 24, 2],
+    [22, 24, 23, 2],
 ];
+// Layered camera-facing artwork: retain the original facets' mean depths,
+// without tilting their planes away from the camera as the animal crosses.
+#[cfg_attr(target_arch = "mos", link_section = ".phase.scenery.wildlife.data")]
+static CREATURE_DEPTHS: [i8; 12] = [-8, -4, 5, 11, 0, 0, -5, -5, 5, 5, 5, -8];
 
 #[inline(never)]
 #[cfg_attr(target_arch = "mos", link_section = ".phase.scenery.wildlife")]
@@ -763,13 +784,13 @@ fn wildlife(sink: &mut SceneSink<'_>, context: &Decoration) {
                 0,
             );
         }
-        for face in CREATURE_FACES {
+        for (index, face) in CREATURE_FACES.iter().enumerate() {
             let points = core::array::from_fn(|corner| {
                 let p = CREATURE_POINTS[face[corner] as usize];
                 Vec3 {
                     x: x + p[0] as i16 * 2,
                     y: floor + p[1] as i16 * 2,
-                    z: z + p[2] as i16 * 2,
+                    z: z + CREATURE_DEPTHS[index] as i16 * 2,
                 }
             });
             triangle(sink, points, palette[face[3] as usize], camera_y);
@@ -779,22 +800,36 @@ fn wildlife(sink: &mut SceneSink<'_>, context: &Decoration) {
         let x = -4700 + elapsed as i16 * 24 + bird * 180;
         let y = 1050 + bird * 110;
         let z = 2800 + bird * 160;
+        if sink.shadow_enabled() {
+            sink.shadow_caster(crate::shadow::Caster {
+                center: Vec3 {
+                    x,
+                    y: y - camera_y,
+                    z,
+                },
+                half_x: 95,
+                half_z: 24,
+                shape: 1,
+            });
+        }
         let flap = crate::math::sin8(
             (elapsed as u8)
                 .wrapping_mul(5)
                 .wrapping_add(bird as u8 * 53),
         ) / 4;
-        let body = Vec3 { x, y, z: z - 28 };
+        // Birds are camera-facing silhouettes. Flapping changes the outline,
+        // not the plane, so a wing never turns into an accidental back face.
+        let body = Vec3 { x, y, z };
         let head = Vec3 {
             x: x + 12,
             y: y + 15,
-            z: z - 38,
+            z,
         };
         triangle(
             sink,
             [
-                body,
                 head,
+                body,
                 Vec3 {
                     x: x - 95,
                     y: y + flap,
@@ -807,8 +842,8 @@ fn wildlife(sink: &mut SceneSink<'_>, context: &Decoration) {
         triangle(
             sink,
             [
-                head,
                 body,
+                head,
                 Vec3 {
                     x: x + 95,
                     y: y + flap,
@@ -872,6 +907,20 @@ fn transport(sink: &mut SceneSink<'_>, elapsed: u16, camera_y: i16) {
     }
     let x = 4800 - elapsed as i16 * 24;
     let y = 700 + crate::math::sin8((elapsed as u8).wrapping_mul(2)) / 8;
+    // The side-on artwork has no modeled depth; give its downward silhouette
+    // a shallow authored hull, headed left across the flight corridor.
+    if sink.shadow_enabled() {
+        sink.shadow_caster(crate::shadow::Caster {
+            center: Vec3 {
+                x: x - 32,
+                y: y - camera_y,
+                z: 2000,
+            },
+            half_x: 160,
+            half_z: 768,
+            shape: 2 | (3 << 4),
+        });
+    }
     for face in TRANSPORT_FACES {
         let points = core::array::from_fn(|corner| {
             let p = TRANSPORT_POINTS[face[corner] as usize];
@@ -958,7 +1007,9 @@ fn transport(sink: &mut SceneSink<'_>, elapsed: u16, camera_y: i16) {
                 },
                 Vec3 {
                     x: x + 25,
-                    y: y - pulse / 2,
+                    // The inner flame tapers below its root even at the
+                    // smallest pulse; it must not fold through that edge.
+                    y: y - (pulse / 2).max(46),
                     z: 1976,
                 },
             ],
@@ -986,6 +1037,16 @@ fn meteors(sink: &mut SceneSink<'_>, elapsed: u16) {
         let y = 1550 + (index as i16 % 3) * 90 - age as i16 * 12;
         let remaining = crate::transition::METEOR_DURATION - age;
         let width = age.min(remaining).min(8) as i16 * 5;
+        // Meteors use sky-camera coordinates already; only the solid head
+        // casts. Their luminous trails are not separate objects.
+        if sink.shadow_enabled() {
+            sink.shadow_caster(crate::shadow::Caster {
+                center: Vec3 { x, y, z: 2600 },
+                half_x: width,
+                half_z: width,
+                shape: 3,
+            });
+        }
         let tail = if age < 24 {
             age as i16 * 28
         } else if remaining < 16 {
@@ -1011,8 +1072,8 @@ fn meteors(sink: &mut SceneSink<'_>, elapsed: u16) {
             y: y + tail,
             z: 2600,
         };
-        sink.triangle(a, b, tip, 10, TWO_SIDED);
-        sink.triangle(a, Vec3 { x, y, z: 2600 }, tip, 7, TWO_SIDED);
+        sink.triangle(a, tip, b, 10, 0);
+        sink.triangle(a, tip, Vec3 { x, y, z: 2600 }, 7, 0);
         sink.triangle(
             a,
             b,
@@ -1022,7 +1083,7 @@ fn meteors(sink: &mut SceneSink<'_>, elapsed: u16) {
                 z: 2600,
             },
             if remaining < 8 { 7 } else { 1 },
-            TWO_SIDED,
+            0,
         );
     }
 }
@@ -1126,6 +1187,236 @@ mod tests {
     impl GeometrySink for Capture {
         fn triangle(&mut self, a: Vec3, b: Vec3, c: Vec3, color: u8, flags: u8) {
             self.0.push(([a, b, c], color, flags));
+        }
+    }
+
+    #[derive(Default)]
+    struct ShadowCapture {
+        geometry: Capture,
+        casters: Vec<crate::shadow::Caster>,
+        enabled: bool,
+    }
+    impl GeometrySink for ShadowCapture {
+        fn triangle(&mut self, a: Vec3, b: Vec3, c: Vec3, color: u8, flags: u8) {
+            self.geometry.triangle(a, b, c, color, flags);
+        }
+        fn shadow_enabled(&self) -> bool {
+            self.enabled
+        }
+        fn shadow_caster(&mut self, caster: crate::shadow::Caster) {
+            self.casters.push(caster);
+        }
+    }
+
+    fn shadow_scene(
+        stage: u8,
+        elapsed: u16,
+        crossing: bool,
+        camera: i16,
+        enabled: bool,
+    ) -> ShadowCapture {
+        let info = STAGE_INFOS[stage as usize];
+        let mut bytes = [0; crate::assets::SEGMENT_CACHE_SIZE];
+        bytes[..4].copy_from_slice(b"SMS2");
+        bytes[4] = stage;
+        bytes[5] = info.enemy_profile;
+        bytes[6] = if info.theme < 10 {
+            GROUND_COLORS[info.theme as usize]
+        } else {
+            0
+        };
+        bytes[8..16].copy_from_slice(&[
+            info.enemy_profile,
+            info.music_cue,
+            info.bridge_profile,
+            info.boss_kind,
+            info.theme,
+            info.next_theme,
+            info.previous_theme,
+            0,
+        ]);
+        let segment = Segment::new(&bytes).unwrap();
+        let mut result = ShadowCapture {
+            enabled,
+            ..ShadowCapture::default()
+        };
+        emit(
+            &mut result,
+            &segment,
+            3750 + elapsed,
+            stage,
+            crossing.then_some((stage, elapsed)),
+            camera,
+            false,
+        );
+        result
+    }
+
+    #[test]
+    fn scenery_shadow_casters_stay_bounded_through_every_crossing() {
+        for stage in 0..18 {
+            for elapsed in 0..400 {
+                for crossing in [false, true] {
+                    if crossing && stage == 17 {
+                        continue;
+                    }
+                    let scene = shadow_scene(stage, elapsed, crossing, 40, true);
+                    assert!(
+                        scene.casters.len() <= 16,
+                        "casters: stage {stage}, tick {elapsed}"
+                    );
+                    for caster in &scene.casters {
+                        assert!(caster.half_x > 0 && caster.half_z > 0);
+                        assert!((1..=4).contains(&(caster.shape & 15)));
+                        assert_eq!(caster.shape & 0xc0, 0);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn disabling_decorative_shadows_preserves_every_scenery_triangle() {
+        for stage in 0..18 {
+            for elapsed in [0, 100, 150, 199, 200, 250, 399] {
+                for crossing in [false, true] {
+                    let enabled = shadow_scene(stage, elapsed, crossing, 40, true);
+                    let disabled = shadow_scene(stage, elapsed, crossing, 40, false);
+                    assert_eq!(enabled.geometry, disabled.geometry);
+                    assert!(disabled.casters.is_empty());
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn decorative_casters_follow_geometry_camera_offsets_exactly_once() {
+        for stage in [0, 2, 4, 12, 13, 14, 15, 16] {
+            let a = shadow_scene(stage, 150, stage < 12, 24, true);
+            let b = shadow_scene(stage, 150, stage < 12, 56, true);
+            assert_eq!(a.casters.len(), b.casters.len());
+            assert!(!a.casters.is_empty());
+            for (a, b) in a.casters.iter().zip(&b.casters) {
+                assert_eq!(a.center.x, b.center.x);
+                assert_eq!(a.center.z, b.center.z);
+                // Meteors are authored in camera-space sky coordinates; every
+                // other physical decoration follows the same camera as its mesh.
+                assert_eq!(a.center.y - b.center.y, if stage == 4 { 0 } else { 32 });
+                assert_eq!((a.half_x, a.half_z, a.shape), (b.half_x, b.half_z, b.shape));
+            }
+        }
+    }
+
+    fn normal(points: [Vec3; 3]) -> [i64; 3] {
+        let a = [
+            i64::from(points[1].x) - i64::from(points[0].x),
+            i64::from(points[1].y) - i64::from(points[0].y),
+            i64::from(points[1].z) - i64::from(points[0].z),
+        ];
+        let b = [
+            i64::from(points[2].x) - i64::from(points[0].x),
+            i64::from(points[2].y) - i64::from(points[0].y),
+            i64::from(points[2].z) - i64::from(points[0].z),
+        ];
+        [
+            a[1] * b[2] - a[2] * b[1],
+            a[2] * b[0] - a[0] * b[2],
+            a[0] * b[1] - a[1] * b[0],
+        ]
+    }
+
+    #[test]
+    fn backdrops_keep_camera_facing_winding_through_every_transition() {
+        for info in &STAGE_INFOS[..11] {
+            for elapsed in 0..400 {
+                for face in 0..14 {
+                    let (mut points, _) = backdrop_face(info.theme, face);
+                    let (destination, _) = backdrop_face(info.next_theme, face);
+                    for (point, target) in points.iter_mut().zip(destination) {
+                        point.x = blend(point.x, target.x, weight(elapsed));
+                        point.y = blend(point.y, target.y, weight(elapsed));
+                        point.z = blend(point.z, target.z, weight(elapsed));
+                    }
+                    assert!(
+                        normal(points)[2] < 0,
+                        "backdrop {} -> {} face {face}, tick {elapsed}",
+                        info.theme,
+                        info.next_theme
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn cloud_and_crystal_fans_keep_connected_outlines_during_every_crossing() {
+        use std::collections::BTreeSet;
+
+        // Reordering crystal vertices must retain its original five corners.
+        assert_eq!(
+            BTreeSet::from(CLOUD_OUTLINES[4]),
+            BTreeSet::from([[-16, 0], [-11, -48], [0, -68], [8, -38], [18, 0]])
+        );
+        for stage in 0..11 {
+            for elapsed in 0..400 {
+                let mut scene = Capture::default();
+                land(&mut scene, &context(stage, elapsed, 40), 0);
+                let backdrop = &scene.0[scene.0.len() - 14..];
+                for fan in backdrop[5..].chunks_exact(3) {
+                    for pair in fan.windows(2) {
+                        let a = pair[0].0;
+                        let b = pair[1].0;
+                        assert_eq!(a[0], b[0], "fan root, stage {stage}, tick {elapsed}");
+                        assert_eq!(a[2], b[1], "fan edge, stage {stage}, tick {elapsed}");
+                        assert_eq!(
+                            a.iter().filter(|point| b.contains(point)).count(),
+                            2,
+                            "exact shared edge, stage {stage}, tick {elapsed}"
+                        );
+                    }
+                    for (points, _, _) in fan {
+                        assert!(
+                            normal(*points)[2] < 0,
+                            "fan must face camera, stage {stage}, tick {elapsed}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn terrain_is_authored_upward_and_billboards_toward_the_camera() {
+        for section in 0..12u8 {
+            for phase in 0..64 {
+                for legacy in [false, true] {
+                    let mut context = context(section, 400, 40);
+                    context.scene_ticks = phase;
+                    context.legacy = legacy;
+                    let mut scene = Capture::default();
+                    land(&mut scene, &context, 0);
+                    for (points, _, flags) in scene.0 {
+                        if flags & EXTERIOR_TERRAIN != 0 {
+                            let n = normal(points);
+                            assert!(
+                                n[1] > 0 || n == [0; 3],
+                                "section {section}, phase {phase}: {points:?}, normal {n:?}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+        for profile in 0..3 {
+            for elapsed in 0..400 {
+                for (points, _, flags) in decoration(profile, elapsed, 40).0 {
+                    assert_eq!(flags, 0);
+                    assert!(
+                        normal(points)[2] < 0,
+                        "artwork profile {profile}, tick {elapsed}"
+                    );
+                }
+            }
         }
     }
 
@@ -1243,8 +1534,8 @@ mod tests {
                         renderer.triangle(points[0], points[1], points[2], color, flags);
                     }
                     assert_eq!(renderer.dropped, 0);
-                    // Retain room for the existing 174 foreground reservation.
-                    // Bridge controls use far fewer than its full combat pool.
+                    // Scenery stays within the existing staging reservation;
+                    // foreground capacity is computed after projection.
                     assert!(renderer.triangle_count <= 96);
                 }
             }
@@ -1292,7 +1583,10 @@ mod tests {
                 let terrain = &scene.0[..terrain_count];
                 for pair in terrain.chunks_exact(2) {
                     assert_eq!(pair[0].0[0], pair[1].0[0]);
-                    assert_eq!(pair[0].0[2], pair[1].0[1]);
+                    assert!(
+                        pair[1].0[1..].contains(&pair[0].0[1])
+                            || pair[1].0[1..].contains(&pair[0].0[2])
+                    );
                 }
             }
         }
@@ -1347,7 +1641,7 @@ mod tests {
         assert_eq!(a, b);
         assert_ne!(a, c);
         assert_eq!(a.0.len(), 26);
-        assert!(a.0.iter().all(|face| face.2 == TWO_SIDED));
+        assert!(a.0.iter().all(|face| face.2 == 0));
         assert_ne!(a.0[0].0, c.0[0].0, "feet must stride");
         assert_ne!(a.0[20].0, c.0[20].0, "wings must flap");
     }
@@ -1374,7 +1668,7 @@ mod tests {
                 let first = decoration(section, elapsed, 40);
                 assert_eq!(first, decoration(section, elapsed, 40));
                 assert!(first.0.len() <= 26);
-                assert!(first.0.iter().all(|face| face.2 == TWO_SIDED));
+                assert!(first.0.iter().all(|face| face.2 == 0));
             }
         }
     }
@@ -1431,14 +1725,14 @@ mod tests {
         assert!(first.0[0].0[0].x > later.0[0].0[0].x);
         assert!(first.0[0].0[0].y > later.0[0].0[0].y);
         assert!(
-            first.0[0].0[2].x - first.0[0].0[0].x < later.0[0].0[2].x - later.0[0].0[0].x,
+            first.0[0].0[1].x - first.0[0].0[0].x < later.0[0].0[1].x - later.0[0].0[0].x,
             "trail grows into view"
         );
         // The first emitted meteor is the oldest, now on its last visible tick.
         let mut ending = Capture::default();
         meteors(&mut ending, 179);
         let first_tail = ending.0[0].0;
-        assert!(first_tail[2].x - first_tail[0].x < 60);
+        assert!(first_tail[1].x - first_tail[0].x < 60);
     }
 
     #[test]
@@ -1680,9 +1974,10 @@ mod tests {
                     let mut vertices = BTreeSet::new();
                     let mut body_faces = 0;
                     let mut fins = 0;
+                    let mut signed_volume = 0i64;
                     for (points, color, flags) in wreck.0 {
                         assert!(matches!(color, 8 | 12 | 15), "wreck ink must stay visible");
-                        assert_eq!(flags & TWO_SIDED, TWO_SIDED);
+                        assert_eq!(flags, 0);
                         if points.iter().any(|p| p.y == highest) {
                             fins += 1;
                             assert_eq!(color, 15, "attached fin is a light-gray accent");
@@ -1691,6 +1986,11 @@ mod tests {
                         body_faces += 1;
                         let p = points.map(|p| [p.x, p.y, p.z]);
                         vertices.extend(p);
+                        let wide = p.map(|p| p.map(i64::from));
+                        signed_volume += wide[0][0]
+                            * (wide[1][1] * wide[2][2] - wide[1][2] * wide[2][1])
+                            + wide[0][1] * (wide[1][2] * wide[2][0] - wide[1][0] * wide[2][2])
+                            + wide[0][2] * (wide[1][0] * wide[2][1] - wide[1][1] * wide[2][0]);
                         let a = core::array::from_fn::<_, 3, _>(|i| i32::from(p[1][i] - p[0][i]));
                         let b = core::array::from_fn::<_, 3, _>(|i| i32::from(p[2][i] - p[0][i]));
                         assert_ne!(
@@ -1708,7 +2008,8 @@ mod tests {
                             edge.1 += if from < to { 1 } else { -1 };
                         }
                     }
-                    assert_eq!(fins, 1, "only the attached fin is an open sheet");
+                    assert_eq!(fins, 2, "the attached fin has an explicit front and back");
+                    assert!(signed_volume > 0, "closed wreck faces must point outward");
                     assert!(
                         edges.values().all(|&edge| edge == (2, 0)),
                         "body must have no missing faces or inconsistent shared edges"
@@ -1809,7 +2110,10 @@ mod tests {
             for tick in 0..256 {
                 for camera in [24, 40, 56] {
                     let scene = orbital_capture(section, tick, None, camera);
-                    assert!(scene.0.len() <= 54, "stage {section}, tick {tick}");
+                    assert!(
+                        scene.0.len() <= raw_face_limit(None) as usize,
+                        "stage {section}, tick {tick}"
+                    );
                     assert!(scene
                         .0
                         .iter()
@@ -1849,6 +2153,28 @@ mod tests {
                 a.0.iter().map(|f| (f.0, f.1)).collect::<Vec<_>>(),
                 b.0.iter().map(|f| (f.0, f.1)).collect::<Vec<_>>(),
             );
+        }
+    }
+
+    #[test]
+    fn orbital_crossings_fit_staging_with_explicit_panel_backs() {
+        for section in 12..17 {
+            for elapsed in 0..400 {
+                for camera in [24, 40, 56] {
+                    let scene = orbital_capture(section, 3750 + elapsed, Some(elapsed), camera);
+                    assert!(scene.0.len() <= raw_face_limit(Some((section, elapsed))) as usize);
+                    assert!(scene.0.len() <= crate::render::SCENERY_CAPACITY);
+                    let mut renderer = crate::render::Renderer::new();
+                    for (p, color, flags) in scene.0 {
+                        renderer.triangle(p[0], p[1], p[2], color, flags);
+                    }
+                    assert_eq!(renderer.dropped, 0);
+                    assert!(
+                        renderer.triangle_count <= 96,
+                        "orbital crossing {section}, tick {elapsed}, camera {camera}"
+                    );
+                }
+            }
         }
     }
 

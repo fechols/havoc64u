@@ -7,11 +7,11 @@ quarter-square and projection tables, provides a RENDERER image and compares
 fast_emit_mesh with a C transcription of the reference mesh path
 (emit_mesh_reference feeding SceneBudget::triangle and Renderer::triangle):
 every vertex rotated by a 3x3 Q8 matrix with the arithmetic shift, translated
-with saturating adds and lowered by the chase camera; faces consuming the
-scene budget in order; faces entirely at or behind the near plane projected
+with saturating adds and lowered by the chase camera; all faces visited in
+order; faces entirely at or behind the near plane projected
 and emitted (project_triangle); faces entirely in front dropped; faces that
 straddle the plane handed back for clipping in sequence. Random meshes cover
-every shift, colour override, flag bits, budget exhaustion, i16 saturation,
+every shift, colour override, metadata flag bits, i16 saturation,
 the 256-command capacity and 128-vertex meshes. The vertex records at $E000
 are checked as well. The JSON report stays under target/mesh-test.
 """
@@ -29,14 +29,17 @@ assemblies = [root / "target-c64/asm/multiply.S", root / "target-c64/asm/project
               root / "target-c64/asm/emit.S", root / "target-c64/asm/division.S"]
 source = r'''
 #include <stdint.h>
+#include <stddef.h>
 #include <stdio.h>
 #include <string.h>
 struct Vec3 { int16_t x, y, z; };
 struct __attribute__((packed)) MeshArgs {
   const uint8_t *vertices; const uint8_t *faces; const int16_t *matrix;
-  struct Vec3 position; int16_t camera_y; uint16_t count, limit;
+  struct Vec3 position; int16_t camera_y;
   uint8_t vertex_count, face_count, shift, flags, color, face_color, indices[3];
 };
+_Static_assert(sizeof(struct MeshArgs)==23,"mesh argument ABI");
+_Static_assert(offsetof(struct MeshArgs,face_color)==19,"mesh return ABI");
 extern uint8_t fast_emit_mesh(struct MeshArgs *args, uint8_t start);
 #define QLO ((uint8_t*)0xc000)
 #define QHI ((uint8_t*)0xc200)
@@ -64,7 +67,7 @@ static void emit(uint8_t *r, const struct Vec3 p[3], uint8_t color, uint8_t flag
   int16_t sx[3], sy[3];
   for(uint8_t i=0;i<3;i++){ int16_t out[2]; project(&p[i],out); sx[i]=out[0]; sy[i]=out[1]; }
   int32_t area=((int32_t)sx[1]-sx[0])*((int32_t)sy[2]-sy[0])-((int32_t)sy[1]-sy[0])*((int32_t)sx[2]-sx[0]);
-  if(area==0||(area<0&&!(flags&1)))return;
+  if(area<=0)return;
   if((sx[0]<=0&&sx[1]<=0&&sx[2]<=0)||(sx[0]>=160&&sx[1]>=160&&sx[2]>=160)||
      (sy[0]<=0&&sy[1]<=0&&sy[2]<=0)||(sy[0]>=200&&sy[1]>=200&&sy[2]>=200))return;
   uint16_t count=(uint16_t)(r[0]|r[1]<<8);
@@ -73,12 +76,12 @@ static void emit(uint8_t *r, const struct Vec3 p[3], uint8_t color, uint8_t flag
   uint16_t depth=(uint16_t)(sum/3);
   uint8_t *c=r+6+count*16;
   for(uint8_t i=0;i<3;i++){ c[i*2]=(uint8_t)sx[i]; c[i*2+1]=(uint8_t)(sx[i]>>8); c[6+i*2]=(uint8_t)sy[i]; c[7+i*2]=(uint8_t)(sy[i]>>8); }
-  c[12]=(uint8_t)depth; c[13]=(uint8_t)(depth>>8); c[14]=color&15; c[15]=(flags&0x62)|(area>0?4:0);
+  c[12]=(uint8_t)depth; c[13]=(uint8_t)(depth>>8); c[14]=color&15; c[15]=flags&0x62;
   count++; r[0]=(uint8_t)count; r[1]=(uint8_t)(count>>8);
 }
 static int16_t sat_add(int16_t a, int16_t b){ int32_t s=(int32_t)a+b; return clamp16(s,-32768,32767); }
 /* The reference: emit_mesh_reference -> SceneBudget::triangle -> Renderer::triangle. */
-static uint16_t reference(const struct MeshArgs *a){
+static void reference(const struct MeshArgs *a){
   for(uint8_t i=0;i<a->vertex_count;i++){
     const int8_t *v=(const int8_t*)a->vertices+i*3;
     int32_t s[3];
@@ -90,11 +93,8 @@ static uint16_t reference(const struct MeshArgs *a){
     cam[i].y=(int16_t)(sat_add((int16_t)s[1],a->position.y)-a->camera_y);
     cam[i].z=sat_add((int16_t)s[2],a->position.z);
   }
-  uint16_t count=a->count;
   ref_clipped_count=0;
   for(uint8_t f=0;f<a->face_count;f++){
-    if(count>=a->limit)break;
-    count++;
     const uint8_t *face=a->faces+f*4;
     struct Vec3 p[3]={cam[face[0]],cam[face[1]],cam[face[2]]};
     uint8_t color=a->color?a->color:face[3];
@@ -102,14 +102,13 @@ static uint16_t reference(const struct MeshArgs *a){
     if(behind==3) emit(reference_renderer,p,color,a->flags);
     else if(behind){ ref_clipped[ref_clipped_count]=f; ref_clip_color[ref_clipped_count++]=color; }
   }
-  return count;
 }
 static uint32_t checks, emitted, clipped_total, vertices_total;
 static int fail(const char *what, uint32_t detail){ printf("FAIL check %lu: %s (%lu)\n",(unsigned long)checks,what,(unsigned long)detail); return 1; }
 static int check(struct MeshArgs *a){
   checks++;
   struct MeshArgs kernel=*a;
-  uint16_t want_count=reference(a);
+  reference(a);
   clipped_count=0;
   uint8_t face=0;
   while(1){
@@ -121,8 +120,8 @@ static int check(struct MeshArgs *a){
     if(clipped_count>250)return fail("clip loop",face);
     face++;
   }
-  if(kernel.count!=want_count)return fail("budget count",kernel.count*256u+want_count);
   if(clipped_count!=ref_clipped_count)return fail("clipped face count",clipped_count*256u+ref_clipped_count);
+  if(memcmp(&kernel,a,offsetof(struct MeshArgs,face_color)))return fail("mesh input arguments changed",0);
   for(uint8_t i=0;i<clipped_count;i++){
     if(clipped_faces[i]!=ref_clipped[i])return fail("clipped face order",i);
     if(kernel_clip_color[i]!=ref_clip_color[i])return fail("clipped face colour",i);
@@ -161,6 +160,32 @@ int main(void){
   uint16_t square=0;
   for(uint16_t n=0;n<512;n++){QLO[n]=(uint8_t)square;QHI[n]=(uint8_t)(square>>8);square=(uint16_t)(square+((n+1)>>1));}
   for(uint16_t i=0;i<128;i++){uint32_t d=i+128; PROJECT_X[i]=(uint16_t)((80ul*32768ul+d/2)/d); PROJECT_Y[i]=(uint16_t)((133ul*32768ul+d/2)/d);}
+  /* A visible last face after 254 culled faces must still be visited. Then
+     exercise every physical-capacity rejection in a complete 255-face mesh. */
+  {
+    static const int8_t points[9]={-40,-30,0,10,50,0,60,-30,0};
+    memcpy(vertices,points,sizeof points);
+    for(uint8_t i=0;i<9;i++)matrix[i]=(i%4==0)?256:0;
+    struct MeshArgs a={vertices,faces,matrix,{0,0,200},0,3,255,8,0x63,0,0,{0,0,0}};
+    for(uint16_t f=0;f<255;f++){
+      faces[f*4]=0;faces[f*4+1]=2;faces[f*4+2]=1;faces[f*4+3]=7;
+    }
+    faces[254*4+1]=1;faces[254*4+2]=2;
+    begin_frame(0);
+    if(check(&a))return 1;
+    if(RENDERER[0]!=1||RENDERER[1])return fail("late visible face was skipped",RENDERER[0]);
+    for(uint16_t f=0;f<255;f++){faces[f*4+1]=1;faces[f*4+2]=2;}
+    for(uint16_t start=254;start<=256;start++){
+      begin_frame(start);
+      if(check(&a))return 1;
+      if(RENDERER[0]||RENDERER[1]!=1||RENDERER[2]!=(uint8_t)(start-1)||RENDERER[3])
+        return fail("complete overflow accounting",start);
+    }
+    begin_frame(256);
+    RENDERER[2]=reference_renderer[2]=0xfe;RENDERER[3]=reference_renderer[3]=0xff;
+    if(check(&a))return 1;
+    if(RENDERER[2]!=0xff||RENDERER[3]!=0xff)return fail("overflow saturation",0);
+  }
   for(uint16_t mesh=0;mesh<160;mesh++){
     struct MeshArgs a;
     uint8_t vc=(uint8_t)(mesh%40==39?128:4+(next()>>8)%28);
@@ -185,8 +210,6 @@ int main(void){
     a.color=(uint8_t)((next()>>11)%4==0?1+(next()>>7)%15:0);
     uint16_t renderer_count=(uint16_t)((next()>>9)%9==0?250+(next()>>8)%7:(next()>>8)%64);
     begin_frame(renderer_count);
-    a.count=(uint16_t)((next()>>8)%170);
-    a.limit=(uint16_t)((next()>>10)%5==0?a.count+(next()>>8)%(fc+1):174);
     a.face_color=0; a.indices[0]=a.indices[1]=a.indices[2]=0;
     if(check(&a))return 1;
     emitted+=(uint16_t)((RENDERER[0]|RENDERER[1]<<8)-renderer_count);

@@ -1,13 +1,17 @@
 // Included inside render::tests; no test-only public game API is needed.
-fn fixture_triangle(x: [i16; 3], y: [i16; 3]) -> Triangle {
+fn fixture_triangle(mut x: [i16; 3], mut y: [i16; 3]) -> Triangle {
     let area = (x[1] as i32 - x[0] as i32) * (y[2] as i32 - y[0] as i32)
         - (y[1] as i32 - y[0] as i32) * (x[2] as i32 - x[0] as i32);
+    if area < 0 {
+        x.swap(1, 2);
+        y.swap(1, 2);
+    }
     Triangle {
         x,
         y,
         depth: 100,
         color: 7,
-        reserved: if area > 0 { POSITIVE_AREA } else { 0 },
+        reserved: 0,
     }
 }
 
@@ -246,8 +250,8 @@ fn persistent_raster_matches_arbitrary_band_reference_and_restarts() {
                 random = random.wrapping_mul(1664525).wrapping_add(1013904223);
                 triangle.y[corner] = ((random >> 16) % 16383) as i16 - 8191;
             }
+            triangle = fixture_triangle(triangle.x, triangle.y);
             triangle.color = (index % 15 + 1) as u8;
-            triangle.reserved = fixture_triangle(triangle.x, triangle.y).reserved;
             renderer.triangles[index] = triangle;
         }
         renderer.triangle_count = count as u16;

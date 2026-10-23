@@ -2,7 +2,7 @@
 //! display refresh rate, so PAL and NTSC use the same millisecond gesture windows.
 use crate::assets::{self, AssetBank, Segment, Spawn, StageInfo};
 use crate::audio::{AudioEvent, Effect, MusicState};
-use crate::{emit_mesh, GeometrySink, Vec3, TERRAIN_CLEAR_GEOMETRY, TWO_SIDED};
+use crate::{emit_mesh, GeometrySink, Vec3, TERRAIN_CLEAR_GEOMETRY};
 
 pub const UP: u8 = 1;
 pub const DOWN: u8 = 2;
@@ -48,6 +48,42 @@ const DOUBLE_TAP_WINDOW_MS: u16 = 500;
 /// Fire released this long charges a homing missile; the remembered release
 /// instant is held within this window of the present.
 const CHARGE_FULL_MS: u16 = 2000;
+
+// Per-level switches compile into three bytes. Every enabled level uses the
+// same dark gray ink, including throughout terrestrial transitions.
+#[cfg_attr(target_arch = "mos", link_section = ".tables.shadow_levels")]
+static SHADOW_LEVELS: [u8; 3] = {
+    #[rustfmt::skip]
+    const LEVELS: [bool; assets::SEGMENT_COUNT as usize] = [
+        true,  // Lowland Approach
+        true,  // Crystal Cave
+        true,  // Iron Canyon
+        true,  // Canyon Gate
+        true,  // Ashen Wastes
+        true,  // Foundry Belt
+        true,  // Fortress Run
+        true,  // Citadel Core
+        true,  // Storm Front
+        true,  // Meteor Reach
+        true,  // Carrier Coast
+        true,  // Carrier Assault
+        false, // Asteroid Belt
+        false, // Shattered Moon
+        false, // Ship Graveyard
+        false, // Orbital Shipyard
+        true,  // Space Carrier
+        false, // Jump Gate
+    ];
+    let mut packed = [0; 3];
+    let mut stage = 0;
+    while stage < LEVELS.len() {
+        if LEVELS[stage] {
+            packed[stage / 8] |= 1 << (stage & 7);
+        }
+        stage += 1;
+    }
+    packed
+};
 
 mod enemies;
 pub mod flight;
@@ -577,6 +613,20 @@ impl Game {
     #[inline(always)]
     pub fn stage_info(&self) -> StageInfo {
         self.stage_info
+    }
+    /// One authored flat plane per enabled level, expressed in camera space.
+    /// Orbital crossings and the ascent move their scenery away from this plane.
+    #[inline(always)]
+    pub fn shadow_ground_y(&self) -> Option<i16> {
+        if SHADOW_LEVELS[(self.stage_id / 8) as usize] & (1 << (self.stage_id & 7)) == 0
+            || (self.mode == Mode::Transition
+                && (self.stage_info.bridge_profile == 3 || self.stage_info.theme >= 10))
+            || (self.mode == Mode::Victory && self.menu_ticks >= crate::victory::FADE_TICKS)
+        {
+            None
+        } else {
+            Some(-105 - scene_camera_y(self.mode, self.player.y, self.ticks))
+        }
     }
     /// Bind only a validated page belonging to the current checkpoint. Native
     /// callers do this before selecting the model bank and simulation image.
@@ -1936,21 +1986,21 @@ impl Game {
         bank: &AssetBank<'_>,
         segment: &Segment<'_>,
     ) {
-        struct CountFaces(u16);
-        impl GeometrySink for CountFaces {
-            fn triangle(&mut self, _: Vec3, _: Vec3, _: Vec3, _: u8, _: u8) {
-                self.0 += 1;
-            }
-        }
-        let mut scenery = CountFaces(0);
-        self.render_scenery(&mut scenery, segment);
-        let foreground_limit = 174.min(233u16.saturating_sub(scenery.0));
         if self.mode == Mode::Victory {
             struct Fade<'a, S> {
                 sink: &'a mut S,
                 ticks: u16,
             }
             impl<S: GeometrySink> GeometrySink for Fade<'_, S> {
+                fn checkpoint(&self) -> Option<crate::render::Checkpoint> {
+                    self.sink.checkpoint()
+                }
+                fn rollback(&mut self, checkpoint: crate::render::Checkpoint) {
+                    self.sink.rollback(checkpoint);
+                }
+                fn scenery_last(&mut self, prefix: u16) {
+                    self.sink.scenery_last(prefix);
+                }
                 fn triangle(&mut self, a: Vec3, b: Vec3, c: Vec3, color: u8, flags: u8) {
                     self.sink.triangle(
                         a,
@@ -1965,11 +2015,173 @@ impl Game {
                 sink,
                 ticks: self.menu_ticks,
             };
-            self.render_foreground(&mut world, bank, foreground_limit);
-            self.render_scenery(&mut world, segment);
+            self.render_world(&mut world, bank, segment);
             self.render_medal(sink, bank);
         } else {
-            self.render_foreground(sink, bank, foreground_limit);
+            self.render_world(sink, bank, segment);
+        }
+    }
+    /// Complete host scene with optional downward shadows. Scratch belongs to
+    /// the caller and may be reused or released as soon as this method returns.
+    #[cfg(not(target_arch = "mos"))]
+    pub fn render_with_shadows(
+        &self,
+        renderer: &mut crate::render::Renderer,
+        frame: &mut crate::shadow::ShadowFrame,
+        bank: &AssetBank<'_>,
+        segment: &Segment<'_>,
+    ) {
+        struct Scenery<'a> {
+            renderer: &'a mut crate::render::Renderer,
+            frame: &'a mut crate::shadow::ShadowFrame,
+        }
+        impl GeometrySink for Scenery<'_> {
+            fn triangle(&mut self, a: Vec3, b: Vec3, c: Vec3, color: u8, flags: u8) {
+                self.renderer.triangle(a, b, c, color, flags);
+            }
+            fn shadow_enabled(&self) -> bool {
+                true
+            }
+            fn shadow_caster(&mut self, caster: crate::shadow::Caster) {
+                self.frame.push_caster(caster);
+            }
+        }
+        frame.reset();
+        let Some(ground_y) = self.shadow_ground_y() else {
+            self.render(renderer, bank, segment);
+            frame.finish_without_shadows(renderer);
+            return;
+        };
+        self.render_scenery(&mut Scenery { renderer, frame }, segment);
+        let prefix = renderer.triangle_count;
+        self.render_foreground(renderer, bank, 174.min(renderer.remaining_commands()));
+        renderer.scenery_last(prefix);
+        if self.mode == Mode::Victory {
+            renderer.fade_scene(self.menu_ticks);
+            self.render_medal(renderer, bank);
+        }
+        self.collect_shadow_casters(frame, bank);
+        frame.render(renderer, ground_y, crate::shadow::SHADOW_COLOR);
+    }
+
+    /// Collect only value descriptors: the shadow overlay never calls geometry
+    /// or scenery code after their execution windows have been replaced.
+    #[inline(never)]
+    #[cfg_attr(target_arch = "mos", link_section = ".phase.shadow")]
+    pub fn collect_shadow_casters(
+        &self,
+        frame: &mut crate::shadow::ShadowFrame,
+        bank: &AssetBank<'_>,
+    ) {
+        use crate::shadow::Caster;
+        if self.shadow_ground_y().is_none() {
+            return;
+        }
+        let camera_y = scene_camera_y(self.mode, self.player.y, self.ticks);
+        // Insert important gameplay objects ahead of the already-collected decorations.
+        let mut priority = 0u8;
+        if matches!(
+            self.mode,
+            Mode::Playing | Mode::Transition | Mode::Title | Mode::Victory
+        ) {
+            priority += u8::from(frame.insert_caster(
+                priority,
+                shadow_model(bank, assets::PLAYER, self.player, false, camera_y),
+            ));
+        }
+        if self.mode == Mode::Victory {
+            return;
+        }
+        if self.mode != Mode::Transition {
+            if self.boss_started && !self.boss_defeated {
+                priority += u8::from(frame.insert_caster(
+                    priority,
+                    shadow_model(
+                        bank,
+                        assets::CARRIER,
+                        Vec3 {
+                            x: 0,
+                            y: 0,
+                            z: self.boss_z,
+                        },
+                        false,
+                        camera_y,
+                    ),
+                ));
+            }
+            for actor in &self.actors {
+                if actor.kind != 0
+                    && actor.pos.z >= ACTOR_RETIRE_Z
+                    && (matches!(actor.kind, assets::FIGHTER | assets::DIVER)
+                        || (self.stage_info.theme >= 10 && actor.kind == assets::ROCK))
+                {
+                    let position = if actor.kind == assets::ROCK {
+                        actor_center(*actor, bank)
+                    } else {
+                        actor.pos
+                    };
+                    priority += u8::from(frame.insert_caster(
+                        priority,
+                        shadow_model(bank, actor.kind, position, actor.small_debris(), camera_y),
+                    ));
+                }
+            }
+        }
+        for pickup in &self.pickups {
+            if pickup.kind != 0 {
+                let (half_x, half_z, shape) = if pickup.kind == 1 {
+                    (13, 13, 3)
+                } else {
+                    (16, 12, 4)
+                };
+                let caster = Caster {
+                    center: Vec3 {
+                        y: pickup.pos.y - camera_y,
+                        ..pickup.pos
+                    },
+                    half_x,
+                    half_z,
+                    shape,
+                };
+                frame.insert_caster(frame.caster_count(), caster);
+            }
+        }
+        for shot in &self.shots {
+            if shot.kind != 0 {
+                let radius = if shot.kind == 2 {
+                    5
+                } else {
+                    3 + shot.damage as i16
+                };
+                let caster = Caster {
+                    center: Vec3 {
+                        y: shot.pos.y - camera_y,
+                        ..shot.pos
+                    },
+                    half_x: radius,
+                    half_z: radius,
+                    shape: 3,
+                };
+                frame.insert_caster(frame.caster_count(), caster);
+            }
+        }
+    }
+    /// Runtime sinks budget projected commands. Plain captures retain authoring
+    /// order and are deliberately not used to predict projection capacity.
+    #[cfg(not(target_arch = "mos"))]
+    fn render_world(
+        &self,
+        sink: &mut impl GeometrySink,
+        bank: &AssetBank<'_>,
+        segment: &Segment<'_>,
+    ) {
+        if sink.checkpoint().is_some() {
+            self.render_scenery(sink, segment);
+            let prefix = sink.checkpoint().unwrap().triangle_count;
+            self.render_foreground(sink, bank, 174.min(256 - prefix));
+            sink.scenery_last(prefix);
+        } else {
+            self.render_foreground(sink, bank, 174);
             self.render_scenery(sink, segment);
         }
     }
@@ -1986,7 +2198,9 @@ impl Game {
             color_override: 0,
             extra_flags: 0,
         };
+        let checkpoint = budget.begin_group();
         crate::victory::emit(&mut budget, bank, self.menu_ticks, self.ticks);
+        budget.finish_group(checkpoint);
     }
     /// Draw prepared foreground state without advancing presentation timers.
     /// Call `prepare_damage_feedback_frame` once before drawing a new frame.
@@ -2002,7 +2216,7 @@ impl Game {
             return;
         }
         // Prioritize player, boss, projectiles and pickups before distant detail.
-        // 233 raw faces leave room for near-plane splitting in the 256 commands.
+        // The limit counts accepted commands, including near-plane splits.
         let mut budget = SceneBudget {
             sink,
             count: 0,
@@ -2020,6 +2234,7 @@ impl Game {
             self.mode,
             Mode::Playing | Mode::Transition | Mode::Title | Mode::Victory
         ) {
+            let checkpoint = sink.begin_group();
             let appearance = self.player_appearance();
             sink.extra_flags = TERRAIN_CLEAR_GEOMETRY;
             sink.color_override = (appearance >> 8) as u8;
@@ -2034,39 +2249,29 @@ impl Game {
                 false,
             );
             sink.color_override = 0;
-            // A pair of flat exhaust triangles; deliberately no particles/textures.
+            // Each flat exhaust has an explicit underside for high climbs.
             for x in [-11, 11] {
                 let p = Vec3 {
                     x: self.player.x + x,
                     y: self.player.y - 3,
                     z: PLAYER_Z - 20,
                 };
-                tri(
-                    sink,
-                    Vec3 {
-                        x: p.x - 3,
-                        y: p.y,
-                        z: p.z,
-                    },
-                    Vec3 {
-                        x: p.x + 3,
-                        y: p.y,
-                        z: p.z,
-                    },
-                    Vec3 {
-                        x: p.x,
-                        y: p.y,
-                        z: p.z
-                            - 12
-                            - (if self.mode == Mode::Victory {
-                                self.ticks.wrapping_sub(self.menu_ticks)
-                            } else {
-                                self.ticks
-                            } & 7) as i16,
-                    },
-                    8,
-                );
+                let left = Vec3 { x: p.x - 3, ..p };
+                let right = Vec3 { x: p.x + 3, ..p };
+                let tip = Vec3 {
+                    z: p.z
+                        - 12
+                        - (if self.mode == Mode::Victory {
+                            self.ticks.wrapping_sub(self.menu_ticks)
+                        } else {
+                            self.ticks
+                        } & 7) as i16,
+                    ..p
+                };
+                tri(sink, left, right, tip, 8);
+                tri(sink, right, left, tip, 8);
             }
+            sink.finish_group(checkpoint);
         }
         sink.extra_flags = 0;
         if self.mode == Mode::Victory {
@@ -2082,6 +2287,7 @@ impl Game {
     fn render_effects(&self, sink: &mut SceneBudget<'_, impl GeometrySink>) {
         for s in &self.shots {
             if s.kind != 0 {
+                let checkpoint = sink.begin_group();
                 diamond(
                     sink,
                     s.pos,
@@ -2094,18 +2300,23 @@ impl Game {
                         3
                     },
                 );
+                sink.finish_group(checkpoint);
             }
         }
         for p in &self.pickups {
+            let checkpoint = sink.begin_group();
             if p.kind == 1 {
                 shield_pickup(sink, p.pos);
             } else if p.kind != 0 {
                 bomb_pickup(sink, p.pos);
             }
+            sink.finish_group(checkpoint);
         }
         for e in &self.explosions {
             if e.ticks > 0 {
+                let checkpoint = sink.begin_group();
                 diamond(sink, e.pos, 4 + (18 - e.ticks) as i16 * 3, e.color);
+                sink.finish_group(checkpoint);
             }
         }
     }
@@ -2115,6 +2326,7 @@ impl Game {
     #[cfg_attr(target_arch = "mos", link_section = ".phase.geometry.combat")]
     fn render_combat(&self, sink: &mut SceneBudget<'_, impl GeometrySink>, bank: &AssetBank<'_>) {
         if self.boss_started && !self.boss_defeated {
+            let checkpoint = sink.begin_group();
             sink.color_override = u8::from(self.boss_hit_flash_ticks > ENEMY_HIT_FLASH_TICKS);
             emit_mesh(
                 sink,
@@ -2175,10 +2387,17 @@ impl Game {
                 );
             }
             sink.color_override = 0;
+            sink.finish_group(checkpoint);
         }
         self.render_effects(sink);
         for (i, a) in self.actors.iter().enumerate() {
             if a.kind != 0 && a.pos.z >= ACTOR_RETIRE_Z {
+                let reserve = self.actors[i + 1..]
+                    .iter()
+                    .filter(|actor| actor.kind != 0 && actor.pos.z >= ACTOR_RETIRE_Z)
+                    .count() as u16
+                    * 2;
+                let limit = sink.limit;
                 sink.color_override =
                     u8::from(self.actor_hit_flash_ticks[i] > ENEMY_HIT_FLASH_TICKS);
                 // Ground hazards and mounted enemies stay visible over terrain,
@@ -2192,25 +2411,12 @@ impl Game {
                 } else {
                     0
                 };
-                let reserve = (ACTORS - i - 1) as u16 * 2;
-                if a.pos.z > 1200
-                    || sink.count + bank.face_count(a.kind) as u16 + reserve > sink.limit
-                {
-                    diamond(
-                        sink,
-                        actor_center(*a, bank),
-                        if a.kind == assets::FIGHTER {
-                            assets::enemy_scaled(22)
-                        } else if a.kind <= bank.enemy_count() {
-                            assets::enemy_scaled(18)
-                        } else if a.small_debris() {
-                            9
-                        } else {
-                            18
-                        },
-                        if a.hp == 255 { 12 } else { 2 },
-                    );
-                } else {
+                sink.limit = limit.saturating_sub(reserve);
+                let mut proxy = a.pos.z > 1200
+                    || (sink.sink.checkpoint().is_none()
+                        && sink.count + bank.face_count(a.kind) as u16 > sink.limit);
+                if !proxy {
+                    let checkpoint = sink.begin_group();
                     let roll = if bank.enemy(a.kind).render_mode == 1 {
                         (a.age as u8).wrapping_mul(2)
                     } else {
@@ -2235,7 +2441,27 @@ impl Game {
                         roll,
                         a.small_debris(),
                     );
+                    proxy = !sink.finish_group(checkpoint);
                 }
+                if proxy {
+                    let checkpoint = sink.begin_group();
+                    diamond(
+                        sink,
+                        actor_center(*a, bank),
+                        if a.kind == assets::FIGHTER {
+                            assets::enemy_scaled(22)
+                        } else if a.kind <= bank.enemy_count() {
+                            assets::enemy_scaled(18)
+                        } else if a.small_debris() {
+                            9
+                        } else {
+                            18
+                        },
+                        if a.hp == 255 { 12 } else { 2 },
+                    );
+                    sink.finish_group(checkpoint);
+                }
+                sink.limit = limit;
                 sink.extra_flags = 0;
                 sink.color_override = 0;
             }
@@ -2274,6 +2500,12 @@ impl Game {
                 crate::render::drift_sky(&mut points, flags, self.parallax[0], self.parallax[1]);
                 self.sink
                     .triangle(points[0], points[1], points[2], color, flags);
+            }
+            fn shadow_enabled(&self) -> bool {
+                self.sink.shadow_enabled()
+            }
+            fn shadow_caster(&mut self, caster: crate::shadow::Caster) {
+                self.sink.shadow_caster(caster);
             }
         }
         let mut drifted = SkyDrift {
@@ -2354,6 +2586,29 @@ impl Game {
     }
 }
 
+#[inline(never)]
+#[cfg_attr(target_arch = "mos", link_section = ".phase.shadow")]
+fn shadow_model(
+    bank: &AssetBank<'_>,
+    id: u8,
+    position: Vec3,
+    half: bool,
+    camera_y: i16,
+) -> crate::shadow::Caster {
+    let spec = bank.shadow_spec(id);
+    let divisor = if half { 2 } else { 1 };
+    crate::shadow::Caster {
+        center: Vec3 {
+            x: position.x + spec.offset_x / divisor,
+            y: position.y - camera_y,
+            z: position.z + spec.offset_z / divisor,
+        },
+        half_x: spec.half_x as i16 / divisor,
+        half_z: spec.half_z as i16 / divisor,
+        shape: spec.family | (spec.heading << 4),
+    }
+}
+
 // Resident: used by projectile and bomb damage without duplicating the health
 // comparison and timer update in the crowded SIM overlay.
 #[inline(never)]
@@ -2384,12 +2639,36 @@ struct SceneBudget<'a, S: GeometrySink> {
     color_override: u8,
     extra_flags: u8,
 }
+impl<S: GeometrySink> SceneBudget<'_, S> {
+    #[inline(always)]
+    fn begin_group(&self) -> (u16, Option<crate::render::Checkpoint>) {
+        (self.count, self.sink.checkpoint())
+    }
+
+    #[inline(never)]
+    #[cfg_attr(target_arch = "mos", link_section = ".phase.geometry")]
+    fn finish_group(
+        &mut self,
+        (count, checkpoint): (u16, Option<crate::render::Checkpoint>),
+    ) -> bool {
+        if let Some(checkpoint) = checkpoint {
+            if self.count > self.limit
+                || self.sink.checkpoint().unwrap().dropped != checkpoint.dropped
+            {
+                self.sink.rollback(checkpoint);
+                self.count = count;
+                return false;
+            }
+        }
+        true
+    }
+}
 impl<S: GeometrySink> GeometrySink for SceneBudget<'_, S> {
     #[inline(never)]
     #[cfg_attr(target_arch = "mos", link_section = ".phase.geometry")]
     fn triangle(&mut self, a: Vec3, b: Vec3, c: Vec3, color: u8, flags: u8) {
-        if self.count < self.limit {
-            self.count += 1;
+        let before = self.sink.checkpoint();
+        if before.is_some() || self.count < self.limit {
             // Scenery (and so every STATIC_SKY face) is staged elsewhere; all
             // foreground geometry follows the chase camera.
             let camera_y = self.camera_y;
@@ -2404,6 +2683,9 @@ impl<S: GeometrySink> GeometrySink for SceneBudget<'_, S> {
                 },
                 flags | self.extra_flags,
             );
+            self.count += before.map_or(1, |before| {
+                self.sink.checkpoint().unwrap().triangle_count - before.triangle_count
+            });
         }
     }
     /// The asm mesh path: `fast_emit_mesh` transforms the instance once into
@@ -2431,8 +2713,6 @@ impl<S: GeometrySink> GeometrySink for SceneBudget<'_, S> {
             matrix: *const [[i16; 3]; 3],
             position: Vec3,
             camera_y: i16,
-            count: u16,
-            limit: u16,
             vertex_count: u8,
             face_count: u8,
             shift: u8,
@@ -2444,8 +2724,12 @@ impl<S: GeometrySink> GeometrySink for SceneBudget<'_, S> {
         extern "C" {
             fn fast_emit_mesh(args: *mut MeshArgs, start: u8) -> u8;
         }
-        const _: [(); 27] = [(); core::mem::size_of::<MeshArgs>()];
+        const _: [(); 23] = [(); core::mem::size_of::<MeshArgs>()];
         const RECORDS: usize = 0xE000;
+        let before = self
+            .sink
+            .checkpoint()
+            .expect("native mesh needs a projected sink");
         let rotation = crate::math::RotationMatrix::new(yaw, pitch, roll);
         let mut args = MeshArgs {
             vertices: bank.vertex_data(id),
@@ -2453,16 +2737,10 @@ impl<S: GeometrySink> GeometrySink for SceneBudget<'_, S> {
             matrix: &rotation.m,
             position,
             camera_y: self.camera_y,
-            count: self.count,
-            limit: self.limit,
             vertex_count: bank.vertex_count(id),
             face_count: bank.face_count(id),
             shift: 8 - bank.shift(id) + half as u8,
-            flags: (if bank.one_sided(id) {
-                0
-            } else {
-                crate::TWO_SIDED
-            }) | self.extra_flags,
+            flags: self.extra_flags,
             color: self.color_override,
             face_color: 0,
             indices: [0; 3],
@@ -2490,7 +2768,7 @@ impl<S: GeometrySink> GeometrySink for SceneBudget<'_, S> {
             );
             face += 1;
         }
-        self.count = args.count;
+        self.count += self.sink.checkpoint().unwrap().triangle_count - before.triangle_count;
     }
 }
 // Only foreground GEOMETRY uses this transform. Keep one outlined copy in its
@@ -2504,8 +2782,8 @@ fn camera_point(p: Vec3, camera_y: i16) -> Vec3 {
         ..p
     }
 }
-#[inline(never)]
-// Resident: both SCENERY and GEOMETRY call this with their own overlay loaded.
+#[inline(always)]
+// Each rendering overlay keeps its own small camera calculation.
 fn scene_camera_y(mode: Mode, player_y: i16, ticks: u16) -> i16 {
     if matches!(mode, Mode::Title | Mode::Attract) {
         let base = if mode == Mode::Title { 0 } else { 40 };
@@ -2593,7 +2871,7 @@ fn missile_velocity(error: i16, closing: i16, dz: i16) -> i8 {
 #[inline(never)]
 #[cfg_attr(target_arch = "mos", link_section = ".phase.geometry")]
 fn tri(sink: &mut impl GeometrySink, a: Vec3, b: Vec3, c: Vec3, color: u8) {
-    sink.triangle(a, b, c, color, TWO_SIDED);
+    sink.triangle(a, b, c, color, 0);
 }
 // Each byte selects x from its low two bits and y from its next two bits.
 // Keep the original face order: equal-depth sorting preserves the shield rim
@@ -2664,3 +2942,9 @@ mod tests;
 
 #[cfg(test)]
 mod damage_flash_tests;
+
+#[cfg(test)]
+mod culling_budget_tests;
+
+#[cfg(all(test, feature = "host-tools"))]
+mod shadow_tests;

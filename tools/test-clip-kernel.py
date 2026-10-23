@@ -54,7 +54,7 @@ static void emit(uint8_t *r, const struct Vec3 p[3], uint8_t color, uint8_t flag
   int16_t sx[3], sy[3];
   for(uint8_t i=0;i<3;i++){ int16_t out[2]; project(&p[i],out); sx[i]=out[0]; sy[i]=out[1]; }
   int32_t area=((int32_t)sx[1]-sx[0])*((int32_t)sy[2]-sy[0])-((int32_t)sy[1]-sy[0])*((int32_t)sx[2]-sx[0]);
-  if(area==0||(area<0&&!(flags&1)))return;
+  if(area<=0)return;
   if((sx[0]<=0&&sx[1]<=0&&sx[2]<=0)||(sx[0]>=160&&sx[1]>=160&&sx[2]>=160)||
      (sy[0]<=0&&sy[1]<=0&&sy[2]<=0)||(sy[0]>=200&&sy[1]>=200&&sy[2]>=200))return;
   uint16_t count=(uint16_t)(r[0]|r[1]<<8);
@@ -63,7 +63,7 @@ static void emit(uint8_t *r, const struct Vec3 p[3], uint8_t color, uint8_t flag
   uint16_t depth=(uint16_t)(sum/3);
   uint8_t *c=r+6+count*16;
   for(uint8_t i=0;i<3;i++){ c[i*2]=(uint8_t)sx[i]; c[i*2+1]=(uint8_t)(sx[i]>>8); c[6+i*2]=(uint8_t)sy[i]; c[7+i*2]=(uint8_t)(sy[i]>>8); }
-  c[12]=(uint8_t)depth; c[13]=(uint8_t)(depth>>8); c[14]=color&15; c[15]=(flags&0x62)|(area>0?4:0);
+  c[12]=(uint8_t)depth; c[13]=(uint8_t)(depth>>8); c[14]=color&15; c[15]=flags&0x62;
   count++; r[0]=(uint8_t)count; r[1]=(uint8_t)(count>>8);
 }
 /* Rust: div_i32 truncates toward zero; here numerator and denominator are positive. */
@@ -116,6 +116,14 @@ int main(void){
   for(uint16_t n=0;n<512;n++){QLO[n]=(uint8_t)square;QHI[n]=(uint8_t)(square>>8);square=(uint16_t)(square+((n+1)>>1));}
   for(uint16_t i=0;i<128;i++){uint32_t d=i+128; PROJECT_X[i]=(uint16_t)((80ul*32768ul+d/2)/d); PROJECT_Y[i]=(uint16_t)((133ul*32768ul+d/2)/d);}
   memset(CACHE,0,640); memset(RENDERER,0,6); memset(reference_renderer,0,6);
+  /* Clipping preserves positive winding and never revives a reversed face,
+     even when every formerly meaningful sidedness bit is set. */
+  {
+    struct Vec3 front[3]={{-16,-16,4},{0,16,64},{16,-16,64}};
+    struct Vec3 back[3]={front[0],front[2],front[1]};
+    if(check(front,2,0xff)||check(back,2,0xff))return 1;
+    if(RENDERER[0]!=2||RENDERER[1]){puts("FAIL clipped winding rejection");return 1;}
+  }
   /* authored: plane-touching depths, extreme coordinate differences, identical corners */
   static const struct Vec3 authored[][3]={
     {{0,0,7},{100,0,100},{0,100,100}}, {{0,0,8},{100,0,100},{0,100,100}}, {{0,0,8},{100,0,7},{0,100,7}},
@@ -125,8 +133,9 @@ int main(void){
     {{-1000,-1000,-1000},{1000,1000,1000},{1000,-1000,8}}, {{0,0,8},{0,0,8},{0,0,8}}, {{0,0,7},{0,0,7},{0,0,7}},
   };
   for(uint8_t t=0;t<sizeof authored/sizeof authored[0];t++){
-    for(uint8_t order=0;order<3;order++){
-      struct Vec3 p[3]={authored[t][order],authored[t][(order+1)%3],authored[t][(order+2)%3]};
+    for(uint8_t order=0;order<6;order++){
+      uint8_t first=order%3, direction=order<3?1:2;
+      struct Vec3 p[3]={authored[t][first],authored[t][(first+direction)%3],authored[t][(first+2*direction)%3]};
       for(uint8_t flags=0;flags<2;flags++) if(check(p,(uint8_t)(t&15),(uint8_t)(flags|0x62)))return 1;
     }
   }

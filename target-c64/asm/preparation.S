@@ -40,7 +40,7 @@
 .set TP_DY, $77bc
 .set TP_SIGN, $77be
 
-.section .phase.pixels.preparation,"ax",@progbits
+.section .phase.shadow.final.preparation,"ax",@progbits
 .globl fast_prepare_triangle
 .type fast_prepare_triangle,@function
 fast_prepare_triangle:
@@ -58,10 +58,9 @@ fast_prepare_triangle:
     sta TP_POINTS,y
     dey
     bpl .Lpt_copy
-    lda TP_POINTS+15
-    and #4
-    asl
-    asl
+    ; Emission accepts only positive-area faces. Sorting the vertices below
+    ; still toggles this orientation for each swap.
+    lda #16
     ora TP_POINTS+14
     sta TP_FLAGS
     lda TP_POINTS+15

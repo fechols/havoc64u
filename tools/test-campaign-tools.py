@@ -196,7 +196,9 @@ class CampaignTools(unittest.TestCase):
                                 for page, offset in legacy["overlay_offsets"].items()))
 
     def test_package_size_validation_rejects_truncated_extended_and_wrong_capacity_images(self):
-        for version, expected_size, wrong_size in ((0x534d0a00, 0x1000000, 0x800000),
+        for version, expected_size, wrong_size in ((0x534d0c00, 0x1000000, 0x800000),
+                                                   (0x534d0b00, 0x1000000, 0x800000),
+                                                   (0x534d0a00, 0x1000000, 0x800000),
                                                    (0x534d0900, 0x800000, 0x100000),
                                                    (0x534d0800, 0x100000, 0x1000000),
                                                    (0x534d0700, 0x1000000, 0x100000)):
@@ -222,6 +224,26 @@ class CampaignTools(unittest.TestCase):
         self.assertEqual(current["music_offset"], 0xc0000)
         self.assertEqual(current["overlay_offsets"], previous["overlay_offsets"])
         self.assertEqual(current["overlay_offsets"], mono["overlay_offsets"])
+
+    def test_outward_mesh_package_keeps_stereo_capacity_and_export_layout(self):
+        current = vice.package_model_layout(package(True, 0x534d0b00))
+        previous = vice.package_model_layout(package(True, 0x534d0a00))
+        self.assertEqual(current["magic"], b"SMA5")
+        self.assertEqual(previous["magic"], b"SMA4")
+        self.assertEqual(current["version"], 0x534d0b00)
+        for field in previous.keys() - {"version", "magic"}:
+            self.assertEqual(current[field], previous[field], field)
+        self.assertEqual(current["descriptors"], 88)
+        self.assertEqual(current["reu_size"], 0x1000000)
+        self.assertEqual(vice.results_restart_modes(current, "Victory"), ("Title", "Playing"))
+
+    def test_shadow_package_adds_two_bounded_overlays_and_silhouette_metadata(self):
+        current = vice.package_model_layout(package(True, 0x534d0c00))
+        previous = vice.package_model_layout(package(True, 0x534d0b00))
+        self.assertEqual(current["magic"], b"SMA6")
+        self.assertEqual(current["descriptors"], 88)
+        self.assertEqual(current["reu_size"], 0x1000000)
+        self.assertEqual(current["overlay_offsets"], previous["overlay_offsets"] | {31: 0x95000, 32: 0xa5000, 33: 0xaa000})
 
     def test_last_stage_clock_exceeds_old_absolute_limit_without_wrapping(self):
         values = vice.stage_fixture({"stage_id": 17, "rail_ticks": 17 * 3750 + 2600},

@@ -10,13 +10,13 @@
 #[cfg(not(target_arch = "mos"))]
 use crate::projection::project;
 use crate::space_dust::SpaceDustFrame;
-#[cfg(not(target_arch = "mos"))]
-use crate::TWO_SIDED;
 use crate::{GeometrySink, Vec3};
 
-mod sort;
 #[cfg(all(feature = "span-front-to-back", not(target_arch = "mos")))]
 mod front;
+#[cfg(test)]
+mod shadow_tests;
+mod sort;
 #[cfg(all(feature = "span-buffer", not(target_arch = "mos")))]
 mod spans;
 #[cfg(all(feature = "span-buffer", not(target_arch = "mos")))]
@@ -37,8 +37,13 @@ const SCENERY_OFFSET: usize = 2176;
 pub const NEAR: i16 = 8;
 pub const HUD_INK: u8 = 0x80;
 pub(crate) const TERRAIN_CLEAR_INK: u8 = 0x40;
-#[cfg(not(target_arch = "mos"))]
-const POSITIVE_AREA: u8 = 4;
+
+/// An append-only geometry transaction, valid before sorting or rasterization.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Checkpoint {
+    pub triangle_count: u16,
+    pub dropped: u16,
+}
 
 #[derive(Clone, Copy)]
 #[repr(C)]
@@ -92,6 +97,7 @@ fn drift_points(points: &mut [Vec3; 3], parallax_x: i16, parallax_y: i16) {
 pub struct SceneryStage<'a> {
     renderer: &'a mut Renderer,
     count: u8,
+    shadows: Option<&'a mut crate::shadow::ShadowFrame>,
 }
 impl SceneryStage<'_> {
     #[inline(always)]
@@ -100,6 +106,17 @@ impl SceneryStage<'_> {
     }
 }
 impl GeometrySink for SceneryStage<'_> {
+    #[inline(always)]
+    fn shadow_enabled(&self) -> bool {
+        self.shadows.is_some()
+    }
+    #[inline(never)]
+    #[cfg_attr(target_arch = "mos", link_section = ".phase.scenery_aux")]
+    fn shadow_caster(&mut self, caster: crate::shadow::Caster) {
+        if let Some(frame) = &mut self.shadows {
+            frame.push_caster(caster);
+        }
+    }
     #[inline(never)]
     #[cfg_attr(target_arch = "mos", link_section = ".phase.scenery")]
     fn triangle(&mut self, a: Vec3, b: Vec3, c: Vec3, color: u8, flags: u8) {
@@ -158,6 +175,27 @@ impl Default for Renderer {
 }
 
 impl Renderer {
+    #[inline(always)]
+    pub fn checkpoint(&self) -> Checkpoint {
+        Checkpoint {
+            triangle_count: self.triangle_count,
+            dropped: self.dropped,
+        }
+    }
+
+    #[inline(always)]
+    pub fn rollback(&mut self, checkpoint: Checkpoint) {
+        assert_eq!(self.padding, 0, "cannot roll back rasterized commands");
+        assert!(checkpoint.triangle_count <= self.triangle_count);
+        self.triangle_count = checkpoint.triangle_count;
+        self.dropped = checkpoint.dropped;
+    }
+
+    #[inline(always)]
+    pub fn remaining_commands(&self) -> u16 {
+        TRIANGLE_CAPACITY as u16 - self.triangle_count
+    }
+
     pub const fn new() -> Self {
         Self {
             triangle_count: 0,
@@ -202,6 +240,64 @@ impl Renderer {
         SceneryStage {
             renderer: self,
             count: 0,
+            shadows: None,
+        }
+    }
+
+    #[inline(always)]
+    pub fn scenery_stage_with_shadows<'a>(
+        &'a mut self,
+        frame: &'a mut crate::shadow::ShadowFrame,
+    ) -> SceneryStage<'a> {
+        assert_eq!(self.triangle_count, 0, "stage scenery before projection");
+        assert_eq!(self.padding, 0, "begin a new frame before scenery");
+        SceneryStage {
+            renderer: self,
+            count: 0,
+            shadows: Some(frame),
+        }
+    }
+
+    /// Append one flat-ground silhouette triangle through the ordinary projector.
+    /// The caller owns whole-caster rollback and keeps these commands as a suffix.
+    #[inline(never)]
+    #[cfg_attr(target_arch = "mos", link_section = ".phase.shadow")]
+    pub fn append_ground_shadow_triangle(&mut self, a: Vec3, b: Vec3, c: Vec3, color: u8) {
+        #[cfg(not(target_arch = "mos"))]
+        self.triangle(a, b, c, color, crate::EXTERIOR_TERRAIN);
+        #[cfg(target_arch = "mos")]
+        unsafe {
+            extern "C" {
+                fn fast_shadow_clip_triangle(
+                    points: *const [Vec3; 3],
+                    color: u8,
+                    flags: u8,
+                    renderer: *mut Renderer,
+                );
+            }
+            assert_eq!(self.padding, 0, "begin a new frame before geometry");
+            // The kernel uses the fixed resident address. Passing the alias
+            // also tells LLVM that emission changes the caller's command count.
+            fast_shadow_clip_triangle(&[a, b, c], color, crate::EXTERIOR_TERRAIN, self);
+        }
+    }
+
+    /// Sort the ordinary scene, leaving solid ground silhouettes as a final layer.
+    /// Their identical ink makes sorting the shadow suffix unnecessary.
+    #[inline(never)]
+    #[cfg_attr(target_arch = "mos", link_section = ".phase.shadow.final")]
+    pub fn finish_ground_shadows(&mut self, base_count: u16) {
+        assert_eq!(self.padding, 0, "begin a new frame before geometry");
+        assert!(base_count <= self.triangle_count, "shadow count");
+        sort::depth_sort(&mut self.triangles[..base_count as usize]);
+        #[cfg(target_arch = "mos")]
+        for index in base_count..self.triangle_count {
+            // Projection is complete, and sorting has initialized the base prefix.
+            unsafe {
+                (SORT_ORDER as *mut u8)
+                    .add(index as usize)
+                    .write(index as u8)
+            };
         }
     }
 
@@ -216,7 +312,12 @@ impl Renderer {
         #[cfg(target_arch = "mos")]
         {
             extern "C" {
-                fn fast_replay_scenery(start: u8, count: u8, parallax_x: i16, parallax_y: i16) -> u8;
+                fn fast_replay_scenery(
+                    start: u8,
+                    count: u8,
+                    parallax_x: i16,
+                    parallax_y: i16,
+                ) -> u8;
             }
             let mut index = 0;
             while index < count {
@@ -321,7 +422,7 @@ impl Renderer {
 
     /// Stable far-to-near radix sort: ties retain their authored ordering.
     #[inline(never)]
-    #[cfg_attr(target_arch = "mos", link_section = ".phase.geometry")]
+    #[cfg_attr(target_arch = "mos", link_section = ".phase.shadow.final")]
     pub fn finish(&mut self) {
         assert_eq!(self.padding, 0, "begin a new frame before geometry");
         sort::depth_sort(&mut self.triangles[..self.triangle_count as usize]);
@@ -352,11 +453,9 @@ impl Renderer {
             ambient.draw_band(band, pixels);
         }
         let mut coverage_seen = false;
-        for triangle in &self.triangles[..self.triangle_count as usize] {
-            let (mut head, tail) = prepare_triangle(triangle);
-            seek_row(&mut head, &tail, band * 8);
-            raster_rows_reference(&mut head, &tail, band * 8, pixels, true, &mut coverage_seen);
-        }
+        self.band_spans(band, |row, first, end, flags| {
+            paint_reference_span(pixels, row, first, end, flags, &mut coverage_seen);
+        });
     }
 
     /// Host reference of the cell-direct pass: the same geometry walk as
@@ -376,12 +475,17 @@ impl Renderer {
         if let Some(ambient) = ambient {
             ambient.draw_band(band, cells);
         }
+        self.band_spans(band, |row, first, end, flags| {
+            cells.geometry_span(row, first, end, flags);
+        });
+    }
+
+    #[cfg(not(target_arch = "mos"))]
+    fn band_spans(&self, band: u8, mut paint: impl FnMut(usize, usize, usize, u8)) {
         for triangle in &self.triangles[..self.triangle_count as usize] {
             let (mut head, tail) = prepare_triangle(triangle);
             seek_row(&mut head, &tail, band * 8);
-            raster_rows(&mut head, &tail, band * 8, |row, first, end, color_flags| {
-                cells.geometry_span(row, first, end, color_flags);
-            });
+            raster_rows(&mut head, &tail, band * 8, &mut paint);
         }
     }
 
@@ -442,13 +546,9 @@ impl Renderer {
         if let Some(ambient) = ambient {
             ambient.draw_band(band, &mut spans);
         }
-        for triangle in &self.triangles[..self.triangle_count as usize] {
-            let (mut head, tail) = prepare_triangle(triangle);
-            seek_row(&mut head, &tail, band * 8);
-            raster_rows(&mut head, &tail, band * 8, |row, first, end, flags| {
-                spans.geometry_span(row, first, end, flags);
-            });
-        }
+        self.band_spans(band, |row, first, end, flags| {
+            spans.geometry_span(row, first, end, flags);
+        });
         spans
     }
 
@@ -492,50 +592,27 @@ impl Renderer {
     #[inline(never)]
     #[cfg_attr(target_arch = "mos", link_section = ".phase.pixels")]
     pub fn raster_pass(&mut self) -> Option<RasterPass<'_>> {
-        if self.padding != 0 {
+        let required = if cfg!(target_arch = "mos") { 1 } else { 0 };
+        if self.padding != required {
             return None;
         }
-        self.padding = 1;
-        let mut pass = RasterPass {
-            renderer: self,
-            next_band: 0,
-            #[cfg(not(target_arch = "mos"))]
-            tails: [RasterTail::EMPTY; TRIANGLE_CAPACITY],
-            #[cfg(not(target_arch = "mos"))]
-            masks: [[0; 32]; 25],
-            #[cfg(all(feature = "span-buffer", not(target_arch = "mos")))]
-            span_stats: SpanStats::default(),
-        };
-        pass.masks_mut().fill([0; 32]);
-        for index in 0..pass.renderer.triangle_count as usize {
-            #[cfg(target_arch = "mos")]
-            let tail = unsafe {
-                // The commands stay in emission order; the depth sort wrote
-                // the sorted order's command index for every position. Heads
-                // and tails are separate fixed arrays, so nothing aliases.
-                let source = *(SORT_ORDER as *const u8).add(index) as usize;
-                let head = pass.head_ptr(index);
-                let tail = pass.tails_mut().as_mut_ptr().add(index);
-                prepare_triangle_into(&pass.renderer.triangles[source], &mut *head, &mut *tail);
-                *tail
-            };
-            #[cfg(not(target_arch = "mos"))]
-            let (head, tail) = prepare_triangle(&pass.renderer.triangles[index]);
-            #[cfg(not(target_arch = "mos"))]
-            pass.write_head(index, head);
-            #[cfg(not(target_arch = "mos"))]
-            {
-                pass.tails_mut()[index] = tail;
-            }
-            if tail.top < tail.bottom {
-                let first = tail.top / 8;
-                let last = (tail.bottom - 1) / 8;
-                for band in first..=last {
-                    pass.masks_mut()[band as usize][index / 8] |= 1 << (index & 7);
-                }
-            }
-        }
+        self.padding = 2;
+        #[allow(unused_mut)]
+        let mut pass = RasterPass::new(self);
+        #[cfg(not(target_arch = "mos"))]
+        pass.prepare();
         Some(pass)
+    }
+
+    /// SHADOW retires its frame before PIXELS reuses the prepared records.
+    #[cfg(target_arch = "mos")]
+    #[inline(never)]
+    #[link_section = ".phase.shadow.final"]
+    pub fn prepare_raster(&mut self) {
+        assert_eq!(self.padding, 0);
+        let mut pass = RasterPass::new(self);
+        pass.prepare();
+        pass.renderer.padding = 1;
     }
 
     /// Project, cull and record one triangle whose corners all lie at or
@@ -559,7 +636,7 @@ impl Renderer {
             * (triangle.y[2] as i32 - triangle.y[0] as i32)
             - (triangle.y[1] as i32 - triangle.y[0] as i32)
                 * (triangle.x[2] as i32 - triangle.x[0] as i32);
-        if area == 0 || (area < 0 && flags & TWO_SIDED == 0) {
+        if area <= 0 {
             return;
         }
         if triangle.x.iter().all(|&x| x <= 0)
@@ -576,15 +653,26 @@ impl Renderer {
         // Clipping leaves positive i16 depths, so their average fits in i16.
         triangle.depth = crate::math::div_u32_u16(a.z as u32 + b.z as u32 + c.z as u32, 3) as i16;
         triangle.color = color & 15;
-        triangle.reserved = (flags
-            & (crate::game::STATIC_SKY | crate::TERRAIN_CLEAR_GEOMETRY | crate::EXTERIOR_TERRAIN))
-            | if area > 0 { POSITIVE_AREA } else { 0 };
+        triangle.reserved = flags
+            & (crate::game::STATIC_SKY | crate::TERRAIN_CLEAR_GEOMETRY | crate::EXTERIOR_TERRAIN);
         self.triangles[self.triangle_count as usize] = triangle;
         self.triangle_count += 1;
     }
 }
 
 impl GeometrySink for Renderer {
+    #[inline(always)]
+    fn checkpoint(&self) -> Option<Checkpoint> {
+        Some(Renderer::checkpoint(self))
+    }
+    #[inline(always)]
+    fn rollback(&mut self, checkpoint: Checkpoint) {
+        Renderer::rollback(self, checkpoint);
+    }
+    #[inline(always)]
+    fn scenery_last(&mut self, prefix: u16) {
+        Renderer::scenery_last(self, prefix);
+    }
     #[inline(never)]
     #[cfg_attr(target_arch = "mos", link_section = ".phase.geometry")]
     fn triangle(&mut self, a: Vec3, b: Vec3, c: Vec3, color: u8, flags: u8) {
@@ -715,7 +803,48 @@ pub struct RasterPass<'a> {
 const SORT_ORDER: usize = 0x7600;
 #[cfg(target_arch = "mos")]
 const RASTER_HEADS: usize = 0xef20;
-impl RasterPass<'_> {
+impl<'a> RasterPass<'a> {
+    #[inline(always)]
+    fn new(renderer: &'a mut Renderer) -> Self {
+        Self {
+            renderer,
+            next_band: 0,
+            #[cfg(not(target_arch = "mos"))]
+            tails: [RasterTail::EMPTY; TRIANGLE_CAPACITY],
+            #[cfg(not(target_arch = "mos"))]
+            masks: [[0; 32]; 25],
+            #[cfg(all(feature = "span-buffer", not(target_arch = "mos")))]
+            span_stats: SpanStats::default(),
+        }
+    }
+
+    #[inline(never)]
+    #[cfg_attr(target_arch = "mos", link_section = ".phase.shadow.final")]
+    fn prepare(&mut self) {
+        self.masks_mut().fill([0; 32]);
+        for index in 0..self.renderer.triangle_count as usize {
+            #[cfg(target_arch = "mos")]
+            let tail = unsafe {
+                let source = *(SORT_ORDER as *const u8).add(index) as usize;
+                let head = self.head_ptr(index);
+                let tail = self.tails_mut().as_mut_ptr().add(index);
+                prepare_triangle_into(&self.renderer.triangles[source], &mut *head, &mut *tail);
+                *tail
+            };
+            #[cfg(not(target_arch = "mos"))]
+            let (head, tail) = prepare_triangle(&self.renderer.triangles[index]);
+            #[cfg(not(target_arch = "mos"))]
+            {
+                self.write_head(index, head);
+                self.tails[index] = tail;
+            }
+            if tail.top < tail.bottom {
+                for band in tail.top / 8..=(tail.bottom - 1) / 8 {
+                    self.masks_mut()[band as usize][index / 8] |= 1 << (index & 7);
+                }
+            }
+        }
+    }
     /// Accumulated compositor work for the visible bands produced by this pass.
     #[cfg(all(feature = "span-buffer", not(target_arch = "mos")))]
     pub fn span_stats(&self) -> SpanStats {
@@ -723,15 +852,9 @@ impl RasterPass<'_> {
     }
 
     #[inline(always)]
+    #[cfg(target_arch = "mos")]
     fn tails_mut(&mut self) -> &mut [RasterTail; TRIANGLE_CAPACITY] {
-        #[cfg(target_arch = "mos")]
-        unsafe {
-            &mut *(0xe000 as *mut [RasterTail; TRIANGLE_CAPACITY])
-        }
-        #[cfg(not(target_arch = "mos"))]
-        {
-            &mut self.tails
-        }
+        unsafe { &mut *(0xe000 as *mut [RasterTail; TRIANGLE_CAPACITY]) }
     }
     #[inline(always)]
     fn masks_mut(&mut self) -> &mut [[u8; 32]; 25] {
@@ -883,21 +1006,22 @@ impl RasterPass<'_> {
                         let index = byte * 8 + bit;
                         let mut head = unsafe { self.head_ptr(index).read_unaligned() };
                         let tail = self.tails[index];
-                        #[cfg(not(feature = "span-buffer"))]
-                        raster_rows_reference(
-                            &mut head,
-                            &tail,
-                            band * 8,
-                            pixels,
-                            paint_scene,
-                            &mut coverage_seen,
-                        );
-                        #[cfg(feature = "span-buffer")]
-                        raster_rows(&mut head, &tail, band * 8, |row, first, end, flags| {
+                        let mut paint = |row, first, end, flags| {
                             if paint_scene {
+                                #[cfg(not(feature = "span-buffer"))]
+                                paint_reference_span(
+                                    pixels,
+                                    row,
+                                    first,
+                                    end,
+                                    flags,
+                                    &mut coverage_seen,
+                                );
+                                #[cfg(feature = "span-buffer")]
                                 spans.geometry_span(row, first, end, flags);
                             }
-                        });
+                        };
+                        raster_rows(&mut head, &tail, band * 8, &mut paint);
                         self.write_head(index, head);
                     }
                     mask >>= 1;
@@ -945,11 +1069,12 @@ impl RasterPass<'_> {
                         let index = byte * 8 + bit;
                         let mut head = unsafe { self.head_ptr(index).read_unaligned() };
                         let tail = self.tails[index];
-                        raster_rows(&mut head, &tail, band * 8, |row, first, end, flags| {
+                        let mut paint = |row, first, end, flags| {
                             if let Some(spans) = &mut spans {
                                 spans.geometry_span(row, first, end, flags, pixels);
                             }
-                        });
+                        };
+                        raster_rows(&mut head, &tail, band * 8, &mut paint);
                         self.write_head(index, head);
                     }
                 }
@@ -997,7 +1122,7 @@ fn prepare_triangle(triangle: &Triangle) -> (RasterHead, RasterTail) {
 }
 
 #[inline(never)]
-#[cfg_attr(target_arch = "mos", link_section = ".phase.pixels")]
+#[cfg_attr(target_arch = "mos", link_section = ".phase.shadow.final")]
 fn prepare_triangle_into(triangle: &Triangle, head: &mut RasterHead, tail: &mut RasterTail) {
     #[cfg(target_arch = "mos")]
     {
@@ -1032,7 +1157,7 @@ fn prepare_triangle_into(triangle: &Triangle, head: &mut RasterHead, tail: &mut 
             x: triangle.x[2],
             y: triangle.y[2],
         };
-        let mut orientation = (triangle.reserved & POSITIVE_AREA) << 2;
+        let mut orientation = 16;
         orientation ^= sort_pair(&mut a, &mut b);
         orientation ^= sort_pair(&mut b, &mut c);
         orientation ^= sort_pair(&mut a, &mut b);
@@ -1115,40 +1240,33 @@ fn raster_rows(
 }
 
 #[cfg(not(target_arch = "mos"))]
-fn raster_rows_reference(
-    head: &mut RasterHead,
-    tail: &RasterTail,
-    band_y: u8,
+fn paint_reference_span(
     pixels: &mut [u8; BAND_PIXELS],
-    paint: bool,
+    row: usize,
+    first: usize,
+    end: usize,
+    color_flags: u8,
     coverage_seen: &mut bool,
 ) {
-    raster_rows(head, tail, band_y, |row, first, end, color_flags| {
-        if !paint {
-            return;
-        }
-        let offset = row * WIDTH;
-        let span = &mut pixels[offset + first..offset + end];
-        let color = color_flags & 15;
-        if color_flags & crate::TERRAIN_CLEAR_GEOMETRY != 0 {
-            *coverage_seen = true;
-            span.fill(color | TERRAIN_CLEAR_INK);
-        } else if !*coverage_seen {
-            span.fill(color);
-        } else if color_flags & crate::EXTERIOR_TERRAIN != 0 {
-            for pixel in span {
-                if *pixel & TERRAIN_CLEAR_INK == 0 {
-                    *pixel = color;
-                }
-            }
-        } else {
-            // Keep coverage when a nearer object replaces protected geometry.
-            // A later terrain command must not erase that object either.
-            for pixel in span {
-                *pixel = (*pixel & TERRAIN_CLEAR_INK) | color;
+    let offset = row * WIDTH;
+    let span = &mut pixels[offset + first..offset + end];
+    let color = color_flags & 15;
+    if color_flags & crate::TERRAIN_CLEAR_GEOMETRY != 0 {
+        *coverage_seen = true;
+        span.fill(color | TERRAIN_CLEAR_INK);
+    } else if !*coverage_seen {
+        span.fill(color);
+    } else if color_flags & crate::EXTERIOR_TERRAIN != 0 {
+        for pixel in span {
+            if *pixel & TERRAIN_CLEAR_INK == 0 {
+                *pixel = color;
             }
         }
-    });
+    } else {
+        for pixel in span {
+            *pixel = (*pixel & TERRAIN_CLEAR_INK) | color;
+        }
+    }
 }
 
 /// Approximate VIC-II palette for host previews and quantization distances.
@@ -1639,27 +1757,27 @@ mod tests {
                 z: NEAR / 2,
             },
             Vec3 {
-                x: -12,
-                y: -12,
-                z: 64,
-            },
-            Vec3 {
                 x: 12,
                 y: -12,
                 z: 64,
             },
+            Vec3 {
+                x: -12,
+                y: -12,
+                z: 64,
+            },
             index & 15,
-            TWO_SIDED,
+            0,
         );
     }
     fn tied_foreground(sink: &mut impl GeometrySink, index: u8) {
         let z = if index & 1 == 0 { 42 } else { 53 };
         sink.triangle(
             Vec3 { x: -8, y: -8, z },
-            Vec3 { x: 8, y: -8, z },
             Vec3 { x: 0, y: 8, z },
+            Vec3 { x: 8, y: -8, z },
             index.wrapping_add(7) & 15,
-            TWO_SIDED,
+            0,
         );
     }
     #[test]
@@ -1745,23 +1863,27 @@ mod tests {
             staged.begin(6);
             {
                 let mut stage = staged.scenery_stage();
-                stage.triangle(far(-800, 300), far(800, 300), far(0, 900), 14, TWO_SIDED | STATIC_SKY);
-                stage.triangle(far(-800, -300), far(800, -300), far(0, 200), 5, TWO_SIDED);
+                stage.triangle(far(-800, 300), far(0, 900), far(800, 300), 14, STATIC_SKY);
+                stage.triangle(far(-800, -300), far(0, 200), far(800, -300), 5, 0);
                 assert_eq!(stage.count(), 2);
             }
             direct.triangle(
                 far(-800 - dx, 300 - dy),
-                far(800 - dx, 300 - dy),
                 far(-dx, 900 - dy),
+                far(800 - dx, 300 - dy),
                 14,
-                TWO_SIDED | STATIC_SKY,
+                STATIC_SKY,
             );
-            direct.triangle(far(-800, -300), far(800, -300), far(0, 200), 5, TWO_SIDED);
+            direct.triangle(far(-800, -300), far(0, 200), far(800, -300), 5, 0);
             assert_eq!(staged.project_scenery(2, dx, dy), 2);
             direct.finish();
             staged.finish();
             for index in 0..2 {
-                assert_eq!(command(&direct, index), command(&staged, index), "parallax {dx},{dy}");
+                assert_eq!(
+                    command(&direct, index),
+                    command(&staged, index),
+                    "parallax {dx},{dy}"
+                );
             }
             let reference = *plain.get_or_insert((command(&staged, 0), command(&staged, 1)));
             // Backdrop moves against the pan; ordinary scenery never moves.
@@ -1807,7 +1929,7 @@ mod tests {
                         z: depth,
                     },
                     color,
-                    TWO_SIDED | flags,
+                    flags,
                 );
             };
             add(200, 1, crate::TERRAIN_CLEAR_GEOMETRY);
@@ -1850,7 +1972,7 @@ mod tests {
                     z: 200,
                 },
                 1,
-                TWO_SIDED | crate::TERRAIN_CLEAR_GEOMETRY,
+                crate::TERRAIN_CLEAR_GEOMETRY,
             );
             renderer.triangle(
                 Vec3 {
@@ -1869,7 +1991,7 @@ mod tests {
                     z: 100,
                 },
                 5,
-                TWO_SIDED,
+                0,
             );
             renderer.finish();
             renderer.render_band(12, &mut pixels);
@@ -1894,7 +2016,7 @@ mod tests {
                     z: 64,
                 },
                 2,
-                TWO_SIDED | flags,
+                flags,
             );
             assert_eq!(renderer.triangle_count, 2);
             for triangle in &renderer.triangles[..2] {

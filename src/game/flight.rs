@@ -118,8 +118,20 @@ pub fn step_reference(player: &mut Vec3, flight: &mut Flight, bits: u8, push: i8
     let dy = (bits & UP != 0) as i16 - (bits & DOWN != 0) as i16;
     let target_x = dx * V_MAX_X + push as i16 * V_PUSH;
     let target_y = dy * V_MAX_Y;
-    let dvx = axis(&mut player.x, &mut flight.frac[0], &mut flight.vel[0], target_x, EDGE_X);
-    axis(&mut player.y, &mut flight.frac[1], &mut flight.vel[1], target_y, EDGE_Y);
+    let dvx = axis(
+        &mut player.x,
+        &mut flight.frac[0],
+        &mut flight.vel[0],
+        target_x,
+        EDGE_X,
+    );
+    axis(
+        &mut player.y,
+        &mut flight.frac[1],
+        &mut flight.vel[1],
+        target_y,
+        EDGE_Y,
+    );
     // Coordinated bank: −16 × the lateral acceleration (units per tick²),
     // saturating at BANK_MAX; the single unit of a settling velocity
     // commands none. The attitude follows with a 160 ms lag.
@@ -128,9 +140,13 @@ pub fn step_reference(player: &mut Vec3, flight: &mut Flight, bits: u8, push: i8
     } else {
         dvx.wrapping_neg().clamp(-20, 20) << 8
     };
-    flight.bank = flight.bank.wrapping_add(delta(bank_target.wrapping_sub(flight.bank), 3));
+    flight.bank = flight
+        .bank
+        .wrapping_add(delta(bank_target.wrapping_sub(flight.bank), 3));
     let pitch_target = -(target_y << 2);
-    flight.pitch = flight.pitch.wrapping_add(delta(pitch_target.wrapping_sub(flight.pitch), 3));
+    flight.pitch = flight
+        .pitch
+        .wrapping_add(delta(pitch_target.wrapping_sub(flight.pitch), 3));
 }
 
 #[cfg(test)]
@@ -182,8 +198,18 @@ mod tests {
             let push = if (10..35).contains(&tick) { 1 } else { 0 };
             fly(&mut a.0, &mut a.1, [(bits, push)]);
             fly(&mut b.0, &mut b.1, [(mirror, -push)]);
-            assert!((a.0.x + b.0.x).abs() <= 1, "tick {tick}: {:?} {:?}", a.0, b.0);
-            assert!((a.0.y + b.0.y).abs() <= 1, "tick {tick}: {:?} {:?}", a.0, b.0);
+            assert!(
+                (a.0.x + b.0.x).abs() <= 1,
+                "tick {tick}: {:?} {:?}",
+                a.0,
+                b.0
+            );
+            assert!(
+                (a.0.y + b.0.y).abs() <= 1,
+                "tick {tick}: {:?} {:?}",
+                a.0,
+                b.0
+            );
             assert!((a.1.bank + b.1.bank).abs() <= 3 * 256);
             assert!((a.1.pitch + b.1.pitch).abs() <= 3 * 256);
         }
@@ -199,7 +225,10 @@ mod tests {
             peak = peak.min(flight.bank);
         }
         assert!(peak <= -15 * 256, "peak bank {peak}");
-        assert!(flight.bank > peak && flight.bank < 0, "levels out while sliding");
+        assert!(
+            flight.bank > peak && flight.bank < 0,
+            "levels out while sliding"
+        );
         assert!(flight.vel[0] > 700);
         for _ in 0..12 {
             step_reference(&mut player, &mut flight, 0, 0);

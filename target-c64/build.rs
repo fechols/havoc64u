@@ -59,6 +59,7 @@ fn main() {
         "multiply",
         "project",
         "emit",
+        "shadow_emit",
         "cells",
         "publish",
         "hud",
@@ -72,6 +73,21 @@ fn main() {
             continue;
         }
         let object = output.join(format!("{source}.o"));
+        // The shadow prefix replaces GEOMETRY while retaining fast_project
+        // at $6F20. Compile the exact tested clip/emission core into both
+        // prefixes; exclude mesh and scenery replay from the shadow copy.
+        let assembly_path = if source == "shadow_emit" {
+            let original = std::fs::read_to_string(directory.join("asm/emit.S")).unwrap();
+            let (core, _) = original.split_once("; uint8_t fast_replay_scenery").unwrap();
+            let core = core.replace(".phase.geometry", ".phase.shadow.emit")
+                .replace("fast_emit_triangle", "fast_shadow_emit_triangle")
+                .replace("fast_clip_triangle", "fast_shadow_clip_triangle");
+            let path = output.join(format!("{source}.S"));
+            std::fs::write(&path, core).unwrap();
+            path
+        } else {
+            directory.join(format!("asm/{source}.S"))
+        };
         let mut assembly = Command::new(&compiler);
         if span_buffer {
             assembly.arg("-Wa,-defsym,SPAN_BUFFER=1");
@@ -82,7 +98,7 @@ fn main() {
         }
         let status = assembly.args(["-c", "-o"])
             .arg(&object)
-            .arg(directory.join(format!("asm/{source}.S")))
+            .arg(&assembly_path)
             .status()
             .unwrap_or_else(|error| panic!("cannot run {compiler}: {error}"));
         assert!(status.success(), "assembly of {source}.S failed");
@@ -99,7 +115,7 @@ fn main() {
             audit_command.arg("--define").arg("SPAN_FRONT=1");
         }
         let audit = audit_command
-            .arg(directory.join(format!("asm/{source}.S")))
+            .arg(&assembly_path)
             .env("MOS_CLANG", &compiler)
             .status()
             .unwrap_or_else(|error| panic!("cannot run the branch audit: {error}"));

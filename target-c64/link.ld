@@ -16,6 +16,7 @@ MEMORY {
     phase (rwx) : ORIGIN = 0x3000, LENGTH = 0x4200
     startup_checks (rx) : ORIGIN = 0x8E00, LENGTH = 0x0500
     sim_aux (rx) : ORIGIN = 0x8E00, LENGTH = 0x0500
+    scenery_extra (rx) : ORIGIN = 0xE000, LENGTH = 0x0800
     constants (r) : ORIGIN = 0x7800, LENGTH = 0x0800
     tables (r) : ORIGIN = 0x9900, LENGTH = 0x0700
     /* Empty regions materialize zero-filled holes in the contiguous PRG. */
@@ -76,6 +77,8 @@ __reu_scenery_graveyard = 0x075000;
 __reu_scenery_shipyard = 0x07A000;
 __reu_scenery_carrier = 0x085000;
 __reu_scenery_gate = 0x08A000;
+__reu_shadow = 0x095000;
+__reu_scenery_helpers = 0x0AA000;
 
 SECTIONS {
     /* The stock C64 .init.250 case-mode hook calls KERNAL CHROUT. Our BSS
@@ -147,6 +150,33 @@ SECTIONS {
         KEEP(*(.phase.victory.entry))
         *(.phase.victory .phase.victory.*)
     } >phase
+    /* Projection survives the GEOMETRY -> SHADOW prefix replacement. PIXELS
+     * reloads its own helper into this same tail only after preparation. */
+    .phase.render_aux 0x6F20 : AT(__reu_geometry + 0x3F20) {
+        __phase_render_aux_start = .;
+        *(.phase.render_aux .phase.render_aux.*)
+        __phase_render_aux_end = .;
+    } >phase
+    .phase.shadow 0x3000 : AT(__reu_shadow) {
+        __phase_shadow_start = .;
+        KEEP(*(.phase.shadow.entry))
+        *(.phase.shadow.final .phase.shadow.final.*)
+        __phase_shadow_finalize_end = .;
+        *(.phase.shadow .phase.shadow.*)
+        /* The enabled-only camera dispatch belongs to the full shadow tail. */
+        *(.rodata.*setup_shadows*)
+        __phase_shadow_end = .;
+    } >phase
+    .phase.scenery_aux 0x8E00 : AT(__reu_scenery_helpers) {
+        __phase_scenery_aux_start = .;
+        *(.phase.scenery_aux .phase.scenery_aux.*)
+        __phase_scenery_aux_end = .;
+    } >sim_aux
+    .phase.scenery_extra 0xE000 : AT(__reu_scenery_helpers + 0x500) {
+        __phase_scenery_extra_start = .;
+        *(.phase.scenery_extra .phase.scenery_extra.*)
+        __phase_scenery_extra_end = .;
+    } >scenery_extra
     .phase.pixels 0x3000 : AT(__reu_pixels) {
         __phase_pixels_start = .;
         *(.phase.pixels .phase.pixels.*)
@@ -345,6 +375,8 @@ SECTIONS {
         SHORT(__phase_scenery_size)
         SHORT(__phase_scenery_size)
         SHORT(__phase_scenery_size)
+        SHORT(__phase_shadow_size)
+        SHORT(__phase_scenery_aux_size)
         __startup_checks_end = .;
     } >startup_checks
 
@@ -392,6 +424,9 @@ SECTIONS {
         BYTE(__reu_scenery_shipyard >> 12)
         BYTE(__reu_scenery_carrier >> 12)
         BYTE(__reu_scenery_gate >> 12)
+        BYTE(__reu_shadow >> 12)
+        BYTE(0) /* retired shadow-draw logical ID 32 */
+        BYTE(__reu_scenery_helpers >> 12)
         __code_reu_pages_end = .;
         *(.tables .tables.*)
         *(.rodata.*PROJECT_X* .rodata.*PROJECT_Y* .rodata.*COLOR_DISTANCE* .rodata.*SIN*)
@@ -461,9 +496,17 @@ __phase_sim_aux_size = SIZEOF(.phase.sim_aux);
 __phase_enemy_size = MAX(MAX(MAX(MAX(MAX(MAX(MAX(SIZEOF(.phase.terminal), SIZEOF(.phase.enemy.lowlands)), SIZEOF(.phase.enemy.canyon)), SIZEOF(.phase.enemy.fortress)), SIZEOF(.phase.enemy.carrier)), SIZEOF(.phase.enemy.warden)), SIZEOF(.phase.enemy.citadel)), SIZEOF(.phase.enemy.flagship));
 __phase_sim_size = __phase_sim_base_size + __phase_enemy_size;
 __phase_sim_end = __phase_sim_start + __phase_sim_size;
-__phase_geometry_size = SIZEOF(.phase.geometry);
+__phase_geometry_prefix_size = SIZEOF(.phase.geometry);
+__phase_render_aux_size = SIZEOF(.phase.render_aux);
+__phase_render_aux_load = LOADADDR(.phase.render_aux);
+__phase_geometry_size = __phase_render_aux_end - __phase_geometry_start;
 __phase_geometry_base_size = __phase_geometry_base_end - __phase_geometry_start;
 __phase_victory_size = __phase_geometry_base_size + SIZEOF(.phase.victory);
+__phase_shadow_size = SIZEOF(.phase.shadow);
+__phase_shadow_finalize_size = __phase_shadow_finalize_end - __phase_shadow_start;
+__phase_scenery_aux_prefix_size = SIZEOF(.phase.scenery_aux);
+__phase_scenery_extra_size = SIZEOF(.phase.scenery_extra);
+__phase_scenery_aux_size = 0x500 + __phase_scenery_extra_size;
 __phase_pixels_prefix_size = SIZEOF(.phase.pixels);
 __phase_pixels_aux_size = SIZEOF(.phase.pixels_aux);
 __phase_pixels_aux_load = LOADADDR(.phase.pixels_aux);
@@ -511,6 +554,9 @@ __raster_masks_end = 0xEF20;
 __span_buffer_start = 0xD000;
 __span_buffer_end = 0xDA00;
 __span_buffer_size = __span_buffer_end - __span_buffer_start;
+/* Flat shadow descriptors retire before raster preparation reuses this RAM. */
+__shadow_frame_start = 0xE800;
+__shadow_frame_end = 0xFF20;
 ASSERT(__span_buffer_size == 8 * 160 * 2, "incorrect span compositor allocation")
 ASSERT(__span_buffer_start == __renderer_start + 6 && __span_buffer_end <= __renderer_end, "span compositor must reuse retired commands only")
 /* Front-to-back row heads borrow preparation/packer scratch only while painting. */
@@ -535,7 +581,7 @@ ASSERT(__reu_size == 0x1000000 && __reu_code_slot_size == 0x4200, "incorrect 16 
 ASSERT(__reu_digital_music == 0x100000 && __reu_digital_victory == 0x500000 && __reu_digital_ring == 0xFE0000 &&
        __reu_digital_ring_size == 0x20000 && __reu_digital_ring + __reu_digital_ring_size == __reu_size,
        "incorrect digital music or sampler ring allocation")
-ASSERT(__code_reu_pages_end - __code_reu_pages == 31, "incorrect logical REU page table size")
+ASSERT(__code_reu_pages_end - __code_reu_pages == 34, "incorrect logical REU page table size")
 ASSERT((__reu_boot & 0xFFF) == 0 && (__reu_boot & 0xFFFF) + __reu_code_slot_size <= 0x10000, "boot REU slot must be aligned and stay in one bank")
 ASSERT((__reu_sim_lowlands & 0xFFF) == 0 && (__reu_sim_lowlands & 0xFFFF) + __reu_code_slot_size <= 0x10000, "sim_lowlands REU slot must be aligned and stay in one bank")
 ASSERT((__reu_geometry & 0xFFF) == 0 && (__reu_geometry & 0xFFFF) + __reu_code_slot_size <= 0x10000, "geometry REU slot must be aligned and stay in one bank")
@@ -560,6 +606,7 @@ ASSERT((__reu_scenery_graveyard & 0xFFF) == 0 && (__reu_scenery_graveyard & 0xFF
 ASSERT((__reu_scenery_shipyard & 0xFFF) == 0 && (__reu_scenery_shipyard & 0xFFFF) + __reu_code_slot_size <= 0x10000, "scenery_shipyard REU slot must be aligned and stay in one bank")
 ASSERT((__reu_scenery_carrier & 0xFFF) == 0 && (__reu_scenery_carrier & 0xFFFF) + __reu_code_slot_size <= 0x10000, "scenery_carrier REU slot must be aligned and stay in one bank")
 ASSERT((__reu_scenery_gate & 0xFFF) == 0 && (__reu_scenery_gate & 0xFFFF) + __reu_code_slot_size <= 0x10000, "scenery_gate REU slot must be aligned and stay in one bank")
+ASSERT((__reu_shadow & 0xFFF) == 0 && (__reu_shadow & 0xFFFF) + __reu_code_slot_size <= 0x10000, "shadow REU slot must be aligned and stay in one bank")
 ASSERT(0xB000 <= __reu_boot &&
        __reu_boot + __reu_code_slot_size <= __reu_victory &&
        __reu_victory + __reu_code_slot_size <= __reu_sim_terminal &&
@@ -583,7 +630,8 @@ ASSERT(0xB000 <= __reu_boot &&
        __reu_sim_canyon + __reu_code_slot_size <= __reu_scenery_carrier &&
        __reu_scenery_carrier + __reu_code_slot_size <= __reu_scenery_gate &&
        __reu_scenery_gate + __reu_code_slot_size <= __reu_sim_fortress &&
-       __reu_sim_fortress + __reu_code_slot_size <= __reu_sim_carrier &&
+       __reu_sim_fortress + __reu_code_slot_size <= __reu_shadow &&
+       __reu_shadow + __reu_code_slot_size <= __reu_sim_carrier &&
        __reu_sim_carrier + __reu_code_slot_size <= __reu_models &&
        __reu_models + 0x9000 <= __reu_music && __reu_music + 0x40000 == __reu_digital_music,
        "REU code, asset and music reservations overlap or exceed the image")
@@ -615,9 +663,16 @@ ASSERT(__phase_sim_size <= 0x4200, "composed SIM overlay exceeds $3000-$71FF")
 ASSERT(__phase_sim_aux_size > 0 && __phase_sim_aux_size <= 0x0500, "SIM helpers exceed retired startup / renderer workspace")
 ASSERT(encounter_lowlands == encounter_step && encounter_canyon == encounter_step && encounter_fortress == encounter_step && encounter_carrier == encounter_step && encounter_warden == encounter_step && encounter_citadel == encounter_step && encounter_flagship == encounter_step, "encounter ABI entries must start every SIM tail")
 ASSERT(SIZEOF(.phase.enemy.lowlands) > 0 && SIZEOF(.phase.enemy.canyon) > 0 && SIZEOF(.phase.enemy.fortress) > 0 && SIZEOF(.phase.enemy.carrier) > 0, "all four enemy tails are required")
-ASSERT(SIZEOF(.phase.geometry) <= 0x4200, "GEOMETRY overlay exceeds $3000-$71FF")
-ASSERT(__phase_victory_size <= 0x4200, "victory GEOMETRY overlay exceeds $3000-$71FF")
-ASSERT(__phase_geometry_base_size > 0 && __phase_geometry_base_size < __phase_geometry_size, "GEOMETRY needs a common prefix and a combat tail")
+ASSERT(__phase_geometry_prefix_size <= 0x3F20, "GEOMETRY overlaps shared projection helpers at $6F20")
+ASSERT(__phase_geometry_size <= 0x4200, "composed GEOMETRY image exceeds phase slot")
+ASSERT(__phase_victory_size <= 0x3F20, "victory GEOMETRY overlaps shared projection helpers")
+ASSERT(__phase_geometry_base_size > 0 && __phase_geometry_base_size < __phase_geometry_prefix_size, "GEOMETRY needs a common prefix and a combat tail")
+ASSERT(__phase_render_aux_start == 0x6F20 && __phase_render_aux_size > 0 && __phase_render_aux_size <= 0x2E0, "shared projection helpers exceed $6F20-$71FF")
+ASSERT(__phase_shadow_size > 0 && __phase_shadow_size <= 0x3F20, "SHADOW overlaps shared projection helpers at $6F20")
+ASSERT(__phase_scenery_aux_prefix_size > 0 && __phase_scenery_aux_prefix_size <= 0x500, "SCENERY helpers exceed retired pixel workspace")
+ASSERT(__phase_scenery_extra_size > 0 && __phase_scenery_extra_size <= 0x800, "SCENERY extra helpers overlap persistent shadow frame")
+ASSERT((__reu_scenery_helpers & 0xFFF) == 0 && (__reu_scenery_helpers & 0xFFFF) + __reu_code_slot_size <= 0x10000, "SCENERY helper REU slot crosses bank")
+ASSERT(__reu_sim_carrier + __reu_code_slot_size <= __reu_scenery_helpers && __reu_scenery_helpers + __reu_code_slot_size <= __reu_models, "SCENERY helper REU slot overlaps carrier or models")
 ASSERT(SIZEOF(.phase.pixels) <= 0x3F20, "PIXELS overlay overlaps its helpers at $6F20")
 ASSERT(__phase_pixels_aux_start == 0x6F20, "PIXELS helpers must start at $6F20")
 ASSERT(__phase_pixels_aux_size > 0 && __phase_pixels_aux_size <= 0x02E0, "PIXELS helpers exceed $6F20-$71FF")
@@ -658,3 +713,4 @@ OUTPUT_FORMAT {
     FULL(image_postgap)
     FULL(tables)
 }
+ASSERT(__phase_scenery_extra_end <= __shadow_frame_start && __shadow_frame_end <= __raster_heads_end, "SCENERY helper or shadow scratch overlaps live frame");

@@ -11,6 +11,7 @@ import hashlib
 import importlib.util
 import json
 from pathlib import Path
+import re
 import struct
 import subprocess
 
@@ -44,6 +45,9 @@ pub fn replay(input:&[u8],clear_color:u8)->Vec<u8> {
     for index in 0..count {
         single.begin(0);single.triangle_count=1;
         single.triangles[0]=commands[index];single.triangles[0].color=1;
+        // The isolated diagnostic measures the child's own raw edges. Parent
+        // intersection is exercised by the complete grouped-frame replay.
+        single.triangles[0].reserved &= !0x80;
         let pixels=painted_frame(&mut single);
         for row in pixels.chunks_exact(160) {
                 let (left,right)=match row.iter().position(|&color|color!=0) {
@@ -68,16 +72,14 @@ def compile_renderer(source_root, build, name):
     copied = "\n".join(line for line in render.splitlines() if not line.startswith("//!"))
     copied = copied.replace("mod sort;", f'#[path="{source_root / "src/render/sort.rs"}"] mod sort;')
     traversal = ("let mut pass=renderer.raster_pass().unwrap(); for band in 0..25 { "
-                 "assert_eq!(pass.next_band(&mut pixels,true),Some(band)); output.extend_from_slice(&pixels); }") if name == "new" else (
-                 "for band in 0..25 { renderer.render_band(band,&mut pixels); output.extend_from_slice(&pixels); }")
-    source = f'''#![allow(dead_code,unused_imports)]
-#[derive(Clone,Copy,Default,Debug,PartialEq,Eq)] pub struct Vec3 {{ pub x:i16,pub y:i16,pub z:i16 }}
-pub const TWO_SIDED:u8=1;
-pub trait GeometrySink {{ fn triangle(&mut self,a:Vec3,b:Vec3,c:Vec3,color:u8,flags:u8); }}
-mod game {{ pub(crate) const STATIC_SKY:u8=2; }}
-#[path="{source_root / 'src/math.rs'}"] mod math;
-#[path="{source_root / 'src/projection.rs'}"] mod projection;
-mod render {{
+                 "assert_eq!(pass.next_band(&mut pixels,true),Some(band)); output.extend(pixels.iter().map(|pixel| pixel & 15)); }") if name == "new" else (
+                 "for band in 0..25 { renderer.render_band(band,&mut pixels); output.extend(pixels.iter().map(|pixel| pixel & 15)); }")
+    # Compile against that snapshot's real crate interfaces. Handwritten sink
+    # and metadata stubs can silently drift from renderer transactions, scene
+    # coverage, or the old/new winding contract.
+    library = (source_root / "src/lib.rs").read_text().replace("#![no_std]", "")
+    renderer = f'''pub mod render {{
+use std::vec::Vec;
 {copied}
 {REPLAY}
 fn painted_frame(renderer:&mut Renderer)->Vec<u8> {{
@@ -86,11 +88,37 @@ fn painted_frame(renderer:&mut Renderer)->Vec<u8> {{
     output
 }}
 }}
-fn main() {{
+'''
+    def module_source(path):
+        body = path.read_text()
+        directory = path.parent if path.name == "mod.rs" else path.with_suffix("")
+
+        def child(match):
+            indent, visibility, name = match.group(1), match.group(2) or "", match.group(3)
+            child_path = directory / (name + ".rs")
+            if not child_path.is_file():
+                child_path = directory / name / "mod.rs"
+            if not child_path.is_file():
+                return match.group(0)
+            return f"{indent}{visibility}mod {name} {{\n{module_source(child_path)}\n{indent}}}"
+
+        # Explicit #[path] files lose the implicit parent module directory for
+        # nested children. Inline each snapshot module with its own children.
+        return re.sub(r"(?m)^(\s*)(pub(?:\([^)]*\))?\s+)?mod ([A-Za-z_][A-Za-z_0-9]*);", child, body)
+
+    def module(match):
+        name = match.group(1)
+        if name == "render":
+            return renderer
+        return f'pub mod {name} {{\n{module_source(source_root / "src" / (name + ".rs"))}\n}}'
+
+    library = re.sub(r"pub mod ([A-Za-z_][A-Za-z_0-9]*);", module, library)
+    source = "#![allow(dead_code,unused_imports)]\n" + library + '''
+fn main() {
  let args:Vec<_>=std::env::args().collect();
  let input=std::fs::read(&args[1]).unwrap();
  std::fs::write(&args[2],render::replay(&input,args[3].parse().unwrap())).unwrap();
-}}
+}
 '''
     path = build / f"{name}.rs"
     path.write_text(source)

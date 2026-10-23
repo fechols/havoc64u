@@ -24,7 +24,7 @@
 .set PJ_T, $9351
 .set PJ_OUTI, $9354
 
-.section .phase.geometry,"ax",@progbits
+.section .phase.render_aux,"ax",@progbits
 .globl fast_project
 .type fast_project,@function
 fast_project:

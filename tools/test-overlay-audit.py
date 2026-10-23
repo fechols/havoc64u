@@ -41,7 +41,8 @@ def main():
     scenic = next(entry for entry in entries if entry[4].name == "scenic_decoration")
     terminal = next(entry for entry in entries if entry[4].name == "terminal_step")
     victory = next(entry for entry in entries if entry[4].name == "victory_geometry")
-    geometry = next(entry for entry in entries if entry[1].name == ".phase.geometry" and entry[3] == 3)
+    geometry = next(entry for entry in entries if entry[1].name == ".phase.geometry"
+                    and entry[3] == 3 and entry[4].name == "fast_emit_triangle")
     audio_validation = next(entry for entry in entries
                             if entry[1].name == ".phase.audio" and entry[3] == 3
                             and entry[4].section < len(elf.sections)
@@ -94,6 +95,19 @@ def main():
                       and entry[4].section < len(elf.sections)
                       and (callee := elf.function_at(entry[4].section, entry[4].address + struct.unpack_from("<i", elf.data, entry[0] + 8)[0]))
                       and callee.name == "havoc_c64::dma")
+    geometry_prefix_size = next(entry for entry in entries if entry[4].name == '__phase_geometry_prefix_size')
+    shadow_finalize_size = next(entry for entry in entries if entry[4].name == '__phase_shadow_finalize_size')
+    shadow_tail_name = next(symbol.name for symbol in elf.symbols
+                            if checker['readable_name'](symbol.name) == 'havoc_c64::setup_shadows')
+    shadow_finalize_call = next(entry for entry in entries if entry[1].name == '.phase.shadow'
+                               and entry[3] == 3
+                               and (caller := elf.function_at(entry[1].index, entry[2]))
+                               and caller.name == 'havoc::render::Renderer::finish_ground_shadows')
+    shadow_projection_call = next(entry for entry in entries if entry[1].name == '.phase.shadow'
+                            and entry[3] == 3 and entry[4].name == 'fast_project')
+    scenery_helper_name = next(symbol.name for symbol in elf.symbols
+                               if symbol.kind == 2 and symbol.section < len(elf.sections)
+                               and elf.sections[symbol.section].name == '.phase.scenery_aux')
 
     def auxiliary_header(data, field, value):
         headers = struct.unpack_from("<I", data, 32)[0]
@@ -156,6 +170,14 @@ def main():
         ("geometry-calls-pixels-helpers", lambda data: replace_target(data, geometry, pixels_auxiliary_name), "unsafe overlay references"),
         ("irq-calls-pixels-helpers", lambda data: replace_target(data, irq, pixels_auxiliary_name), "unsafe overlay references"),
         ("escaped-pixels-helper-pointer", lambda data: replace_target(data, pointer, pixels_auxiliary_name), "unsafe overlay references"),
+        ('geometry-full-image-runtime-load', lambda data: replace_target(data, geometry_prefix_size, '__phase_geometry_size'), 'runtime GEOMETRY loader'),
+        ('shadow-calls-retired-geometry', lambda data: replace_target(data, shadow_projection_call, 'fast_emit_triangle'), 'unsafe overlay references'),
+        ('shadow-finalize-wrong-transfer-size', lambda data: symbol_address(data, '__phase_shadow_finalize_size', 1), 'SHADOW finalization transfer size'),
+        ('shadow-finalize-missing-prefix-load', lambda data: replace_target(data, shadow_finalize_size, '__phase_shadow_size'), 'SHADOW loader must choose the full image'),
+        ('shadow-finalize-calls-unloaded-tail', lambda data: replace_target(data, shadow_finalize_call, shadow_tail_name), 'unsafe overlay references'),
+        ('irq-calls-projection-helper', lambda data: replace_target(data, irq, 'fast_project'), 'unsafe overlay references'),
+        ('geometry-calls-retired-scenery-helper', lambda data: replace_target(data, geometry, scenery_helper_name), 'unsafe overlay references'),
+        ('projection-helper-wrong-load-address', lambda data: symbol_address(data, '__phase_render_aux_load', 0x33f21), 'shared projection'),
     ]
     # Symbol presence is sufficient: generic arithmetic must stay absent even
     # if an optimizer currently leaves a helper unreachable.
@@ -214,9 +236,8 @@ def main():
                           'front span heads must reuse exactly'))
     for phase in (".phase.boot", ".phase.geometry", ".phase.pixels", checker["PIXELS_AUX_SECTION"], ".phase.audio", ".phase.scenery", checker["STARTUP_SECTION"]):
         source_call = next(entry for entry in entries if entry[1].name == phase and entry[3] == 3
-                           and (phase != ".phase.pixels"
-                                or (caller := elf.function_at(entry[1].index, entry[2]))
-                                and caller.name != "havoc_c64::draw_pixels"))
+                           and (caller := elf.function_at(entry[1].index, entry[2]))
+                           and caller.name not in ("havoc_c64::draw_pixels", "havoc_c64::prepare_geometry", "havoc_c64::prepare_scenery"))
         cases.append((f"{phase}-calls-sim-helpers",
                       lambda data, call=source_call: replace_target(data, call, auxiliary_name),
                       "unsafe overlay references"))

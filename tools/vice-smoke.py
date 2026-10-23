@@ -729,7 +729,8 @@ def package_model_layout(package, *, validate_size=False):
     formats = {0x534d0300: (b"SMA2", 80), 0x534d0400: (b"SMA3", 88),
                0x534d0500: (b"SMA3", 88), 0x534d0600: (b"SMA3", 88),
                0x534d0700: (b"SMA4", 88), 0x534d0800: (b"SMA4", 88),
-               0x534d0900: (b"SMA4", 88), 0x534d0a00: (b"SMA4", 88)}
+               0x534d0900: (b"SMA4", 88), 0x534d0a00: (b"SMA4", 88),
+               0x534d0b00: (b"SMA5", 88), 0x534d0c00: (b"SMA6", 88)}
     campaign = version >= 0x534d0500
     space = version >= 0x534d0600
     digital = version >= 0x534d0900
@@ -737,8 +738,8 @@ def package_model_layout(package, *, validate_size=False):
     count = 18 if space else 12 if campaign else 4
     if (len(package) < 18 or package[:4] != b"SM64" or version not in formats
             or package[16] != count or package[17] not in (2, 4)):
-        raise RuntimeError("Expected supported package v3/v4, twelve-stage v5 or eighteen-stage v6-v10")
-    reu_size = (0x1000000 if version == 0x534d0a00 else 0x800000 if digital
+        raise RuntimeError("Expected supported package v3/v4, twelve-stage v5 or eighteen-stage v6-v12")
+    reu_size = (0x1000000 if version >= 0x534d0a00 else 0x800000 if digital
                 else 0x100000 if compact else 0x1000000)
     if validate_size and len(package) != reu_size:
         raise RuntimeError(f"REU package v{version >> 8 & 255} must be exactly {reu_size // (1024 * 1024)} MiB")
@@ -750,6 +751,10 @@ def package_model_layout(package, *, validate_size=False):
              0x55000, 0x5a000, 0x60000, 0x65000, 0x6a000, 0x75000,
              0x7a000, 0x85000, 0x8a000)))
     magic, descriptors = formats[version]
+    if version >= 0x534d0c00:
+        overlay_offsets[31] = 0x95000
+        overlay_offsets[32] = 0xa5000
+        overlay_offsets[33] = 0xaa000
     return {"version": version, "magic": magic, "descriptors": descriptors,
             "medal": version >= 0x534d0400, "campaign": campaign, "space": space, "count": count,
             "segment_magic": b"SMS2" if campaign else b"SMS1", "reu_size": reu_size,
