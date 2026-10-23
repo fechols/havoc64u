@@ -1,0 +1,150 @@
+H.A.V.O.C. - LEVEL MOODS
+
+A creative brief for music production.
+
+----------
+
+1. Lowland Approach
+
+Open, adventurous, and optimistic: green hills and a sense of setting out on
+something big. The music should give the player confidence and the pleasure
+of flight, with an easy forward drive that leaves room for the campaign's
+later intensity to grow.
+
+
+2. Crystal Cave
+
+Luminous, mysterious, and full of discovery, as though flying into a
+beautiful place whose secrets are still hidden. The enclosed passage adds
+alertness and a little unease beneath the wonder. Keep a feeling of motion
+through the cave, with enough space for its atmosphere to register.
+
+
+3. Iron Canyon
+
+Driving, focused, and increasingly tense, with the canyon walls giving the
+flight a feeling of confinement and speed. The player is pressing on toward
+the first major confrontation. Build determination and anticipation here,
+saving the strongest sense of conflict for Canyon Gate.
+
+
+4. Canyon Gate
+
+The Gorge Warden is the first boss, turning the canyon journey into a direct
+confrontation. Begin with the pressure of approaching a defended obstacle,
+then let the battle feel forceful and urgent. This is the first major
+payoff: a hard-won breakthrough and a brief release afterward.
+
+
+5. Ashen Wastes
+
+Bleak, exposed, and determined, with the landscape making the journey feel
+harsher after the first victory. There is room for a little weariness or
+sadness, but the player is still pushing forward through combat. A
+persistent pulse can carry that resolve into the next stretch.
+
+
+6. Foundry Belt
+
+Heavy, industrial, and relentless, suggesting the weight and repetition of
+machinery all around the player. The surroundings should feel busy and
+imposing, with a firm sense of forward motion. This section deepens the
+pressure as the route continues toward the fortress and its core.
+
+
+7. Fortress Run
+
+Purposeful, martial, and increasingly urgent: the player is committed to the
+assault and closing on a major target. Give the music a strong sense of
+resolve under pressure. This is the buildup to Citadel Core, with tension
+gathering as the next boss encounter approaches.
+
+
+8. Citadel Core
+
+Mechanical menace and concentrated pressure, as the assault reaches the
+Citadel Heart boss. The approach should feel ominous, then tighten into a
+forceful confrontation with a powerful machine. A sense of a heavy heartbeat
+suits the battle, followed by relief when its defenses finally fall.
+
+
+9. Storm Front
+
+Turbulent, urgent, and exhilarating, with the feeling of being swept into
+rough conditions after the Citadel victory. The music can surge and heave
+while keeping the player moving. This starts a fresh rise in intensity as
+the journey continues toward the carrier confrontation.
+
+
+10. Meteor Reach
+
+Restless, exposed, and unpredictable, carrying the storm section's momentum
+into another hazardous stretch. The player should feel alert to trouble
+ahead, with excitement and unease sharing the same space. Keep the energy
+moving and unsettled as the route draws closer to Carrier Coast.
+
+
+11. Carrier Coast
+
+A looming threat comes into focus, with determination growing alongside the
+tension. This is the immediate approach to Carrier Assault, so the music
+should suggest a large confrontation getting closer. Let the player feel
+committed and capable while holding back the full battle intensity.
+
+
+12. Carrier Assault
+
+A powerful, hard-fought confrontation with the Carrier boss and the climax
+of the campaign's terrestrial stretch. Build from the approach into an
+urgent battle that feels like a major achievement to win. Afterward, the
+ascent into space brings release, exhilaration, and a new sense of scale.
+
+
+13. Asteroid Belt
+
+Fast, agile, and thrilling: reaching space opens up the view while debris
+keeps the player busy. Give this level a lively sense of weaving and
+dodging, with the excitement of entering a much larger arena. The mood is
+adventurous, energized by the danger of the flight itself.
+
+
+14. Shattered Moon
+
+Vast, beautiful, and slightly melancholy, inviting a sense of awe at the
+lunar scenery. Broader, more spacious movement can give this level a
+reflective character after the Asteroid Belt's rush. Combat continues, so
+preserve an underlying drive even as the emotional pace opens out.
+
+
+15. Ship Graveyard
+
+Mysterious, mournful, and uneasy, with abandoned hulls suggesting loss and
+unanswered questions. The music should leave room for the player to take in
+the wreckage and feel the loneliness of the setting. Keep tension
+underneath: this is still an active combat area, with danger among the
+remains.
+
+
+16. Orbital Shipyard
+
+Metallic, purposeful, and imposing, bringing renewed industrial energy after
+the graveyard's unease. A precise, insistent drive suits the structures and
+machinery of the shipyard. This approach to the Dreadnought builds pressure
+ahead of the campaign's final battles.
+
+
+17. Space Carrier
+
+Massive, threatening, and combative, with the Dreadnought giving the
+approach a sense of overwhelming scale. Let anticipation develop into the
+force of the penultimate boss battle, with determination answering the
+threat. Its defeat earns a breath of relief, while the final challenge still
+lies ahead.
+
+
+18. Jump Gate
+
+Begin with awe, mystery, and the promise of reaching a monumental
+destination. The Gate Guardian turns that anticipation into the final boss
+confrontation: urgent, determined, and carrying the weight of the whole
+journey.
