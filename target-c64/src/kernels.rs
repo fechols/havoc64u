@@ -7,7 +7,7 @@
 //! `JSR`. The IRQ never calls the slot until the foreground has copied and
 //! verified the playing cue's image.
 
-use crate::{HardwareSid, AUDIO};
+use crate::{sid_mut, HardwareSid};
 use havoc::audio::kernels;
 
 macro_rules! shim {
@@ -15,7 +15,7 @@ macro_rules! shim {
         #[no_mangle]
         #[link_section = $section]
         pub unsafe extern "C" fn $entry() {
-            kernels::$kernel(AUDIO.assume_init_mut(), &mut HardwareSid);
+            kernels::$kernel(sid_mut(), &mut HardwareSid);
         }
     };
 }

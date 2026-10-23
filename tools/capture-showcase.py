@@ -298,6 +298,8 @@ class Capture:
         self.mon.command("sidefx off")
         for address in self.failures:
             self.mon.command(f"break exec {address:04x}")
+        self.report["emulator_audio"] = vice.configure_emulator_audio(
+            self.mon, self.syms, self.failures, package_layout, self.args.audio_backend)
         self.mon.run_until(self.syms["frame_complete"], self.failures)
 
     def game(self):
@@ -534,6 +536,7 @@ def main():
     parser.add_argument("--roms", type=Path, default=sibling / "target/tools/secondreality/vice/data")
     parser.add_argument("--llvm-nm", type=Path, default=Path(os.environ.get("LLVM_MOS", Path.home() / ".local/llvm-mos")) / "bin/llvm-nm")
     parser.add_argument("--timeout", type=float, default=45)
+    vice.add_emulator_audio_argument(parser)
     args = parser.parse_args()
     if args.duration is not None and (not math.isfinite(args.duration) or not .5 <= args.duration <= 60
                                       or abs(args.duration * 50 - round(args.duration * 50)) > 1e-7):
@@ -571,6 +574,7 @@ def main():
             if args.scene and scene["name"] not in args.scene:
                 continue
             result = Capture(args, scene, package, syms, layout, layouts, failures).run()
+            report["emulator_audio"] = result["emulator_audio"]
             report["scenes"].append(dict(name=scene["name"], label=scene["label"], directory=scene["name"],
                 manifest=f"{scene['name']}/scene.json", included_in_video=result["included_in_video"],
                 duration_seconds=result["duration_seconds"], passed=result["passed"]))

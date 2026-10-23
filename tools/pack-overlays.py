@@ -3,6 +3,7 @@ import os
 import pathlib
 import subprocess
 import sys
+from digital_format import validate_digital_payload
 
 # Directory order and logical IDs remain stable; the linker owns REU addresses.
 CODE_IMAGES = (
@@ -45,15 +46,23 @@ def checked_layout(symbols):
     """Check full reservations, including padding, before writing any payload."""
     size = symbols['__reu_size']
     slot_size = symbols['__reu_code_slot_size']
-    assert size == 0x100000 and slot_size == 0x4200, 'unsupported REU layout'
+    assert size == 0x1000000 and slot_size == 0x4200, 'unsupported REU layout'
+    assert symbols['__reu_digital_music'] == 0x100000, 'incorrect digital music address'
+    assert symbols['__reu_digital_victory'] == 0x500000, 'incorrect digital victory address'
+    assert symbols['__reu_digital_ring'] == 0xfe0000, 'incorrect digital ring address'
+    assert symbols['__reu_digital_ring_size'] == 0x20000, 'incorrect digital ring size'
     offsets = {name: symbols[f'__reu_{symbol}'] for name, symbol, _ in CODE_IMAGES}
     kernels_start, kernels_end, _ = kernel_reservation(symbols)
     allocations = [(0, 0x180, 'directories'), (0x1000, 0x1c00, 'common assets'),
                    (0x2000, 0xb000, 'encounters'),
                    (symbols['__reu_models'], symbols['__reu_models'] + 0x9000, 'models'),
                    (kernels_start, kernels_end, 'music kernels'),
-                   (symbols['__reu_music'], symbols['__reu_music'] + 0x40000, 'music')]
+                   (symbols['__reu_music'], symbols['__reu_music'] + 0x40000, 'music'),
+                   (symbols['__reu_digital_music'], symbols['__reu_digital_victory'], 'digital title music'),
+                   (symbols['__reu_digital_victory'], symbols['__reu_digital_ring'], 'digital victory music'),
+                   (symbols['__reu_digital_ring'], size, 'mutable PCM ring')]
     for name, offset in offsets.items():
+        assert offset + slot_size <= 0x100000, f'{name}: code allocation exceeds REU code region'
         assert offset & 0xfff == 0, f'{name}: code base must be 4 KiB aligned'
         assert (offset & 0xffff) + slot_size <= 0x10000, f'{name}: code slot crosses a 64 KiB bank'
         assert name == 'pixels' or offset >> 16 != 4, 'PIXELS must retain its exclusive REU bank'
@@ -129,8 +138,11 @@ def main():
     assert image[:2] == b'\x01\x08'
     reu = bytearray(reu_path.read_bytes())
     offsets, allocations = checked_layout(symbols)
-    assert len(reu) == symbols['__reu_size'], 'REU image must contain exactly 1 MiB'
-    assert int.from_bytes(reu[4:8], 'little') == 0x534d0800, 'expected v8 package'
+    assert len(reu) == symbols['__reu_size'], 'REU image must contain exactly 16 MiB'
+    assert int.from_bytes(reu[4:8], 'little') == 0x534d0a00, 'expected v10 package'
+    digital = validate_digital_payload(reu)
+    for name, metadata in digital.items():
+        print(f'digital {name}: {metadata["asset_bytes"]:,} bytes, {metadata["sample_rate"]} Hz stereo; shared 128 KiB mutable PCM ring')
     table_at = 2 + symbols['__code_reu_pages'] - 0x801
     expected_pages = bytearray(31)
     for name, _, logical_id in CODE_IMAGES:

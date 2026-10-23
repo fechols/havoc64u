@@ -153,7 +153,7 @@ for line in listing.splitlines():
         used.append((name,address,address+size))
     print(f'{name:18} ${address:04X}-${address+size-1:04X} {size:5} bytes')
 # Linker bases are the source for both packaging and the runtime address table.
-# Validate the fixed v8 map independently, including each full reserved slot.
+# Validate the fixed v10 map independently, including each full reserved slot.
 reu_layout = (
     (1, 'boot', 0x10000),
     (2, 'sim_lowlands', 0x20000),
@@ -180,19 +180,26 @@ reu_layout = (
     (29, 'scenery_carrier', 0x85000),
     (30, 'scenery_gate', 0x8a000),
 )
-assert symbols['__reu_size'] == 0x100000, 'incorrect 1 MiB REU image size'
+assert symbols['__reu_size'] == 0x1000000, 'incorrect 16 MiB REU image size'
+assert symbols['__reu_digital_music'] == 0x100000, 'incorrect digital music address'
+assert symbols['__reu_digital_victory'] == 0x500000, 'incorrect digital victory address'
+assert symbols['__reu_digital_ring'] == 0xfe0000, 'incorrect digital ring address'
+assert symbols['__reu_digital_ring_size'] == 0x20000, 'incorrect digital ring size'
 assert symbols['__reu_code_slot_size'] == 0x4200, 'incorrect REU code slot size'
 assert symbols['__reu_models'] == 0xb0000, 'incorrect REU model bank address'
 assert symbols['__reu_music'] == 0xc0000, 'incorrect REU music bank address'
 reu_allocations = [(0, 0x180, 'directories'), (0x1000, 0x1c00, 'common assets'),
                    (0x2000, 0xb000, 'encounters'), (0xb0000, 0xb9000, 'models'),
                    (symbols['__reu_music_kernels'], symbols['__reu_music_kernels'] + 0x100 + 21 * symbols['__music_kernel_size'], 'music kernels'),
-                   (0xc0000, 0x100000, 'music')]
+                   (0xc0000, 0x100000, 'music'),
+                   (0x100000, 0x500000, 'digital title music'),
+                   (0x500000, 0xfe0000, 'digital victory music'),
+                   (0xfe0000, 0x1000000, 'mutable PCM ring')]
 assert symbols['__reu_music_kernels'] == 0xb9000, 'incorrect REU music kernel address'
 for phase_id, name, expected in reu_layout:
     address = symbols[f'__reu_{name}']
     end = address + symbols['__reu_code_slot_size']
-    assert 0 <= address < end <= symbols['__reu_size'], f'{name} REU slot exceeds image'
+    assert 0 <= address < end <= 0x100000, f'{name} REU slot exceeds image code region'
     assert address & 0xfff == 0, f'{name} REU slot must be 4 KiB aligned'
     assert (address & 0xffff) + 0x4200 <= 0x10000, f'{name} REU slot crosses a 64 KiB bank'
     for start, stop, owner in reu_allocations:
@@ -298,7 +305,8 @@ print(f'AUDIO runtime prefix {symbols["__phase_audio_runtime_size"]} bytes; star
 print(f'SIM common prefix {symbols["__phase_sim_base_size"]} bytes; largest simulation tail {symbols["__phase_enemy_size"]} bytes; eight padded images {symbols["__phase_sim_size"]} bytes each')
 print('SIM runtime transfer sizes by profile0..7: ' + ', '.join(map(str, sim_load_sizes)))
 print('OVL7 startup code sizes by directory order: ' + ', '.join(map(str, code_sizes)))
-print('REU 1 MiB: 744,832 reserved bytes; 303,744 unreserved bytes; music $0C0000-$0FFFFF')
+reserved = sum(end - start for start, end, _ in reu_allocations)
+print(f'REU 16 MiB: {reserved:,} reserved bytes; {symbols["__reu_size"] - reserved:,} unreserved bytes; SID music $0C0000-$0FFFFF; Galactic Dash $100000-$4FFFFF; Hammond Rocker $500000-$FDFFFF; mutable stereo PCM ring $FE0000-$FFFFFF')
 print('REU logical phase slots: ' + ', '.join(f'{phase_id:02X}=${symbols[f"__reu_{name}"]:06X}' for phase_id, name, expected in reu_layout))
 print(f'SIM helper code8E00-92FF: {symbols["__phase_sim_aux_size"]} bytes; reloaded before every SIM profile, shares retired startup/cache/band workspace')
 print(f'Victory GEOMETRY composed image {symbols["__phase_victory_size"]} bytes')

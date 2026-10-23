@@ -350,7 +350,12 @@ fn music_follows_stage_boss_crossing_and_result_identity() {
         game.mode = Mode::Playing;
         set_rail(&mut game, index as u32 * SECTION_TICKS as u32);
         let cue = MusicState::from_cue(game.stage_info.music_cue).unwrap();
-        for mode in [Mode::Playing, Mode::Attract, Mode::Respawning] {
+        for boss_started in [false, true] {
+            game.mode = Mode::Attract;
+            game.boss_started = boss_started;
+            assert_eq!(game.music_state(), MusicState::Title);
+        }
+        for mode in [Mode::Playing, Mode::Respawning] {
             game.mode = mode;
             game.boss_started = false;
             assert_eq!(game.music_state(), cue);
@@ -376,11 +381,87 @@ fn music_follows_stage_boss_crossing_and_result_identity() {
         }
     }
     game.mode = Mode::Victory;
+    game.menu_ticks = crate::victory::FADE_TICKS;
     assert_eq!(game.music_state(), MusicState::Victory);
     game.mode = Mode::GameOver;
     assert_eq!(game.music_state(), MusicState::Defeat);
     game.mode = Mode::Title;
     assert_eq!(game.music_state(), MusicState::Title);
+}
+
+#[test]
+fn menu_music_toggle_changes_only_the_track_and_toggles_back() {
+    fn scene(mode: Mode) -> Game {
+        let mut game = Game::new();
+        game.reset_scene(mode, 6, 300);
+        game.ticks = 1234;
+        game.menu_ticks = 123;
+        game.player.x = 37;
+        game.player.y = -22;
+        game.actors[0] = enemy(assets::FIGHTER, 30, 10, 500);
+        game.controls.fire_armed = true;
+        game
+    }
+    for mode in [Mode::Title, Mode::Attract] {
+        let mut game = scene(mode);
+        let mut expected = scene(mode);
+        assert_eq!(game.music_state(), MusicState::Title);
+        game.toggle_menu_music();
+        assert_eq!(game.music_state(), MusicState::Victory);
+        expected.menu_music_galactic = true;
+        assert_eq!(game, expected, "toggling must preserve the entire scene");
+        game.toggle_menu_music();
+        assert_eq!(game.music_state(), MusicState::Title);
+        expected.menu_music_galactic = false;
+        assert_eq!(game, expected, "toggling back must preserve the scene");
+    }
+}
+
+#[test]
+fn menu_music_toggle_is_ignored_outside_title_and_attract() {
+    for mode in [
+        Mode::Playing,
+        Mode::Transition,
+        Mode::Respawning,
+        Mode::Victory,
+        Mode::GameOver,
+    ] {
+        for galactic in [false, true] {
+            let mut game = Game::new();
+            game.mode = mode;
+            game.menu_ticks = crate::victory::FADE_TICKS;
+            game.menu_music_galactic = galactic;
+            let mut expected = Game::new();
+            expected.mode = mode;
+            expected.menu_ticks = crate::victory::FADE_TICKS;
+            expected.menu_music_galactic = galactic;
+            let cue = game.music_state();
+            game.toggle_menu_music();
+            assert_eq!(game.music_state(), cue);
+            assert_eq!(game, expected, "ignored toggle changed {mode:?}");
+        }
+    }
+}
+
+#[test]
+fn menu_music_selection_survives_scene_and_run_resets_until_reload() {
+    let mut game = Game::new();
+    for cue in [MusicState::Victory, MusicState::Title] {
+        game.toggle_menu_music();
+        assert_eq!(game.music_state(), cue);
+        for stage in [0, 1, 6, 10, 12, 14, 16] {
+            game.reset_scene(Mode::Attract, stage, 0);
+            assert_eq!(game.music_state(), cue);
+        }
+        game.reset_run();
+        assert_eq!(game.music_state(), MusicState::Lowlands);
+        game.mode = Mode::GameOver;
+        assert_eq!(game.music_state(), MusicState::Defeat);
+        game.reset_run();
+        game.reset_scene(Mode::Title, 0, 0);
+        assert_eq!(game.music_state(), cue);
+        assert_eq!(Game::new().music_state(), MusicState::Title);
+    }
 }
 
 pub(super) fn empty_segment(index: u8) -> [u8; assets::SEGMENT_SIZE] {
@@ -1242,14 +1323,17 @@ fn backdrop_screen_geometry_follows_only_the_sky_parallax_across_camera_modes() 
                 game.player.y = player_y;
                 game.player.x = if player_y < 0 { -100 } else { 100 };
                 set_rail(&mut game, ticks);
+                game.ticks = ticks;
                 let theme = game.stage_info.theme;
-                // The chase camera never moves the backdrop; only the slight
-                // parallax drift does, and the title and map tour have none.
+                // The foreground camera never moves the backdrop directly;
+                // only its separate parallax offset reaches these faces.
                 let [dx, dy] = game.sky_parallax();
                 if matches!(mode, Mode::Title | Mode::Attract) {
-                    assert_eq!([dx, dy], [0, 0]);
+                    assert!((-64..=64).contains(&dx));
+                    assert!((-8..=8).contains(&dy));
                 } else {
                     assert_eq!([dx, dy], [game.player.x, player_y >> 1]);
+                    assert_eq!(game.scenery_camera_y(), 40 + player_y / 4);
                 }
                 let expected: [_; 14] = core::array::from_fn(|face| {
                     let (points, color) = backdrop_face(theme, face as u8);
@@ -1399,7 +1483,7 @@ fn section_themes_are_distinct_compact_and_keep_all_backdrop_facets_cacheable() 
     );
 }
 #[test]
-fn backdrop_drifts_opposite_to_the_ship_while_terrain_and_title_stay_fixed() {
+fn gameplay_backdrop_drifts_opposite_to_the_ship_while_terrain_stays_fixed() {
     #[derive(Default)]
     struct Capture(std::vec::Vec<([Vec3; 3], u8, u8)>);
     impl GeometrySink for Capture {
@@ -1454,12 +1538,144 @@ fn backdrop_drifts_opposite_to_the_ship_while_terrain_and_title_stay_fixed() {
             }
         }
     }
-    let mut title = Game::new();
-    title.player.x = 100;
-    assert_eq!(title.sky_parallax(), [0, 0]);
-    title.reset_scene(Mode::Attract, 0, 0);
-    title.player.x = 100;
-    assert_eq!(title.sky_parallax(), [0, 0]);
+}
+#[test]
+fn menu_camera_sways_gently_without_following_the_player() {
+    for (mode, base) in [(Mode::Title, 0), (Mode::Attract, 40)] {
+        let mut game = Game::new();
+        game.mode = mode;
+        let mut minimum = [i16::MAX; 3];
+        let mut maximum = [i16::MIN; 3];
+        let mut previous = [base, 0, 0];
+        for tick in 0..=1024 {
+            game.ticks = tick;
+            game.player.x = -100;
+            game.player.y = -65;
+            let [dx, dy] = game.sky_parallax();
+            let current = [game.scenery_camera_y(), dx, dy];
+            game.player.x = 100;
+            game.player.y = 65;
+            assert_eq!(game.scenery_camera_y(), current[0]);
+            assert_eq!(game.sky_parallax(), [dx, dy]);
+            for axis in 0..3 {
+                minimum[axis] = minimum[axis].min(current[axis]);
+                maximum[axis] = maximum[axis].max(current[axis]);
+                assert!(
+                    (current[axis] - previous[axis]).abs() <= [1, 2, 1][axis],
+                    "abrupt menu camera step: {mode:?}, tick {tick}, axis {axis}"
+                );
+            }
+            previous = current;
+        }
+        assert_eq!(minimum, [base - 4, -64, -8]);
+        assert_eq!(maximum, [base + 4, 64, 8]);
+        assert_eq!(previous, [base, 0, 0]);
+        game.ticks = u16::MAX;
+        assert!((game.scenery_camera_y() - base).abs() <= 1);
+        let [dx, dy] = game.sky_parallax();
+        assert!(
+            dx.abs() <= 2 && dy.abs() <= 1,
+            "clock wrap must stay smooth"
+        );
+    }
+}
+#[test]
+fn menu_camera_moves_foreground_and_terrain_together() {
+    #[derive(Default)]
+    struct Capture(std::vec::Vec<([Vec3; 3], u8, u8)>);
+    impl GeometrySink for Capture {
+        fn triangle(&mut self, a: Vec3, b: Vec3, c: Vec3, color: u8, flags: u8) {
+            self.0.push(([a, b, c], color, flags));
+        }
+    }
+    let bytes = empty_segment(0);
+    let segment = Segment::new(&bytes).unwrap();
+    let bank = test_bank(0);
+    for mode in [Mode::Title, Mode::Attract] {
+        let mut game = Game::new();
+        game.mode = mode;
+        if mode == Mode::Attract {
+            let mut hidden_player = Capture::default();
+            game.render_foreground(&mut hidden_player, &bank, 174);
+            assert!(
+                hidden_player.0.is_empty(),
+                "attract must not draw the player"
+            );
+            game.actors[0] = enemy(assets::FIGHTER, 30, 10, 500);
+        }
+        let mut foreground = Capture::default();
+        let mut scenery = Capture::default();
+        game.render_foreground(&mut foreground, &bank, 174);
+        game.render_scenery(&mut scenery, &segment);
+        assert!(!foreground.0.is_empty());
+        let base_camera = game.scenery_camera_y();
+        for tick in [256, 768] {
+            // Hold simulation geometry fixed; these phases also preserve the
+            // title ship's exhaust animation while the camera rises and falls.
+            game.ticks = tick;
+            let camera_delta = game.scenery_camera_y() - base_camera;
+            let [dx, dy] = game.sky_parallax();
+            assert_ne!(camera_delta, 0);
+            let mut moved_foreground = Capture::default();
+            let mut moved_scenery = Capture::default();
+            game.render_foreground(&mut moved_foreground, &bank, 174);
+            game.render_scenery(&mut moved_scenery, &segment);
+            for (before, after, backdrop_allowed) in [
+                (&foreground.0, &moved_foreground.0, false),
+                (&scenery.0, &moved_scenery.0, true),
+            ] {
+                assert_eq!(before.len(), after.len());
+                for (old, new) in before.iter().zip(after) {
+                    assert_eq!((old.1, old.2), (new.1, new.2));
+                    let backdrop = backdrop_allowed && old.2 & STATIC_SKY != 0;
+                    let [shift_x, shift_y] = if backdrop {
+                        [dx, dy]
+                    } else {
+                        [0, camera_delta]
+                    };
+                    for (a, b) in old.0.iter().zip(&new.0) {
+                        assert_eq!(
+                            *b,
+                            Vec3 {
+                                x: a.x - shift_x,
+                                y: a.y - shift_y,
+                                z: a.z,
+                            },
+                            "camera mismatch: {mode:?}, tick {tick}, backdrop {backdrop}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+#[test]
+fn title_activity_keeps_camera_time_but_scene_cuts_restore_neutral_framing() {
+    let bytes = empty_segment(0);
+    let segment = Segment::new(&bytes).unwrap();
+    let bank = test_bank(0);
+    let mut game = Game::new();
+    game.ticks = 255;
+    game.menu_ticks = 400;
+    sample(&mut game, RIGHT, 100);
+    game.tick(&segment, &bank);
+    assert_eq!(game.mode, Mode::Title);
+    assert_eq!((game.ticks, game.menu_ticks), (256, 0));
+    assert_ne!(game.scenery_camera_y(), 0);
+    assert_ne!(game.sky_parallax(), [0, 0]);
+
+    sample(&mut game, 0, 120);
+    game.menu_ticks = ATTRACT_TICKS - 1;
+    game.tick(&segment, &bank);
+    assert_eq!(game.mode, Mode::Attract);
+    assert_eq!(game.scenery_camera_y(), 40);
+    assert_eq!(game.sky_parallax(), [0, 0]);
+    game.ticks = 256;
+    game.menu_ticks = ATTRACT_TICKS - 1;
+    game.tick(&segment, &bank);
+    assert_eq!((game.mode, game.stage_id), (Mode::Attract, 1));
+    assert_eq!(game.scenery_camera_y(), 40);
+    assert_eq!(game.sky_parallax(), [0, 0]);
 }
 #[test]
 fn lowered_horizons_overlap_terrain_at_every_scroll_phase_and_camera_extreme() {
@@ -1490,9 +1706,9 @@ fn lowered_horizons_overlap_terrain_at_every_scroll_phase_and_camera_extreme() {
         // raises it toward the terrain.
         for (camera_y, parallax_y) in [
             (0, 0),
-            (chase_camera_y(Mode::Playing, -65), -65 >> 1),
+            (scene_camera_y(Mode::Playing, -65, 0), -65 >> 1),
             (40, 0),
-            (chase_camera_y(Mode::Playing, 65), 65 >> 1),
+            (scene_camera_y(Mode::Playing, 65, 0), 65 >> 1),
         ] {
             let mut horizon = crate::render::Renderer::new();
             for face in 0..5 {
@@ -1846,7 +2062,14 @@ fn victory_freezes_the_run_and_consumes_inputs_through_all_four_hundred_ticks() 
     let bytes = empty_segment(assets::SEGMENT_COUNT - 1);
     let segment = Segment::new(&bytes).unwrap();
     let bank = test_bank(assets::SEGMENT_COUNT - 1);
-    let mut game = running();
+    let mut game = Game::new();
+    // A prior victory can be manually switched back to Hammond; winning a
+    // subsequent run must select Galactic again for the reveal and menus.
+    game.menu_music_galactic = true;
+    game.toggle_menu_music();
+    assert_eq!(game.music_state(), MusicState::Title);
+    game.reset_run();
+    game.invulnerability = 0;
     set_rail(&mut game, MISSION_TICKS - 1);
     game.boss_started = true;
     game.boss_defeated = true;
@@ -1889,7 +2112,14 @@ fn victory_freezes_the_run_and_consumes_inputs_through_all_four_hundred_ticks() 
         game.tick(&segment, &bank);
         assert_eq!(game.mode, Mode::Victory);
         assert_eq!(game.hud().victory_ticks, elapsed);
-        assert_eq!(game.music_state(), MusicState::Victory);
+        assert_eq!(
+            game.music_state(),
+            if elapsed < crate::victory::FADE_TICKS {
+                MusicState::GateGuardian
+            } else {
+                MusicState::Victory
+            }
+        );
         assert_eq!((game.score, game.shield, game.bombs, game.lives), resources);
         assert_eq!(
             (
@@ -1920,13 +2150,36 @@ fn victory_freezes_the_run_and_consumes_inputs_through_all_four_hundred_ticks() 
     assert_eq!(game.mode, Mode::Victory);
     sample(&mut game, FIRE, 9040);
     game.tick(&segment, &bank);
-    assert_eq!(game.mode, Mode::Playing);
-    assert_eq!(game.simulation_profile(), 0);
+    assert_eq!(game.mode, Mode::Title);
+    assert_eq!(game.simulation_profile(), 7);
     assert_eq!(game.victory_ticks(), 0);
+    assert_eq!(game.music_state(), MusicState::Victory);
     assert_eq!(
         (game.score, game.shield, game.bombs, game.lives),
         (0, 100, 3, 3)
     );
+    // The fire that dismissed the medal is consumed. A fresh edge starts a
+    // new run with its SID score while the menu reward survives every reset.
+    let first = empty_segment(0);
+    let first = Segment::new(&first).unwrap();
+    game.tick(&first, &test_bank(0));
+    assert_eq!(game.mode, Mode::Title);
+    sample(&mut game, 0, 9060);
+    game.tick(&first, &test_bank(0));
+    sample(&mut game, FIRE, 9080);
+    game.tick(&first, &test_bank(0));
+    assert_eq!(game.mode, Mode::Playing);
+    assert_eq!(game.music_state(), MusicState::Lowlands);
+    game.mode = Mode::GameOver;
+    assert_eq!(game.music_state(), MusicState::Defeat);
+    game.reset_run();
+    for stage in [0, 1, 6, 10, 12, 14, 16] {
+        game.reset_scene(Mode::Attract, stage, 0);
+        assert_eq!(game.music_state(), MusicState::Victory);
+    }
+    game.reset_scene(Mode::Title, 0, 0);
+    assert_eq!(game.music_state(), MusicState::Victory);
+    assert_eq!(Game::new().music_state(), MusicState::Title);
 }
 #[test]
 fn victory_world_keeps_only_the_frozen_ship_and_scenery_until_blackout() {

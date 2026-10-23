@@ -4,7 +4,7 @@
 //! page, then publishes it while the interrupt is masked. Keep that external
 //! page unchanged until `page_request` returns another request. The interrupt
 //! copies a ready page into the active page at a phrase boundary; it never reads
-//! REU. Reset lives in BOOT and page validation lives in the AUDIO overlay.
+//! REU. Reset and page validation live in the AUDIO overlay.
 //! SID 0/1 voice three remain exclusively reserved for the existing effects.
 //!
 //! With the `music-kernels` feature, each cue may bring its own per-tick
@@ -203,6 +203,7 @@ pub struct AudioSnapshot {
 }
 
 impl AudioEngine {
+    #[cfg_attr(target_arch = "mos", link_section = ".phase.audio")]
     pub const fn new(standard: VideoStandard) -> Self {
         Self {
             underruns: 0,
@@ -425,8 +426,8 @@ impl AudioEngine {
     }
 
     /// Initialize all mapped chips, clear effects, and request the cue opening.
-    /// This startup function requires the BOOT overlay on the target.
-    #[cfg_attr(target_arch = "mos", link_section = ".phase.boot")]
+    /// Requires the AUDIO overlay on the target, including backend switches.
+    #[cfg_attr(target_arch = "mos", link_section = ".phase.audio")]
     #[inline(never)]
     pub fn reset<B: SidBus>(&mut self, bus: &mut B) {
         self.effects = [EMPTY_FX; 2];
@@ -485,7 +486,7 @@ impl AudioEngine {
         let _ = bus;
     }
 
-    #[cfg_attr(target_arch = "mos", link_section = ".phase.boot")]
+    #[cfg_attr(target_arch = "mos", link_section = ".phase.audio")]
     #[inline(never)]
     fn initialize<B: SidBus>(&mut self, bus: &mut B) {
         for sid in 0..SID_COUNT {

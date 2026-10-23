@@ -34,6 +34,10 @@ fn package() -> Vec<u8> {
         .copy_from_slice(&directory);
     let music = havoc::soundtrack::score_bank();
     bytes[MUSIC_OFFSET as usize..MUSIC_OFFSET as usize + music.len()].copy_from_slice(&music);
+    for (track, asset) in baked_assets::DIGITAL_TRACKS {
+        let start = track.descriptor().asset_offset as usize;
+        bytes[start..start + asset.len()].copy_from_slice(asset);
+    }
     let offset = COMMON_OFFSET as usize;
     bytes[offset..offset + COMMON_SIZE].copy_from_slice(&common);
     put16(&mut bytes, 18, checksum(&common));
@@ -166,7 +170,11 @@ fn dma_chunks_stop_at_reu_pages_cpu_wrap_and_end_of_installed_ram() {
     assert_eq!(dma_chunk(0x2000, 0xffff, 2), 1);
     assert_eq!(dma_chunk(0x7ffff, 0x8400, 2), 1);
     assert_eq!(dma_chunk(0xfffff, 0x8400, 2), 1);
-    assert_eq!(dma_chunk(0x100000, 0x8400, 1), 0);
+    assert_eq!(dma_chunk(0x100000, 0x8400, 1), 1);
+    assert_eq!(dma_chunk(0x7fffff, 0x8400, 2), 1);
+    assert_eq!(dma_chunk(0x800000, 0x8400, 1), 1);
+    assert_eq!(dma_chunk(0xfffff0, 0x8400, 64), 16);
+    assert_eq!(dma_chunk(0xffffff, 0x8400, 2), 1);
     assert_eq!(dma_chunk(0x1000000, 0x8400, 1), 0);
     assert_eq!(dma_chunk(u32::MAX, 0x8400, 1), 0);
     assert_eq!(dma_chunk(0, 0, 0), 0);
@@ -191,10 +199,27 @@ fn package_validation_detects_payload_corruption_and_wrong_image_size() {
 #[test]
 fn relocated_package_rejects_old_version_even_with_a_valid_header_checksum() {
     let mut bytes = package();
-    put32(&mut bytes, 4, 0x534D0700);
+    put32(&mut bytes, 4, 0x534D0900);
     seal_header(&mut bytes);
     assert_eq!(validate_header(&bytes), Err(AssetError::Version));
     assert!(baked_assets::check_package(&bytes).is_err());
+}
+
+#[test]
+fn digital_payload_is_checked_but_runtime_pcm_ring_is_mutable() {
+    let mut bytes = package();
+    for (track, _) in baked_assets::DIGITAL_TRACKS {
+        let descriptor = track.descriptor();
+        for offset in [0, 21, 22, 32, 80, descriptor.metadata.stream_offset as usize,
+            descriptor.metadata.crc_offset as usize] {
+            let address = descriptor.asset_offset as usize + offset;
+            bytes[address] ^= 1;
+            assert!(baked_assets::check_package(&bytes).is_err(), "{track:?} byte {offset}");
+            bytes[address] ^= 1;
+        }
+    }
+    bytes[DIGITAL_RING_OFFSET as usize..].fill(0x81);
+    assert!(baked_assets::check_package(&bytes).is_ok());
 }
 
 #[test]
@@ -649,9 +674,15 @@ fn eighteen_stage_profiles_cover_terrestrial_and_orbital_campaign_with_contiguou
         MODEL_BANKS_OFFSET + MODEL_SIZE as u32 * SEGMENT_COUNT as u32,
         0xb9000
     );
-    assert_eq!(REU_SIZE, 1024 * 1024);
+    assert_eq!(REU_SIZE, 16 * 1024 * 1024);
     assert_eq!(MUSIC_OFFSET, 0x0c0000);
-    assert_eq!(MUSIC_OFFSET + MUSIC_CAPACITY, REU_SIZE);
+    assert_eq!(MUSIC_OFFSET + MUSIC_CAPACITY, DIGITAL_MUSIC_OFFSET);
+    assert_eq!(DIGITAL_MUSIC_OFFSET, havoc::digital::ASSET_OFFSET);
+    assert_eq!(DIGITAL_VICTORY_OFFSET, havoc::digital::HAMMOND_OFFSET);
+    assert_eq!(DIGITAL_RING_OFFSET, havoc::digital::RING_OFFSET);
+    assert_eq!(DIGITAL_RING_OFFSET + DIGITAL_RING_SIZE, REU_SIZE);
+    assert!(havoc::digital::ASSET_BYTES <= DIGITAL_MUSIC_CAPACITY);
+    assert!(havoc::digital::Track::HammondRocker.descriptor().asset_bytes <= DIGITAL_VICTORY_CAPACITY);
     let mut bosses = Vec::new();
     for stage in 0..SEGMENT_COUNT {
         let bytes = baked_assets::segment_bank(stage);

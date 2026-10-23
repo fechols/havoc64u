@@ -10,6 +10,7 @@ Fly an original 3D rail shooter for the **64 MHz C64 Ultimate**. Skim green hill
 
 - **3D worlds** — Dive through colorful landscapes and orbital scenery.
 - **Quad-SID music** — Enjoy the complete original score through four built-in UltiSIDs.
+- **Stereo digital music** — Hammond Rocker plays continuously through the title and attract tour, with SID music taking over when you launch. Earn the final gold medal to select Galactic Dash for the victory, title and attract screens.
 - **18 varied stages** — Journey from green hills to orbital battlefields.
 - **Five bosses** — Break their defenses and strike their exposed cores.
 - **Aircraft-like handling** — Bank, climb, and dive with weight and momentum.
@@ -45,7 +46,7 @@ Screenshots: **original v0.1.0 four-SID build**, captured in a PAL emulator.
 
 **[Download H.A.V.O.C. v0.1.1](https://github.com/fechols/havoc64u/releases/download/v0.1.1/havoc-v0.1.1.zip)** — the complete eighteen-stage campaign and full four-SID score in one package. It uses the C64 Ultimate's built-in UltiSIDs; no extra chips or hardware installation needed.
 
-You need a **C64 Ultimate running at 64 MHz**, **1 MiB of REU memory**, and a joystick connected to **port 2**. The supplied configuration sets the speed, memory, and sound routing. A stock C64 cannot run the game.
+Current source builds need a **C64 Ultimate running at 64 MHz**, **16 MiB of REU memory**, and a joystick connected to **port 2**. The supplied configuration enables Ultimate Audio and sets the speed, memory, and SID routing. A stock C64 cannot run the game. The published v0.1.1 download predates digital title music and retains its original 1 MiB configuration.
 
 1. Unzip the package and copy its three runtime files — `havoc.cfg`, `havoc.reu`, and `havoc.prg` — to the Ultimate's storage.
 2. Import `havoc.cfg`.
@@ -84,7 +85,9 @@ Watch the weapon meter: **HOMING MISSILE** means your next shot tracks a random 
 - **Make each life count.** You start with three lives. Losing one restarts the current stage with your score intact; losing all three ends the run.
 - **Catch your breath.** Scenic crossings are safe, but bombs still consume inventory. Leaving a cleared boss stage restores one life, up to three.
 
-Wait fifteen seconds at the title for scenery and music previews. Move or press fire to return, then release and press fire to start. Release held fire before restarting after a run, too.
+Wait fifteen seconds at the title for a scenery tour. The digital track continues across every attract map and the return to the title. Move or press fire to return, then release and press fire to start. Release held fire before restarting after a run, too. Completing the campaign starts Galactic Dash with the gold-medal reveal; a fresh fire press returns to the title with that track still playing.
+
+Secret music preview: press **CTRL + C= (Commodore) + DEL** at the title or during attract mode to switch between the two digital songs, even before winning. Hold the modifiers and tap DEL again to switch back. Each switch starts the chosen song from the beginning; the selection stays until you switch again, complete the campaign, or reload.
 
 ## Help
 
@@ -93,3 +96,5 @@ See the [setup and troubleshooting guide](docs/hardware.md) for help getting sta
 ## License
 
 The game, tools, models, music, and screenshots are released under the [MIT License](LICENSE).
+
+The digital title and victory music tracks, **Hammond Rocker** and **Galactic Dash**, were provided by **William Echols** under the MIT License.

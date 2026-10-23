@@ -450,7 +450,8 @@ mod tests {
     fn dma_boundaries() {
         assert_eq!(dma_chunk(0x7fff0, 0x8400, 1024), 16);
         assert_eq!(dma_chunk(0x80000, 0xfff0, 1024), 16);
-        assert_eq!(dma_chunk(0x100000, 0x8400, 1024), 0);
+        assert_eq!(dma_chunk(0x100000, 0x8400, 1024), 1024);
+        assert_eq!(dma_chunk(REU_SIZE, 0x8400, 1024), 0);
         assert_eq!(dma_chunk(0x10, 0x8400, 0), 0);
     }
 }

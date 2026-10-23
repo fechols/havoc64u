@@ -39,7 +39,13 @@ REGION_ALIAS("c_writeable", low)
 /* Package v8 keeps the original logical phase IDs while packing code into
  * 4 KiB-aligned slots. No slot crosses a 64 KiB bank. Bank 4 remains PIXELS-only
  * so its split-transfer audit can distinguish prefix/helper DMA by bank. */
-__reu_size = 0x100000;
+__reu_size = 0x1000000;
+/* Legacy reservation names identify Galactic Dash and Hammond Rocker;
+ * the runtime selects their title/victory roles independently. */
+__reu_digital_music = 0x100000;
+__reu_digital_victory = 0x500000;
+__reu_digital_ring = 0xFE0000;
+__reu_digital_ring_size = 0x20000;
 __reu_code_slot_size = 0x4200;
 __reu_models = 0x0B0000;
 __reu_music = 0x0C0000;
@@ -156,7 +162,7 @@ SECTIONS {
     } >phase
     .phase.audio 0x3000 : AT(__reu_audio) {
         __phase_audio_start = .;
-        *(.phase.audio .phase.audio.data)
+        *(.phase.audio .phase.audio.data .phase.audio.crc_table)
         /* After the full bank scan, refills use the immutable resident cue
          * directory and no longer need the startup validator or parser. */
         __phase_audio_runtime_end = .;
@@ -525,7 +531,10 @@ __quarter_squares_start = 0xC000;
 __quarter_squares_end = 0xC400;
 
 /* The byte address table and bounded loader rely on these physical slots. */
-ASSERT(__reu_size == 0x100000 && __reu_code_slot_size == 0x4200, "incorrect 1 MiB REU allocation")
+ASSERT(__reu_size == 0x1000000 && __reu_code_slot_size == 0x4200, "incorrect 16 MiB REU allocation")
+ASSERT(__reu_digital_music == 0x100000 && __reu_digital_victory == 0x500000 && __reu_digital_ring == 0xFE0000 &&
+       __reu_digital_ring_size == 0x20000 && __reu_digital_ring + __reu_digital_ring_size == __reu_size,
+       "incorrect digital music or sampler ring allocation")
 ASSERT(__code_reu_pages_end - __code_reu_pages == 31, "incorrect logical REU page table size")
 ASSERT((__reu_boot & 0xFFF) == 0 && (__reu_boot & 0xFFFF) + __reu_code_slot_size <= 0x10000, "boot REU slot must be aligned and stay in one bank")
 ASSERT((__reu_sim_lowlands & 0xFFF) == 0 && (__reu_sim_lowlands & 0xFFFF) + __reu_code_slot_size <= 0x10000, "sim_lowlands REU slot must be aligned and stay in one bank")
@@ -576,7 +585,7 @@ ASSERT(0xB000 <= __reu_boot &&
        __reu_scenery_gate + __reu_code_slot_size <= __reu_sim_fortress &&
        __reu_sim_fortress + __reu_code_slot_size <= __reu_sim_carrier &&
        __reu_sim_carrier + __reu_code_slot_size <= __reu_models &&
-       __reu_models + 0x9000 <= __reu_music && __reu_music + 0x40000 == __reu_size,
+       __reu_models + 0x9000 <= __reu_music && __reu_music + 0x40000 == __reu_digital_music,
        "REU code, asset and music reservations overlap or exceed the image")
 ASSERT(__reu_pixels == 0x40000 && __reu_audio >= 0x50000, "REU bank 4 must remain PIXELS-only")
 

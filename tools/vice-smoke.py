@@ -4,7 +4,9 @@
 Run from the configured WSL SDK: python3 tools/vice-smoke.py --video pal
 The default emulator and ROMs are in the sibling doomc64u checkout. No package
 files are modified. Timing reports describe this emulator, not physical C64U
-performance. Only Python's standard library and LLVM-MOS llvm-nm are required.
+performance. The default SID-only audio mode substitutes SID menu cues for the
+unsupported Ultimate Audio sampler; it does not validate digital playback.
+Only Python's standard library and LLVM-MOS llvm-nm are required.
 """
 import argparse
 import hashlib
@@ -104,6 +106,47 @@ def symbols(elf, llvm_nm):
         if name not in result:
             raise RuntimeError(f"Missing target symbol {name}; use the matching unstripped ELF")
     return result
+
+
+def add_emulator_audio_argument(parser):
+    parser.add_argument("--audio-backend", choices=("sid", "native"), default="sid",
+                        help="sid: substitute SID menu cues for the companion's missing sampler (default); "
+                             "native: production audio, requires Ultimate Audio emulation")
+
+
+def configure_emulator_audio(mon, syms, failures, package_format, backend="sid"):
+    """Select the explicit emulator override after CRT, before any game startup.
+
+    Only live low RAM is changed. PRG/REU files and their pairing checks remain
+    intact, and native mode retains the production missing-sampler diagnostic.
+    """
+    if backend not in ("sid", "native"):
+        raise ValueError(f"Unknown emulator audio backend: {backend}")
+    if not package_format["digital"]:
+        return {"backend": "sid", "sid_substitution": False,
+                "scope": "Legacy SID-only package; no monitor audio override."}
+    if backend == "native":
+        return {"backend": "native", "sid_substitution": False,
+                "scope": "Production audio path; requires Ultimate Audio emulation."}
+    if "EMULATOR_SID_ONLY" not in syms:
+        raise RuntimeError("Digital package lacks the EMULATOR_SID_ONLY hook; rebuild with scripts/build.sh "
+                           "or use --audio-backend native with a sampler-capable emulator")
+    if "main" not in syms:
+        raise RuntimeError("Missing native main symbol; use the matching unstripped ELF")
+    mon.run_until(syms["main"], failures)
+    address = syms["EMULATOR_SID_ONLY"]
+    mon.command("bank ram")
+    try:
+        before = mon.integer(address, 1)
+        mon.command(f"> {address:04x} 01")
+        if mon.integer(address, 1) != 1:
+            raise RuntimeError("Emulator SID-only override did not retain its value")
+    finally:
+        mon.command("bank cpu")
+    return {"backend": "sid", "sid_substitution": True,
+            "scope": "SID menu cue substitution; excludes digital playback and digital menu timing validation.",
+            "monitor_patch": {"symbol": "EMULATOR_SID_ONLY", "address": address,
+                              "before": before, "value": 1}}
 
 
 def png(path, rows, width, height):
@@ -685,15 +728,18 @@ def package_model_layout(package, *, validate_size=False):
     version = int.from_bytes(package[4:8], "little")
     formats = {0x534d0300: (b"SMA2", 80), 0x534d0400: (b"SMA3", 88),
                0x534d0500: (b"SMA3", 88), 0x534d0600: (b"SMA3", 88),
-               0x534d0700: (b"SMA4", 88), 0x534d0800: (b"SMA4", 88)}
+               0x534d0700: (b"SMA4", 88), 0x534d0800: (b"SMA4", 88),
+               0x534d0900: (b"SMA4", 88), 0x534d0a00: (b"SMA4", 88)}
     campaign = version >= 0x534d0500
     space = version >= 0x534d0600
-    compact = version == 0x534d0800
+    digital = version >= 0x534d0900
+    compact = version >= 0x534d0800
     count = 18 if space else 12 if campaign else 4
     if (len(package) < 18 or package[:4] != b"SM64" or version not in formats
             or package[16] != count or package[17] not in (2, 4)):
-        raise RuntimeError("Expected supported package v3/v4, twelve-stage v5 or eighteen-stage v6/v7/v8")
-    reu_size = 0x100000 if compact else 0x1000000
+        raise RuntimeError("Expected supported package v3/v4, twelve-stage v5 or eighteen-stage v6-v10")
+    reu_size = (0x1000000 if version == 0x534d0a00 else 0x800000 if digital
+                else 0x100000 if compact else 0x1000000)
     if validate_size and len(package) != reu_size:
         raise RuntimeError(f"REU package v{version >> 8 & 255} must be exactly {reu_size // (1024 * 1024)} MiB")
     overlay_offsets = {page: page * 0x10000
@@ -707,6 +753,7 @@ def package_model_layout(package, *, validate_size=False):
     return {"version": version, "magic": magic, "descriptors": descriptors,
             "medal": version >= 0x534d0400, "campaign": campaign, "space": space, "count": count,
             "segment_magic": b"SMS2" if campaign else b"SMS1", "reu_size": reu_size,
+            "digital": digital,
             "music_offset": 0xc0000 if compact else 0x200000 if space else 0x100000,
             "overlay_offsets": overlay_offsets}
 
@@ -768,6 +815,45 @@ def full_boss_health(initial_state):
     return health
 
 
+def victory_music_cue(package_format, reveal_ticks):
+    """Digital-era victory keeps the final boss cue through the blackout."""
+    return 20 if package_format["digital"] and reveal_ticks < 100 else 5
+
+
+def results_restart_modes(package_format, mode_name):
+    return ("Title", "Playing") if package_format["digital"] and mode_name == "Victory" else ("Playing",)
+
+
+def menu_music_fixture(package_format, fields, cue):
+    """Select a menu tune explicitly without assuming a prior scenario's state."""
+    if not package_format["digital"]:
+        return {}
+    field = fields.get("menu_music_galactic", {})
+    if field.get("type") != "bool":
+        raise RuntimeError("Digital menu fixtures require Game::menu_music_galactic")
+    if cue not in (0, 5):
+        raise RuntimeError("Menu music must select title or victory")
+    field["size"] = 1
+    return {"menu_music_galactic": int(cue == 5)}
+
+
+def check_menu_music(frame, cue, previous=None, pages=None):
+    """Audit SID cue/page continuity; this does not validate DAC playback."""
+    if frame.get("music_cue") != cue or frame.get("music_active_cue", cue) != cue:
+        raise RuntimeError(f"Menu/reveal music selected the wrong cue; expected {cue}: {frame}")
+    page = frame.get("music_page", 0)
+    if previous is not None and previous[0] == cue:
+        old_page = previous[1]
+        if pages is None:
+            if page < old_page:
+                raise RuntimeError("Victory reveal restarted its music before the full cue loop")
+        elif page not in (old_page, (old_page + 1) % pages):
+            raise RuntimeError(f"Menu music restarted or skipped a score page: {old_page} -> {page}")
+    if pages is not None and not 0 <= page < pages:
+        raise RuntimeError(f"Menu music exposed out-of-range page {page}/{pages}")
+    return cue, page
+
+
 def streaming_checks(mon, syms, failures, elf, reu, dwarf_tool, output, result):
     """Monitor-assisted boundary scenarios, deliberately separate from timing."""
     layout = dwarf_game_layout(elf, dwarf_tool, syms, output, controls=True)
@@ -777,6 +863,9 @@ def streaming_checks(mon, syms, failures, elf, reu, dwarf_tool, output, result):
                   layout=layout, scenarios=[])
     data = reu.read_bytes()
     format = package_model_layout(data)
+    if format["digital"]:
+        menu_music_fixture(format, layout["fields"], 5)
+        result["scope"] += " Digital-package cues use emulator SID substitution; no DAC playback is validated."
     boss_health = result["full_boss_health"]
     # Preserve old-binary smoke compatibility while checking the revised policy
     # explicitly for the doubled-health balance revision.
@@ -842,6 +931,8 @@ def streaming_checks(mon, syms, failures, elf, reu, dwarf_tool, output, result):
             observed += ["ticks", "transition_ticks"]
         if "stage_id" in layout["fields"]:
             observed += ["stage_id"]
+        if format["digital"]:
+            observed += ["menu_music_galactic"]
         frame["game"] = read_game_state(mon, layout, observed)
         frame["stack_guards"] = {name: mon.integer(syms[name], 1) for name in ("__stack_bottom", "__irq_stack_bottom")}
         mon.command("bank cpu")
@@ -882,6 +973,39 @@ def streaming_checks(mon, syms, failures, elf, reu, dwarf_tool, output, result):
         scenario["cache_views"] = caches(name)
         scenario["passed"] = True
         print(f"STREAM {scenario['name']}: passed ({len(scenario.get('frames', []))} observed frames)", flush=True)
+
+    def restart_results(scenario, mode_name):
+        route = results_restart_modes(format, mode_name)
+        prior = scenario["frames"][-1]
+        previous = (prior.get("music_cue"), prior.get("music_page", 0))
+        pages = data[format["music_offset"] + 16 + 5 * 8 + 4]
+        mon.command("jpdb 1 $0f")
+        frame = wait_ready(scenario, layout["modes"][route[0]], 0, 1)
+        if route[0] == "Title":
+            previous = check_menu_music(frame, 5, previous, pages)
+            if not frame["game"]["menu_music_galactic"]:
+                raise RuntimeError("Victory did not retain Galactic Dash for the title")
+            for _ in range(3):
+                held = observe(scenario)
+                if held["game_mode"] != layout["modes"]["Title"] or held["game"]["menu_ticks"] != 0:
+                    raise RuntimeError("Held victory-dismissal FIRE escaped title or advanced its idle timer")
+                previous = check_menu_music(held, 5, previous, pages)
+            scenario["reward_title_capture"] = capture(mon, syms, output, f"{scenario['name']}-reward-title")
+            mon.command("jpdb 1 $1f")
+            previous = check_menu_music(observe(scenario), 5, previous, pages)
+            released = observe(scenario)
+            if released["game_mode"] != layout["modes"]["Title"] or released["joystick_port2"] != 31:
+                raise RuntimeError("Releasing victory-dismissal FIRE started gameplay")
+            check_menu_music(released, 5, previous, pages)
+            mon.command("jpdb 1 $0f")
+            frame = wait_ready(scenario, layout["modes"]["Playing"], 0, 1)
+            scenario["fresh_fire_returned_to_title"] = True
+            scenario["second_fresh_fire_started_run"] = True
+        expected = {"shield": 100, "lives": 3, "bombs": 3, "score": 0, "boss_started": 0, "boss_defeated": 0}
+        if frame["joystick_port2"] != 15 or any(frame["game"][name] != value for name, value in expected.items()):
+            raise RuntimeError(f"Fresh joystick FIRE did not fully reset the {mode_name} fixture")
+        scenario["restart_route"] = list(route)
+        return frame
 
     # Ordinary traces and metrics have already been finalized. Trace only the
     # core SID gate registers here; the two third voices belong to effects.
@@ -994,7 +1118,7 @@ def streaming_checks(mon, syms, failures, elf, reu, dwarf_tool, output, result):
 
     if format["medal"]:
         scenario = {"name": "natural-gold-medal-reveal", "captures": {},
-                    "note": "Seed the last mission tick with the carrier defeated; the normal win path and all 400 reveal ticks run in native code. Joystick FIRE is pressed during the reveal, held through arrival, then released and freshly pressed to restart."}
+                    "note": "Seed the last mission tick with the final boss defeated; the normal win path and all 400 reveal ticks run in native code. Joystick FIRE is pressed during the reveal and held through arrival; release/fresh presses follow the package's title/run restart flow."}
         result["scenarios"].append(scenario)
         mon.command("jpdb 1 $1f")
         observe(scenario)
@@ -1005,6 +1129,7 @@ def streaming_checks(mon, syms, failures, elf, reu, dwarf_tool, output, result):
         mon.command("jpdb 1 $0f")
         frozen = epoch = None
         music_pages = []
+        previous_music = None
         repress = 0
         for _ in range(200):
             frame = observe(scenario)
@@ -1022,13 +1147,10 @@ def streaming_checks(mon, syms, failures, elf, reu, dwarf_tool, output, result):
                 raise RuntimeError("Victory reveal did not advance exactly 400 simulation ticks")
             if any(game[name] != value for name, value in frozen.items()):
                 raise RuntimeError("Victory reveal changed the frozen ship, mission state, or resources")
-            if frame.get("music_cue") != 5 or ("music_active_cue" in frame and frame["music_active_cue"] != 5):
-                raise RuntimeError("Victory reveal interrupted the homecoming music")
-            page = frame.get("music_page", 0)
-            if music_pages and page < music_pages[-1]:
-                raise RuntimeError("Victory reveal restarted its music before the full cue loop")
-            music_pages.append(page)
             progress = game["menu_ticks"]
+            cue = victory_music_cue(format, progress)
+            previous_music = check_menu_music(frame, cue, previous_music)
+            music_pages.append({"reveal_ticks": progress, "cue": cue, "page": previous_music[1]})
             label = "hold" if progress == 400 else "approach" if progress >= 100 else "fade" if progress >= 40 else "entry"
             if label not in scenario["captures"]:
                 saved = capture(mon, syms, output, f"victory-reveal-{label}")
@@ -1067,11 +1189,7 @@ def streaming_checks(mon, syms, failures, elf, reu, dwarf_tool, output, result):
         released = observe(scenario)
         if released["game_mode"] != layout["modes"]["Victory"] or released["joystick_port2"] != 31:
             raise RuntimeError("Releasing FIRE dismissed the settled medal")
-        mon.command("jpdb 1 $0f")
-        restarted = wait_ready(scenario, layout["modes"]["Playing"], 0, 1)
-        expected = {"shield": 100, "lives": 3, "bombs": 3, "score": 0, "boss_started": 0, "boss_defeated": 0}
-        if any(restarted["game"][name] != value for name, value in expected.items()):
-            raise RuntimeError("Fresh FIRE failed to reset the mission after the medal reveal")
+        restart_results(scenario, "Victory")
         scenario["fresh_fire_restarted"] = True
         finish_capture(scenario, "victory-reveal-restarted")
 
@@ -1086,6 +1204,7 @@ def streaming_checks(mon, syms, failures, elf, reu, dwarf_tool, output, result):
         values = {"rail_ticks": final_stage*3750+1000, "mode": layout["modes"][mode_name]}
         if mode_name == "Victory" and format["medal"]:
             values["menu_ticks"] = 400
+            values.update(menu_music_fixture(format, layout["fields"], 5))
         if mode_name == "GameOver":
             values.update(shield=0, lives=0)
         seed(scenario, values)
@@ -1093,11 +1212,7 @@ def streaming_checks(mon, syms, failures, elf, reu, dwarf_tool, output, result):
         if frame["joystick_port2"] != 31:
             raise RuntimeError("Results fixture did not observe a released physical joystick")
         scenario["results_capture"] = capture(mon, syms, output, f"results-{mode_name.lower()}")
-        mon.command("jpdb 1 $0f")
-        frame = wait_ready(scenario, layout["modes"]["Playing"], 0, 1)
-        expected = {"shield": 100, "lives": 3, "bombs": 3, "score": 0, "boss_started": 0, "boss_defeated": 0}
-        if frame["joystick_port2"] != 15 or any(frame["game"][field] != value for field, value in expected.items()):
-            raise RuntimeError(f"Fresh joystick FIRE did not fully reset the {mode_name} fixture")
+        restart_results(scenario, mode_name)
         finish_capture(scenario, f"restart-{mode_name.lower()}")
     mon.command("jpdb 1 $1f")
     mon.command("log off")
@@ -1123,6 +1238,12 @@ def attract_checks(mon, syms, failures, elf, reu, dwarf_tool, output, result):
                   scenarios=[])
     data = reu.read_bytes()
     format = package_model_layout(data)
+    if format["digital"]:
+        menu_music_fixture(format, fields, 0)
+        observed += ("menu_music_galactic",)
+        result["scope"] += " Selected menu cue and SID score pages remain continuous across the tour; emulator SID substitution does not validate DAC playback."
+    expected_menu_cue = None
+    previous_menu_music = None
     tour = (0, 1, 6, 10, 12, 14, 16) if format["space"] else (0, 1, 6, 10) if format["campaign"] else (0, 1, 2, 3)
     segment_base = int.from_bytes(data[12:16], "little")
     references = [data[segment_base+i*2048:segment_base+i*2048+512] for i in range(format["count"])]
@@ -1188,6 +1309,7 @@ def attract_checks(mon, syms, failures, elf, reu, dwarf_tool, output, result):
             raise RuntimeError("Attract monitor fixture did not retain its values")
 
     def observe(scenario):
+        nonlocal previous_menu_music
         mon.run_until(syms["frame_complete"], failures)
         frame = counters(mon, syms)
         frame["game"] = read_game()
@@ -1214,6 +1336,16 @@ def attract_checks(mon, syms, failures, elf, reu, dwarf_tool, output, result):
                 or frame.get("render_segment") != section
                 or section not in frame["cache_sections"]):
             raise RuntimeError("Attract rendered a stale section or exported an inconsistent mode")
+        if format["digital"] and frame["game_mode"] in (modes["Title"], modes["Attract"]):
+            cue = 5 if frame["game"]["menu_music_galactic"] else 0
+            if expected_menu_cue is not None and cue != expected_menu_cue:
+                raise RuntimeError("Menu tune selection changed during the attract tour or a scene reset")
+            pages = data[format["music_offset"] + 16 + cue * 8 + 4]
+            if not pages:
+                raise RuntimeError("Selected menu score has no pages")
+            previous_menu_music = check_menu_music(frame, cue, previous_menu_music, pages)
+        else:
+            previous_menu_music = None
         return frame
 
     def expect_mode(scenario, mode, section=0):
@@ -1242,6 +1374,9 @@ def attract_checks(mon, syms, failures, elf, reu, dwarf_tool, output, result):
     observe(setup)
     observe(setup)
     seed(setup, {"menu_ticks": 0, "menu_activity": 0})
+    if format["digital"]:
+        expected_menu_cue = 5 if read_game()["menu_music_galactic"] else 0
+        result["selected_menu_cue"] = expected_menu_cue
     finish(setup)
 
     tour_labels = (["Lowland Approach", "Crystal Cave", "Fortress Run", "Carrier Coast"]
@@ -2597,6 +2732,9 @@ def music_checks(mon, syms, failures, elf, reu, dwarf_tool, output, result, sid_
     result.update(passed=False, monitor_assisted=True, excluded_from_timing=True,
                   scope="Each selected cue plays one complete native loop plus a page while rendering continues. DWARF-derived respawn/results/ascent fixtures hold each cue; lowlands uses physical held FIRE during play for both effects voices. Expanded four-SID scores cross 128 KiB offsets.",
                   sid_count=sid_count, selected_cues=selected_cues, scenarios=[], layout=layout)
+    if format["digital"]:
+        menu_music_fixture(format, fields, 0)
+        result["scope"] += " Title and victory are their packaged SID substitutes for this emulator run; the DLT3 tracks and DAC output are not validated."
 
     def patch(values):
         values = stage_fixture(values, layout, data)
@@ -2644,11 +2782,14 @@ def music_checks(mon, syms, failures, elf, reu, dwarf_tool, output, result, sid_
         loop_ticks = pages * 16 * row_ticks
         if cue == 0:
             fixture = {"mode": modes["Title"], "rail_ticks": 0, "menu_ticks": 0}
+            fixture.update(menu_music_fixture(format, fields, 0))
         elif cue in (5, 6):
             fixture = {"mode": modes["Victory"] if cue == 5 else modes["GameOver"],
                        "stage_id": format["count"] - 1, "rail_ticks": format["count"] * 3750,
                        "menu_ticks": 400 if cue == 5 else 0,
                        "boss_started": 1, "boss_defeated": 1}
+            if cue == 5:
+                fixture.update(menu_music_fixture(format, fields, 5))
         elif cue == 19:
             fixture = {"mode": modes["Transition"], "stage_id": 11, "rail_ticks": 12 * 3750,
                        "transition_ticks": 1, "boss_started": 1, "boss_defeated": 1,
@@ -2765,6 +2906,7 @@ def music_checks(mon, syms, failures, elf, reu, dwarf_tool, output, result, sid_
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
+    add_emulator_audio_argument(parser)
     sibling = ROOT.parent / "doomc64u"
     parser.add_argument("--video", choices=("pal", "ntsc"), default="pal")
     parser.add_argument("--vice", type=Path, default=Path(os.environ.get("VICE_BIN", sibling / "target/audit-fast/x64sc-64x")))
@@ -2862,6 +3004,8 @@ def main():
         monitor_log.unlink(missing_ok=True)  # VICE otherwise appends old sessions.
         mon.command(f'logname "{monitor_log.as_posix()}"')
         mon.command("log on")
+        report["emulator_audio"] = configure_emulator_audio(
+            mon, syms, failures, package_format, args.audio_backend)
         mon.run_until(syms["frame_complete"], failures)
         report["title"] = counters(mon, syms)
         report["title"]["capture"] = capture(mon, syms, output, "title")

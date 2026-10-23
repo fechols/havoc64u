@@ -1,0 +1,56 @@
+{
+    "source":  {
+                   "filename":  "Galactic Dash.mp3",
+                   "sha256":  "ea1964c7d517e87b966cf5898f6db8e9ab2347e9a7b00dc532b8dddf2fe5fc7f",
+                   "sample_rate":  48000,
+                   "channels":  2,
+                   "duration_seconds":  153.56
+               },
+    "conversion":  {
+                       "ffmpeg_version":  "n8.1.1-20260506",
+                       "intermediate":  "16-bit FLAC at the original 48 kHz stereo rate",
+                       "output_rate":  24000,
+                       "sample_count":  3685440,
+                       "codebook_entries":  16,
+                       "codebook_count":  521,
+                       "lloyd_iterations":  20,
+                       "bits_per_sample":  4,
+                       "crc":  "CRC-8 polynomial 0x07, initial zero, cumulative per 1024 stream bytes including final short chunk",
+                       "stereo":  "Preserve original left/right channels, resampling each with identical filter timing",
+                       "resampler":  "Second Reality 512-phase 100 dB Kaiser-windowed sinc, sequential evaluation; floating-point output retained until normalization to prevent filter-overshoot clipping",
+                       "frame_count":  3685440,
+                       "sample_count_unit":  "stereo frames",
+                       "channels":  2,
+                       "normalization":  "One constant shared gain after resampling and before quantization; target -1 dBFS; validate decoded EBU R128 true peak \u003c= -1 dBTP; reduce by excess plus 0.1 dB and re-encode, at most five attempts",
+                       "normalization_gain_db":  4.233007,
+                       "normalization_attempts":  1,
+                       "true_peak_meter":  "FFmpeg EBU R128; upper bounds include 0.0005 linear metadata rounding margin",
+                       "format":  "DLT3",
+                       "packing":  "One byte per stereo frame: low nibble left, high nibble right; codebook pairs contain left 48 bytes then right 48 bytes; even frame-count segments",
+                       "reconstruction":  "Independent signed 16-bit saturating delta accumulators, reset together at the song loop",
+                       "flac_sha256":  "fe005fc18dc31c8e770167090dc91e1fecb994bb747f762af9b53ef61241898e",
+                       "encoder_files_sha256":  {
+                                                    "encoder.rs":  "bc9dbe7b9dcdc5cbca01c79208a99435603f35a95c5dbbdd9479511e3101caa0",
+                                                    "format.rs":  "ddf5dc682c2bc9689308d703f7b59e90f6e4b9b26c39bdbcadd3d74f02b22ff1",
+                                                    "lloyd.rs":  "4421d54add65d69ef1063204481caa312ed11377e7d8eb34aca7b7e65a3547d5",
+                                                    "main.rs":  "95f4c4c77856eabab81df1b77432d360f9e7a2ef4efce69bb7ea52d1fc7ebf87",
+                                                    "normalize.rs":  "943300775b7e4826e969ee38a29d3c4dde2f47368060d5b44cfb1e696c316caf",
+                                                    "resample.rs":  "d63b75a79e5770ce7031fa45994e3bad7aa364485b630314292eac49c4654007"
+                                                }
+                   },
+    "tool_source":  {
+                        "project":  "secondreality-opt",
+                        "checkout_head":  "5f3360f74067fc9ec04301a1eb195173d63a8a1a",
+                        "license":  "Unlicense",
+                        "files_sha256":  {
+                                             "src/audio/flac_to_adpcm.rs":  "8e5ff7664ff2cbf339d5abd4114a3bddb63704f28daf3297bc46c5c7c8206105",
+                                             "src/audio/lloyd.rs":  "4421d54add65d69ef1063204481caa312ed11377e7d8eb34aca7b7e65a3547d5",
+                                             "target-c64/s64-adpcm-music/src/lib.rs":  "b17cc8771c8c2a4fdd433ee5d2cdbdfa14b2b7fc0ba4b96f0e4265f2f5fb561e"
+                                         },
+                        "note":  "Original source hashes identify the imported Second Reality algorithms and remain unchanged. The local encoder extends them with DLT3 independent stereo codebooks, floating resampling, shared normalization and decoded true-peak validation; conversion.encoder_files_sha256 identifies the implementation used for this asset."
+                    },
+    "asset_sha256":  "a28e928461c62dc6343bb02012c6c1c5cb5b51afff4f8a81fb1c1485db40ee90",
+    "decoded_pcm_sha256":  "c7132bd6701b5a940ee148722878a335fd12b60da2a37b3fd703c2ffb4ecef75",
+    "generated_metadata":  "galactic-dash.json",
+    "reference_pcm_sha256":  "2039e585f9194721719e1fbdece984dabd92901c5ef3aef6c8de88f56cd21d3c"
+}

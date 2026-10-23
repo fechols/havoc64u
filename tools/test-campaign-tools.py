@@ -112,6 +112,53 @@ class CampaignTools(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "this .*cue package"):
                 vice.music_cue_selection(count, requested)
 
+    def test_victory_fade_and_restart_flow_follow_package_generation(self):
+        digital = vice.package_model_layout(package(True, 0x534d0a00))
+        legacy = vice.package_model_layout(package(True, 0x534d0800))
+        self.assertEqual([vice.victory_music_cue(digital, tick) for tick in (0, 40, 99, 100, 400)],
+                         [20, 20, 20, 5, 5])
+        self.assertEqual([vice.victory_music_cue(legacy, tick) for tick in (0, 99, 100, 400)],
+                         [5, 5, 5, 5])
+        self.assertEqual(vice.results_restart_modes(digital, "Victory"), ("Title", "Playing"))
+        self.assertEqual(vice.results_restart_modes(legacy, "Victory"), ("Playing",))
+        for version in (legacy, digital):
+            self.assertEqual(vice.results_restart_modes(version, "GameOver"), ("Playing",))
+
+    def test_menu_fixtures_select_both_sticky_tunes_without_changing_legacy_fields(self):
+        digital = vice.package_model_layout(package(True, 0x534d0a00))
+        legacy = vice.package_model_layout(package(True, 0x534d0800))
+        fields = {"menu_music_galactic": {"type": "bool", "offset": 10}}
+        self.assertEqual(vice.menu_music_fixture(digital, fields, 0), {"menu_music_galactic": 0})
+        self.assertEqual(vice.menu_music_fixture(digital, fields, 5), {"menu_music_galactic": 1})
+        self.assertEqual(fields["menu_music_galactic"]["size"], 1)
+        self.assertEqual(vice.menu_music_fixture(legacy, {}, 0), {})
+        with self.assertRaisesRegex(RuntimeError, "menu_music_galactic"):
+            vice.menu_music_fixture(digital, {}, 0)
+        with self.assertRaisesRegex(RuntimeError, "title or victory"):
+            vice.menu_music_fixture(digital, fields, 20)
+
+    def test_menu_page_checks_allow_cue_handoff_and_loop_but_reject_restarts(self):
+        def frame(cue, page, active=None):
+            return {"music_cue": cue, "music_active_cue": cue if active is None else active,
+                    "music_page": page}
+
+        previous = vice.check_menu_music(frame(20, 2), 20)
+        # The tick-100 reward handoff intentionally starts a new cue at page 0.
+        previous = vice.check_menu_music(frame(5, 0), 5, previous)
+        self.assertEqual(previous, (5, 0))
+        for cue in (0, 5):
+            previous = None
+            for page in (0, 0, 1, 2, 3, 0, 1):
+                previous = vice.check_menu_music(frame(cue, page), cue, previous, 4)
+            for invalid in (frame(cue, 0), frame(cue, 3), frame(cue, 4)):
+                with self.assertRaisesRegex(RuntimeError, "restarted|skipped|out-of-range"):
+                    vice.check_menu_music(invalid, cue, previous, 4)
+            for invalid in (frame(20, 1), frame(cue, 1, 20)):
+                with self.assertRaisesRegex(RuntimeError, "wrong cue"):
+                    vice.check_menu_music(invalid, cue, previous, 4)
+        with self.assertRaisesRegex(RuntimeError, "restarted"):
+            vice.check_menu_music(frame(5, 0), 5, (5, 1))
+
     def test_versions_and_boss_overlay_aliases(self):
         self.assertEqual(vice.package_model_layout(package(False))["count"], 12)
         self.assertEqual(vice.package_model_layout(package(True))["count"], 18)
@@ -149,7 +196,9 @@ class CampaignTools(unittest.TestCase):
                                 for page, offset in legacy["overlay_offsets"].items()))
 
     def test_package_size_validation_rejects_truncated_extended_and_wrong_capacity_images(self):
-        for version, expected_size, wrong_size in ((0x534d0800, 0x100000, 0x1000000),
+        for version, expected_size, wrong_size in ((0x534d0a00, 0x1000000, 0x800000),
+                                                   (0x534d0900, 0x800000, 0x100000),
+                                                   (0x534d0800, 0x100000, 0x1000000),
                                                    (0x534d0700, 0x1000000, 0x100000)):
             data = package(True, version)
             data.extend(bytes(expected_size - len(data)))
@@ -160,6 +209,19 @@ class CampaignTools(unittest.TestCase):
         for invalid in (b"", b"SM64", package(True)[:17]):
             with self.assertRaisesRegex(RuntimeError, "Expected supported package"):
                 vice.package_model_layout(invalid, validate_size=True)
+
+    def test_digital_package_keeps_compact_game_offsets_and_expands_reu(self):
+        current = vice.package_model_layout(package(True, 0x534d0a00))
+        mono = vice.package_model_layout(package(True, 0x534d0900))
+        previous = vice.package_model_layout(package(True, 0x534d0800))
+        self.assertTrue(current["digital"])
+        self.assertFalse(previous["digital"])
+        self.assertTrue(mono["digital"])
+        self.assertEqual(mono["reu_size"], 0x800000)
+        self.assertEqual(current["reu_size"], 0x1000000)
+        self.assertEqual(current["music_offset"], 0xc0000)
+        self.assertEqual(current["overlay_offsets"], previous["overlay_offsets"])
+        self.assertEqual(current["overlay_offsets"], mono["overlay_offsets"])
 
     def test_last_stage_clock_exceeds_old_absolute_limit_without_wrapping(self):
         values = vice.stage_fixture({"stage_id": 17, "rail_ticks": 17 * 3750 + 2600},

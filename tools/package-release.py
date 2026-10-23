@@ -41,22 +41,29 @@ def release_contents(package_dir, root=ROOT):
     config = configparser.ConfigParser(interpolation=None)
     config.read_string(contents["havoc.cfg"].decode("utf-8"))
     expected = {
+        "C64 and Cartridge Settings": {
+            "RAM Expansion Unit": "Enabled", "REU Size": "16 MB",
+            "Map Ultimate Audio $DF20-DFFF": "Enabled",
+        },
         "SID Addressing": {
             "SID Socket 1 Address": "Unmapped", "SID Socket 2 Address": "Unmapped",
             "UltiSID 1 Address": "$D400", "UltiSID 2 Address": "$D420",
             "UltiSID Range Split": "1/2 (A6)", "Auto Address Mirroring": "Disabled",
         },
-        "Audio Mixer": {"Vol Socket 1": "OFF", "Vol Socket 2": "OFF"},
+        "Audio Mixer": {"Vol Socket 1": "OFF", "Vol Socket 2": "OFF",
+                        "Vol Sampler L": "0 dB", "Vol Sampler R": "0 dB",
+                        "Pan Sampler L": "Left 3", "Pan Sampler R": "Right 3"},
     }
     for section, entries in expected.items():
         for key, value in entries.items():
             if config.get(section, key, fallback=None) != value:
-                raise ValueError(f"Four-UltiSID configuration requires {key}={value}")
+                raise ValueError(f"Ultimate audio configuration requires {key}={value}")
     prg, reu = contents["havoc.prg"], contents["havoc.reu"]
     if len(prg) <= 2 or prg[:2] != b"\x01\x08":
         raise ValueError("Expected a native PRG loading at $0801")
-    if len(reu) != 1024 * 1024 or reu[:4] != b"SM64" or reu[17] != 4:
-        raise ValueError("Expected a 1 MiB four-SID REU package")
+    if (len(reu) != 16 * 1024 * 1024 or reu[:4] != b"SM64" or reu[17] != 4
+            or int.from_bytes(reu[4:8], "little") != 0x534d0a00):
+        raise ValueError("Expected a v10 16 MiB four-SID REU package")
     return contents
 
 

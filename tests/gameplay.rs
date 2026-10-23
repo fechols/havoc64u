@@ -138,15 +138,18 @@ fn attract_waits_fifteen_seconds_then_previews_each_section_and_returns_to_title
     advance(&mut game, &sections, 1);
     for section in [0, 1, 6, 10, 12, 14, 16] {
         assert_eq!(game.hud().mode, Mode::Attract);
+        assert_eq!(game.music_state(), havoc::audio::MusicState::Title);
         assert_eq!(game.hud().section, section);
         assert_eq!(game.hud().distance, 0);
         advance(&mut game, &sections, 749);
         assert_eq!(game.hud().mode, Mode::Attract);
+        assert_eq!(game.music_state(), havoc::audio::MusicState::Title);
         assert_eq!(game.hud().section, section);
         assert_eq!(game.hud().distance, 5992);
         advance(&mut game, &sections, 1);
     }
     assert_eq!(game.hud().mode, Mode::Title);
+    assert_eq!(game.music_state(), havoc::audio::MusicState::Title);
     assert_eq!(game.hud().distance, 0);
     advance(&mut game, &sections, 749);
     assert_eq!(game.hud().mode, Mode::Title);
@@ -191,10 +194,12 @@ fn every_attract_wake_input_is_consumed_and_a_fresh_fire_starts_a_clean_run() {
         assert_eq!(game.hud().boss_shield, 0);
         advance(&mut game, &sections, 800);
         assert_eq!(game.hud().mode, Mode::Title, "held input {wake}");
+        assert_eq!(game.music_state(), havoc::audio::MusicState::Title);
         input(&mut game, 0, 82_000);
         input(&mut game, FIRE, 82_020);
         advance(&mut game, &sections, 1);
         assert_eq!(game.hud().mode, Mode::Playing);
+        assert_eq!(game.music_state(), havoc::audio::MusicState::Lowlands);
         assert_eq!(game.hud().distance, 0);
         assert_eq!(game.hud().score, 0);
         assert_eq!(game.hud().shield, 100);

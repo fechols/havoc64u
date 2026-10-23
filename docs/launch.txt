@@ -1,8 +1,9 @@
 H.A.V.O.C. - Heavy Assault Vessel: Orbital Combat
 
-Requires a C64 Ultimate at 64 MHz with 1 MiB of REU memory and a joystick
+Requires a C64 Ultimate at 64 MHz with 16 MiB of REU memory and a joystick
 connected to port 2. The supplied configuration enables four built-in SID
-instances using UltiSID range splitting. No physical SID chips are needed.
+instances using UltiSID range splitting, plus Ultimate Audio for normalized
+stereo title, attract and victory music. No physical SID chips are needed.
 
 Launch
 1. Copy havoc.cfg, havoc.reu, and havoc.prg to the Ultimate's storage.
@@ -18,7 +19,19 @@ at zero before running its PRG again.
 Turn your joystick's hardware autofire off. The game supplies its own autofire;
 controller-generated fire pulses can accidentally spend your bombs.
 
+Hammond Rocker plays continuously on the title and throughout the attract tour.
+The final gold-medal reveal starts Galactic Dash. Release fire, then press it
+to return to the title with Galactic Dash still playing.
+Secret preview: CTRL + C= (Commodore) + DEL toggles the two digital songs on
+the title or in attract mode, even before winning. Hold CTRL and C= and tap
+DEL again to switch back. Each song starts from the beginning; the selection
+stays until you switch again, complete the campaign, or reload the game.
+Starting a game switches to the four-SID score and gameplay effects.
+
 Controls and troubleshooting:
 https://github.com/fechols/havoc64u
 
 Original game, music, models, and tools. See LICENSE for the MIT License.
+
+The digital title and victory music tracks, Hammond Rocker and Galactic Dash,
+were provided by William Echols under the MIT License.

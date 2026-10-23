@@ -1,0 +1,56 @@
+{
+    "source":  {
+                   "filename":  "Hammond Rocker.mp3",
+                   "sha256":  "6df67797f001d101814aa0b7b003a5a8a630f04826819236b690dc5551caf6f6",
+                   "sample_rate":  48000,
+                   "channels":  2,
+                   "duration_seconds":  209.92
+               },
+    "conversion":  {
+                       "ffmpeg_version":  "n8.1.1-20260506",
+                       "intermediate":  "16-bit FLAC at the original 48 kHz stereo rate",
+                       "output_rate":  24000,
+                       "sample_count":  5038080,
+                       "codebook_entries":  16,
+                       "codebook_count":  521,
+                       "lloyd_iterations":  20,
+                       "bits_per_sample":  4,
+                       "crc":  "CRC-8 polynomial 0x07, initial zero, cumulative per 1024 stream bytes including final short chunk",
+                       "stereo":  "Preserve original left/right channels, resampling each with identical filter timing",
+                       "resampler":  "Second Reality 512-phase 100 dB Kaiser-windowed sinc, sequential evaluation; floating-point output retained until normalization to prevent filter-overshoot clipping",
+                       "frame_count":  5038080,
+                       "sample_count_unit":  "stereo frames",
+                       "channels":  2,
+                       "normalization":  "One constant shared gain after resampling and before quantization; target -1 dBFS; validate decoded EBU R128 true peak \u003c= -1 dBTP; reduce by excess plus 0.1 dB and re-encode, at most five attempts",
+                       "normalization_gain_db":  2.887157,
+                       "normalization_attempts":  1,
+                       "true_peak_meter":  "FFmpeg EBU R128; upper bounds include 0.0005 linear metadata rounding margin",
+                       "format":  "DLT3",
+                       "packing":  "One byte per stereo frame: low nibble left, high nibble right; codebook pairs contain left 48 bytes then right 48 bytes; even frame-count segments",
+                       "reconstruction":  "Independent signed 16-bit saturating delta accumulators, reset together at the song loop",
+                       "flac_sha256":  "378bc7b87a4a125288cef078a835181f07fedfc87e2d999ccfb5c614d65c564e",
+                       "encoder_files_sha256":  {
+                                                    "encoder.rs":  "bc9dbe7b9dcdc5cbca01c79208a99435603f35a95c5dbbdd9479511e3101caa0",
+                                                    "format.rs":  "ddf5dc682c2bc9689308d703f7b59e90f6e4b9b26c39bdbcadd3d74f02b22ff1",
+                                                    "lloyd.rs":  "4421d54add65d69ef1063204481caa312ed11377e7d8eb34aca7b7e65a3547d5",
+                                                    "main.rs":  "95f4c4c77856eabab81df1b77432d360f9e7a2ef4efce69bb7ea52d1fc7ebf87",
+                                                    "normalize.rs":  "943300775b7e4826e969ee38a29d3c4dde2f47368060d5b44cfb1e696c316caf",
+                                                    "resample.rs":  "d63b75a79e5770ce7031fa45994e3bad7aa364485b630314292eac49c4654007"
+                                                }
+                   },
+    "tool_source":  {
+                        "project":  "secondreality-opt",
+                        "checkout_head":  "5f3360f74067fc9ec04301a1eb195173d63a8a1a",
+                        "license":  "Unlicense",
+                        "files_sha256":  {
+                                             "src/audio/flac_to_adpcm.rs":  "8e5ff7664ff2cbf339d5abd4114a3bddb63704f28daf3297bc46c5c7c8206105",
+                                             "src/audio/lloyd.rs":  "4421d54add65d69ef1063204481caa312ed11377e7d8eb34aca7b7e65a3547d5",
+                                             "target-c64/s64-adpcm-music/src/lib.rs":  "b17cc8771c8c2a4fdd433ee5d2cdbdfa14b2b7fc0ba4b96f0e4265f2f5fb561e"
+                                         },
+                        "note":  "Original source hashes identify the imported Second Reality algorithms and remain unchanged. The local encoder extends them with DLT3 independent stereo codebooks, floating resampling, shared normalization and decoded true-peak validation; conversion.encoder_files_sha256 identifies the implementation used for this asset."
+                    },
+    "asset_sha256":  "fef71d8e49cec3504674d55528b5740c472dae46211110a47ae30308e809694d",
+    "decoded_pcm_sha256":  "7d75aa7bb4b2c374030a419a2f2863c3d1e14490621710436b2928c4f3cb1ea3",
+    "generated_metadata":  "hammond-rocker.json",
+    "reference_pcm_sha256":  "e2fad983c0c6a77de03e1ea56275ecacb65dcd7652d1e4305fb37c714d236477"
+}

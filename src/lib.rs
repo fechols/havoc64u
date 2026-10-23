@@ -8,6 +8,8 @@ extern crate std;
 pub mod assets;
 pub mod audio;
 pub mod cells;
+pub mod digital;
+pub mod digital_clock;
 pub mod game;
 pub mod hud;
 pub mod hud_sprites;

@@ -77,6 +77,9 @@ def wav_metrics(path, seconds):
 
 def main():
     sibling = ROOT.parent / "doomc64u"
+    spec = importlib.util.spec_from_file_location("havoc_smoke", ROOT / "tools/vice-smoke.py")
+    smoke = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(smoke)
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--package-dir", type=Path, default=ROOT / "dist")
     parser.add_argument("--out-dir", type=Path)
@@ -85,10 +88,8 @@ def main():
     parser.add_argument("--vice", type=Path, default=Path(os.environ.get("VICE_BIN", sibling / "target/audit-fast/x64sc-64x")))
     parser.add_argument("--roms", type=Path, default=sibling / "target/tools/secondreality/vice/data")
     parser.add_argument("--llvm-nm", type=Path, default=Path(os.environ.get("LLVM_MOS", Path.home() / ".local/llvm-mos")) / "bin/llvm-nm")
+    smoke.add_emulator_audio_argument(parser)
     args = parser.parse_args()
-    spec = importlib.util.spec_from_file_location("havoc_smoke", ROOT / "tools/vice-smoke.py")
-    smoke = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(smoke)
     package = args.package_dir.resolve()
     elf, reu, prg = (package / f"havoc.{suffix}" for suffix in ("elf", "reu", "prg"))
     data = reu.read_bytes()
@@ -159,6 +160,8 @@ def main():
             mon.command("sidefx off")
             for address in failures:
                 mon.command(f"break exec {address:04x}")
+            report["emulator_audio"] = smoke.configure_emulator_audio(
+                mon, syms, failures, package_format, args.audio_backend)
             mon.run_until(syms["frame_complete"], failures)
 
             def patch(values):

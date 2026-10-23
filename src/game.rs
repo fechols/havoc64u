@@ -350,6 +350,8 @@ pub struct Game {
     ticks: u16,
     menu_ticks: u16,
     menu_activity: bool,
+    /// Menu track selection survives scene resets; victory selects Galactic.
+    menu_music_galactic: bool,
     audio_head: u8,
     audio_len: u8,
     spawn_cursor: u8,
@@ -415,6 +417,7 @@ impl Game {
             ticks: 0,
             menu_ticks: 0,
             menu_activity: false,
+            menu_music_galactic: false,
             actors: [Actor::EMPTY; ACTORS],
             shots: [Shot::EMPTY; SHOTS],
             missile_targets: [0; SHOTS / 2],
@@ -603,7 +606,7 @@ impl Game {
     #[inline(never)]
     #[cfg_attr(target_arch = "mos", link_section = ".phase.scenery")]
     pub fn scenery_camera_y(&self) -> i16 {
-        chase_camera_y(self.mode, self.player.y)
+        scene_camera_y(self.mode, self.player.y, self.ticks)
     }
     /// Sky color follows the active mission section in every camera mode.
     #[inline(never)]
@@ -641,12 +644,29 @@ impl Game {
             victory_ticks: self.victory_ticks(),
         }
     }
+    /// Switch menu tracks without affecting the scene or its inactivity timer.
+    /// Inlined so the native PIXELS keyboard scan needs no other overlay.
+    #[inline(always)]
+    pub fn toggle_menu_music(&mut self) {
+        if matches!(self.mode, Mode::Title | Mode::Attract) {
+            self.menu_music_galactic = !self.menu_music_galactic;
+        }
+    }
     #[inline(never)]
     #[cfg_attr(target_arch = "mos", link_section = ".phase.sim")]
     pub fn music_state(&self) -> MusicState {
         match self.mode {
-            Mode::Title => MusicState::Title,
-            Mode::Victory => MusicState::Victory,
+            // The title and complete attract tour share one uninterrupted track.
+            Mode::Title | Mode::Attract => {
+                if self.menu_music_galactic {
+                    MusicState::Victory
+                } else {
+                    MusicState::Title
+                }
+            }
+            // Keep the final battle music through the fade, then start the
+            // reward track with the first visible medal frame.
+            Mode::Victory if self.menu_ticks >= crate::victory::FADE_TICKS => MusicState::Victory,
             Mode::GameOver => MusicState::Defeat,
             Mode::Transition if self.stage_info.bridge_profile == 3 => {
                 MusicState::from_cue(19).unwrap()
@@ -720,7 +740,9 @@ impl Game {
     fn reset_scene(&mut self, mode: Mode, stage_id: u8, stage_ticks: u16) {
         let bits = self.controls.bits;
         let now = self.controls.now;
+        let menu_music_galactic = self.menu_music_galactic;
         self.reset_in_place();
+        self.menu_music_galactic = menu_music_galactic;
         self.presentation_event = PresentationEvent::Reset;
         self.mode = mode;
         self.stage_ticks = stage_ticks;
@@ -891,6 +913,7 @@ impl Game {
             && self.boss_defeated
         {
             self.mode = Mode::Victory;
+            self.menu_music_galactic = true;
             self.menu_ticks = 0;
             self.shots = [Shot::EMPTY; SHOTS];
             self.missile_targets = [0; SHOTS / 2];
@@ -994,7 +1017,11 @@ impl Game {
             // result screen. A held fire button cannot skip or restart it.
             self.menu_ticks += 1;
         } else if self.controls.start_pending {
-            self.reset_run();
+            if self.mode == Mode::Victory {
+                self.reset_scene(Mode::Title, 0, 0);
+            } else {
+                self.reset_run();
+            }
         }
         self.controls.clear_pending();
     }
@@ -1981,10 +2008,10 @@ impl Game {
             count: 0,
             limit: foreground_limit.min(174),
             // An elevated chase camera separates the nearby ship from targets
-            // on its firing line. Keep the title's original showcase framing.
+            // on its firing line. Menus float around their authored framing.
             // Follow a quarter of vertical movement so the lowest banked hull
             // stays above the cockpit while neutral targets remain exposed.
-            camera_y: chase_camera_y(self.mode, self.player.y),
+            camera_y: scene_camera_y(self.mode, self.player.y, self.ticks),
             color_override: 0,
             extra_flags: 0,
         };
@@ -2257,14 +2284,19 @@ impl Game {
     }
     /// A slight camera pan toward the ship: the far backdrop drifts opposite
     /// to its sideways movement and dips as it climbs, nearer clouds more than
-    /// the horizon. Title and map tours keep their authored framing. The
+    /// the horizon. Title and map tours drift independently of the ship. The
     /// arithmetic shift is exact enough and far cheaper than a signed divide;
     /// outlined because inlining it bloats the GEOMETRY frame driver.
     #[inline(never)]
     #[cfg_attr(target_arch = "mos", link_section = ".phase.geometry")]
     pub fn sky_parallax(&self) -> [i16; 2] {
         if matches!(self.mode, Mode::Title | Mode::Attract) {
-            [0, 0]
+            // One horizontal cycle takes 512 ticks (10.24 s); the smaller
+            // vertical float takes 1024 ticks (20.48 s), on both PAL and NTSC.
+            [
+                crate::math::sin8((self.ticks >> 1) as u8) >> 2,
+                crate::math::sin8((self.ticks >> 2) as u8) >> 5,
+            ]
         } else {
             [self.player.x, self.player.y >> 1]
         }
@@ -2473,9 +2505,11 @@ fn camera_point(p: Vec3, camera_y: i16) -> Vec3 {
     }
 }
 #[inline(never)]
-fn chase_camera_y(mode: Mode, player_y: i16) -> i16 {
-    if mode == Mode::Title {
-        0
+// Resident: both SCENERY and GEOMETRY call this with their own overlay loaded.
+fn scene_camera_y(mode: Mode, player_y: i16, ticks: u16) -> i16 {
+    if matches!(mode, Mode::Title | Mode::Attract) {
+        let base = if mode == Mode::Title { 0 } else { 40 };
+        base + (crate::math::sin8((ticks >> 2) as u8) >> 6)
     } else {
         40 + player_y / 4
     }

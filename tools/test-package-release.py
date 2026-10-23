@@ -12,7 +12,11 @@ SPEC = importlib.util.spec_from_file_location("package_release", Path(__file__).
 release = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(release)
 
-CONFIG = b"""[SID Addressing]
+CONFIG = b"""[C64 and Cartridge Settings]
+RAM Expansion Unit=Enabled
+REU Size=16 MB
+Map Ultimate Audio $DF20-DFFF=Enabled
+[SID Addressing]
 SID Socket 1 Address=Unmapped
 SID Socket 2 Address=Unmapped
 UltiSID 1 Address=$D400
@@ -22,6 +26,10 @@ Auto Address Mirroring=Disabled
 [Audio Mixer]
 Vol Socket 1=OFF
 Vol Socket 2=OFF
+Vol Sampler L= 0 dB
+Vol Sampler R= 0 dB
+Pan Sampler L=Left 3
+Pan Sampler R=Right 3
 """
 
 
@@ -37,8 +45,9 @@ class ReleasePackageTests(unittest.TestCase):
         (self.root / "config/havoc.cfg").write_bytes(CONFIG)
         (self.package / "havoc.cfg").write_bytes(CONFIG)
         (self.package / "havoc.prg").write_bytes(b"\x01\x08native fixture")
-        reu = bytearray(1024 * 1024)
+        reu = bytearray(16 * 1024 * 1024)
         reu[:4] = b"SM64"
+        reu[4:8] = (0x534d0a00).to_bytes(4, "little")
         reu[17] = 4
         (self.package / "havoc.reu").write_bytes(reu)
         (self.root / "docs/launch.txt").write_bytes(b"Launch instructions\n")
@@ -70,7 +79,9 @@ class ReleasePackageTests(unittest.TestCase):
     def test_rejects_two_sid_wrong_size_and_wrong_magic_reu(self):
         path = self.package / "havoc.reu"
         original = path.read_bytes()
-        for data in (original[:17] + b"\x02" + original[18:], original[:-1], b"NOPE" + original[4:]):
+        obsolete = original[:4] + (0x534d0900).to_bytes(4, "little") + original[8:]
+        for data in (original[:17] + b"\x02" + original[18:], original[:-1],
+                     original[:8 * 1024 * 1024], b"NOPE" + original[4:], obsolete):
             with self.subTest(length=len(data), header=data[:18]):
                 path.write_bytes(data)
                 with self.assertRaisesRegex(ValueError, "four-SID REU"):
@@ -99,6 +110,21 @@ class ReleasePackageTests(unittest.TestCase):
         (self.root / "docs/launch.txt").write_bytes(b"")
         with self.assertRaisesRegex(ValueError, "empty"):
             self.build()
+
+    def test_rejects_disabled_sampler_and_insufficient_reu_configuration(self):
+        for old, new, message in (
+                (b"REU Size=16 MB", b"REU Size=8 MB", "REU Size"),
+                (b"Map Ultimate Audio $DF20-DFFF=Enabled", b"Map Ultimate Audio $DF20-DFFF=Disabled", "Map Ultimate Audio"),
+                (b"Vol Sampler L= 0 dB", b"Vol Sampler L=OFF", "Vol Sampler L"),
+                (b"Vol Sampler R= 0 dB", b"Vol Sampler R=OFF", "Vol Sampler R"),
+                (b"Pan Sampler L=Left 3", b"Pan Sampler L=Center", "Pan Sampler L"),
+                (b"Pan Sampler R=Right 3", b"Pan Sampler R=Left 3", "Pan Sampler R")):
+            with self.subTest(setting=message):
+                data = CONFIG.replace(old, new)
+                (self.package / "havoc.cfg").write_bytes(data)
+                (self.root / "config/havoc.cfg").write_bytes(data)
+                with self.assertRaisesRegex(ValueError, message):
+                    self.build()
 
     def test_failed_archive_verification_preserves_previous_zip_and_cleans_temporary(self):
         output = self.build()

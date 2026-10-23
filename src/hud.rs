@@ -120,7 +120,7 @@ fn victory(band: u8, canvas: &mut impl Canvas, hud: &Hud, frame: u16) -> bool {
             band,
             canvas,
             190,
-            b"FIRE: FLY AGAIN",
+            b"FIRE: TITLE SCREEN",
             if frame & 16 == 0 { 1 } else { 7 },
         );
     }
@@ -149,6 +149,7 @@ fn title(band: u8, canvas: &mut impl Canvas, frame: u16) -> bool {
     centered(band, canvas, 155, b"RELEASE: CHARGE", 15);
     centered(band, canvas, 164, b"DOUBLE FIRE: BOMB", 15);
     centered(band, canvas, 173, b"DOUBLE LEFT/RIGHT: ROLL", 15);
+    centered(band, canvas, 181, b"DIGITAL MUSIC BY WILLIAM ECHOLS", 12);
     centered(band, canvas, 189, b"PUSH FIRE TO LAUNCH", blink(frame));
     true
 }

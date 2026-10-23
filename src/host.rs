@@ -1,6 +1,12 @@
 //! Original assets and portable package tools. Never linked into the C64 game.
-use havoc::{assets::*, music, soundtrack};
+use havoc::{assets::*, digital, music, soundtrack};
 use std::{boxed::Box, format, fs, path::Path, println, vec, vec::Vec};
+
+/// Reproducible compressed source; the large MP3 is not required to build.
+pub const DIGITAL_TRACKS: [(digital::Track, &[u8]); 2] = [
+    (digital::Track::GalacticDash, include_bytes!("../assets/music/galactic-dash.dlt")),
+    (digital::Track::HammondRocker, include_bytes!("../assets/music/hammond-rocker.dlt")),
+];
 
 /// All campaign choices are authored here and baked into independently checked
 /// model/encounter pages. None of this table enters the resident game image.
@@ -1634,6 +1640,19 @@ pub fn bake(out: &Path) -> Result<(), Box<dyn std::error::Error>> {
     reu[COMMON_OFFSET as usize..COMMON_OFFSET as usize + COMMON_SIZE].copy_from_slice(&common);
     let score = soundtrack::score_bank();
     reu[MUSIC_OFFSET as usize..MUSIC_OFFSET as usize + score.len()].copy_from_slice(&score);
+    for (track, bytes) in DIGITAL_TRACKS {
+        digital::validate_asset(bytes, track).map_err(|e| format!("digital {track:?}: {e:?}"))?;
+        let start = track.descriptor().asset_offset as usize;
+        let limit = if track == digital::Track::GalacticDash {
+            DIGITAL_VICTORY_OFFSET
+        } else {
+            DIGITAL_RING_OFFSET
+        } as usize;
+        if start + bytes.len() > limit {
+            return Err(format!("digital {track:?} exceeds its REU reservation").into());
+        }
+        reu[start..start + bytes.len()].copy_from_slice(bytes);
+    }
     for i in 0..SEGMENT_COUNT {
         let model = model_bank(i);
         let model_start = MODEL_BANKS_OFFSET as usize + i as usize * MODEL_SIZE;
@@ -1655,7 +1674,7 @@ pub fn bake(out: &Path) -> Result<(), Box<dyn std::error::Error>> {
         out.join("havoc.cfg"),
         include_str!("../config/havoc.cfg"),
     )?;
-    let mut report = format!("H.A.V.O.C. package {PACKAGE_ID:08X}\n1 MiB REU; common {COMMON_OFFSET:06X} (3072 bytes; 2048 resident model bytes); eighteen checked 2048-byte stage model banks at {MODEL_BANKS_OFFSET:06X}; 64-byte model directory at {MODEL_DIRECTORY_OFFSET:06X}; eighteen 2048-byte segments at {SEGMENTS_OFFSET:06X}, each with a checksummed 512-byte runtime prefix (up to 62 encounters)\nEighteen 75-second stages, seventeen 8-second crossings: 24:46 scheduled gameplay plus victory reveal. Five bosses: Gorge Warden, Citadel Heart, Carrier, Dreadnought, Gate Guardian.\nFour enemy movement families with distinct terrestrial and orbital meshes; authored three-dimensional debris fields and an orbital ascent.\n{} SIDs: {} music voices + 2 effects voices. {} original cues; {} bytes of paged score data at {MUSIC_OFFSET:06X}.\nOriginal models and music; no external ROMs or samples.\n", music::SID_COUNT, music::MUSIC_VOICES, music::CUE_COUNT, score.len());
+    let mut report = format!("H.A.V.O.C. package {PACKAGE_ID:08X}\n16 MiB REU; common {COMMON_OFFSET:06X} (3072 bytes; 2048 resident model bytes); eighteen checked 2048-byte stage model banks at {MODEL_BANKS_OFFSET:06X}; 64-byte model directory at {MODEL_DIRECTORY_OFFSET:06X}; eighteen 2048-byte segments at {SEGMENTS_OFFSET:06X}, each with a checksummed 512-byte runtime prefix (up to 62 encounters)\nEighteen 75-second stages, seventeen 8-second crossings: 24:46 scheduled gameplay plus victory reveal. Five bosses: Gorge Warden, Citadel Heart, Carrier, Dreadnought, Gate Guardian.\nFour enemy movement families with distinct terrestrial and orbital meshes; authored three-dimensional debris fields and an orbital ascent.\n{} SIDs: {} music voices + 2 effects voices. {} original cues; {} bytes of paged score data at {MUSIC_OFFSET:06X}.\nHammond Rocker title/attract music at $500000 and Galactic Dash victory/title/attract music at $100000: 24 kHz stereo compressed DLT3; shared mutable 128 KiB PCM ring at $FE0000.\n", music::SID_COUNT, music::MUSIC_VOICES, music::CUE_COUNT, score.len());
     for (index, design) in CAMPAIGN.iter().enumerate() {
         report.push_str(&format!(
             "{:02}. {}: theme {}, enemy profile {}, boss {}, music {}\n",
@@ -1677,9 +1696,24 @@ pub fn bake(out: &Path) -> Result<(), Box<dyn std::error::Error>> {
 }
 pub fn check_package(reu: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
     if reu.len() != REU_SIZE as usize {
-        return Err(format!("REU must contain exactly {REU_SIZE} bytes (1 MiB)").into());
+        return Err(format!("REU must contain exactly {REU_SIZE} bytes (16 MiB)").into());
     }
     validate_header(reu).map_err(|e| format!("package header: {e:?}"))?;
+    for (track, _) in DIGITAL_TRACKS {
+        let descriptor = track.descriptor();
+        let start = descriptor.asset_offset as usize;
+        let end = start + descriptor.asset_bytes as usize;
+        let limit = if track == digital::Track::GalacticDash {
+            DIGITAL_VICTORY_OFFSET
+        } else {
+            DIGITAL_RING_OFFSET
+        } as usize;
+        if end > limit {
+            return Err(format!("digital {track:?} overlaps the next reservation").into());
+        }
+        digital::validate_asset(&reu[start..end], track)
+            .map_err(|e| format!("digital {track:?}: {e:?}"))?;
+    }
     let common = &reu[COMMON_OFFSET as usize..COMMON_OFFSET as usize + COMMON_SIZE];
     let bank = AssetBank::new(common).map_err(|e| format!("common bank: {e:?}"))?;
     if bank.level() != 0 {

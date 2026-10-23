@@ -9,7 +9,17 @@ pub const SEGMENT_CACHE_SIZE: usize = 512;
 pub const MAX_SEGMENT_SPAWNS: u8 = 62;
 pub const SEGMENT_COUNT: u8 = 18;
 pub const SEGMENT_DISTANCE: u32 = 30_000;
-pub const REU_SIZE: u32 = 0x100000;
+pub const REU_SIZE: u32 = crate::digital::REU_SIZE;
+/// Legacy reservation name: Galactic Dash follows the unchanged first MiB.
+/// Playback roles are selected by the backend, independently of asset order.
+pub const DIGITAL_MUSIC_OFFSET: u32 = crate::digital::ASSET_OFFSET;
+/// Legacy reservation name for Hammond Rocker, now the initial title track.
+pub const DIGITAL_VICTORY_OFFSET: u32 = crate::digital::HAMMOND_OFFSET;
+/// Mutable stereo PCM ring, written by the foreground decoder during playback.
+pub const DIGITAL_RING_OFFSET: u32 = crate::digital::RING_OFFSET;
+pub const DIGITAL_RING_SIZE: u32 = crate::digital::RING_BYTES;
+pub const DIGITAL_MUSIC_CAPACITY: u32 = DIGITAL_VICTORY_OFFSET - DIGITAL_MUSIC_OFFSET;
+pub const DIGITAL_VICTORY_CAPACITY: u32 = DIGITAL_RING_OFFSET - DIGITAL_VICTORY_OFFSET;
 pub const COMMON_OFFSET: u32 = 0x1000;
 pub const SEGMENTS_OFFSET: u32 = 0x2000;
 pub const MUSIC_OFFSET: u32 = 0x0c0000;
@@ -28,10 +38,12 @@ pub const MODEL_COUNT: u8 = 9;
 pub const ENEMY_SPECS_OFFSET: usize = 16 + MODEL_COUNT as usize * 8;
 pub const ENEMY_SPEC_SIZE: usize = 8;
 pub const MODEL_DATA_OFFSET: usize = ENEMY_SPECS_OFFSET + 3 * ENEMY_SPEC_SIZE;
-// Version 8 packs code and music into a 1 MiB REU without changing bank formats.
+// Version 10 preserves stereo digital tracks in a 16 MiB REU with a 128 KiB PCM ring.
+// Version 9 added mono digital tracks and a mutable PCM ring in an 8 MiB REU.
+// Version 8 packed code and music into the unchanged first MiB.
 // Version 7 stores mesh vertices as i8 with a per-mesh shift (SMA4 banks);
 // version 6 extended the checked campaign through orbital combat and the gate.
-pub const PACKAGE_ID: u32 = 0x534D0800;
+pub const PACKAGE_ID: u32 = 0x534D0A00;
 pub const PLAYER: u8 = 0;
 pub const FIGHTER: u8 = 1;
 pub const DIVER: u8 = 2;
@@ -622,7 +634,7 @@ impl<'a> Segment<'a> {
     }
 }
 
-/// DMA chunks never wrap REU's 512 KiB pages, installed 1 MiB, or CPU RAM.
+/// DMA chunks never wrap REU's 512 KiB pages, installed memory, or CPU RAM.
 pub fn dma_chunk(reu: u32, cpu: u16, remaining: u16) -> u16 {
     if remaining == 0 || reu >= REU_SIZE as u32 {
         return 0;

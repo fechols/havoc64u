@@ -462,11 +462,15 @@ def main():
     parser.add_argument("--compare", type=Path, help="matching baseline report.json")
     parser.add_argument("--pixel-identity", action="store_true",
                         help="compare decoded pixels instead of raw bitmap/attribute bytes (cell slot order may differ)")
+    vice.add_emulator_audio_argument(parser)
     args = parser.parse_args()
     output, package = args.out_dir.resolve(), args.package_dir.resolve()
     output.mkdir(parents=True, exist_ok=True)
     package_image = (package/"havoc.reu").read_bytes()
     package_format = vice.package_model_layout(package_image, validate_size=True)
+    if package_format["digital"] and args.audio_backend == "native":
+        parser.error("digital-package benchmark fixtures require --audio-backend sid; "
+                     "their AudioEngine snapshots cannot restore DAC state")
     sid_count = package_image[17]
     chosen = [fixture for fixture in fixtures(package_format["medal"], package_format["campaign"], package_format["space"])
               if args.fixtures == "all" or fixture["name"] in args.fixtures.split(",")]
@@ -538,6 +542,8 @@ def main():
         mon.command("sidefx off")
         for address in failures:
             mon.command(f"break exec {address:04x}")
+        report["emulator_audio"] = vice.configure_emulator_audio(
+            mon, syms, failures, package_format, args.audio_backend)
         mon.run_until(syms["benchmark_frame_begin"], failures)
         mon.command("bank ram")
         initial_game = mon.read(game_address, layouts.size("Game"))
@@ -561,6 +567,31 @@ def main():
 
         def word(address, value, size=2):
             write(address, int(value).to_bytes(size, "little"))
+
+        if report["emulator_audio"]["sid_substitution"]:
+            # Digital builds construct the SID member of the audio union in
+            # AUDIO, after the first SIM pass. Keep the pristine Game/Runtime
+            # snapshots above, but let one zero-tick title frame initialize SID.
+            word(syms["BENCH_TICKS"], 0, 1)
+            mon.run_until(syms["frame_complete"], failures)
+            mon.command("bank ram")
+            initial_audio = bytearray(mon.read(audio_address, layouts.size("AudioEngine")))
+            initialized_audio = layouts.decode("AudioEngine", initial_audio)
+            if not initialized_audio["initialized"] or not initialized_audio["enabled"]:
+                raise RuntimeError("Benchmark title warmup did not initialize SID audio")
+            # The external score page and kernel slot change between fixtures.
+            # Seed no live references to either: each fixture must load its own
+            # opening page and kernel before the IRQ consumes them.
+            for field, value in (("underruns", 0), ("row", 0), ("row_ticks", 0),
+                                 ("event_count", 0), ("loaded", 0), ("ready", 0),
+                                 ("waiting", 0), ("kernel", 0xff)):
+                layouts.patch(initial_audio, "AudioEngine", field, value)
+            mon.command("bank cpu")
+            word(syms["BENCH_TICKS"], 255, 1)
+            mon.run_until(syms["benchmark_frame_begin"], failures)
+            report["audio_seed"] = "initialized SID title frame; opening page and kernel reloaded per fixture"
+        else:
+            report["audio_seed"] = "startup AudioEngine snapshot"
 
         if args.real_time_ticks:
             mon.command("jpdb 1 $0f")

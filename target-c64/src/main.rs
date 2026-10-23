@@ -3,12 +3,12 @@
 #![allow(static_mut_refs)]
 
 use core::{
-    mem::MaybeUninit,
+    mem::{ManuallyDrop, MaybeUninit},
     ptr::{read_volatile as rd, write_volatile as wr},
 };
 use havoc::{
     assets::{self, AssetBank, Segment},
-    audio::{AudioEngine, SidBus, VideoStandard},
+    audio::{AudioEngine, MusicState, SidBus, VideoStandard},
     game::{Game, Hud, InputSample, PresentationEvent},
     hud, hud_sprites,
     music::{self, BANK_HEADER_SIZE, PAGE_SIZE},
@@ -46,6 +46,7 @@ static ERROR_MUSIC_KERNEL: [u8; 20] = *b"INVALID MUSIC KERNEL";
 
 #[cfg(feature = "music-kernels")]
 mod kernels;
+mod digital;
 
 #[link_section = ".renderer"]
 #[no_mangle]
@@ -57,10 +58,46 @@ static mut GAME: MaybeUninit<Game> = MaybeUninit::uninit();
 #[link_section = ".phase.pixels_aux.data"]
 static mut SPACE_DUST: SpaceDustFrame = SpaceDustFrame::EMPTY;
 #[link_section = ".audio_state"]
-static mut AUDIO: MaybeUninit<AudioEngine> = MaybeUninit::uninit();
+static mut AUDIO: MaybeUninit<PlaybackState> = MaybeUninit::uninit();
+#[repr(C)]
+union PlaybackState {
+    sid: ManuallyDrop<AudioEngine>,
+    dac: ManuallyDrop<digital::State>,
+}
+const _: () = assert!(core::mem::size_of::<PlaybackState>() <= 400);
+const BACKEND_SID: u8 = 0;
+const BACKEND_DAC: u8 = 1;
+const BACKEND_SWITCHING: u8 = 2;
+// The IRQ reads this discriminator before borrowing the shared state. Only
+// foreground AUDIO code owns DAC state; all replacement happens while gated.
+#[no_mangle]
+pub static mut MUSIC_BACKEND: u8 = BACKEND_SWITCHING;
+// Monitor tooling sets this once at main, after CRT initialization. Production
+// keeps zero: unavailable sampler hardware is an error, never an auto-fallback.
+#[no_mangle]
+pub static mut EMULATOR_SID_ONLY: u8 = 0;
+#[no_mangle]
+pub static mut DIGITAL_FAULT: u8 = 0;
+#[no_mangle]
+pub static mut DIGITAL_LOOPS: u16 = 0;
+#[no_mangle]
+pub static mut DIGITAL_MINIMUM_LEAD: u16 = 0;
+#[no_mangle]
+static mut REQUESTED_CUE: MusicState = MusicState::Title;
+static mut DIGITAL_CALIBRATION: digital::Calibration = digital::Calibration::new();
+#[inline(always)]
+unsafe fn sid_mut() -> &'static mut AudioEngine {
+    &mut *AUDIO.as_mut_ptr().cast::<AudioEngine>()
+}
+#[inline(always)]
+unsafe fn sid_ref() -> &'static AudioEngine {
+    &*AUDIO.as_ptr().cast::<AudioEngine>()
+}
 #[link_section = ".music_page"]
 static mut NEXT_PAGE: MaybeUninit<[u8; PAGE_SIZE]> = MaybeUninit::uninit();
+#[no_mangle]
 static mut MUSIC_DIRECTORY_HASH: u16 = 0;
+#[no_mangle]
 static mut MUSIC_VALIDATED: bool = false;
 // Immutable after the complete boot scan succeeds. Only foreground AUDIO code
 // reads this directory; the IRQ continues to consume bounded published pages.
@@ -135,12 +172,13 @@ pub static mut BENCH_RUNTIME: u16 = 0;
 // samples the controls at least once, also while paused.
 static mut CLOCK_MS: u16 = 0;
 static mut AUDIO_PERIOD: u16 = 19705;
+#[no_mangle]
 static mut CLOCK_KHZ: u16 = 985;
-// Frame-rate overlay toggled by the space bar. Each window covers at least one
+// Frame-rate overlay toggled by F. Each window covers at least one
 // second of 50 Hz audio ticks on either video standard; the readout is in
 // tenths of frames per second.
 static mut FPS_SHOWN: bool = false;
-/// Keys seen down on the previous frame: bit 0 space, bit 1 F.
+/// Keys seen down last frame: bit 0 space, bit 1 F, bit 2 music chord.
 static mut KEYS_HELD: u8 = 0;
 /// Set by the PIXELS key scan, consumed by SIM: simulation time stands still.
 static mut PAUSED: bool = false;
@@ -282,7 +320,10 @@ unsafe fn audio_tick() {
     }
     AUDIO_TICKS = AUDIO_TICKS.wrapping_add(1);
     BOMB_EFFECT.tick();
-    let audio = AUDIO.assume_init_mut();
+    if MUSIC_BACKEND != BACKEND_SID {
+        return;
+    }
+    let audio = sid_mut();
     audio.tick(&mut HardwareSid, NEXT_PAGE.assume_init_ref());
     MUSIC_CUE = audio.current_cue() as u8;
     MUSIC_PAGE = audio.current_page();
@@ -298,6 +339,11 @@ unsafe fn fail(message: &[u8]) -> ! {
     poke(0xd015, 0);
     poke(0xdc0d, 0x7f);
     poke(0xdd0d, 0x7f);
+    // The native sampler otherwise keeps running after a game/asset failure.
+    poke(0xdf21, 0);
+    poke(0xdf20, 0);
+    poke(0xdf41, 0);
+    poke(0xdf40, 0);
     poke(0xd418, 0);
     poke(0xd438, 0);
     poke(0xd458, 0);
@@ -660,10 +706,13 @@ unsafe fn take_input(until: u16) -> Option<InputSample> {
 #[inline(never)]
 unsafe fn send_audio(game: &mut Game) {
     disable_irq();
-    let audio = AUDIO.assume_init_mut();
-    audio.set_music(game.music_state());
-    while let Some(e) = game.pop_audio() {
-        audio.queue(e);
+    REQUESTED_CUE = game.music_state();
+    if MUSIC_BACKEND == BACKEND_SID {
+        let audio = sid_mut();
+        audio.set_music(REQUESTED_CUE);
+        while let Some(e) = game.pop_audio() {
+            audio.queue(e);
+        }
     }
     enable_irq();
 }
@@ -680,19 +729,22 @@ unsafe fn service_audio() {
             fail(&ERROR_MUSIC_DIRECTORY)
         }
         validate_music_bank(header);
+    }
+    if service_backend() {
         MUSIC_VALIDATED = true;
+        return;
     }
     #[cfg(feature = "music-kernels")]
     {
         disable_irq();
-        let kernel = AUDIO.assume_init_ref().kernel_request();
+        let kernel = sid_ref().kernel_request();
         enable_irq();
         if let Some(cue) = kernel {
             load_music_kernel(cue);
         }
     }
     disable_irq();
-    let request = AUDIO.assume_init_ref().page_request();
+    let request = sid_ref().page_request();
     enable_irq();
     let Some(request) = request else {
         return;
@@ -721,12 +773,104 @@ unsafe fn service_audio() {
         fail(&ERROR_MUSIC_PAGE)
     }
     disable_irq();
-    let result = AUDIO.assume_init_mut().publish_page(request, bytes);
+    if sid_mut().publish_page(request, bytes).is_err() {
+        fail(&ERROR_MUSIC_PAGE);
+    }
+    // A newly restored SID engine becomes IRQ-visible only after its first
+    // checked page and modulation kernel are ready.
+    MUSIC_BACKEND = BACKEND_SID;
+    MUSIC_VALIDATED = true;
     enable_irq();
-    if result.is_err() {
-        fail(&ERROR_MUSIC_PAGE)
+}
+
+/// True when DAC owns the audio state and no SID page work may follow.
+#[link_section = ".phase.audio"]
+#[inline(never)]
+unsafe fn service_backend() -> bool {
+    if rd(core::ptr::addr_of!(EMULATOR_SID_ONLY)) == 0
+        && matches!(REQUESTED_CUE, MusicState::Title | MusicState::Victory)
+    {
+        let track = if REQUESTED_CUE == MusicState::Victory {
+            havoc::digital::Track::GalacticDash
+        } else {
+            havoc::digital::Track::HammondRocker
+        };
+        let state = AUDIO.as_mut_ptr().cast::<digital::State>();
+        if MUSIC_BACKEND != BACKEND_DAC || (*state).track != track {
+            disable_irq();
+            let was_sid = MUSIC_BACKEND == BACKEND_SID;
+            let was_dac = MUSIC_BACKEND == BACKEND_DAC;
+            MUSIC_BACKEND = BACKEND_SWITCHING;
+            if was_sid {
+                sid_mut().silence(&mut HardwareSid);
+            } else if was_dac {
+                digital::stop(&mut *state);
+            }
+            state.write(digital::State::new());
+            // Calibration uses sampler completion IRQ status. Keep CPU IRQs
+            // masked through acknowledgement and ring priming. Only the first
+            // start calibrates; later track changes reuse the saved rate.
+            if let Err(fault) = digital::init(
+                &mut *state,
+                &mut DIGITAL_CALIBRATION,
+                CLOCK_KHZ == 985,
+                track,
+            ) {
+                digital_failure(fault);
+            }
+            digital::start(&mut *state);
+            MUSIC_CUE = REQUESTED_CUE as u8;
+            MUSIC_PAGE = 0xff;
+            MUSIC_BACKEND = BACKEND_DAC;
+            enable_irq();
+        }
+        let state = &mut *state;
+        if let Err(fault) = digital::service(state) {
+            digital_failure(fault);
+        }
+        DIGITAL_LOOPS = state.loops;
+        DIGITAL_MINIMUM_LEAD = state.minimum_lead;
+        true
+    } else {
+        if MUSIC_BACKEND != BACKEND_SID {
+            disable_irq();
+            let was_dac = MUSIC_BACKEND == BACKEND_DAC;
+            MUSIC_BACKEND = BACKEND_SWITCHING;
+            if was_dac {
+                digital::stop(&mut *AUDIO.as_mut_ptr().cast::<digital::State>());
+            }
+            let standard = if CLOCK_KHZ == 985 {
+                VideoStandard::Pal
+            } else {
+                VideoStandard::Ntsc
+            };
+            AUDIO
+                .as_mut_ptr()
+                .cast::<AudioEngine>()
+                .write(AudioEngine::new(standard));
+            let audio = sid_mut();
+            audio.reset(&mut HardwareSid);
+            audio.set_music(REQUESTED_CUE);
+            while let Some(event) = GAME.assume_init_mut().pop_audio() {
+                audio.queue(event);
+            }
+            enable_irq();
+        }
+        false
     }
 }
+
+#[link_section = ".phase.audio"]
+#[inline(never)]
+unsafe fn digital_failure(fault: digital::Fault) -> ! {
+    DIGITAL_FAULT = fault as u8;
+    // One AUDIO-owned message avoids resident strings and retains the exact
+    // fault in telemetry and on the error screen.
+    ERROR_DIGITAL[20] = b'0' + fault as u8;
+    fail(&ERROR_DIGITAL)
+}
+#[link_section = ".phase.audio.data"]
+static mut ERROR_DIGITAL: [u8; 36] = *b"DIGITAL AUDIO ERROR 0 - CHECK CONFIG";
 
 #[link_section = ".phase.audio.startup"]
 #[inline(never)]
@@ -799,7 +943,7 @@ unsafe fn load_music_kernel(cue: havoc::audio::MusicState) {
     let slot = core::ptr::addr_of!(__music_kernel_start) as u16;
     let capacity = core::ptr::addr_of!(__music_kernel_size) as u16;
     disable_irq();
-    AUDIO.assume_init_mut().invalidate_kernel();
+    sid_mut().invalidate_kernel();
     enable_irq();
     let base = assets::MUSIC_KERNELS_OFFSET;
     let header_size = music::KERNEL_HEADER_SIZE as u16;
@@ -829,7 +973,7 @@ unsafe fn load_music_kernel(cue: havoc::audio::MusicState) {
         }
     }
     disable_irq();
-    AUDIO.assume_init_mut().accept_kernel(cue, size != 0);
+    sid_mut().accept_kernel(cue, size != 0);
     enable_irq();
 }
 
@@ -931,7 +1075,8 @@ unsafe fn update_fps_overlay(mode: havoc::game::Mode) {
         FPS_WINDOW_START = ticks;
         FPS_WINDOW_FRAMES = 0;
     }
-    // Space is keyboard row 7 column 4 and F is row 2 column 5. CIA 1 port A
+    // Row 7: Space column 4, CTRL column 2, Commodore column 5.
+    // F is row 2 column 5; DEL is row 0 column 0. CIA 1 port A
     // doubles as joystick port 2, so drive it as key rows only briefly with
     // the sampling IRQ masked, then return it to input. A column counts as a
     // key only if it also reads high with no row selected: a joystick in
@@ -941,12 +1086,16 @@ unsafe fn update_fps_overlay(mode: havoc::game::Mode) {
     poke(0xdc00, 0xff);
     let idle = peek(0xdc01);
     poke(0xdc00, 0x7f);
-    let space = peek(0xdc01) & 0x10 == 0 && idle & 0x10 != 0;
+    let row7 = !peek(0xdc01);
+    let space = row7 & idle & 0x10 != 0;
     poke(0xdc00, 0xfb);
     let f_key = peek(0xdc01) & 0x20 == 0 && idle & 0x20 != 0;
+    poke(0xdc00, 0xfe);
+    let delete = peek(0xdc01) & 1 == 0;
     poke(0xdc02, 0);
     enable_irq();
-    let keys = space as u8 | (f_key as u8) << 1;
+    let music_chord = row7 & 0x24 == 0x24 && delete;
+    let keys = space as u8 | (f_key as u8) << 1 | (music_chord as u8) << 2;
     let pressed = keys & !KEYS_HELD;
     // Pause only has meaning while flying; elsewhere the key is ignored and
     // a stale pause cannot survive, because no tick runs while it is set.
@@ -958,6 +1107,12 @@ unsafe fn update_fps_overlay(mode: havoc::game::Mode) {
     if pressed & 2 != 0 {
         FPS_SHOWN = !FPS_SHOWN;
     }
+    if pressed & 4 != 0 && idle & 0x25 == 0x25 {
+        // Inlines into PIXELS; the next SIM/AUDIO pass publishes the selection.
+        GAME.assume_init_mut().toggle_menu_music();
+    }
+    // Latch the raw chord even when idle filtering suppresses it. Releasing
+    // joystick interference or changing modes must not rearm held keys.
     KEYS_HELD = keys;
 }
 
@@ -990,8 +1145,8 @@ unsafe fn prepare_scenery(current: u8, sounds: &mut TransitionAudio) -> u8 {
     // I/O is banked out here. Only update RAM; the IRQ restores I/O before
     // writing SID registers. No AudioEngine reference survives this mask.
     disable_irq();
-    {
-        let audio = AUDIO.assume_init_mut();
+    if MUSIC_BACKEND == BACKEND_SID {
+        let audio = sid_mut();
         if cues.cancel {
             audio.cancel_scene_effects();
         }
@@ -1149,10 +1304,9 @@ unsafe fn boot_init() {
     );
     io_on();
     initialize_game();
-    initialize_audio(standard);
+    initialize_audio();
     load_initial_assets();
     initialize_hud();
-    AUDIO.assume_init_mut().reset(&mut HardwareSid);
     initialize_irq(standard);
 }
 #[link_section = ".phase.boot"]
@@ -1197,8 +1351,12 @@ unsafe fn initialize_quarter_squares() {
 const QUARTER_SQUARES: usize = 0xc000;
 #[link_section = ".phase.boot"]
 #[inline(never)]
-unsafe fn initialize_audio(standard: VideoStandard) {
-    AUDIO.write(AudioEngine::new(standard));
+unsafe fn initialize_audio() {
+    // The shared slot stays uninitialized while BACKEND_SWITCHING gates IRQ
+    // access. AUDIO initializes the selected backend after validating assets.
+    for sid in 0..music::SID_COUNT as u16 {
+        poke(0xd418 + sid * 32, 0);
+    }
     core::ptr::write_bytes(NEXT_PAGE.as_mut_ptr().cast::<u8>(), 0, PAGE_SIZE);
 }
 struct Runtime {
@@ -1398,7 +1556,10 @@ pub unsafe extern "C" fn main() -> i32 {
             load_sim(runtime.profile);
         };
         disable_irq();
-        let music_pending = AUDIO.assume_init_ref().page_request().is_some();
+        let music_pending = MUSIC_BACKEND != BACKEND_SID
+            || (rd(core::ptr::addr_of!(EMULATOR_SID_ONLY)) == 0
+                && matches!(REQUESTED_CUE, MusicState::Title | MusicState::Victory))
+            || sid_ref().page_request().is_some();
         enable_irq();
         if music_pending {
             wr(core::ptr::addr_of_mut!(PROF_PHASE), 8);
