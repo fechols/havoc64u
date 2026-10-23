@@ -840,10 +840,9 @@ unsafe fn service_backend() -> bool {
             ) {
                 digital_failure(fault);
             }
-            // Start both sampler clocks atomically; an IRQ between their
-            // control writes would leave the channels permanently skewed.
+            // Retain DAC ownership while service primes over several frames;
+            // it starts both sampler clocks atomically once the ring is full.
             disable_irq();
-            digital::start(&mut *state);
             MUSIC_PAGE = 0xff;
             MUSIC_BACKEND = BACKEND_DAC;
             enable_irq();
@@ -856,7 +855,7 @@ unsafe fn service_backend() -> bool {
         }
         DIGITAL_LOOPS = state.loops;
         DIGITAL_MINIMUM_LEAD = state.minimum_lead;
-        if state.track == track {
+        if state.is_running() && state.track == track {
             MUSIC_CUE = REQUESTED_CUE as u8;
         }
         true
