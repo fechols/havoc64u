@@ -45,6 +45,26 @@ def layout(space):
 
 
 class CampaignTools(unittest.TestCase):
+    def test_hit_feedback_flashes_gray_hull_facets_but_preserves_gray_shadows(self):
+        def triangle(depth, color, flags=0):
+            return dict(x=[10, 20, 15], y=[20, 20, 10], depth=depth,
+                        color=color, reserved=flags)
+
+        mesh, shadow = triangle(900, 11), triangle(910, 11, 0x40)
+        key = lambda command: tuple(command["x"] + command["y"] + [command["depth"]])
+        reference = {key(command): (command["color"], command["reserved"])
+                     for command in (mesh, shadow)}
+        checked = vice.check_feedback_geometry(reference, [triangle(900, 1), shadow], True)
+        self.assertEqual(checked, dict(white=True, triangles=1, shadow_triangles=1))
+        vice.check_feedback_geometry(reference, [mesh, shadow], False)
+        vice.check_feedback_geometry(reference, [triangle(900, 2), shadow], False,
+                                     pulse={key(mesh)}, core_color=2)
+        for commands, message in (([mesh, shadow], "target mesh"),
+                                  ([triangle(900, 1), triangle(910, 1, 0x40)], "ground shadow"),
+                                  ([triangle(900, 1)], "ground shadow")):
+            with self.assertRaisesRegex(RuntimeError, message):
+                vice.check_feedback_geometry(reference, commands, True)
+
     def test_pixel_profile_accounts_for_wait_separately_from_pack_and_copy(self):
         events = [{"address": 0x200, "value": marker, "bus_cycles": cycle}
                   for marker, cycle in ((3, 10), (9, 30), (4, 80), (1, 110), (0, 140))]
@@ -277,6 +297,22 @@ class CampaignTools(unittest.TestCase):
             vice.clock_fixture({"rail_ticks": 67500}, layout(False)["fields"], 18)
         with self.assertRaisesRegex(RuntimeError, "u16"):
             vice.clock_fixture({"stage_id": 14, "rail_ticks": 100}, layout(True)["fields"], 18)
+
+    def test_encounter_fixtures_disable_or_rewind_both_spawn_streams(self):
+        old_fields = layout(True)["fields"]
+        fields = dict(old_fields, repeat_spawn_cursor={"offset": 3, "size": 1, "type": "u8"})
+        for cursor in (0, 255):
+            original = {"spawn_cursor": cursor}
+            self.assertEqual(vice.clock_fixture(original, fields, 18),
+                             dict(original, repeat_spawn_cursor=cursor))
+            self.assertEqual(vice.clock_fixture(original, old_fields, 18), original)
+            self.assertEqual(original, {"spawn_cursor": cursor})
+            explicit = dict(original, repeat_spawn_cursor=17)
+            self.assertEqual(vice.clock_fixture(explicit, fields, 18), explicit)
+        for fixture in bench.fixtures(True, True, True):
+            seeded = vice.clock_fixture(fixture["patch"], fields, 18)
+            if "spawn_cursor" in seeded:
+                self.assertEqual(seeded["repeat_spawn_cursor"], seeded["spawn_cursor"], fixture["name"])
 
     def test_reads_expose_actual_and_derived_clocks_without_fake_dwarf_fields(self):
         fields = layout(True)

@@ -41,10 +41,10 @@ REGION_ALIAS("c_writeable", low)
  * 4 KiB-aligned slots. No slot crosses a 64 KiB bank. Bank 4 remains PIXELS-only
  * so its split-transfer audit can distinguish prefix/helper DMA by bank. */
 __reu_size = 0x1000000;
-/* Legacy reservation names identify Galactic Dash and Hammond Rocker;
- * the runtime selects their title/victory roles independently. */
+/* The DMC1 manifest directory and its contiguous DLT4 assets share this region. */
 __reu_digital_music = 0x100000;
-__reu_digital_victory = 0x500000;
+/* Legacy symbol now aliases the manifest region; assets have generated offsets. */
+__reu_digital_victory = __reu_digital_music;
 __reu_digital_ring = 0xFE0000;
 __reu_digital_ring_size = 0x20000;
 __reu_code_slot_size = 0x4200;
@@ -192,9 +192,8 @@ SECTIONS {
     } >phase
     .phase.audio 0x3000 : AT(__reu_audio) {
         __phase_audio_start = .;
-        *(.phase.audio .phase.audio.data .phase.audio.crc_table)
-        /* After the full bank scan, refills use the immutable resident cue
-         * directory and no longer need the startup validator or parser. */
+        *(.phase.audio .phase.audio.data .phase.audio.crc_table .phase.audio.kernel)
+        /* Startup validation may be in BOOT, leaving the whole image live. */
         __phase_audio_runtime_end = .;
         *(.phase.audio.startup .phase.audio.startup.*)
         __phase_audio_end = .;
@@ -578,7 +577,7 @@ __quarter_squares_end = 0xC400;
 
 /* The byte address table and bounded loader rely on these physical slots. */
 ASSERT(__reu_size == 0x1000000 && __reu_code_slot_size == 0x4200, "incorrect 16 MiB REU allocation")
-ASSERT(__reu_digital_music == 0x100000 && __reu_digital_victory == 0x500000 && __reu_digital_ring == 0xFE0000 &&
+ASSERT(__reu_digital_music == 0x100000 && __reu_digital_victory == __reu_digital_music && __reu_digital_ring == 0xFE0000 &&
        __reu_digital_ring_size == 0x20000 && __reu_digital_ring + __reu_digital_ring_size == __reu_size,
        "incorrect digital music or sampler ring allocation")
 ASSERT(__code_reu_pages_end - __code_reu_pages == 34, "incorrect logical REU page table size")
@@ -679,7 +678,7 @@ ASSERT(__phase_pixels_aux_size > 0 && __phase_pixels_aux_size <= 0x02E0, "PIXELS
 ASSERT(__phase_pixels_aux_end <= __irq_stack_bottom, "PIXELS helpers overlap IRQ stack")
 ASSERT(__phase_pixels_size <= 0x4200, "composed PIXELS image exceeds phase slot")
 ASSERT(SIZEOF(.phase.audio) <= 0x4200, "AUDIO overlay exceeds $3000-$71FF")
-ASSERT(__phase_audio_runtime_size > 0 && __phase_audio_runtime_size < __phase_audio_size, "AUDIO needs a runtime prefix before startup validation")
+ASSERT(__phase_audio_runtime_size > 0 && __phase_audio_runtime_size <= __phase_audio_size, "AUDIO runtime extent must fit its image")
 ASSERT(__phase_scenery_size <= 0x4200, "composed SCENERY overlay exceeds $3000-$71FF")
 ASSERT(__phase_scenery_base_size > 0 && __phase_scenery_base_size < __phase_scenery_size, "SCENERY needs a common prefix and a wildlife tail")
 ASSERT(__phase_scenery_terrain_size > 0 && __phase_scenery_terrain_size < __phase_scenery_base_size, "SCENERY needs a terrestrial prefix before space helpers")

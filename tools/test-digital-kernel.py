@@ -1,28 +1,25 @@
 #!/usr/bin/env python3
-"""Execute the production AUDIO overlay against bounded REU/sampler models.
+"""Execute linked DLT4 decoding, BOOT, and AUDIO against independent models.
 
-This is a native-code integration test, not a hardware timing measurement.
-CPU instructions run at 64 times the PAL/NTSC bus clock; DMA costs one bus
-cycle per byte. The sampler model adds two divider ticks of synthetic backend
-overhead to the source's 6.25 MHz clock, exercising the calibration correction;
-that overhead is not a claim about physical sampler hardware. Muted
-one-shot calibration advances time directly to completion on its status poll.
-No production decoder, state offsets, or Rust host fixtures are used as the
-PCM oracle. Run after scripts/build-target.sh and packing dist/havoc.reu.
-The absent-sampler cases separately verify the explicit emulator SID-only mode
-and strict production mapping failure; --emulator-only runs just those cases.
+This is modeled NMOS6502 execution at 64x PAL/NTSC bus speed, with DMA charged
+one bus tick/byte. The sampler clock is 6.25MHz/(divider+2); the extra two ticks
+are synthetic calibration stress, not a physical hardware measurement.
 """
 import argparse
 import hashlib
 import json
 from pathlib import Path
+import random
 import runpy
 import struct
 
 ROOT = Path(__file__).resolve().parents[1]
 KERNEL = runpy.run_path(str(ROOT / "tools/test-music-kernel.py"))
+CATALOG = runpy.run_path(str(ROOT / "tools/digital_format.py"))
 Cpu, KernelError, load_elf = (KERNEL[name] for name in ("Cpu", "KernelError", "load_elf"))
 SENTINEL = 0xffff
+FRAMES = 32768
+DELAY = 160
 
 
 def require(condition, message):
@@ -30,92 +27,185 @@ def require(condition, message):
         raise KernelError(message)
 
 
+def steady_aggregates(calls, bus_hz):
+    """Weight work by frames and audio duration, excluding primes and switches."""
+    tracks = {}
+    for call in calls:
+        if not call["steady"] or call["fault"] or not call["pcm_samples"]:
+            continue
+        result = tracks.setdefault(call["active_track"], dict(
+            calls=0, frames=0, cpu_cycles=0, bus_ticks=0, audio_seconds=0.0))
+        result["calls"] += 1
+        result["frames"] += call["pcm_samples"]
+        result["cpu_cycles"] += call["cpu_cycles"]
+        result["bus_ticks"] += call["bus_ticks"]
+        result["audio_seconds"] += call["pcm_samples"] / call["modeled_sampler_rate_hz"]
+    for result in tracks.values():
+        frames, seconds = result["frames"], result["audio_seconds"]
+        wall_us = result["bus_ticks"] * 1000000 / bus_hz
+        result.update(cpu_cycles_per_frame=result["cpu_cycles"] / frames,
+                      bus_ticks_per_frame=result["bus_ticks"] / frames,
+                      wall_us_per_frame=wall_us / frames,
+                      modeled_sampler_rate_hz=frames / seconds,
+                      estimated_service_us_per_audio_second=wall_us / seconds)
+    return tracks
+
+
 def pcm_reference(blob):
-    """Independent signed-magnitude DLT3 stereo decoder, looping at exact length."""
+    """Independent bit-at-a-time DLT4 decoder yielding signed8 frame tuples."""
     samples = int.from_bytes(blob[8:12], "little")
     books = int.from_bytes(blob[18:20], "little")
-    segment = (samples // books // 2) * 2
-    require(blob[:4] == b"DLT3" and blob[21] == 2, "stereo source profile")
-    stream = 32 + books * 96
+    channels = blob[21]
+    require(blob[:4] == b"DLT4" and blob[20] == 3 and channels in (1, 2), "DLT4 profile")
+    alignment = 8 // channels
+    segment = samples if books == 1 else samples // books // alignment * alignment
+    stream = 32 + books * 24 * channels
     while True:
-        accumulator = [0, 0]
-        for index in range(samples):
-            book = min(index // segment, books - 1)
-            packed = blob[stream + index]
-            for channel in range(2):
-                code = (packed >> (4 * channel)) & 15
-                entry = 32 + book * 96 + channel * 48 + code * 3
+        accumulator = [0] * channels
+        for frame in range(samples):
+            book = min(frame // segment, books - 1)
+            output = []
+            for channel in range(channels):
+                bit = (frame * channels + channel) * 3
+                code = sum(((blob[stream + (bit + shift) // 8] >> ((bit + shift) % 8)) & 1) << shift
+                           for shift in range(3))
+                entry = 32 + (book * channels * 8 + channel * 8 + code) * 3
                 magnitude = int.from_bytes(blob[entry:entry + 2], "little")
                 delta = -min(magnitude, 32768) if blob[entry + 2] else min(magnitude, 32767)
                 accumulator[channel] = min(32767, max(-32768, accumulator[channel] + delta))
-            yield tuple(accumulator)
+                output.append(min(127, max(-128, (accumulator[channel] + 128) // 256)))
+            yield tuple(output)
+
+
+def exercise_decode_kernel(elf, symbols):
+    """Adversarial ABI cases, independent of the Rust driver and asset encoder."""
+    sections = {section.name: section for section in elf.sections}
+    base = bytearray(65536)
+    for name in (*KERNEL["RESIDENT_SECTIONS"], ".phase.audio"):
+        section = sections[name]
+        base[section.address:section.address + section.size] = elf.contents(section)
+    kernel, source, output = 0x8e00, 0x9000, 0x9100
+    randomizer = random.Random(0xD174)
+    cases, cycles, frames_total = 0, 0, 0
+    profiles = {channels: dict(cpu_cycles=0, frames=0) for channels in (1, 2)}
+    for channels in (1, 2):
+        for valid_bits in range(8):
+            for count in (1, 2, 3, 7, 8, 31, 42, 85, 127, 128):
+                memory = bytearray(base)
+                book = [-32768, -30000, -257, -128, 0, 127, 256, 32767] * 2
+                randomizer.shuffle(book)
+                initial = [randomizer.choice((-32768, -32767, -129, -128, 127, 128, 32640, 32767)) for _ in range(2)]
+                reservoir = randomizer.randrange(1 << valid_bits)
+                data = bytes(randomizer.randrange(256) for _ in range(128))
+                struct.pack_into("<16h2hHBB", memory, kernel, *book, *initial, reservoir, valid_bits, channels)
+                memory[source:source + len(data)] = data
+                memory[output - 1:output + 257] = bytes([0xa5]) * 258
+                memory[16:32] = bytes(range(0xc0, 0xd0))
+                cpu = Cpu(memory, [(0, 0x200), (kernel + 32, kernel + 40), (output, output + count * channels)])
+                # LLVM-MOS allocates the byte argument in A before allocating
+                # pointer arguments to register pairs. Match the real Rust call.
+                cpu.a, cpu.x = count, 0x71
+                memory[4:6] = kernel.to_bytes(2, "little")  # __rc2 / __rc3
+                memory[6:8] = source.to_bytes(2, "little")  # __rc4 / __rc5
+                memory[8:10] = output.to_bytes(2, "little") # __rc6 / __rc7
+                preserved = bytes(memory[18:34])  # ABI callee-saved __rc16..31
+                before_book = bytes(memory[kernel:kernel + 32])
+                accumulator, bits, packed, used = initial.copy(), valid_bits, reservoir, 0
+                expected = bytearray()
+                for _ in range(count):
+                    for channel in range(channels):
+                        if bits < 3:
+                            packed |= data[used] << bits
+                            used += 1
+                            bits += 8
+                        code, packed, bits = packed & 7, packed >> 3, bits - 3
+                        accumulator[channel] = min(32767, max(-32768, accumulator[channel] + book[channel * 8 + code]))
+                        expected.append(min(127, max(-128, (accumulator[channel] + 128) // 256)) & 255)
+                cpu.push(SENTINEL >> 8)
+                cpu.push((SENTINEL - 1) & 255)
+                cpu.pc = symbols["digital_decode_run"].address
+                for _ in range(100000):
+                    if cpu.pc == SENTINEL:
+                        break
+                    cpu.step()
+                else:
+                    raise KernelError("digital_decode_run exceeded instruction bound")
+                require(cpu.s == 0xfd and cpu.a == used, "decode kernel return/stack ABI")
+                require(memory[output:output + len(expected)] == expected,
+                        f"decode kernel PCM channels={channels} bits={valid_bits} count={count}")
+                require(struct.unpack_from("<2hHBB", memory, kernel + 32) == (*accumulator, packed, bits, channels),
+                        "decode kernel predictor/reservoir state")
+                require(memory[kernel:kernel + 32] == before_book and memory[source:source + len(data)] == data,
+                        "decode kernel modified immutable inputs")
+                require(memory[18:34] == preserved and memory[output - 1] == memory[output + len(expected)] == 0xa5,
+                        "decode kernel ABI or output guard")
+                cases += 1
+                cycles += cpu.cycles
+                frames_total += count
+                profiles[channels]["cpu_cycles"] += cpu.cycles
+                profiles[channels]["frames"] += count
+    for result in profiles.values():
+        result["average_cycles_per_frame"] = result["cpu_cycles"] / result["frames"]
+    return dict(cases=cases, cpu_cycles=cycles, frames=frames_total,
+                average_cycles_per_frame=cycles / frames_total, profiles=profiles)
 
 
 class Machine(Cpu):
     def __init__(self, elf, symbols, image, standard, *, sampler_present=True):
-        self.symbols = symbols
+        self.elf, self.symbols = elf, symbols
         self.sections = {s.name: s for s in elf.sections}
         memory = bytearray(65536)
-        for name in (*KERNEL["RESIDENT_SECTIONS"], ".phase.audio"):
+        for name in KERNEL["RESIDENT_SECTIONS"]:
             section = self.sections[name]
             memory[section.address:section.address + section.size] = elf.contents(section)
-        writable = [(0, 0x200), (0x8e00, 0x9300), (0xd400, 0xd480),
-                    (0xdd00, 0xdd10), (0xdf00, 0xdf60)]
+        writable = [(0, 0x200), (0x8e00, 0x9300), (0xd400, 0xd480), (0xdd00, 0xdd10), (0xdf00, 0xdf60)]
         for name in (".data", ".bss", ".noinit", ".audio_state", ".game_state", ".music_page"):
             section = self.sections.get(name)
             if section:
                 writable.append((section.address, section.address + section.size))
-        for name in ("havoc_c64::AUDIO", "havoc_c64::GAME", "havoc_c64::ERROR_DIGITAL"):
+        for name in ("havoc_c64::AUDIO", "havoc_c64::EFFECTS", "havoc_c64::GAME", "havoc_c64::ERROR_DIGITAL"):
             symbol = symbols[name]
             writable.append((symbol.address, symbol.address + symbol.size))
         writable += [(symbols["__stack_bottom"].address, symbols["__stack"].address),
                      (symbols["__irq_stack_bottom"].address, symbols["__irq_stack"].address),
                      (symbols["__music_page_start"].address, symbols["__music_page_end"].address),
-                     (symbols["music_kernel_tick"].address,
-                      symbols["music_kernel_tick"].address + symbols["__music_kernel_size"].address)]
+                     (symbols["music_kernel_tick"].address, symbols["music_kernel_tick"].address + symbols["__music_kernel_size"].address)]
         super().__init__(memory, writable)
         self.allowed = bytearray(65536)
-        for start, end in writable:
-            self.allowed[start:end] = b"\1" * (end - start)
+        for begin, end in writable:
+            self.allowed[begin:end] = b"\1" * (end - begin)
         self.reu = bytearray(image)
         self.ring = symbols["__reu_digital_ring"].address
         self.ring_size = symbols["__reu_digital_ring_size"].address
         self.bus_hz = 985248 if standard == "pal" else 1022727
-        self.extra_ticks = 0
-        self.timer_origin = 0
+        self.extra_ticks = self.timer_origin = 0
         self.deadline = None
         self.sampler_present = sampler_present
         self.sampler_reads = self.sampler_writes = 0
-        self.control = [0, 0]
-        self.volume = [0, 0]
-        self.starts = [0, 0]
-        self.calibrations = 0
-        self.playback = [None, None]
-        self.playback_checked = [0, 0]
-        self.fetches = self.stashes = self.max_dma = self.ring_wraps = 0
+        self.control, self.volume, self.starts = [0, 0], [0, 0], [0, 0]
+        self.low_bytes = [0xa5, 0x5a]  # 8-bit reads must not inherit these.
+        self.calibrations = self.wide_clears = 0
+        self.playback, self.playback_checked = [None, None], [0, 0]
+        self.fetches = self.stashes = self.max_dma = self.ring_wraps = self.prefix_clears = 0
         self.ring_banks = set()
-        self.selected = None
-        self.references = {}
-        for name, offset in (("galactic-dash", symbols["__reu_digital_music"].address),
-                             ("hammond-rocker", symbols["__reu_digital_victory"].address)):
-            self.references[offset] = (name, (ROOT / f"assets/music/{name}.dlt").read_bytes())
-        self.reference = None
-        self.produced = 0
-        self.pcm_samples = {name: 0 for name, _ in self.references.values()}
+        self.catalog = CATALOG["load_catalog"](validate=False)
+        self.references = self.catalog["tracks"]
+        self.last_source_track = None
+        self.rings = [None, None]
+        self.pcm_samples = {entry["name"]: 0 for entry in self.references}
         self.calls = []
+        self.reported_profiles = set()
+        self.first_kernel_call = None
+        self.allow_corrupt_pcm = False
         self.put("MUSIC_BACKEND", 2)
         self.put("havoc_c64::REQUESTED_CUE", 0)
         self.put("havoc_c64::MUSIC_VALIDATED", 0)
         self.put("havoc_c64::CLOCK_KHZ", 985 if standard == "pal" else 1023, 2)
-        a = b = 0
-        for value in image[0xc0000:0xc0100]:
-            a = (a + value) % 255
-            b = (b + a) % 255
-        self.put("havoc_c64::MUSIC_DIRECTORY_HASH", a | b << 8, 2)
-        stack = symbols["__stack"].address
+        self.put("havoc_c64::MUSIC_DIRECTORY_HASH", CATALOG["checksum"](image[0xc0000:0xc0100]), 2)
         self.stack_bottom = symbols["__stack_bottom"].address
-        self.stack_top = self.stack_min = stack
-        self.mem[2:4] = stack.to_bytes(2, "little")
+        self.stack_top = self.stack_min = symbols["__stack"].address
+        self.mem[2:4] = self.stack_top.to_bytes(2, "little")
+        self.load_phase("boot")
 
     @property
     def ticks(self):
@@ -123,13 +213,34 @@ class Machine(Cpu):
 
     def put(self, name, value, length=1):
         symbol = self.symbols.get(name) or self.symbols[name.rsplit("::", 1)[-1]]
-        start = symbol.address
-        self.mem[start:start + length] = value.to_bytes(length, "little")
+        self.mem[symbol.address:symbol.address + length] = value.to_bytes(length, "little")
 
     def get(self, name, length=1):
         symbol = self.symbols.get(name) or self.symbols[name.rsplit("::", 1)[-1]]
-        start = symbol.address
-        return int.from_bytes(self.mem[start:start + length], "little")
+        return int.from_bytes(self.mem[symbol.address:symbol.address + length], "little")
+
+    def requested_track(self):
+        cue = self.get("havoc_c64::REQUESTED_CUE")
+        stage = self.get("havoc_c64::REQUESTED_STAGE")
+        # Independent scene oracle: menu/result/ascent cues always win. The
+        # stage map distinguishes recordings whose original SID cues coincide.
+        track = self.catalog["cues"][cue]
+        if cue not in (0, 5, 6, 19) and stage < len(self.catalog["stages"]):
+            override = self.catalog["stages"][stage]
+            if override != 255:
+                track = override
+        return self.references[track]["name"]
+
+    def load_phase(self, name):
+        section = self.sections[f".phase.{name}"]
+        self.mem[section.address:section.address + section.size] = self.elf.contents(section)
+        self.phase = name
+
+    def boot(self, budget, expect_fault=False):
+        self.load_phase("boot")
+        self.call("havoc_c64::initialize_music_boot", budget, expect_fault=expect_fault)
+        if not expect_fault:
+            self.load_phase("audio")
 
     def read(self, address):
         address &= 0xffff
@@ -138,7 +249,6 @@ class Machine(Cpu):
             return (timer >> (8 * (address - 0xdd04))) & 255
         if address == 0xdf21:
             self.sampler_reads += 1
-            # Read-only sampler version shares its volume address.
             return 0x10 if self.sampler_present else 0xff
         if address == 0xdf20:
             self.sampler_reads += 1
@@ -173,58 +283,100 @@ class Machine(Cpu):
             self.playback[channel] = None
             if channel == 0:
                 self.deadline = None
-            if value == 0x55:
-                require(channel == 0, "only left calibration requests completion IRQ")
-                frames = self.be24(address + 9) // 4
-                divider = int.from_bytes(self.mem[address + 14:address + 16], "big")
+            if value in (0x55, 0x45, 0x05):
+                require(channel == 0, "left calibration requests completion IRQ")
+                stride = 4 if value == 0x55 else 2 if value == 0x45 else 1
+                require(self.be24(address + 21) == 0, "one-shot repeat B must be zero")
+                frames = self.be24(address + 9) // stride
+                divider = self.be16(address + 14)
                 self.deadline = self.ticks + round(frames * self.bus_hz * (divider + 2) / 6250000)
                 self.calibrations += 1
-            elif value == 0x51:
-                require(channel == 1 and self.control[0] == 0x55, "paired calibration")
-            elif value == 0x53:
-                require(self.volume[channel] == 32 and self.mem[address + 2] == channel * 15, "sampler gain/pan")
-                require(self.mem[address + 4] == 1, "sampler address space")
-                require(self.be24(address + 5) == self.ring + channel * 2, "sampler start")
-                require(self.be24(address + 9) == self.ring_size + 4, "sampler length")
-                require(self.be24(address + 17) == 0 and self.be24(address + 21) == self.ring_size, "sampler repeat")
-                if channel == 1:
-                    require(self.mem[0xdf2e:0xdf30] == self.mem[0xdf4e:0xdf50], "sampler divider pair")
-                    require(self.control[0] == 0x53 and self.ticks - self.playback[0]["start"] <= 2,
-                            "sampler starts must be adjacent")
-                self.playback[channel] = {"start": self.ticks, "played": 0, "position": 0,
-                                          "reference": pcm_reference(self.selected[1])}
-                self.starts[channel] += 1
+                if value == 0x55:
+                    require(self.reu[self.be24(address + 5)] == 0, "wide clearing sample must be zero")
+                    self.low_bytes[0] = 0
+                    self.wide_clears += 1
+            elif value in (0x51, 0x41, 0x01):
+                require(channel == 1 and self.control[0] == value | 4, "paired calibration")
+                if value == 0x51:
+                    require(self.reu[self.be24(address + 5)] == 0, "wide right clearing sample")
+                    self.low_bytes[1] = 0
+            elif value in (0x43, 0x03):
+                self.start_voice(channel, address, value)
             else:
                 require(value == 0, f"unexpected sampler control ${value:02x}")
         elif address == 0xdf01:
             self.transfer(value)
 
+    def start_voice(self, channel, address, control):
+        # Adjacent stores alone are insufficient: a real IRQ between them
+        # permanently separates the two sampler clocks.
+        require(self.p & KERNEL["I"], "sampler starts must mask IRQs")
+        channels = 2 if control == 0x43 else 1
+        start, repeat_a, repeat_b = (self.be24(address + offset) for offset in (5, 17, 21))
+        delay = DELAY if channels == 1 and channel else 0
+        ring_base = start + delay - (channel if channels == 2 else 0)
+        slot = (ring_base - self.ring) >> 16
+        require(slot in (0, 1), "sampler slot")
+        require(ring_base == self.ring + slot * 65536 + (32768 if channels == 1 else 0), "sampler ring base")
+        require(repeat_a == delay and repeat_b == FRAMES * channels + delay, "sampler repeat boundaries")
+        require(self.be24(address + 9) == repeat_b + channels, "sampler terminal boundary")
+        require(self.volume[channel] == 32 and self.mem[address + 2] == channel * 15, "sampler gain/pan")
+        require(self.mem[address + 4] == 1 and self.low_bytes[channel] == 0, "sampler space or stale low byte")
+        ring = self.rings[slot]
+        require(ring and ring["channels"] == channels and ring["produced"] == FRAMES, "handoff before full priming")
+        if channel:
+            require(self.playback[0] and self.playback[0]["slot"] == slot and self.control[0] == control,
+                    "sampler voice pair")
+            require(self.be16(0xdf2e) == self.be16(0xdf4e), "sampler divider pair")
+            require(self.ticks - self.playback[0]["start"] <= 2, "sampler starts must be adjacent")
+        self.playback[channel] = dict(start=self.ticks, played=0, position=0, slot=slot, channels=channels,
+                                      delay=delay, reference=pcm_reference(ring["track"]["blob"]))
+        self.starts[channel] += 1
+
+    def be16(self, address):
+        return int.from_bytes(self.mem[address:address + 2], "big")
+
     def be24(self, address):
         return int.from_bytes(self.mem[address:address + 3], "big")
 
+    def active_name(self):
+        voice = self.playback[0]
+        return None if voice is None else self.rings[voice["slot"]]["track"]["name"]
+
+    def queue_death_effect(self, budget):
+        # Public repr(C), 36-byte EffectsEngine image: events follow the two
+        # five-byte voices; event_count follows the fourteen shadow bytes.
+        effects = self.symbols["havoc_c64::EFFECTS"]
+        require(effects.size == 36, "effects fixture ABI")
+        self.mem[effects.address + 10:effects.address + 12] = bytes((7, 0))
+        self.mem[effects.address + 33] = 1
+        self.call("havoc_c64::audio_tick", budget)
+        require(self.mem[effects.address + 3] == self.mem[effects.address + 8] == 40,
+                "digital playback did not start the SID death effect")
+        require(self.mem[0xd412] & 1 and self.mem[0xd432] & 1, "effect SID gates")
+        return effects.address
+
     def flush_playback(self):
-        """Read PCM using actual start/stride/repeat registers before ring writes."""
         for channel, voice in enumerate(self.playback):
             if voice is None:
                 continue
             base = 0xdf20 + channel * 0x20
-            divider = int.from_bytes(self.mem[base + 14:base + 16], "big")
-            frames = (self.ticks - voice["start"]) * 6250000 // ((divider + 2) * self.bus_hz)
+            frames = (self.ticks - voice["start"]) * 6250000 // ((self.be16(base + 14) + 2) * self.bus_hz)
+            ring = self.rings[voice["slot"]]
             while voice["played"] < frames:
                 if voice["position"] == self.be24(base + 21):
                     voice["position"] = self.be24(base + 17)
                 require(voice["position"] < self.be24(base + 9), "sampler terminal length reached")
                 at = self.be24(base + 5) + voice["position"]
-                require(self.ring <= at and at + 2 <= self.ring + self.ring_size, "sampler read outside ring")
-                # A deliberately fatal service gap can exhaust the ring. Keep
-                # register/bounds checks but leave stale-audio detection to its
-                # explicit underrun assertion.
-                expected = next(voice["reference"])[channel]
-                if voice["played"] < self.produced:
-                    actual = int.from_bytes(self.reu[at:at + 2], "little", signed=True)
-                    require(actual == expected, f"sampler channel {channel} frame {voice['played']} differs")
+                require(self.ring <= at < self.ring + self.ring_size, "sampler fetch outside REU ring")
+                source_frame = voice["played"] - voice["delay"]
+                expected = 0 if source_frame < 0 else next(voice["reference"])[channel if voice["channels"] == 2 else 0]
+                if source_frame < ring["produced"]:
+                    actual = int.from_bytes(bytes((self.low_bytes[channel], self.reu[at])), "little", signed=True)
+                    require(actual == expected * 256,
+                            f"sampler {ring['track']['name']} channel {channel} frame {voice['played']} differs: {actual} != {expected * 256}")
                     self.playback_checked[channel] += 1
-                voice["position"] += 4
+                voice["position"] += voice["channels"]
                 voice["played"] += 1
 
     def transfer(self, command):
@@ -240,28 +392,44 @@ class Machine(Cpu):
             require(all(self.allowed[ram:ram + count]), f"DMA into unowned RAM ${ram:04x}")
             self.mem[ram:ram + count] = self.reu[reu:reu + count]
             self.fetches += 1
-            if reu in self.references and count == 32:
-                self.selected = self.references[reu]
+            if self.phase == "audio":
+                for entry in self.references:
+                    if entry["offset"] <= reu < entry["end"]:
+                        self.last_source_track = entry
+                        break
         elif command == 0x90:
-            require(self.ring <= reu and reu + count <= self.ring + self.ring_size, "REU write outside PCM ring")
+            require(self.ring <= reu and reu + count <= self.ring + self.ring_size, "write outside mutable PCM arena")
             data = self.mem[ram:ram + count]
-            offset = reu - self.ring
-            self.ring_banks.add(offset >> 16)
-            if count == 1024:
-                require(not any(data) and self.control == [0, 0], "initial ring clear must be silent")
-                if offset == 0:
-                    require(self.selected is not None, "ring clear before descriptor load")
-                    self.reference = pcm_reference(self.selected[1])
-                    self.produced = 0
+            slot, offset = divmod(reu - self.ring, 65536)
+            self.ring_banks.add(slot)
+            if self.phase == "boot":
+                require(not any(data) and self.control == [0, 0], "boot ring clear must be silent")
+            elif offset == 32768 - DELAY and count == DELAY:
+                require(not any(data), "mono delay prefix was not cleared on preparation")
+                require(all(v is None or v["slot"] != slot for v in self.playback), "prefix changed under active reader")
+                self.prefix_clears += 1
             else:
-                require(count <= 512 and count % 4 == 0, "PCM batch bound")
-                require(offset == self.produced * 4 % self.ring_size, "PCM ring position")
-                expected = b"".join(struct.pack("<hh", *next(self.reference)) for _ in range(count // 4))
-                require(data == expected, f"PCM differs: {self.selected[0]} sample {self.produced}")
-                if offset == 0 and self.produced:
+                entry = self.last_source_track
+                require(entry is not None, "PCM publication without source fetch")
+                channels = entry["metadata"]["channels"]
+                base = 32768 if channels == 1 else 0
+                active = any(v is not None and v["slot"] == slot for v in self.playback)
+                if offset == base and not active:
+                    self.rings[slot] = dict(track=entry, channels=channels, produced=0, reference=pcm_reference(entry["blob"]))
+                ring = self.rings[slot]
+                require(ring is not None and ring["track"]["name"] == entry["name"], "PCM source/slot ownership")
+                require(0 < count <= 128 * channels and count % channels == 0, "PCM batch bound")
+                require(offset == base + ring["produced"] % FRAMES * channels, "PCM ring cursor")
+                expected = bytes(sample & 255 for _ in range(count // channels) for sample in next(ring["reference"]))
+                if data != expected and not self.allow_corrupt_pcm:
+                    mismatch = next(i for i, (a, b) in enumerate(zip(data, expected)) if a != b)
+                    raise KernelError(f"PCM differs: {entry['name']} frame {ring['produced']} byte {mismatch}; "
+                                      f"actual={data[max(0,mismatch-4):mismatch+12].hex()} expected={expected[max(0,mismatch-4):mismatch+12].hex()}; "
+                                      f"first_kernel_call={self.first_kernel_call}")
+                if offset == base and ring["produced"]:
                     self.ring_wraps += 1
-                self.produced += count // 4
-                self.pcm_samples[self.selected[0]] += count // 4
+                ring["produced"] += count // channels
+                self.pcm_samples[entry["name"]] += count // channels
             self.reu[reu:reu + count] = data
             self.stashes += 1
         else:
@@ -274,140 +442,211 @@ class Machine(Cpu):
         self.push(SENTINEL >> 8)
         self.push((SENTINEL - 1) & 255)
         self.pc = self.symbols[name].address
-        start, ticks = self.cycles, self.ticks
-        samples = sum(self.pcm_samples.values())
+        start, ticks, samples = self.cycles, self.ticks, sum(self.pcm_samples.values())
+        active = self.active_name()
+        starts = self.starts.copy()
+        divider = self.be16(0xdf2e) if active is not None else None
+        requested = self.requested_track()
+        steady = name.endswith("service_audio") and active is not None and active == requested
         failure = self.symbols["havoc_c64::fail"].address
+        decoder = self.symbols["digital_decode_run"].address
         for steps in range(budget):
             if self.pc in (SENTINEL, failure):
                 break
+            if self.phase == "audio" and self.pc == decoder:
+                require(not self.p & KERNEL["I"], "PCM preparation must remain interruptible")
+                if self.first_kernel_call is None:
+                    pointer = int.from_bytes(self.mem[4:6], "little")
+                    source = int.from_bytes(self.mem[6:8], "little")
+                    self.first_kernel_call = dict(pointer=hex(pointer), state=self.mem[pointer:pointer+40].hex(),
+                        source=hex(source), input=self.mem[source:source+16].hex(),
+                        output=hex(int.from_bytes(self.mem[8:10], "little")), count=self.a,
+                        registers=self.mem[2:18].hex())
             self.step()
         else:
             raise KernelError(f"instruction budget exhausted in {name} at ${self.pc:04x}")
         faulted = self.pc == failure
-        sample_delta = sum(self.pcm_samples.values()) - samples
-        cycle_delta = self.cycles - start
         require(faulted == expect_fault,
-                f"{name}: unexpected failure={faulted}, digital fault={self.get('DIGITAL_FAULT')}; "
-                f"call {len(self.calls)}, {cycle_delta} CPU cycles, {sample_delta} PCM samples, "
-                f"{self.ticks - ticks} bus ticks, total produced {self.produced}")
+                f"{name}: failure={faulted}, digital fault={self.get('DIGITAL_FAULT')}, call={len(self.calls)}")
         if not faulted:
             require(self.s == 0xfd and self.mem[2:4] == stack, "stack imbalance")
-        self.calls.append({"entry": name, "instructions": steps, "cpu_cycles": self.cycles - start,
-                           "bus_ticks": self.ticks - ticks,
-                           "pcm_samples": sum(self.pcm_samples.values()) - samples, "fault": faulted})
+            if name.endswith("service_audio"):
+                require(not self.p & KERNEL["I"], "audio service must restore IRQs")
+        result = dict(entry=name, instructions=steps, cpu_cycles=self.cycles - start,
+                      bus_ticks=self.ticks - ticks, pcm_samples=sum(self.pcm_samples.values()) - samples,
+                      active_track=active,
+                      sampler_divider=divider,
+                      modeled_sampler_rate_hz=None if divider is None else 6250000 / (divider + 2),
+                      steady=steady and not faulted and self.active_name() == active and self.starts == starts,
+                      fault=faulted)
+        self.calls.append(result)
+        if result["steady"] and result["pcm_samples"] and active not in self.reported_profiles:
+            elapsed = result["bus_ticks"] / self.bus_hz
+            print(f"steady {active}: {result['cpu_cycles'] / result['pcm_samples']:.1f} CPU cycles/frame, "
+                  f"{elapsed * 1000000 / result['pcm_samples']:.3f} modeled us/frame", flush=True)
+            self.reported_profiles.add(active)
 
     def delay(self, seconds):
         self.extra_ticks += round(seconds * self.bus_hz)
         self.flush_playback()
-        # GEOMETRY/PIXELS/SIM can consume all shared staging between AUDIO calls.
         self.mem[0x8e00:0x9300] = bytes((i * 71 + 19) & 255 for i in range(0x500))
 
 
 def exercise(elf, symbols, image, standard, budget):
     cpu = Machine(elf, symbols, image, standard)
-    require(cpu.get("EMULATOR_SID_ONLY") == 0, "production must default to digital audio")
+    cpu.boot(budget)
     service = lambda **kw: cpu.call("havoc_c64::service_audio", budget, **kw)
     service()
     require(cpu.get("MUSIC_BACKEND") == 1 and cpu.starts == [1, 1], "DAC startup")
-    require(cpu.selected[0] == "hammond-rocker", "startup title must select Hammond Rocker")
-    require(cpu.produced == 32768, "full initial ring prefill")
-    print(f"{standard}: calibrated and primed Hammond Rocker for title/attract", flush=True)
+    require(cpu.active_name() == "hammond-rocker" and cpu.wide_clears > 0, "stereo title and cleared sampler")
+    calibration_count = cpu.calibrations
     audio = symbols["havoc_c64::AUDIO"]
     before = bytes(cpu.mem[audio.address:audio.address + audio.size])
     for _ in range(50):
         cpu.call("havoc_c64::audio_tick", budget)
-    require(cpu.mem[audio.address:audio.address + audio.size] == before, "50 Hz IRQ changed DAC state")
-    for frame in range(9):
-        cpu.delay(0.18)
-        service()
-        print(f"{standard}: title refill {frame + 1}: {cpu.calls[-1]}", flush=True)
-    require(cpu.starts == [1, 1] and cpu.ring_wraps > 0, "title service restarted or never wrapped")
-    calibration_count = cpu.calibrations
-    cpu.put("havoc_c64::REQUESTED_CUE", 1)
-    service()
-    require(cpu.get("MUSIC_BACKEND") == 0 and cpu.control == cpu.volume == [0, 0], "DAC to SID transition")
-    cpu.call("havoc_c64::audio_tick", budget)
-    cpu.put("havoc_c64::REQUESTED_CUE", 0)
-    service()
-    require(cpu.get("MUSIC_BACKEND") == 1 and cpu.starts == [2, 2], "SID to DAC transition")
-    require(cpu.selected[0] == "hammond-rocker", "default menu selection must return to Hammond Rocker")
-    require(cpu.calibrations == calibration_count, "saved calibration was discarded")
-    calibrated_divider = bytes(cpu.mem[0xdf2e:0xdf30])
+    require(cpu.mem[audio.address:audio.address + audio.size] == before, "effects IRQ changed decoder state")
 
-    def select_menu_song(cue, song, frames):
-        starts = cpu.starts.copy()
-        samples = cpu.pcm_samples[song]
-        cpu.put("havoc_c64::REQUESTED_CUE", cue)
-        service()
-        require(cpu.get("MUSIC_BACKEND") == 1 and cpu.selected[0] == song,
-                f"menu selection did not choose {song}")
-        require(cpu.starts == [count + 1 for count in starts], f"{song} must start once per toggle")
-        # Ring writes are checked against a fresh independent PCM decoder, so
-        # a full prefill proves the selected song starts from its first sample.
-        require(cpu.produced == 32768 and cpu.pcm_samples[song] - samples == 32768,
-                f"{song} did not restart with a full ring prefill")
-        require(cpu.calibrations == calibration_count, f"{song} discarded saved calibration")
-        require(bytes(cpu.mem[0xdf2e:0xdf30]) == calibrated_divider,
-                f"{song} changed the calibrated sampler divider")
-        starts = cpu.starts.copy()
-        playback_starts = [voice["start"] for voice in cpu.playback]
-        for _ in range(frames):
+    def play(visits):
+        for _ in range(visits):
             cpu.delay(0.18)
-            # The current menu choice is published each frame, and must keep
-            # playing until the hidden chord changes the selection again.
-            cpu.put("havoc_c64::REQUESTED_CUE", cue)
             service()
-            require(cpu.selected[0] == song and cpu.starts == starts,
-                    f"repeated title/attract requests restarted or replaced {song}")
-            require(cpu.calibrations == calibration_count, "repeated menu requests recalibrated")
-        require([voice["start"] for voice in cpu.playback] == playback_starts,
-                f"repeated title/attract requests changed {song} sampler position")
-        print(f"{standard}: {song} toggled from the beginning and continued for {frames} menu requests",
-              flush=True)
+            cpu.call("havoc_c64::audio_tick", budget)
 
-    select_menu_song(5, "galactic-dash", 9)
-    select_menu_song(0, "hammond-rocker", 3)
-    select_menu_song(5, "galactic-dash", 3)
-    cpu.delay(1.05)
+    def select(cue, stage, expected):
+        old_name, starts = cpu.active_name(), cpu.starts.copy()
+        effects = cpu.queue_death_effect(budget)
+        cpu.put("havoc_c64::REQUESTED_CUE", cue)
+        cpu.put("havoc_c64::REQUESTED_STAGE", stage)
+        require(cpu.requested_track() == expected, "fixture scene-to-track mapping")
+        for visit in range(20):
+            cpu.delay(0.18)
+            service()
+            cpu.call("havoc_c64::audio_tick", budget)
+            require(cpu.mem[effects + 3] == 39 - visit and cpu.mem[effects + 8] == 39 - visit,
+                    "cue preparation or handoff reset/stalled SID effects")
+            if cpu.active_name() == expected:
+                break
+            require(cpu.active_name() == old_name, "pending preparation interrupted active music")
+        else:
+            raise KernelError(f"pending track never completed: {expected}")
+        require(visit >= 7 and cpu.starts == [value + 1 for value in starts], "bounded single handoff")
+        require(cpu.calibrations == calibration_count, "transition recalibrated")
+        stable_starts = cpu.starts.copy()
+        play(4)
+        require(cpu.starts == stable_starts, "repeated cue restarted playback")
+        require(cpu.mem[effects + 3] == 35 - visit, "effects did not continue after handoff")
+        print(f"{standard}: switched {old_name} -> {expected} in {visit + 1} visits", flush=True)
+
+    play(9)
+    # Cancel a partially prepared replacement by requesting the active track.
+    cpu.put("havoc_c64::REQUESTED_CUE", 1)
+    play(2)
+    starts = cpu.starts.copy()
+    cpu.put("havoc_c64::REQUESTED_CUE", 0)
+    play(2)
+    require(cpu.active_name() == "hammond-rocker" and cpu.starts == starts, "active cue did not cancel pending")
+    # Exercise every named recording, including changes with the SAME SID cue.
+    for cue, stage, expected in ((1, 0, "lowland-approach"),
+                                 (7, 1, "crystal-cave"),
+                                 (2, 2, "iron-canyon"),
+                                 (2, 3, "canyon-gate"),
+                                 (8, 4, "ashen-wastes"),
+                                 (8, 5, "foundry-belt")):
+        select(cue, stage, expected)
+        if stage == 3:
+            starts = cpu.starts.copy()
+            cpu.put("havoc_c64::REQUESTED_CUE", 10)  # Gorge Warden appears.
+            play(3)
+            require(cpu.active_name() == expected and cpu.starts == starts,
+                    "Canyon Gate restarted at boss entrance")
+    select(3, 6, "galactic-dash-mono")  # Unrecorded Fortress Run.
+    starts = cpu.starts.copy()
+    for stage in (18, 255):
+        cpu.put("havoc_c64::REQUESTED_STAGE", stage)
+        play(1)
+        require(cpu.starts == starts and cpu.active_name() == "galactic-dash-mono",
+                "invalid stage did not retain cue fallback")
+    # Recorded stage indices cannot override menu, result or ascent cues.
+    for cue in (6, 19):
+        cpu.put("havoc_c64::REQUESTED_CUE", cue)
+        cpu.put("havoc_c64::REQUESTED_STAGE", 0)
+        play(1)
+        require(cpu.starts == starts and cpu.active_name() == "galactic-dash-mono",
+                "protected cue was overridden by stale gameplay stage")
+    select(5, 0, "galactic-dash")
+    select(0, 5, "hammond-rocker")
+    select(3, 6, "galactic-dash-mono")  # Reuses a former stereo slot and prefix.
+    require(cpu.prefix_clears >= 3, "mono prefixes not re-cleared across preparations")
+    cpu.delay(1.25)
     service()
-    require(cpu.get("DIGITAL_MINIMUM_LEAD", 2) > 2048, "below-guard delay depleted ring")
-    cpu.delay(0.18)
-    service()
-    require(cpu.get("DIGITAL_FAULT") == 0, "bounded catch-up did not recover on the following frame")
-    print(f"{standard}: both tracks, scratch reuse, ring wraps and SID handoff passed", flush=True)
-    cpu.delay(1.40)
+    require(cpu.get("DIGITAL_MINIMUM_LEAD", 2) > 2048, "recoverable gap crossed reader guard")
+    play(1)
+    cpu.delay(2.2)
     service(expect_fault=True)
-    require(cpu.get("DIGITAL_FAULT") == 5 and cpu.control == cpu.volume == [0, 0], "underrun did not fault and mute")
-    require(cpu.ring_banks == {0, 1}, "PCM DMA never reached both ring banks")
-    require(min(cpu.playback_checked) > 100_000, "both hardware channel read paths must be exercised")
-    return {"pcm_samples_checked": cpu.pcm_samples, "starts": cpu.starts,
-            "sampler_channel_frames_checked": cpu.playback_checked,
-            "calibration_shots": cpu.calibrations, "ring_wraps": cpu.ring_wraps,
-            "fetches": cpu.fetches, "stashes": cpu.stashes, "max_dma_bytes": cpu.max_dma,
-            "minimum_lead_samples": cpu.get("DIGITAL_MINIMUM_LEAD", 2),
-            "main_stack_bytes_written": cpu.stack_top - cpu.stack_min,
-            "fault": cpu.get("DIGITAL_FAULT"), "calls": cpu.calls}
+    require(cpu.get("DIGITAL_FAULT") == 5 and cpu.control == cpu.volume == [0, 0], "underrun did not stop/mute")
+    require(cpu.ring_banks == {0, 1} and cpu.ring_wraps > 0, "both slots and ring wraps")
+    require(min(cpu.playback_checked) > 100000, "both hardware readers must be exercised")
+    return dict(pcm_samples_checked=cpu.pcm_samples, starts=cpu.starts,
+                sampler_channel_frames_checked=cpu.playback_checked, calibration_shots=cpu.calibrations,
+                ring_wraps=cpu.ring_wraps, mono_prefix_clears=cpu.prefix_clears,
+                fetches=cpu.fetches, stashes=cpu.stashes, max_dma_bytes=cpu.max_dma,
+                minimum_lead_samples=cpu.get("DIGITAL_MINIMUM_LEAD", 2),
+                main_stack_bytes_written=cpu.stack_top - cpu.stack_min, fault=cpu.get("DIGITAL_FAULT"),
+                steady_service=steady_aggregates(cpu.calls, cpu.bus_hz), calls=cpu.calls)
+
+
+def exercise_corruption(elf, symbols, image, standard, budget):
+    """Immutable regions fail at boot; payload CRC fails during streamed prime."""
+    catalog = CATALOG["load_catalog"](validate=False)
+    tracks = catalog["tracks"]
+    track = next(entry for entry in tracks if entry["name"] == "hammond-rocker")
+    results = {}
+    directory = CATALOG["DIGITAL_OFFSET"]
+    stage_map = directory + 16 + 16 * len(tracks) + len(catalog["cues"])
+    cases = [("directory_version", directory + 4, 4),
+             ("directory_stage_count", directory + 10, 4),
+             ("directory_reserved", directory + 11, 4),
+             ("directory_stage_id", stage_map + 3, 4),
+             ("directory_checksum", directory + 14, 4)]
+    cases += [(kind, track["offset"] + relative, fault)
+              for kind, relative, fault in (("header", 20, 4), ("codebook", 32, 7),
+                  ("crc_table", track["metadata"]["crc_offset"], 8),
+                  ("stream", track["metadata"]["stream_offset"], 6))]
+    mono = next(entry for entry in tracks if entry["name"] == "lowland-approach")
+    cases.append(("mono_stream", mono["offset"] + mono["metadata"]["stream_offset"], 6))
+    for kind, offset, fault in cases:
+        corrupted = bytearray(image)
+        corrupted[offset] ^= 1
+        cpu = Machine(elf, symbols, corrupted, standard)
+        if kind.endswith("stream"):
+            cpu.allow_corrupt_pcm = True
+            if kind == "mono_stream":
+                cpu.put("havoc_c64::REQUESTED_CUE", 1)
+                cpu.put("havoc_c64::REQUESTED_STAGE", 0)
+            cpu.boot(budget)
+            cpu.call("havoc_c64::service_audio", budget, expect_fault=True)
+            require(cpu.control == cpu.volume == [0, 0], "CRC failure did not mute")
+        else:
+            cpu.boot(budget, expect_fault=True)
+        require(cpu.get("DIGITAL_FAULT") == fault, f"{kind} corruption fault classification")
+        results[kind] = fault
+        print(f"{standard}: corruption {kind} correctly reported fault {fault}", flush=True)
+    return results
 
 
 def exercise_emulator_sid_only(elf, symbols, image, standard, budget):
     strict = Machine(elf, symbols, image, standard, sampler_present=False)
-    require(strict.get("EMULATOR_SID_ONLY") == 0, "production must not opt into emulator mode")
-    strict.call("havoc_c64::service_audio", budget, expect_fault=True)
+    strict.boot(budget, expect_fault=True)
     require(strict.get("DIGITAL_FAULT") == 1, "missing production sampler must report Mapping")
-    require(strict.get("MUSIC_BACKEND") != 0, "missing production sampler silently fell back to SID")
-    print(f"{standard}: missing sampler still fails in production mode", flush=True)
-
     cues = {}
     for cue, name in ((0, "title"), (5, "victory")):
         cpu = Machine(elf, symbols, image, standard, sampler_present=False)
-        # Match monitor setup after the CRT has initialized globals, before
-        # the first AUDIO call. Each session starts with uninitialized AUDIO.
         cpu.put("EMULATOR_SID_ONLY", 1)
         cpu.put("havoc_c64::REQUESTED_CUE", cue)
+        cpu.boot(budget)
         cpu.call("havoc_c64::service_audio", budget)
-        require(cpu.get("MUSIC_BACKEND") == 0 and cpu.get("MUSIC_VALIDATED") == 1,
-                f"emulator {name} did not initialize the SID backend")
-        gated_voices = set()
+        require(cpu.get("MUSIC_BACKEND") == 0 and cpu.get("MUSIC_VALIDATED") == 1, f"SID-only {name} init")
+        gated = set()
         for _ in range(50):
             cpu.call("havoc_c64::audio_tick", budget)
             cpu.call("havoc_c64::service_audio", budget)
@@ -415,21 +654,12 @@ def exercise_emulator_sid_only(elf, symbols, image, standard, budget):
                 for voice in range(3):
                     base = 0xd400 + sid * 32 + voice * 7
                     if cpu.mem[base + 4] & 1 and any(cpu.mem[base:base + 2]):
-                        gated_voices.add((sid, voice))
-        require(cpu.get("MUSIC_CUE") == cue and cpu.get("MUSIC_PAGE") != 0xff,
-                f"emulator {name} did not consume its SID score")
-        require(gated_voices, f"emulator {name} never played a SID note")
-        require(cpu.get("MUSIC_UNDERRUNS", 2) == 0 and cpu.get("DIGITAL_FAULT") == 0,
-                f"emulator {name} reported an audio fault")
-        require(cpu.sampler_reads == cpu.sampler_writes == 0,
-                f"emulator {name} accessed unavailable sampler hardware")
-        cues[name] = {"cue": cpu.get("MUSIC_CUE"), "page": cpu.get("MUSIC_PAGE"),
-                     "gated_sid_voices": len(gated_voices), "audio_ticks": 50,
-                     "sampler_reads": cpu.sampler_reads, "sampler_writes": cpu.sampler_writes,
-                     "fault": cpu.get("DIGITAL_FAULT")}
-        print(f"{standard}: emulator SID-only {name} played without a sampler", flush=True)
-    return {"sampler_present": False, "strict_production_fault": strict.get("DIGITAL_FAULT"),
-            "emulator_flag": 1, "cues": cues, "passed": True}
+                        gated.add((sid, voice))
+        require(cpu.get("MUSIC_CUE") == cue and gated, f"SID-only {name} never played")
+        require(cpu.get("MUSIC_UNDERRUNS", 2) == cpu.get("DIGITAL_FAULT") == 0, "SID-only fault")
+        require(cpu.sampler_reads == cpu.sampler_writes == 0, "SID-only touched absent sampler")
+        cues[name] = dict(gated_sid_voices=len(gated), sampler_reads=cpu.sampler_reads, sampler_writes=cpu.sampler_writes)
+    return dict(strict_production_fault=1, cues=cues, passed=True)
 
 
 def main():
@@ -437,27 +667,30 @@ def main():
     parser.add_argument("--elf", type=Path, default=ROOT / "dist/havoc.elf")
     parser.add_argument("--reu", type=Path, default=ROOT / "dist/havoc.reu")
     parser.add_argument("--standard", choices=("pal", "ntsc", "both"), default="both")
-    parser.add_argument("--budget", type=int, default=100_000_000)
-    parser.add_argument("--emulator-only", action="store_true",
-                        help="only verify explicit SID-only playback and missing-sampler rejection")
+    parser.add_argument("--budget", type=int, default=100000000)
+    parser.add_argument("--emulator-only", action="store_true")
+    parser.add_argument("--kernel-only", action="store_true", help="only execute directed assembly decoder cases")
     parser.add_argument("--report", type=Path, default=ROOT / "target/digital-kernel/report.json")
     args = parser.parse_args()
     elf, symbols = load_elf(args.elf)
-    image = args.reu.read_bytes()
-    require(len(image) == symbols["__reu_size"].address, "REU/ELF size mismatch; rebuild both")
-    report = {"model": "NMOS 6502 at 64x bus; DMA 1 byte/bus cycle; stereo sampler 6.25 MHz/(divider+2)",
-              "digital_playback_tested": not args.emulator_only,
-              "elf_sha256": hashlib.sha256(args.elf.read_bytes()).hexdigest(),
-              "reu_sha256": hashlib.sha256(image).hexdigest(), "standards": {}}
-    for standard in ("pal", "ntsc") if args.standard == "both" else (args.standard,):
-        result = {} if args.emulator_only else exercise(elf, symbols, image, standard, args.budget)
-        result["emulator_sid_only"] = exercise_emulator_sid_only(elf, symbols, image, standard, args.budget)
-        report["standards"][standard] = result
+    report = dict(model="NMOS6502 at64x bus; DMA1byte/bus tick; sampler6.25MHz/(divider+2)",
+                  elf_sha256=hashlib.sha256(args.elf.read_bytes()).hexdigest(), standards={})
+    if not args.emulator_only:
+        report["assembly_kernel"] = exercise_decode_kernel(elf, symbols)
+    if not args.kernel_only:
+        image = args.reu.read_bytes()
+        require(len(image) == symbols["__reu_size"].address, "REU/ELF size mismatch")
+        report["reu_sha256"] = hashlib.sha256(image).hexdigest()
+        for standard in ("pal", "ntsc") if args.standard == "both" else (args.standard,):
+            result = {} if args.emulator_only else exercise(elf, symbols, image, standard, args.budget)
+            result["emulator_sid_only"] = exercise_emulator_sid_only(elf, symbols, image, standard, args.budget)
+            if not args.emulator_only:
+                result["corruption_faults"] = exercise_corruption(elf, symbols, image, standard, args.budget)
+            report["standards"][standard] = result
     report["passed"] = True
     args.report.parent.mkdir(parents=True, exist_ok=True)
     args.report.write_text(json.dumps(report, indent=2) + "\n")
-    label = "emulator SID-only" if args.emulator_only else "digital and emulator SID-only"
-    print(f"native {label} integration passed; {args.report}")
+    print(f"native DLT4 checks passed; {args.report}")
 
 
 if __name__ == "__main__":

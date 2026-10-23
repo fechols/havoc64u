@@ -157,21 +157,19 @@ pub struct PageRequest {
     pub page: u8,
 }
 
-/// The active page and audio state fit the fixed 432-byte target allocation.
+/// SID score transport, stored separately from the always-live effects engine.
 /// The external page is separately owned by the foreground loader.
 /// `repr(C)` with the only two-byte field first keeps the declared order and
 /// a padding-free layout on both the host and the byte-aligned MOS target, so
 /// a host engine image is a valid simulator fixture for kernel tests.
 #[repr(C)]
 #[cfg_attr(feature = "host-tools", derive(Clone))]
-pub struct AudioEngine {
+pub struct MusicEngine {
     underruns: u16,
     page: [u8; PAGE_SIZE],
     // 32-byte rows: the shadow offset equals the hardware register offset, so
     // every inlined accessor shares one shift instead of a multiply by 25.
     registers: [[u8; 32]; SID_COUNT],
-    effects: [FxVoice; 2],
-    events: [AudioEvent; QUEUE_CAPACITY],
     scratch: [u8; SCRATCH_SIZE],
     standard: VideoStandard,
     music: MusicState,
@@ -179,38 +177,35 @@ pub struct AudioEngine {
     kernel: u8,
     row: u8,
     row_ticks: u8,
-    event_count: u8,
     loaded: bool,
     initialized: bool,
     enabled: bool,
     ready: bool,
     waiting: bool,
+    image_padding: u8,
 }
 
 // image() exposes every byte, so reject any layout with padding at compile
-// time. After the counter and arrays come four identity bytes, three
-// transport bytes and five booleans; the nested records are padding-free.
+// time. The explicit trailing byte gives host and MOS the same even size.
 const _: () = assert!(
-    core::mem::size_of::<AudioEngine>()
-        == 2 + PAGE_SIZE + 32 * SID_COUNT + 10 + 8 + SCRATCH_SIZE + 4 + 3 + 5
+    core::mem::size_of::<MusicEngine>()
+        == 2 + PAGE_SIZE + 32 * SID_COUNT + SCRATCH_SIZE + 4 + 2 + 5 + 1
 );
 
-/// A valid host-side engine state captured by [`AudioEngine::snapshot`].
+/// A valid host-side engine state captured by [`MusicEngine::snapshot`].
 /// The external score page and SID bus state remain owned by the caller.
 #[cfg(feature = "host-tools")]
-pub struct AudioSnapshot {
-    engine: AudioEngine,
+pub struct MusicSnapshot {
+    engine: MusicEngine,
 }
 
-impl AudioEngine {
+impl MusicEngine {
     #[cfg_attr(target_arch = "mos", link_section = ".phase.audio")]
     pub const fn new(standard: VideoStandard) -> Self {
         Self {
             underruns: 0,
             page: [0; PAGE_SIZE],
             registers: [[0; 32]; SID_COUNT],
-            effects: [EMPTY_FX; 2],
-            events: [EMPTY_EVENT; QUEUE_CAPACITY],
             scratch: [0; SCRATCH_SIZE],
             standard,
             music: MusicState::Title,
@@ -218,12 +213,12 @@ impl AudioEngine {
             kernel: NO_KERNEL,
             row: 0,
             row_ticks: 0,
-            event_count: 0,
             loaded: false,
             initialized: false,
             enabled: true,
             ready: false,
             waiting: false,
+            image_padding: 0,
         }
     }
 
@@ -309,8 +304,8 @@ impl AudioEngine {
 
     /// Capture a typed engine state without exposing a raw-byte constructor.
     #[cfg(feature = "host-tools")]
-    pub fn snapshot(&self) -> AudioSnapshot {
-        AudioSnapshot {
+    pub fn snapshot(&self) -> MusicSnapshot {
+        MusicSnapshot {
             engine: self.clone(),
         }
     }
@@ -318,7 +313,7 @@ impl AudioEngine {
     /// Restore a captured engine state. The caller must retain the matching
     /// external score page and SID bus state; this does not write to the bus.
     #[cfg(feature = "host-tools")]
-    pub fn restore(&mut self, snapshot: &AudioSnapshot) {
+    pub fn restore(&mut self, snapshot: &MusicSnapshot) {
         *self = snapshot.engine.clone();
     }
 
@@ -366,72 +361,11 @@ impl AudioEngine {
         Ok(())
     }
 
-    /// Queue an effect without affecting the music voices. Equal-priority
-    /// effects replace older effects; higher-priority effects retain their voice.
-    /// Repeated pending gunfire in the same stereo lane is coalesced.
-    // Keep both foreground callers inside their loaded SIM/SCENERY overlays;
-    // outlining this shared routine would consume scarce resident IRQ space.
-    #[inline(always)]
-    pub fn queue(&mut self, event: AudioEvent) -> bool {
-        if !self.enabled {
-            return false;
-        }
-        if matches!(event.effect, Effect::Fire | Effect::EnemyFire) {
-            for pending in &self.events[..self.event_count as usize] {
-                if pending.effect == event.effect && lane(pending.pan) == lane(event.pan) {
-                    return true;
-                }
-            }
-        }
-        if self.event_count as usize == QUEUE_CAPACITY {
-            let mut lowest = 0;
-            for index in 1..QUEUE_CAPACITY {
-                if self.events[index].effect.priority() < self.events[lowest].effect.priority() {
-                    lowest = index;
-                }
-            }
-            if event.effect.priority() < self.events[lowest].effect.priority() {
-                return false;
-            }
-            for index in lowest..QUEUE_CAPACITY - 1 {
-                self.events[index] = self.events[index + 1];
-            }
-            self.event_count -= 1;
-        }
-        self.events[self.event_count as usize] = event;
-        self.event_count += 1;
-        true
-    }
-
-    /// Cancel only scenery cues, leaving player effects and music untouched.
-    /// Foreground SCENERY calls this with the interrupt masked. No SID access
-    /// occurs here: the next audio tick releases any active scenery voice.
-    #[cfg_attr(target_arch = "mos", link_section = ".phase.scenery")]
-    #[inline(never)]
-    pub fn cancel_scene_effects(&mut self) {
-        let mut retained = 0;
-        for index in 0..self.event_count as usize {
-            let event = self.events[index];
-            if !event.effect.is_scene() {
-                self.events[retained] = event;
-                retained += 1;
-            }
-        }
-        self.event_count = retained as u8;
-        for voice in &mut self.effects {
-            if voice.remaining != 0 && voice.effect.is_scene() {
-                voice.remaining = 1;
-            }
-        }
-    }
-
-    /// Initialize all mapped chips, clear effects, and request the cue opening.
+    /// Reset music voices and request the cue opening without changing effects.
     /// Requires the AUDIO overlay on the target, including backend switches.
     #[cfg_attr(target_arch = "mos", link_section = ".phase.audio")]
     #[inline(never)]
     pub fn reset<B: SidBus>(&mut self, bus: &mut B) {
-        self.effects = [EMPTY_FX; 2];
-        self.event_count = 0;
         self.row = 0;
         self.row_ticks = 0;
         self.underruns = 0;
@@ -445,17 +379,13 @@ impl AudioEngine {
         self.initialize(bus);
     }
 
-    /// Silence every mapped chip until `reset`; discard pending pages/effects.
+    /// Stop SID music while leaving the reserved effects voices and volume live.
     pub fn silence<B: SidBus>(&mut self, bus: &mut B) {
-        self.event_count = 0;
-        self.effects = [EMPTY_FX; 2];
         self.ready = false;
         self.enabled = false;
-        for sid in 0..SID_COUNT {
-            self.write(bus, sid, 4, 0);
-            self.write(bus, sid, 11, 0);
-            self.write(bus, sid, 18, 0);
-            self.write(bus, sid, 24, 0);
+        for voice in 0..MUSIC_VOICES {
+            let (sid, base) = music_voice(voice);
+            self.write(bus, sid, base + 4, 0);
         }
     }
 
@@ -466,11 +396,6 @@ impl AudioEngine {
         }
         self.tick_music(bus, next_page);
         self.tick_kernel(bus);
-        self.tick_effects(bus);
-        for index in 0..self.event_count as usize {
-            self.start_effect(bus, self.events[index]);
-        }
-        self.event_count = 0;
     }
 
     /// Colour the row the transport has just written. The slot only runs for
@@ -491,6 +416,10 @@ impl AudioEngine {
     fn initialize<B: SidBus>(&mut self, bus: &mut B) {
         for sid in 0..SID_COUNT {
             for reg in 0..25 {
+                // Effects own voice three and volume on SID 0/1.
+                if sid < 2 && ((14..21).contains(&reg) || reg == 24) {
+                    continue;
+                }
                 bus.write(sid as u8, reg as u8, 0);
                 // The loops exactly cover all four SID register shadows.
                 unsafe {
@@ -500,7 +429,9 @@ impl AudioEngine {
             self.write(bus, sid, 22, DEFAULT_FILTER_CUTOFF);
             // Extra chips have three music voices; effects bypass filters on 0/1.
             self.write(bus, sid, 23, if sid < 2 { 0x23 } else { 0x27 });
-            self.write(bus, sid, 24, 0x1c);
+            if sid >= 2 {
+                self.write(bus, sid, 24, 0x1c);
+            }
         }
         self.initialized = true;
     }
@@ -643,6 +574,163 @@ impl AudioEngine {
         self.row += 1;
         self.row_ticks = self.page[7] - 1;
     }
+}
+
+/// Always-live effects state, owned independently of the SID/DAC music union.
+#[repr(C)]
+#[derive(Clone)]
+pub struct EffectsEngine {
+    effects: [FxVoice; 2],
+    events: [AudioEvent; QUEUE_CAPACITY],
+    registers: [[u8; 7]; 2],
+    standard: VideoStandard,
+    event_count: u8,
+    enabled: bool,
+    initialized: bool,
+}
+
+const _: () = assert!(core::mem::size_of::<EffectsEngine>() == 36);
+const _: () = assert!(core::mem::size_of::<MusicEngine>() == 382);
+
+impl EffectsEngine {
+    #[cfg_attr(target_arch = "mos", link_section = ".phase.audio")]
+    pub const fn new(standard: VideoStandard) -> Self {
+        Self {
+            effects: [EMPTY_FX; 2],
+            events: [EMPTY_EVENT; QUEUE_CAPACITY],
+            registers: [[0; 7]; 2],
+            standard,
+            event_count: 0,
+            enabled: true,
+            initialized: false,
+        }
+    }
+
+    /// Initialize effects once at boot. Music/backend changes must not call it.
+    #[cfg_attr(target_arch = "mos", link_section = ".phase.audio")]
+    #[inline(never)]
+    pub fn reset<B: SidBus>(&mut self, bus: &mut B) {
+        self.effects = [EMPTY_FX; 2];
+        self.events = [EMPTY_EVENT; QUEUE_CAPACITY];
+        self.event_count = 0;
+        self.enabled = true;
+        for sid in 0..2 {
+            for reg in 14..21 {
+                bus.write(sid as u8, reg as u8, 0);
+            }
+            // Effects bypass filters and need volume even when boot selects DAC.
+            bus.write(sid as u8, 23, 0x23);
+            bus.write(sid as u8, 24, 0x1c);
+        }
+        self.registers = [[0; 7]; 2];
+        self.initialized = true;
+    }
+
+    /// Stop effects alone; music and the chip-wide volume are untouched.
+    pub fn silence<B: SidBus>(&mut self, bus: &mut B) {
+        self.event_count = 0;
+        self.effects = [EMPTY_FX; 2];
+        self.enabled = false;
+        for sid in 0..2 {
+            self.write(bus, sid, 18, 0);
+        }
+    }
+
+    /// One 20 ms tick, independent of the selected music backend.
+    pub fn tick<B: SidBus>(&mut self, bus: &mut B) {
+        if !self.enabled || !self.initialized {
+            return;
+        }
+        self.tick_effects(bus);
+        for index in 0..self.event_count as usize {
+            self.start_effect(bus, self.events[index]);
+        }
+        self.event_count = 0;
+    }
+
+    #[inline(never)]
+    fn write<B: SidBus>(&mut self, bus: &mut B, sid: usize, reg: usize, value: u8) {
+        // Private callers address only SID 0/1's seven voice-three registers.
+        let previous = unsafe {
+            self.registers
+                .get_unchecked_mut(sid)
+                .get_unchecked_mut(reg - 14)
+        };
+        if *previous != value {
+            *previous = value;
+            bus.write(sid as u8, reg as u8, value);
+        }
+    }
+
+    #[inline(never)]
+    fn write_word<B: SidBus>(&mut self, bus: &mut B, sid: usize, reg: usize, value: u16) {
+        self.write(bus, sid, reg, value as u8);
+        self.write(bus, sid, reg + 1, (value >> 8) as u8);
+    }
+
+    #[inline(always)]
+    fn register(&self, sid: usize, reg: usize) -> u8 {
+        unsafe { *self.registers.get_unchecked(sid).get_unchecked(reg - 14) }
+    }
+
+    /// Queue an effect without affecting the music voices. Equal-priority
+    /// effects replace older effects; higher-priority effects retain their voice.
+    /// Repeated pending gunfire in the same stereo lane is coalesced.
+    // Keep both foreground callers inside their loaded SIM/SCENERY overlays;
+    // outlining this shared routine would consume scarce resident IRQ space.
+    #[inline(always)]
+    pub fn queue(&mut self, event: AudioEvent) -> bool {
+        if !self.enabled {
+            return false;
+        }
+        if matches!(event.effect, Effect::Fire | Effect::EnemyFire) {
+            for pending in &self.events[..self.event_count as usize] {
+                if pending.effect == event.effect && lane(pending.pan) == lane(event.pan) {
+                    return true;
+                }
+            }
+        }
+        if self.event_count as usize == QUEUE_CAPACITY {
+            let mut lowest = 0;
+            for index in 1..QUEUE_CAPACITY {
+                if self.events[index].effect.priority() < self.events[lowest].effect.priority() {
+                    lowest = index;
+                }
+            }
+            if event.effect.priority() < self.events[lowest].effect.priority() {
+                return false;
+            }
+            for index in lowest..QUEUE_CAPACITY - 1 {
+                self.events[index] = self.events[index + 1];
+            }
+            self.event_count -= 1;
+        }
+        self.events[self.event_count as usize] = event;
+        self.event_count += 1;
+        true
+    }
+
+    /// Cancel only scenery cues, leaving player effects and music untouched.
+    /// Foreground SCENERY calls this with the interrupt masked. No SID access
+    /// occurs here: the next audio tick releases any active scenery voice.
+    #[cfg_attr(target_arch = "mos", link_section = ".phase.scenery")]
+    #[inline(never)]
+    pub fn cancel_scene_effects(&mut self) {
+        let mut retained = 0;
+        for index in 0..self.event_count as usize {
+            let event = self.events[index];
+            if !event.effect.is_scene() {
+                self.events[retained] = event;
+                retained += 1;
+            }
+        }
+        self.event_count = retained as u8;
+        for voice in &mut self.effects {
+            if voice.remaining != 0 && voice.effect.is_scene() {
+                voice.remaining = 1;
+            }
+        }
+    }
 
     #[inline(never)]
     fn tick_effects<B: SidBus>(&mut self, bus: &mut B) {
@@ -741,6 +829,104 @@ impl AudioEngine {
                 age: 0,
             };
         }
+    }
+}
+
+/// Combined host/SID-only facade. Targets keep these owners separate so effects
+/// survive replacement of the music transport with a DAC decoder.
+#[repr(C)]
+#[cfg_attr(feature = "host-tools", derive(Clone))]
+pub struct AudioEngine {
+    pub transport: MusicEngine,
+    pub effects: EffectsEngine,
+}
+
+const _: () = assert!(core::mem::size_of::<AudioEngine>() == 418);
+
+impl core::ops::Deref for AudioEngine {
+    type Target = MusicEngine;
+    fn deref(&self) -> &MusicEngine {
+        &self.transport
+    }
+}
+impl core::ops::DerefMut for AudioEngine {
+    fn deref_mut(&mut self) -> &mut MusicEngine {
+        &mut self.transport
+    }
+}
+
+#[cfg(feature = "host-tools")]
+pub struct AudioSnapshot {
+    engine: AudioEngine,
+}
+
+impl AudioEngine {
+    pub const fn new(standard: VideoStandard) -> Self {
+        Self {
+            transport: MusicEngine::new(standard),
+            effects: EffectsEngine::new(standard),
+        }
+    }
+
+    /// Explicit forwarding retains the original two-phase method borrow API.
+    pub fn publish_page(&mut self, request: PageRequest, bytes: &[u8]) -> Result<(), ScoreError> {
+        self.transport.publish_page(request, bytes)
+    }
+
+    pub fn reset<B: SidBus>(&mut self, bus: &mut B) {
+        self.transport.reset(bus);
+        self.effects.reset(bus);
+    }
+
+    pub fn silence<B: SidBus>(&mut self, bus: &mut B) {
+        self.transport.silence(bus);
+        self.effects.silence(bus);
+        for sid in 0..SID_COUNT {
+            self.transport.registers[sid][24] = 0;
+            bus.write(sid as u8, 24, 0);
+        }
+    }
+
+    pub fn tick<B: SidBus>(&mut self, bus: &mut B, next_page: &[u8; PAGE_SIZE]) {
+        self.transport.tick(bus, next_page);
+        self.effects.tick(bus);
+    }
+
+    #[inline(always)]
+    pub fn queue(&mut self, event: AudioEvent) -> bool {
+        self.effects.queue(event)
+    }
+
+    pub fn cancel_scene_effects(&mut self) {
+        self.effects.cancel_scene_effects();
+    }
+
+    #[cfg(feature = "host-tools")]
+    pub fn image(&self) -> &[u8] {
+        // Both records have explicit, tested padding-free byte layouts.
+        unsafe {
+            core::slice::from_raw_parts(
+                (self as *const Self).cast::<u8>(),
+                core::mem::size_of::<Self>(),
+            )
+        }
+    }
+
+    #[cfg(feature = "host-tools")]
+    pub fn music_image(&self) -> &[u8] {
+        self.transport.image()
+    }
+
+    #[cfg(feature = "host-tools")]
+    pub fn snapshot(&self) -> AudioSnapshot {
+        AudioSnapshot {
+            engine: self.clone(),
+        }
+    }
+
+    #[cfg(feature = "host-tools")]
+    pub fn restore(&mut self, snapshot: &AudioSnapshot) {
+        *self = snapshot.engine.clone();
     }
 }
 

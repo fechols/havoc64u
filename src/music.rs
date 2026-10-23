@@ -52,8 +52,7 @@ pub enum ScoreError {
     Transition,
 }
 
-#[inline(never)]
-#[cfg_attr(target_arch = "mos", link_section = ".phase.audio")]
+#[inline(always)]
 fn checksum_excluding(bytes: &[u8], excluded: usize) -> u16 {
     let mut a = 0u16;
     let mut b = 0u16;
@@ -72,14 +71,13 @@ fn checksum_excluding(bytes: &[u8], excluded: usize) -> u16 {
     (b << 8) | a
 }
 
-#[inline(never)]
-#[cfg_attr(target_arch = "mos", link_section = ".phase.audio")]
+#[inline(always)]
 pub fn page_checksum(bytes: &[u8]) -> u16 {
     checksum_excluding(bytes, 10)
 }
 
 #[inline(never)]
-#[cfg_attr(target_arch = "mos", link_section = ".phase.audio.startup")]
+#[cfg_attr(target_arch = "mos", link_section = ".phase.boot")]
 pub fn bank_header_checksum(bytes: &[u8]) -> u16 {
     checksum_excluding(bytes, 14)
 }
@@ -93,7 +91,7 @@ pub struct CueInfo {
 }
 
 #[inline(never)]
-#[cfg_attr(target_arch = "mos", link_section = ".phase.audio.startup")]
+#[cfg_attr(target_arch = "mos", link_section = ".phase.boot")]
 pub fn cue_info(header: &[u8], cue: u8) -> Result<CueInfo, ScoreError> {
     if header.len() < BANK_HEADER_SIZE {
         return Err(ScoreError::Truncated);
@@ -138,8 +136,7 @@ pub fn cue_info(header: &[u8], cue: u8) -> Result<CueInfo, ScoreError> {
     Ok(info)
 }
 
-#[inline(never)]
-#[cfg_attr(target_arch = "mos", link_section = ".phase.audio")]
+#[inline(always)]
 pub fn validate_page(bytes: &[u8], cue: u8, index: u8) -> Result<(), ScoreError> {
     if bytes.len() != PAGE_SIZE {
         return Err(ScoreError::Truncated);
@@ -181,8 +178,7 @@ pub fn validate_page(bytes: &[u8], cue: u8, index: u8) -> Result<(), ScoreError>
 
 /// Validate the sixteen-byte kernel directory header against the resident
 /// slot capacity. The header checksum treats its own field as zero.
-#[inline(never)]
-#[cfg_attr(target_arch = "mos", link_section = ".phase.audio")]
+#[inline(always)]
 pub fn kernel_header(header: &[u8], slot: u16) -> Result<(), ScoreError> {
     if header.len() < KERNEL_HEADER_SIZE {
         return Err(ScoreError::Truncated);
@@ -203,8 +199,7 @@ pub fn kernel_header(header: &[u8], slot: u16) -> Result<(), ScoreError> {
 }
 
 /// Decode one cue's `size, checksum` entry; a zero size means no kernel.
-#[inline(never)]
-#[cfg_attr(target_arch = "mos", link_section = ".phase.audio")]
+#[inline(always)]
 pub fn kernel_entry(entry: &[u8], slot: u16) -> Result<(u16, u16), ScoreError> {
     if entry.len() < KERNEL_ENTRY_SIZE {
         return Err(ScoreError::Truncated);
@@ -218,7 +213,7 @@ pub fn kernel_entry(entry: &[u8], slot: u16) -> Result<(u16, u16), ScoreError> {
 
 /// Boot-time check of the complete directory, including its final checksum.
 #[inline(never)]
-#[cfg_attr(target_arch = "mos", link_section = ".phase.audio.startup")]
+#[cfg_attr(target_arch = "mos", link_section = ".phase.boot")]
 pub fn kernel_directory(directory: &[u8], slot: u16) -> Result<(), ScoreError> {
     if directory.len() < KERNEL_DIRECTORY_SIZE {
         return Err(ScoreError::Truncated);

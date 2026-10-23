@@ -508,6 +508,8 @@ def dwarf_game_layout(elf, tool, syms, output, controls=False):
                 "menu_ticks": "u16", "boss_left": "u8", "boss_right": "u8", "boss_core": "u8"}
     if "Transition" in modes:
         required.update(transition_ticks="u16", ticks="u16")
+    if "repeat_spawn_cursor" in fields:
+        required["repeat_spawn_cursor"] = "u8"
     sizes = {"u8": 1, "i8": 1, "u16": 2, "u32": 4, "i16": 2, "bool": 1, "havoc::game::Mode": 1}
     if "stage_id" in fields:
         required["stage_id"] = "u8"
@@ -609,12 +611,16 @@ def read_game_state(mon, layout, names, raw=None):
 
 
 def clock_fixture(values, fields, count, transition_mode=6):
-    """Translate logical total-progress fixtures to the package's actual clock.
+    """Translate logical progress and encounter fixtures to the actual layout.
 
     v5 owns u16 rail_ticks; v6 owns u16 stage_ticks plus stage_id. No synthetic
     DWARF offsets are installed, and conflicting dual-clock fixtures fail.
     """
     values = dict(values)
+    # Isolated encounters disable both streams; previews rewind both. Older
+    # packages have only the original cursor and keep their existing layout.
+    if "spawn_cursor" in values and "repeat_spawn_cursor" in fields:
+        values.setdefault("repeat_spawn_cursor", values["spawn_cursor"])
     if not any(name in values for name in ("rail_ticks", "stage_ticks", "stage_id")):
         return values
     stage = values.get("stage_id")
@@ -1824,6 +1830,21 @@ def hud_checks(mon, syms, failures, elf, dwarf_tool, output, result):
     print("HUD: eight fixed sprites retained across frames; unchanged state wrote zero bytes; score dirtied one corner", flush=True)
 
 
+def check_feedback_geometry(reference, commands, white, pulse=(), core_color=7):
+    """Flash target facets while retaining its ground-shadow suffix unchanged."""
+    actual = {tuple(command["x"] + command["y"] + [command["depth"]]):
+              (command["color"], command["reserved"]) for command in commands}
+    shadows = 0
+    for key, (color, flags) in reference.items():
+        ground = bool(flags & 0x40)
+        shadows += ground
+        expected = color if ground else 1 if white else core_color if key in pulse else color
+        if actual.get(key) != (expected, flags):
+            label = "ground shadow changed during feedback" if ground else "target mesh does not match its feedback phase"
+            raise RuntimeError(label)
+    return dict(white=white, triangles=len(reference) - shadows, shadow_triangles=shadows)
+
+
 def weapon_checks(mon, syms, failures, elf, dwarf_tool, output, result, video, package=None):
     """Seed encounter fixtures; exercise damage, charging and FIRE through game code."""
     layout = dwarf_game_layout(elf, dwarf_tool, syms, output, controls=True)
@@ -1898,7 +1919,8 @@ def weapon_checks(mon, syms, failures, elf, dwarf_tool, output, result, video, p
             or renderer["fields"]["triangles"]["type"] != "havoc::render::Triangle[256]"
             or any(triangle["fields"][axis]["type"] != "i16[3]" for axis in ("x", "y"))
             or triangle["fields"]["depth"]["type"] != "i16"
-            or triangle["fields"]["color"]["type"] != "u8"):
+            or triangle["fields"]["color"]["type"] != "u8"
+            or triangle["fields"]["reserved"]["type"] != "u8"):
         raise RuntimeError("Unsupported Renderer/Triangle DWARF layout")
     effect = structs["BombEffect"]
     effect["address"] = resident_symbol(syms, "BOMB_EFFECT")[1]
@@ -1974,6 +1996,7 @@ def weapon_checks(mon, syms, failures, elf, dwarf_tool, output, result, video, p
                 command[axis] = list(struct.unpack_from("<3h", data, offset))
             command["depth"] = struct.unpack_from("<h", data, triangle["fields"]["depth"]["offset"])[0]
             command["color"] = data[triangle["fields"]["color"]["offset"]]
+            command["reserved"] = data[triangle["fields"]["reserved"]["offset"]]
             commands.append(command)
         return commands
 
@@ -2060,19 +2083,21 @@ def weapon_checks(mon, syms, failures, elf, dwarf_tool, output, result, video, p
 
         def mesh_reference(blank, populated):
             background = {signature(command) for command in blank["triangles"]}
-            mesh = {signature(command): command["color"] for command in populated["triangles"]
+            mesh = {signature(command): (command["color"], command["reserved"])
+                    for command in populated["triangles"]
                     if signature(command) not in background}
-            if len(mesh) < 2 or not any(color != 1 for color in mesh.values()):
+            facets = [color for color, flags in mesh.values() if not flags & 0x40]
+            if len(facets) < 2 or not any(color != 1 for color in facets):
                 raise RuntimeError("Cannot isolate a colored feedback target mesh")
             return mesh
 
         def colors(scenario, mesh, current, white, pulse):
-            actual = {signature(command): command["color"] for command in current["triangles"]}
             core_color = 7 if current["game"]["ticks"] & 8 == 0 else 2
-            if any(actual.get(key) != (1 if white else core_color if key in pulse else color)
-                   for key, color in mesh.items()):
-                raise RuntimeError(f"{scenario['name']}: target mesh does not match its feedback phase")
-            scenario.setdefault("geometry_checks", []).append(dict(white=white, triangles=len(mesh)))
+            try:
+                checked = check_feedback_geometry(mesh, current["triangles"], white, pulse, core_color)
+            except RuntimeError as error:
+                raise RuntimeError(f"{scenario['name']}: {error}") from error
+            scenario.setdefault("geometry_checks", []).append(checked)
 
         def stage(scenario, index):
             pause(scenario, False)
@@ -2698,21 +2723,21 @@ def music_checks(mon, syms, failures, elf, reu, dwarf_tool, output, result, sid_
         raise RuntimeError("Music fixtures require the DWARF Game::menu_ticks field")
     fields["menu_ticks"]["size"] = 2
     audio_description = subprocess.check_output(
-        [str(dwarf_tool), "--name=AudioEngine", "--show-children", str(elf)], text=True)
-    members = dwarf_members(audio_description, "AudioEngine")
+        [str(dwarf_tool), "--name=MusicEngine", "--show-children", str(elf)], text=True)
+    members = dwarf_members(audio_description, "MusicEngine")
     register_field = members.get("registers")
     audio_size = re.search(r"DW_AT_byte_size\s+\((0x[0-9a-fA-F]+|\d+)\)", audio_description)
     # Shadow rows are 32 bytes (one shift shared with the hardware offset);
     # the historical engine used 25-byte rows. DWARF prints the nested array
     # as `u8[N]`, so take the row stride from the following member's offset.
     # The audit mirrors only the 25 real registers of each row.
-    following = members.get("effects")
+    following = members.get("scratch")
     register_stride = ((following["offset"] - register_field["offset"]) // sid_count
                        if register_field and following and following["offset"] > register_field["offset"] else 0)
     if (not register_field or register_stride not in (25, 32)
             or register_field["type"] not in (f"[[u8; {register_stride}]; {sid_count}]", f"u8[{sid_count}]")
             or not audio_size or register_field["offset"] + sid_count * register_stride > int(audio_size[1], 0)):
-        raise RuntimeError("Pitch audit requires the exact native AudioEngine register-cache layout")
+        raise RuntimeError("Pitch audit requires the exact native MusicEngine register-cache layout")
     register_address = resident_symbol(syms, "AUDIO")[1] + register_field["offset"]
     data = reu.read_bytes()
     format = package_model_layout(data)

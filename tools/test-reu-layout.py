@@ -3,6 +3,7 @@ import importlib.util
 from pathlib import Path
 import unittest
 import json
+from digital_format import load_catalog, pack_catalog
 
 
 spec = importlib.util.spec_from_file_location('packer', Path(__file__).with_name('pack-overlays.py'))
@@ -18,7 +19,7 @@ def layout():
     symbols = {'__reu_size': 0x1000000, '__reu_code_slot_size': 0x4200,
                '__reu_models': 0xb0000, '__reu_music': 0xc0000,
                '__reu_digital_music': 0x100000, '__reu_digital_ring': 0xfe0000,
-               '__reu_digital_victory': 0x500000,
+               '__reu_digital_victory': 0x100000,
                '__reu_digital_ring_size': 0x20000,
                '__reu_music_kernels': 0xb9000, '__music_kernel_size': 0x300}
     symbols.update((f'__reu_{symbol}', address)
@@ -30,10 +31,8 @@ class ReuLayout(unittest.TestCase):
     def test_digital_asset_integrity_and_mutable_ring(self):
         root = Path(__file__).resolve().parents[1]
         reu = bytearray(0x1000000)
-        tracks = (('galactic-dash', 0x100000), ('hammond-rocker', 0x500000))
-        for name, start in tracks:
-            asset = (root / f'assets/music/{name}.dlt').read_bytes()
-            reu[start:start + len(asset)] = asset
+        catalog = pack_catalog(reu)
+        tracks = [(entry['name'], entry['offset']) for entry in catalog['tracks']]
         result = packer.validate_digital_payload(reu)
         self.assertEqual(set(result), {name for name, _ in tracks})
         for name, start in tracks:
@@ -73,7 +72,7 @@ class ReuLayout(unittest.TestCase):
             ('__reu_music_kernels', 0xbd000, 'overlaps'),
             ('__music_kernel_size', 0x800, 'bounded DMA'),
             ('__reu_digital_music', 0xf0000, 'digital music address'),
-            ('__reu_digital_victory', 0x200000, 'digital victory address'),
+            ('__reu_digital_victory', 0x200000, 'digital victory alias'),
             ('__reu_digital_ring', 0x3e0000, 'digital ring address'),
             ('__reu_digital_ring_size', 0x10000, 'digital ring size'),
         ):

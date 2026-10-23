@@ -370,9 +370,14 @@ def audit(path):
         require(phases[name].address + phases[name].size <= 0x7200,
                 f"{name} exceeds the execution window")
     partial_phases = []
+    audio_phase = phases['.phase.audio']
+    require(symbols['__phase_audio_runtime_end'].address == audio_phase.address + audio_phase.size,
+            'AUDIO runtime must include the full image after startup validation moves to BOOT')
+    boot_functions = {function.name for function in elf.functions[phases['.phase.boot'].index]}
+    require({'havoc_c64::validate_music_bank', 'havoc::digital::parse_header'} <= boot_functions,
+            'music startup validation must remain in BOOT')
     for name, boundary_name, caller_name, tail_name in (
         ("geometry", "__phase_geometry_base_end", "havoc::game::Game::render_foreground", "havoc::game::Game::render_combat"),
-        ("audio", "__phase_audio_runtime_end", "havoc_c64::service_audio", "havoc_c64::validate_music_bank"),
         ("shadow", "__phase_shadow_finalize_end", "havoc_c64::prepare_shadows", "havoc_c64::setup_shadows"),
     ):
         phase = phases[f".phase.{name}"]
@@ -651,8 +656,7 @@ def audit(path):
             if (source.index == phase.index and target.index == phase.index
                     and address < boundary <= destination):
                 # Reviewed guards: foreground calls combat only outside
-                # Transition; AUDIO calls validation only before MUSIC_VALIDATED.
-                # main chooses full/prefix loads from those same stable states.
+                # Transition. Main chooses full/prefix loads from stable state.
                 instruction = address - source.address - 1
                 direct = (kind == 3 and 0 <= instruction < source.size
                           and elf.contents(source)[instruction] in (0x20, 0x4C))

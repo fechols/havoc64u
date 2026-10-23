@@ -1,9 +1,18 @@
 // Ported from secondreality-opt/src/audio/flac_to_adpcm.rs (Unlicense).
 // Sequential iteration preserves the original per-sample arithmetic.
 pub fn resample_pcm(src: &[i16], src_rate: u32, dst_rate: u32) -> Vec<f64> {
+    resample_f64(
+        &src.iter().map(|&sample| sample as f64).collect::<Vec<_>>(),
+        src_rate,
+        dst_rate,
+    )
+}
+
+/// Floating-point input preserves half-sample precision when downmixing stereo.
+pub fn resample_f64(src: &[f64], src_rate: u32, dst_rate: u32) -> Vec<f64> {
     assert!(src_rate > 0 && dst_rate > 0, "sample rates must be nonzero");
     if src_rate == dst_rate || src.is_empty() {
-        return src.iter().map(|&sample| sample as f64).collect();
+        return src.to_vec();
     }
     const PHASES: usize = 512;
     let taps = resampler_tap_count(src_rate, dst_rate);
@@ -30,7 +39,7 @@ pub fn resample_pcm(src: &[i16], src_rate: u32, dst_rate: u32) -> Vec<f64> {
             let mut sum = 0.0;
             for k in lo..hi {
                 let weight = a[k] + blend * (b[k] - a[k]);
-                sum += src[(first + k as isize) as usize] as f64 * weight;
+                sum += src[(first + k as isize) as usize] * weight;
             }
             // Keep filter overshoot and fractional precision until the shared
             // normalization gain is applied; clipping here would be permanent.

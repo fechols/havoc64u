@@ -7,6 +7,7 @@ fi
 root=$(cd "$(dirname "$0")/.." && pwd)
 cd "$root"
 source scripts/env.sh
+python3 tools/digital_format.py
 command -v mos-c64-clang >/dev/null || { echo 'Install LLVM-MOS SDK v22.5.0; see README.md' >&2; exit 1; }
 rustup run mos rustc --version
 cargo +stable test --all-targets

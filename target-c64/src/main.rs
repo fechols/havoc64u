@@ -8,7 +8,7 @@ use core::{
 };
 use havoc::{
     assets::{self, AssetBank, Segment},
-    audio::{AudioEngine, MusicState, SidBus, VideoStandard},
+    audio::{EffectsEngine, MusicEngine, MusicState, SidBus, VideoStandard},
     game::{Game, Hud, InputSample, PresentationEvent},
     hud, hud_sprites,
     music::{self, BANK_HEADER_SIZE, PAGE_SIZE},
@@ -38,7 +38,7 @@ static ERROR_PACKAGE_HEADER: [u8; 36] = *b"LOAD MATCHING H.A.V.O.C. REU AT ZERO"
 static ERROR_MUSIC_PAGE: [u8; 18] = *b"INVALID MUSIC PAGE";
 #[link_section = ".phase.audio.data"]
 static ERROR_MUSIC_DIRECTORY: [u8; 23] = *b"INVALID MUSIC DIRECTORY";
-#[link_section = ".phase.audio.startup.data"]
+#[link_section = ".phase.boot.data"]
 static ERROR_MUSIC_CHECKSUM: [u8; 22] = *b"INVALID MUSIC CHECKSUM";
 #[cfg(feature = "music-kernels")]
 #[link_section = ".phase.audio.data"]
@@ -59,12 +59,16 @@ static mut GAME: MaybeUninit<Game> = MaybeUninit::uninit();
 static mut SPACE_DUST: SpaceDustFrame = SpaceDustFrame::EMPTY;
 #[link_section = ".audio_state"]
 static mut AUDIO: MaybeUninit<PlaybackState> = MaybeUninit::uninit();
+#[link_section = ".audio_state"]
+static mut EFFECTS: MaybeUninit<EffectsEngine> = MaybeUninit::uninit();
 #[repr(C)]
 union PlaybackState {
-    sid: ManuallyDrop<AudioEngine>,
+    sid: ManuallyDrop<MusicEngine>,
     dac: ManuallyDrop<digital::State>,
 }
-const _: () = assert!(core::mem::size_of::<PlaybackState>() <= 400);
+const _: () = assert!(core::mem::size_of::<PlaybackState>() <= 392);
+const _: () =
+    assert!(core::mem::size_of::<PlaybackState>() + core::mem::size_of::<EffectsEngine>() <= 432);
 const BACKEND_SID: u8 = 0;
 const BACKEND_DAC: u8 = 1;
 const BACKEND_SWITCHING: u8 = 2;
@@ -84,14 +88,16 @@ pub static mut DIGITAL_LOOPS: u16 = 0;
 pub static mut DIGITAL_MINIMUM_LEAD: u16 = 0;
 #[no_mangle]
 static mut REQUESTED_CUE: MusicState = MusicState::Title;
+#[no_mangle]
+static mut REQUESTED_STAGE: u8 = 255;
 static mut DIGITAL_CALIBRATION: digital::Calibration = digital::Calibration::new();
 #[inline(always)]
-unsafe fn sid_mut() -> &'static mut AudioEngine {
-    &mut *AUDIO.as_mut_ptr().cast::<AudioEngine>()
+unsafe fn sid_mut() -> &'static mut MusicEngine {
+    &mut *AUDIO.as_mut_ptr().cast::<MusicEngine>()
 }
 #[inline(always)]
-unsafe fn sid_ref() -> &'static AudioEngine {
-    &*AUDIO.as_ptr().cast::<AudioEngine>()
+unsafe fn sid_ref() -> &'static MusicEngine {
+    &*AUDIO.as_ptr().cast::<MusicEngine>()
 }
 #[link_section = ".music_page"]
 static mut NEXT_PAGE: MaybeUninit<[u8; PAGE_SIZE]> = MaybeUninit::uninit();
@@ -325,6 +331,9 @@ unsafe fn audio_tick() {
     }
     AUDIO_TICKS = AUDIO_TICKS.wrapping_add(1);
     BOMB_EFFECT.tick();
+    if MUSIC_VALIDATED {
+        EFFECTS.assume_init_mut().tick(&mut HardwareSid);
+    }
     if MUSIC_BACKEND != BACKEND_SID {
         return;
     }
@@ -606,9 +615,10 @@ fn segment_address(slot: u8) -> u16 {
 unsafe fn segment_data(slot: u8) -> &'static [u8] {
     core::slice::from_raw_parts(segment_address(slot) as *const u8, 512)
 }
-// Benchmark controls grow SIM; its checksum helper can use spare resident RAM.
-// Production keeps the same code placement and transfer sizes.
+// Benchmark controls grow SIM; its checksum helper shares constant RAM with
+// the resident benchmark checkpoints. Production keeps its SIM placement.
 #[cfg_attr(not(feature = "benchmarks"), link_section = ".phase.sim")]
+#[cfg_attr(feature = "benchmarks", link_section = ".benchmark_resident")]
 #[inline(never)]
 unsafe fn validate_segment(slot: u8, index: u8) {
     let b = segment_data(slot);
@@ -724,11 +734,14 @@ unsafe fn take_input(until: u16) -> Option<InputSample> {
 unsafe fn send_audio(game: &mut Game) {
     disable_irq();
     REQUESTED_CUE = game.music_state();
+    REQUESTED_STAGE = game.segment_index();
     if MUSIC_BACKEND == BACKEND_SID {
         let audio = sid_mut();
         audio.set_music(REQUESTED_CUE);
-        while let Some(e) = game.pop_audio() {
-            audio.queue(e);
+    }
+    while let Some(e) = game.pop_audio() {
+        if MUSIC_VALIDATED {
+            EFFECTS.assume_init_mut().queue(e);
         }
     }
     enable_irq();
@@ -740,12 +753,13 @@ unsafe fn send_audio(game: &mut Game) {
 #[inline(never)]
 unsafe fn service_audio() {
     if !MUSIC_VALIDATED {
-        dma(assets::MUSIC_OFFSET, 0x8e00, BANK_HEADER_SIZE as u16);
-        let header = core::slice::from_raw_parts(0x8e00 as *const u8, BANK_HEADER_SIZE);
-        if assets::checksum(header) != MUSIC_DIRECTORY_HASH {
-            fail(&ERROR_MUSIC_DIRECTORY)
-        }
-        validate_music_bank(header);
+        let standard = if CLOCK_KHZ == 985 {
+            VideoStandard::Pal
+        } else {
+            VideoStandard::Ntsc
+        };
+        EFFECTS.write(EffectsEngine::new(standard));
+        EFFECTS.assume_init_mut().reset(&mut HardwareSid);
     }
     if service_backend() {
         MUSIC_VALIDATED = true;
@@ -804,29 +818,20 @@ unsafe fn service_audio() {
 #[link_section = ".phase.audio"]
 #[inline(never)]
 unsafe fn service_backend() -> bool {
-    if rd(core::ptr::addr_of!(EMULATOR_SID_ONLY)) == 0
-        && matches!(REQUESTED_CUE, MusicState::Title | MusicState::Victory)
-    {
-        let track = if REQUESTED_CUE == MusicState::Victory {
-            havoc::digital::Track::GalacticDash
-        } else {
-            havoc::digital::Track::HammondRocker
-        };
+    if rd(core::ptr::addr_of!(EMULATOR_SID_ONLY)) == 0 {
+        let track = havoc::digital::track_for_scene(REQUESTED_CUE, REQUESTED_STAGE);
         let state = AUDIO.as_mut_ptr().cast::<digital::State>();
-        if MUSIC_BACKEND != BACKEND_DAC || (*state).track != track {
+        if MUSIC_BACKEND != BACKEND_DAC {
             disable_irq();
             let was_sid = MUSIC_BACKEND == BACKEND_SID;
-            let was_dac = MUSIC_BACKEND == BACKEND_DAC;
             MUSIC_BACKEND = BACKEND_SWITCHING;
             if was_sid {
                 sid_mut().silence(&mut HardwareSid);
-            } else if was_dac {
-                digital::stop(&mut *state);
             }
-            state.write(digital::State::new());
-            // Calibration uses sampler completion IRQ status. Keep CPU IRQs
-            // masked through acknowledgement and ring priming. Only the first
-            // start calibrates; later track changes reuse the saved rate.
+            digital::clear(state);
+            enable_irq();
+            // Only boot measures rates and validates immutable data. Effects
+            // and input IRQs remain live throughout foreground preparation.
             if let Err(fault) = digital::init(
                 &mut *state,
                 &mut DIGITAL_CALIBRATION,
@@ -835,11 +840,15 @@ unsafe fn service_backend() -> bool {
             ) {
                 digital_failure(fault);
             }
+            // Start both sampler clocks atomically; an IRQ between their
+            // control writes would leave the channels permanently skewed.
+            disable_irq();
             digital::start(&mut *state);
-            MUSIC_CUE = REQUESTED_CUE as u8;
             MUSIC_PAGE = 0xff;
             MUSIC_BACKEND = BACKEND_DAC;
             enable_irq();
+        } else {
+            digital::request(&mut *state, track);
         }
         let state = &mut *state;
         if let Err(fault) = digital::service(state) {
@@ -847,6 +856,9 @@ unsafe fn service_backend() -> bool {
         }
         DIGITAL_LOOPS = state.loops;
         DIGITAL_MINIMUM_LEAD = state.minimum_lead;
+        if state.track == track {
+            MUSIC_CUE = REQUESTED_CUE as u8;
+        }
         true
     } else {
         if MUSIC_BACKEND != BACKEND_SID {
@@ -863,13 +875,13 @@ unsafe fn service_backend() -> bool {
             };
             AUDIO
                 .as_mut_ptr()
-                .cast::<AudioEngine>()
-                .write(AudioEngine::new(standard));
+                .cast::<MusicEngine>()
+                .write(MusicEngine::new(standard));
             let audio = sid_mut();
             audio.reset(&mut HardwareSid);
             audio.set_music(REQUESTED_CUE);
             while let Some(event) = GAME.assume_init_mut().pop_audio() {
-                audio.queue(event);
+                EFFECTS.assume_init_mut().queue(event);
             }
             enable_irq();
         }
@@ -889,17 +901,38 @@ unsafe fn digital_failure(fault: digital::Fault) -> ! {
 #[link_section = ".phase.audio.data"]
 static mut ERROR_DIGITAL: [u8; 36] = *b"DIGITAL AUDIO ERROR 0 - CHECK CONFIG";
 
-#[link_section = ".phase.audio.startup"]
+#[link_section = ".phase.boot.data"]
+static ERROR_BOOT_MUSIC: [u8; 24] = *b"INVALID MUSIC PACKAGE   ";
+
+/// Runs while BOOT owns the overlay. Effects and track decoding start later.
+#[link_section = ".phase.boot"]
+#[inline(never)]
+unsafe fn initialize_music_boot() {
+    dma(assets::MUSIC_OFFSET, 0x8e00, BANK_HEADER_SIZE as u16);
+    let header = core::slice::from_raw_parts(0x8e00 as *const u8, BANK_HEADER_SIZE);
+    if assets::checksum(header) != MUSIC_DIRECTORY_HASH {
+        fail(&ERROR_BOOT_MUSIC);
+    }
+    validate_music_bank(header);
+    if rd(core::ptr::addr_of!(EMULATOR_SID_ONLY)) == 0 {
+        if let Err(fault) = digital::bootstrap(&mut DIGITAL_CALIBRATION, CLOCK_KHZ == 985) {
+            DIGITAL_FAULT = fault as u8;
+            fail(&ERROR_BOOT_MUSIC);
+        }
+    }
+}
+
+#[link_section = ".phase.boot"]
 #[inline(never)]
 unsafe fn validate_music_bank(header: &[u8]) {
     let mut end = BANK_HEADER_SIZE as u32;
     for cue in 0..music::CUE_COUNT as u8 {
         let info = match music::cue_info(header, cue) {
             Ok(info) => info,
-            Err(_) => fail(&ERROR_MUSIC_DIRECTORY),
+            Err(_) => fail(&ERROR_BOOT_MUSIC),
         };
         if info.offset != end {
-            fail(&ERROR_MUSIC_DIRECTORY)
+            fail(&ERROR_BOOT_MUSIC)
         }
         let mut a = 0u16;
         let mut b = 0u16;
@@ -914,7 +947,7 @@ unsafe fn validate_music_bank(header: &[u8]) {
                 || bytes[7] != info.row_ticks
                 || bytes[6] != if page + 1 == info.pages { 0 } else { page + 1 }
             {
-                fail(&ERROR_MUSIC_PAGE)
+                fail(&ERROR_BOOT_MUSIC)
             }
             for &value in bytes {
                 a += value as u16;
@@ -941,10 +974,9 @@ unsafe fn validate_music_bank(header: &[u8]) {
             .write(info);
     }
     if end != assets::u32_at(header, 8) {
-        fail(&ERROR_MUSIC_DIRECTORY)
+        fail(&ERROR_BOOT_MUSIC)
     }
-    // Startup-only like the rest of this tail: the AUDIO prefix keeps its
-    // single reviewed call into the validator, which checks the kernels too.
+    // Validate every SID kernel while BOOT still owns startup workspace.
     #[cfg(feature = "music-kernels")]
     validate_music_kernels();
 }
@@ -1001,7 +1033,7 @@ unsafe fn load_music_kernel(cue: havoc::audio::MusicState) {
 /// Boot-time check of the complete kernel directory and every image, using
 /// the same retired workspace as the score header; no kernel runs yet.
 #[cfg(feature = "music-kernels")]
-#[link_section = ".phase.audio.startup"]
+#[link_section = ".phase.boot"]
 #[inline(never)]
 unsafe fn validate_music_kernels() {
     let slot = core::ptr::addr_of!(__music_kernel_start) as u16;
@@ -1010,13 +1042,13 @@ unsafe fn validate_music_kernels() {
     dma(base, 0x8e00, music::KERNEL_DIRECTORY_SIZE as u16);
     let directory = core::slice::from_raw_parts(0x8e00 as *const u8, music::KERNEL_DIRECTORY_SIZE);
     if music::kernel_directory(directory, capacity).is_err() {
-        fail(&ERROR_MUSIC_KERNEL)
+        fail(&ERROR_BOOT_MUSIC)
     }
     for cue in 0..music::CUE_COUNT as u8 {
         let at = music::KERNEL_HEADER_SIZE + cue as usize * music::KERNEL_ENTRY_SIZE;
         let (size, expected) = match music::kernel_entry(&directory[at..], capacity) {
             Ok(entry) => entry,
-            Err(_) => fail(&ERROR_MUSIC_KERNEL),
+            Err(_) => fail(&ERROR_BOOT_MUSIC),
         };
         if size == 0 {
             continue;
@@ -1024,7 +1056,7 @@ unsafe fn validate_music_kernels() {
         dma(music::kernel_image_offset(base, cue, capacity), slot, size);
         let image = core::slice::from_raw_parts(slot as *const u8, size as usize);
         if assets::checksum(image) != expected {
-            fail(&ERROR_MUSIC_KERNEL)
+            fail(&ERROR_BOOT_MUSIC)
         }
     }
 }
@@ -1062,6 +1094,7 @@ pub unsafe extern "C" fn benchmark_frame_ready() {
 // Capture the benchmark deadline in resident main before SIM reentry.
 #[cfg(feature = "benchmarks")]
 #[inline(never)]
+#[link_section = ".benchmark_resident"]
 unsafe fn benchmark_now(sim_ms: u16, ticks: u8) -> u16 {
     sim_ms.wrapping_add(ticks as u16 * 20)
 }
@@ -1177,10 +1210,10 @@ unsafe fn prepare_scenery(current: u8, sounds: &mut TransitionAudio) -> u8 {
     }
     let cues = sounds.update(game.transition_progress().map(|(_, tick)| (bridge, tick)));
     // I/O is banked out here. Only update RAM; the IRQ restores I/O before
-    // writing SID registers. No AudioEngine reference survives this mask.
+    // writing SID registers. No effects reference survives this mask.
     disable_irq();
-    if MUSIC_BACKEND == BACKEND_SID {
-        let audio = sid_mut();
+    if MUSIC_VALIDATED {
+        let audio = EFFECTS.assume_init_mut();
         if cues.cancel {
             audio.cancel_scene_effects();
         }
@@ -1397,6 +1430,12 @@ unsafe fn boot_init() {
     initialize_audio();
     load_initial_assets();
     initialize_hud();
+    CLOCK_KHZ = if standard == VideoStandard::Pal {
+        985
+    } else {
+        1023
+    };
+    initialize_music_boot();
     initialize_irq(standard);
 }
 #[link_section = ".phase.boot"]
@@ -1647,8 +1686,7 @@ pub unsafe extern "C" fn main() -> i32 {
         };
         disable_irq();
         let music_pending = MUSIC_BACKEND != BACKEND_SID
-            || (rd(core::ptr::addr_of!(EMULATOR_SID_ONLY)) == 0
-                && matches!(REQUESTED_CUE, MusicState::Title | MusicState::Victory))
+            || rd(core::ptr::addr_of!(EMULATOR_SID_ONLY)) == 0
             || sid_ref().page_request().is_some();
         enable_irq();
         if music_pending {

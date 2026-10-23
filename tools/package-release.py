@@ -32,6 +32,7 @@ def release_contents(package_dir, root=ROOT):
         "havoc.reu": package_dir / "havoc.reu",
         "README.txt": root / "docs/launch.txt",
         "LICENSE": root / "LICENSE",
+        "MUSIC-LICENSE.txt": root / "assets/music/LICENSE",
     }
     contents = {name: path.read_bytes() for name, path in sources.items()}
     if any(not data for data in contents.values()):
@@ -51,7 +52,7 @@ def release_contents(package_dir, root=ROOT):
             "UltiSID Range Split": "1/2 (A6)", "Auto Address Mirroring": "Disabled",
         },
         "Audio Mixer": {"Vol Socket 1": "OFF", "Vol Socket 2": "OFF",
-                        "Vol Sampler L": "0 dB", "Vol Sampler R": "0 dB",
+                        "Vol Sampler L": "+6 dB", "Vol Sampler R": "+6 dB",
                         "Pan Sampler L": "Left 3", "Pan Sampler R": "Right 3"},
     }
     for section, entries in expected.items():

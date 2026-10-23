@@ -76,7 +76,7 @@ assert 0 < symbols['__phase_scenery_terrain_size'] < symbols['__phase_scenery_ba
 assert symbols['__phase_scenery_terrain_end'] == 0x3000 + symbols['__phase_scenery_terrain_size']
 assert 0 < symbols['__phase_geometry_base_size'] < symbols['__phase_geometry_size'] <= 0x4200
 assert symbols['__phase_geometry_base_end'] == 0x3000 + symbols['__phase_geometry_base_size']
-assert 0 < symbols['__phase_audio_runtime_size'] < symbols['__phase_audio_size'] <= 0x4200
+assert 0 < symbols['__phase_audio_runtime_size'] <= symbols['__phase_audio_size'] <= 0x4200
 assert symbols['__phase_audio_runtime_end'] == 0x3000 + symbols['__phase_audio_runtime_size']
 assert symbols['encounter_step'] == symbols['__phase_sim_base_end'] == 0x3000 + symbols['__phase_sim_base_size']
 assert 0 < symbols['__phase_sim_base_size'] < symbols['__phase_sim_size'] <= 0x4200
@@ -193,7 +193,7 @@ reu_layout = (
 )
 assert symbols['__reu_size'] == 0x1000000, 'incorrect 16 MiB REU image size'
 assert symbols['__reu_digital_music'] == 0x100000, 'incorrect digital music address'
-assert symbols['__reu_digital_victory'] == 0x500000, 'incorrect digital victory address'
+assert symbols['__reu_digital_victory'] == symbols['__reu_digital_music'], 'incorrect digital victory alias'
 assert symbols['__reu_digital_ring'] == 0xfe0000, 'incorrect digital ring address'
 assert symbols['__reu_digital_ring_size'] == 0x20000, 'incorrect digital ring size'
 assert symbols['__reu_code_slot_size'] == 0x4200, 'incorrect REU code slot size'
@@ -203,8 +203,7 @@ reu_allocations = [(0, 0x180, 'directories'), (0x1000, 0x1c00, 'common assets'),
                    (0x2000, 0xb000, 'encounters'), (0xb0000, 0xb9000, 'models'),
                    (symbols['__reu_music_kernels'], symbols['__reu_music_kernels'] + 0x100 + 21 * symbols['__music_kernel_size'], 'music kernels'),
                    (0xc0000, 0x100000, 'music'),
-                   (0x100000, 0x500000, 'digital title music'),
-                   (0x500000, 0xfe0000, 'digital victory music'),
+                   (0x100000, 0xfe0000, 'digital soundtrack'),
                    (0xfe0000, 0x1000000, 'mutable PCM ring')]
 assert symbols['__reu_music_kernels'] == 0xb9000, 'incorrect REU music kernel address'
 for phase_id, name, expected in reu_layout:
@@ -323,7 +322,7 @@ print(f'SIM common prefix {symbols["__phase_sim_base_size"]} bytes; largest simu
 print('SIM runtime transfer sizes by profile0..7: ' + ', '.join(map(str, sim_load_sizes)))
 print('OVL7 startup code sizes by directory order: ' + ', '.join(map(str, code_sizes)))
 reserved = sum(end - start for start, end, _ in reu_allocations)
-print(f'REU 16 MiB: {reserved:,} reserved bytes; {symbols["__reu_size"] - reserved:,} unreserved bytes; SID music $0C0000-$0FFFFF; Galactic Dash $100000-$4FFFFF; Hammond Rocker $500000-$FDFFFF; mutable stereo PCM ring $FE0000-$FFFFFF')
+print(f'REU 16 MiB: {reserved:,} reserved bytes; {symbols["__reu_size"] - reserved:,} unreserved bytes; SID music $0C0000-$0FFFFF; DMC1 soundtrack $100000-$FDFFFF; two mutable 64 KiB PCM slots $FE0000-$FFFFFF')
 print('REU logical phase slots: ' + ', '.join(f'{phase_id:02X}=${symbols[f"__reu_{name}"]:06X}' for phase_id, name, expected in reu_layout))
 print(f'SIM helper code8E00-92FF: {symbols["__phase_sim_aux_size"]} bytes; reloaded before every SIM profile, shares retired startup/cache/band workspace')
 print(f'Victory GEOMETRY composed image {symbols["__phase_victory_size"]} bytes')

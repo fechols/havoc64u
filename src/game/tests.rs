@@ -643,10 +643,8 @@ fn scenic_bridges_add_exactly_eight_seconds_and_keep_the_outgoing_checkpoint() {
             game.actors.iter().filter(|actor| actor.kind != 0).count(),
             1
         );
-        assert_eq!(
-            game.actors[0].pos.z,
-            1784 - test_bank(outgoing + 1).enemy(1).speed as i16
-        );
+        let expected_z = 1784 - test_bank(outgoing + 1).enemy(1).speed as i16;
+        assert!((expected_z - 64..=expected_z + 63).contains(&game.actors[0].pos.z));
         game.tick(&incoming, &test_bank(game.segment_index()));
         assert_eq!(
             game.actors.iter().filter(|actor| actor.kind != 0).count(),
@@ -2045,6 +2043,8 @@ fn compact_reset_matches_every_constructor_field_without_comparing_padding() {
     game.audio_head = 7;
     game.audio_len = 8;
     game.spawn_cursor = 12;
+    game.repeat_spawn_cursor = 7;
+    game.encounter_seed = 93;
     game.spawn_segment = 3;
     game.shield = 17;
     game.bombs = 1;
@@ -2488,7 +2488,7 @@ fn sidestep_avoids_old_lane_scenery_but_can_hit_the_new_lane() {
     }
     let lane = probe.player.x;
     assert!(lane > 35, "the sidestep clears a rock's radius: {lane}");
-    for (rolling, obstacle_x, expected_shield) in [(false, 0, 70), (true, 0, 100), (true, lane, 70)]
+    for (rolling, obstacle_x, expected_shield) in [(false, 0, 85), (true, 0, 100), (true, lane, 85)]
     {
         let mut g = running();
         g.actors[0] = Actor {
@@ -2529,7 +2529,7 @@ fn roll_deflects_projectiles_but_not_scenery() {
         ..Actor::EMPTY
     };
     g.update_actors(&test_bank(g.segment_index()));
-    assert_eq!(g.shield, 70);
+    assert_eq!(g.shield, 85);
 }
 #[test]
 fn respawn_uses_section_checkpoint_and_retains_score() {
@@ -3746,7 +3746,7 @@ fn scaled_ram_boxes_include_depth_while_obstacles_keep_their_original_depth() {
             g.update_actors(&test_bank(0));
             assert_eq!(
                 g.shield,
-                if hit { 70 } else { 100 },
+                if hit { 85 } else { 100 },
                 "kind {kind}, x {x}, depth {dz}"
             );
         }

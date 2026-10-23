@@ -10,15 +10,14 @@ pub const MAX_SEGMENT_SPAWNS: u8 = 62;
 pub const SEGMENT_COUNT: u8 = 18;
 pub const SEGMENT_DISTANCE: u32 = 30_000;
 pub const REU_SIZE: u32 = crate::digital::REU_SIZE;
-/// Legacy reservation name: Galactic Dash follows the unchanged first MiB.
-/// Playback roles are selected by the backend, independently of asset order.
-pub const DIGITAL_MUSIC_OFFSET: u32 = crate::digital::ASSET_OFFSET;
-/// Legacy reservation name for Hammond Rocker, now the initial title track.
+/// DMC1 directory and contiguous DLT4 soundtrack follow the unchanged first MiB.
+pub const DIGITAL_MUSIC_OFFSET: u32 = crate::digital::MUSIC_OFFSET;
+/// Compatibility asset address; individual tracks no longer own fixed slots.
 pub const DIGITAL_VICTORY_OFFSET: u32 = crate::digital::HAMMOND_OFFSET;
-/// Mutable stereo PCM ring, written by the foreground decoder during playback.
+/// Two mutable 64 KiB PCM slots, written by the foreground decoder.
 pub const DIGITAL_RING_OFFSET: u32 = crate::digital::RING_OFFSET;
 pub const DIGITAL_RING_SIZE: u32 = crate::digital::RING_BYTES;
-pub const DIGITAL_MUSIC_CAPACITY: u32 = DIGITAL_VICTORY_OFFSET - DIGITAL_MUSIC_OFFSET;
+pub const DIGITAL_MUSIC_CAPACITY: u32 = crate::digital::MUSIC_CAPACITY;
 pub const DIGITAL_VICTORY_CAPACITY: u32 = DIGITAL_RING_OFFSET - DIGITAL_VICTORY_OFFSET;
 pub const COMMON_OFFSET: u32 = 0x1000;
 pub const SEGMENTS_OFFSET: u32 = 0x2000;
@@ -654,6 +653,20 @@ impl<'a> Segment<'a> {
     #[cfg_attr(target_arch = "mos", link_section = ".phase.sim")]
     pub fn spawn_count(&self) -> u8 {
         self.data[7]
+    }
+    /// Peek a checked record without decoding coordinates in the scheduler.
+    #[inline(never)]
+    #[cfg_attr(target_arch = "mos", link_section = ".phase.sim")]
+    pub(crate) fn spawn_distance(&self, i: u8, delay: u16) -> u16 {
+        if i >= self.spawn_count() {
+            return u16::MAX;
+        }
+        let p = 16 + i as usize * 8;
+        // Segment validation proves every indexed record is complete.
+        unsafe {
+            u16::from_le_bytes([*self.data.get_unchecked(p), *self.data.get_unchecked(p + 1)])
+                + delay
+        }
     }
     #[inline(never)]
     #[cfg_attr(target_arch = "mos", link_section = ".phase.sim")]

@@ -15,7 +15,7 @@
 //! multiply. A kernel's size is the sum of the blocks it uses, which is what
 //! makes per-song code cheaper than one resident player with every feature.
 
-use super::{music_voice, note_frequency, AudioEngine, MusicState, SidBus};
+use super::{music_voice, note_frequency, MusicEngine, MusicState, SidBus};
 use crate::music::{FILTER_OFFSET, INSTRUMENT_OFFSET, MUSIC_VOICES, PAGE_ROWS, SID_COUNT};
 
 const BASS: usize = 0;
@@ -33,7 +33,7 @@ const PORTAMENTO: usize = 4;
 /// Dispatch to the loaded cue's kernel.
 #[cfg(not(target_arch = "mos"))]
 #[inline(never)]
-pub fn run<B: SidBus>(engine: &mut AudioEngine, bus: &mut B) {
+pub fn run<B: SidBus>(engine: &mut MusicEngine, bus: &mut B) {
     match engine.playing {
         MusicState::Title => title(engine, bus),
         MusicState::Lowlands => lowlands(engine, bus),
@@ -64,7 +64,7 @@ pub fn run<B: SidBus>(engine: &mut AudioEngine, bus: &mut B) {
 /// It takes no arguments: every shim modulates the fixed resident engine.
 #[cfg(target_arch = "mos")]
 #[inline(always)]
-pub fn run<B: SidBus>(_engine: &mut AudioEngine, _bus: &mut B) {
+pub fn run<B: SidBus>(_engine: &mut MusicEngine, _bus: &mut B) {
     extern "C" {
         fn music_kernel_tick();
     }
@@ -98,7 +98,7 @@ struct At {
     tick: u8,
 }
 
-impl AudioEngine {
+impl MusicEngine {
     #[inline(always)]
     fn at(&self) -> At {
         At {
@@ -338,7 +338,7 @@ impl AudioEngine {
 // data-driven player would otherwise have to carry for every song.
 
 #[inline(always)]
-pub fn title<B: SidBus>(e: &mut AudioEngine, bus: &mut B) {
+pub fn title<B: SidBus>(e: &mut MusicEngine, bus: &mut B) {
     let at = e.at();
     e.lfo();
     e.glide_filter(bus, 1);
@@ -347,7 +347,7 @@ pub fn title<B: SidBus>(e: &mut AudioEngine, bus: &mut B) {
 }
 
 #[inline(always)]
-pub fn lowlands<B: SidBus>(e: &mut AudioEngine, bus: &mut B) {
+pub fn lowlands<B: SidBus>(e: &mut MusicEngine, bus: &mut B) {
     let at = e.at();
     e.lfo();
     e.glide_filter(bus, 1);
@@ -357,7 +357,7 @@ pub fn lowlands<B: SidBus>(e: &mut AudioEngine, bus: &mut B) {
 }
 
 #[inline(always)]
-pub fn canyon<B: SidBus>(e: &mut AudioEngine, bus: &mut B) {
+pub fn canyon<B: SidBus>(e: &mut MusicEngine, bus: &mut B) {
     let at = e.at();
     e.lfo();
     e.wah_filter(bus, at, BASS, 0x30);
@@ -365,7 +365,7 @@ pub fn canyon<B: SidBus>(e: &mut AudioEngine, bus: &mut B) {
 }
 
 #[inline(always)]
-pub fn fortress<B: SidBus>(e: &mut AudioEngine, bus: &mut B) {
+pub fn fortress<B: SidBus>(e: &mut MusicEngine, bus: &mut B) {
     let at = e.at();
     e.lfo();
     e.glide_filter(bus, 2);
@@ -374,7 +374,7 @@ pub fn fortress<B: SidBus>(e: &mut AudioEngine, bus: &mut B) {
 }
 
 #[inline(always)]
-pub fn carrier<B: SidBus>(e: &mut AudioEngine, bus: &mut B) {
+pub fn carrier<B: SidBus>(e: &mut MusicEngine, bus: &mut B) {
     e.lfo();
     e.glide_filter(bus, 1);
     e.pulse_shimmer(bus, LEAD, 2, 1);
@@ -382,7 +382,7 @@ pub fn carrier<B: SidBus>(e: &mut AudioEngine, bus: &mut B) {
 }
 
 #[inline(always)]
-pub fn victory<B: SidBus>(e: &mut AudioEngine, bus: &mut B) {
+pub fn victory<B: SidBus>(e: &mut MusicEngine, bus: &mut B) {
     let at = e.at();
     e.lfo();
     e.glide_filter(bus, 1);
@@ -391,7 +391,7 @@ pub fn victory<B: SidBus>(e: &mut AudioEngine, bus: &mut B) {
 }
 
 #[inline(always)]
-pub fn crystal_current<B: SidBus>(e: &mut AudioEngine, bus: &mut B) {
+pub fn crystal_current<B: SidBus>(e: &mut MusicEngine, bus: &mut B) {
     let at = e.at();
     e.lfo();
     e.glide_filter(bus, 2);
@@ -400,7 +400,7 @@ pub fn crystal_current<B: SidBus>(e: &mut AudioEngine, bus: &mut B) {
 }
 
 #[inline(always)]
-pub fn ashes_and_steel<B: SidBus>(e: &mut AudioEngine, bus: &mut B) {
+pub fn ashes_and_steel<B: SidBus>(e: &mut MusicEngine, bus: &mut B) {
     let at = e.at();
     e.lfo();
     e.wah_filter(bus, at, BASS, 0x30);
@@ -409,7 +409,7 @@ pub fn ashes_and_steel<B: SidBus>(e: &mut AudioEngine, bus: &mut B) {
 }
 
 #[inline(always)]
-pub fn tempest_drive<B: SidBus>(e: &mut AudioEngine, bus: &mut B) {
+pub fn tempest_drive<B: SidBus>(e: &mut MusicEngine, bus: &mut B) {
     let at = e.at();
     e.lfo();
     e.glide_filter(bus, 2);
@@ -418,7 +418,7 @@ pub fn tempest_drive<B: SidBus>(e: &mut AudioEngine, bus: &mut B) {
 }
 
 #[inline(always)]
-pub fn gorge_warden<B: SidBus>(e: &mut AudioEngine, bus: &mut B) {
+pub fn gorge_warden<B: SidBus>(e: &mut MusicEngine, bus: &mut B) {
     let at = e.at();
     e.lfo();
     e.wah_filter(bus, at, BASS, 0x40);
@@ -426,7 +426,7 @@ pub fn gorge_warden<B: SidBus>(e: &mut AudioEngine, bus: &mut B) {
 }
 
 #[inline(always)]
-pub fn citadel_heart<B: SidBus>(e: &mut AudioEngine, bus: &mut B) {
+pub fn citadel_heart<B: SidBus>(e: &mut MusicEngine, bus: &mut B) {
     let at = e.at();
     e.lfo();
     e.wah_filter(bus, at, BASS, 0x28);
@@ -435,7 +435,7 @@ pub fn citadel_heart<B: SidBus>(e: &mut AudioEngine, bus: &mut B) {
 }
 
 #[inline(always)]
-pub fn carrier_overdrive<B: SidBus>(e: &mut AudioEngine, bus: &mut B) {
+pub fn carrier_overdrive<B: SidBus>(e: &mut MusicEngine, bus: &mut B) {
     let at = e.at();
     e.lfo();
     e.glide_filter(bus, 2);
@@ -445,7 +445,7 @@ pub fn carrier_overdrive<B: SidBus>(e: &mut AudioEngine, bus: &mut B) {
 }
 
 #[inline(always)]
-pub fn asteroid_belt<B: SidBus>(e: &mut AudioEngine, bus: &mut B) {
+pub fn asteroid_belt<B: SidBus>(e: &mut MusicEngine, bus: &mut B) {
     let at = e.at();
     e.lfo();
     e.glide_filter(bus, 2);
@@ -455,7 +455,7 @@ pub fn asteroid_belt<B: SidBus>(e: &mut AudioEngine, bus: &mut B) {
 }
 
 #[inline(always)]
-pub fn shattered_moon<B: SidBus>(e: &mut AudioEngine, bus: &mut B) {
+pub fn shattered_moon<B: SidBus>(e: &mut MusicEngine, bus: &mut B) {
     let at = e.at();
     e.lfo();
     e.glide_filter(bus, 2);
@@ -465,7 +465,7 @@ pub fn shattered_moon<B: SidBus>(e: &mut AudioEngine, bus: &mut B) {
 }
 
 #[inline(always)]
-pub fn ship_graveyard<B: SidBus>(e: &mut AudioEngine, bus: &mut B) {
+pub fn ship_graveyard<B: SidBus>(e: &mut MusicEngine, bus: &mut B) {
     let at = e.at();
     e.lfo();
     e.glide_filter(bus, 2);
@@ -474,7 +474,7 @@ pub fn ship_graveyard<B: SidBus>(e: &mut AudioEngine, bus: &mut B) {
 }
 
 #[inline(always)]
-pub fn orbital_shipyard<B: SidBus>(e: &mut AudioEngine, bus: &mut B) {
+pub fn orbital_shipyard<B: SidBus>(e: &mut MusicEngine, bus: &mut B) {
     let at = e.at();
     e.lfo();
     e.wah_filter(bus, at, BASS, 0x38);
@@ -484,7 +484,7 @@ pub fn orbital_shipyard<B: SidBus>(e: &mut AudioEngine, bus: &mut B) {
 }
 
 #[inline(always)]
-pub fn space_carrier<B: SidBus>(e: &mut AudioEngine, bus: &mut B) {
+pub fn space_carrier<B: SidBus>(e: &mut MusicEngine, bus: &mut B) {
     let at = e.at();
     e.lfo();
     e.wah_filter(bus, at, BASS, 0x30);
@@ -494,7 +494,7 @@ pub fn space_carrier<B: SidBus>(e: &mut AudioEngine, bus: &mut B) {
 }
 
 #[inline(always)]
-pub fn jump_gate<B: SidBus>(e: &mut AudioEngine, bus: &mut B) {
+pub fn jump_gate<B: SidBus>(e: &mut MusicEngine, bus: &mut B) {
     let at = e.at();
     e.lfo();
     e.glide_filter(bus, 2);
@@ -504,7 +504,7 @@ pub fn jump_gate<B: SidBus>(e: &mut AudioEngine, bus: &mut B) {
 }
 
 #[inline(always)]
-pub fn ascent<B: SidBus>(e: &mut AudioEngine, bus: &mut B) {
+pub fn ascent<B: SidBus>(e: &mut MusicEngine, bus: &mut B) {
     let at = e.at();
     e.lfo();
     e.glide_filter(bus, 2);
@@ -513,7 +513,7 @@ pub fn ascent<B: SidBus>(e: &mut AudioEngine, bus: &mut B) {
 }
 
 #[inline(always)]
-pub fn gate_guardian<B: SidBus>(e: &mut AudioEngine, bus: &mut B) {
+pub fn gate_guardian<B: SidBus>(e: &mut MusicEngine, bus: &mut B) {
     let at = e.at();
     e.lfo();
     e.wah_filter(bus, at, BASS, 0x30);

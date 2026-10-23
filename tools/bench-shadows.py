@@ -70,7 +70,7 @@ def checks(mon, syms, failures, elf, dwarf_tool, output, result):
     layouts = bench.Layouts(elf, dwarf_tool, output)
     game_address = vice.resident_symbol(syms,'GAME')[1]
     renderer_address = vice.resident_symbol(syms,'RENDERER')[1]
-    audio_address = vice.resident_symbol(syms,'AUDIO')[1]
+    audio = bench.AudioState(layouts, syms)
     pause = vice.resident_symbol(syms,'PAUSED')[1]
     fps = vice.resident_symbol(syms,'FPS_SHOWN')[1]
     package = (args.package_dir/'havoc.reu').read_bytes()
@@ -101,7 +101,7 @@ def checks(mon, syms, failures, elf, dwarf_tool, output, result):
 
     mon.command('bank ram')
     initial = bytearray(mon.read(game_address,layouts.size('Game')))
-    initial_audio = mon.read(audio_address,layouts.size('AudioEngine'))
+    initial_audio = audio.capture(mon)
     for field in ['actors','shots','pickups','explosions','flight','controls']:
         offset,kind = layouts.member('Game',field)
         initial[offset:offset+layouts.size(kind)] = bytes(layouts.size(kind))
@@ -137,7 +137,7 @@ def checks(mon, syms, failures, elf, dwarf_tool, output, result):
         for field,value in values.items(): layouts.patch(game,'Game',field,value)
         mon.command('bank ram')
         write(game_address,game)
-        write(audio_address,initial_audio)
+        audio.restore(write, initial_audio)
         word(syms['FRAME_SERIAL'],32)
         word(syms['TEST_INPUT'],16,1)
         for symbol,size in [('INPUT_OVERFLOWS',2),('AUDIO_TICKS',2)]: word(syms[symbol],0,size)

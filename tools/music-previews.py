@@ -114,11 +114,11 @@ def main():
         if fields.get(name, {}).get("type") != kind:
             raise RuntimeError(f"Unsupported Game::{name} DWARF field")
         fields[name]["size"] = size
-    description = subprocess.check_output([str(dwarf), "--name=AudioEngine", "--show-children", str(elf)], text=True)
-    audio_fields = smoke.dwarf_members(description, "AudioEngine")
+    description = subprocess.check_output([str(dwarf), "--name=MusicEngine", "--show-children", str(elf)], text=True)
+    audio_fields = smoke.dwarf_members(description, "MusicEngine")
     for name in ("row", "row_ticks"):
         if audio_fields.get(name, {}).get("type") != "u8":
-            raise RuntimeError(f"Unsupported AudioEngine::{name} DWARF field")
+            raise RuntimeError(f"Unsupported MusicEngine::{name} DWARF field")
     audio_address = smoke.resident_symbol(syms, "AUDIO")[1]
     with socket.socket() as available:
         available.bind(("127.0.0.1", 0))

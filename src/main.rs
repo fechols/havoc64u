@@ -378,11 +378,11 @@ fn kernel_fixtures(out: &Path) -> Result<(), Box<dyn std::error::Error>> {
             engine.tick(&mut bus, &next_page);
             // Sample across row phases and bar boundaries, including row zero.
             if tick % 53 == 7 || tick % page_ticks == 1 || tick % page_ticks == page_ticks - 1 {
-                let before = engine.image().to_vec();
+                let before = engine.music_image().to_vec();
                 let snapshot = engine.snapshot();
                 let mut probe = Recorder::default();
                 if engine.run_kernel_once(&mut probe) {
-                    let after = engine.image().to_vec();
+                    let after = engine.music_image().to_vec();
                     cases.push(format!(
                         "{{\"cue\":{cue},\"tick\":{tick},\"before\":\"{}\",\"after\":\"{}\",\"sid\":\"{}\"}}",
                         hex(&before),
@@ -401,7 +401,7 @@ fn kernel_fixtures(out: &Path) -> Result<(), Box<dyn std::error::Error>> {
         format!(
             "{{\"sid_count\":{},\"engine_size\":{},\"cases\":[\n{}\n]}}\n",
             SID_COUNT,
-            std::mem::size_of::<AudioEngine>(),
+            std::mem::size_of::<havoc::audio::MusicEngine>(),
             cases.join(",\n")
         ),
     )?;

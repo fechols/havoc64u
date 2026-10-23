@@ -104,6 +104,48 @@ class Layouts:
                 for key, field in fields.items()}
 
 
+class AudioState:
+    """Snapshot the exact SID owners in either a split or legacy native build."""
+
+    def __init__(self, layouts, syms):
+        self.layouts = layouts
+        split = any(symbol == "EFFECTS" or ("havoc_c64" in symbol and
+                    re.search(r"7EFFECTS17h[0-9a-fA-F]+E(?:\.\d+)?$", symbol))
+                    for symbol in syms)
+        self.music_type = "MusicEngine" if split else "AudioEngine"
+        self.effects_type = "EffectsEngine" if split else "AudioEngine"
+        self.regions = {self.music_type: vice.resident_symbol(syms, "AUDIO")[1]}
+        if split:
+            self.regions[self.effects_type] = vice.resident_symbol(syms, "EFFECTS")[1]
+        for kind in self.regions:
+            layouts.load(kind)
+
+    def capture(self, mon):
+        return {kind: bytes(mon.read(address, self.layouts.size(kind)))
+                for kind, address in self.regions.items()}
+
+    def restore(self, write, snapshot):
+        for kind, address in self.regions.items():
+            if len(snapshot[kind]) != self.layouts.size(kind):
+                raise RuntimeError(f"Wrong byte size restoring {kind}")
+            write(address, snapshot[kind])
+
+    def restart_seed(self, snapshot):
+        """Retain initialized owners but discard references to external music data."""
+        seed = {kind: bytearray(raw) for kind, raw in snapshot.items()}
+        for kind in self.regions:
+            state = self.layouts.decode(kind, seed[kind])
+            if not state["initialized"] or not state["enabled"]:
+                raise RuntimeError(f"Benchmark title warmup did not initialize SID {kind}")
+        # The external page and kernel slot change between fixtures. Each
+        # fixture must load its opening page and kernel before the IRQ uses them.
+        for field, value in (("underruns", 0), ("row", 0), ("row_ticks", 0),
+                             ("loaded", 0), ("ready", 0), ("waiting", 0), ("kernel", 0xff)):
+            self.layouts.patch(seed[self.music_type], self.music_type, field, value)
+        self.layouts.patch(seed[self.effects_type], self.effects_type, "event_count", 0)
+        return {kind: bytes(raw) for kind, raw in seed.items()}
+
+
 STAGE_FIELDS = ("enemy_profile", "music_cue", "bridge_profile", "boss_kind",
                 "theme", "next_theme", "previous_theme", "reserved")
 SKY_COLORS = (6, 8, 11, 4, 0, 11, 8, 11, 6, 4, 0, 0, 0, 0, 0, 0)
@@ -159,7 +201,7 @@ def fixtures(include_victory=True, campaign=False, space=False, boss_health=None
         if name == "full-pools":
             for array, pool_count, fields in (
                 ("actors", 12, {"kind": 3, "hp": 6, "pos.z": 100}),
-                ("shots", 24, {"kind": 2, "damage": 12, "pos.z": 300}),
+                ("shots", 24, {"kind": 2, "damage": 6, "pos.z": 300}),
                 ("pickups", 4, {"kind": 1, "pos.z": 400}),
                 ("explosions", 6, {"ticks": 9, "color": 7, "pos.z": 500}),
             ):
@@ -470,7 +512,7 @@ def main():
     package_format = vice.package_model_layout(package_image, validate_size=True)
     if package_format["digital"] and args.audio_backend == "native":
         parser.error("digital-package benchmark fixtures require --audio-backend sid; "
-                     "their AudioEngine snapshots cannot restore DAC state")
+                     "their SID audio snapshots cannot restore DAC state")
     sid_count = package_image[17]
     chosen = [fixture for fixture in fixtures(package_format["medal"], package_format["campaign"], package_format["space"])
               if args.fixtures == "all" or fixture["name"] in args.fixtures.split(",")]
@@ -502,10 +544,10 @@ def main():
                 raise RuntimeError(f"Package is not an instrumented benchmark build: missing {name}")
         failures = {address: name for name, address in syms.items() if ("havoc_c64" in name and "4fail" in name) or name == "rust_begin_unwind"}
         layouts = Layouts(elf, args.llvm_nm.with_name("llvm-dwarfdump"), output)
-        for name in ("Game", "Runtime", "AudioEngine", "Renderer", "Triangle"):
+        for name in ("Game", "Runtime", "Renderer", "Triangle"):
             layouts.load(name)
+        audio = AudioState(layouts, syms)
         game_address = vice.resident_symbol(syms, "GAME")[1]
-        audio_address = vice.resident_symbol(syms, "AUDIO")[1]
         renderer_address = vice.resident_symbol(syms, "RENDERER")[1]
         audio_tick_address = vice.resident_symbol(syms, "audio_tick")[1]
         bus_hz, period = (985248, 19705) if args.video == "pal" else (1022727, 20455)
@@ -547,7 +589,7 @@ def main():
         mon.run_until(syms["benchmark_frame_begin"], failures)
         mon.command("bank ram")
         initial_game = mon.read(game_address, layouts.size("Game"))
-        initial_audio = mon.read(audio_address, layouts.size("AudioEngine"))
+        initial_audio = audio.capture(mon)
         runtime_address = mon.integer(syms["BENCH_RUNTIME"])
         initial_runtime = mon.read(runtime_address, layouts.size("Runtime"))
         mon.command("bank cpu")
@@ -575,23 +617,13 @@ def main():
             word(syms["BENCH_TICKS"], 0, 1)
             mon.run_until(syms["frame_complete"], failures)
             mon.command("bank ram")
-            initial_audio = bytearray(mon.read(audio_address, layouts.size("AudioEngine")))
-            initialized_audio = layouts.decode("AudioEngine", initial_audio)
-            if not initialized_audio["initialized"] or not initialized_audio["enabled"]:
-                raise RuntimeError("Benchmark title warmup did not initialize SID audio")
-            # The external score page and kernel slot change between fixtures.
-            # Seed no live references to either: each fixture must load its own
-            # opening page and kernel before the IRQ consumes them.
-            for field, value in (("underruns", 0), ("row", 0), ("row_ticks", 0),
-                                 ("event_count", 0), ("loaded", 0), ("ready", 0),
-                                 ("waiting", 0), ("kernel", 0xff)):
-                layouts.patch(initial_audio, "AudioEngine", field, value)
+            initial_audio = audio.restart_seed(audio.capture(mon))
             mon.command("bank cpu")
             word(syms["BENCH_TICKS"], 255, 1)
             mon.run_until(syms["benchmark_frame_begin"], failures)
             report["audio_seed"] = "initialized SID title frame; opening page and kernel reloaded per fixture"
         else:
-            report["audio_seed"] = "startup AudioEngine snapshot"
+            report["audio_seed"] = "startup SID audio snapshot"
 
         if args.real_time_ticks:
             mon.command("jpdb 1 $0f")
@@ -678,7 +710,7 @@ def main():
                         descriptor = 0xb0000 + fixture["section"]*2048 + package_format["descriptors"] + (kind-1)*8
                         layouts.patch(game, "Game", f"actors[{index}].approach_speed", segment_image[descriptor+6])
             write(game_address, game)
-            write(audio_address, initial_audio)
+            audio.restore(write, initial_audio)
             runtime = bytearray(initial_runtime)
             sections = [fixture["section"], (fixture["section"] + (2 if fixture["cache_miss"] else 1)) % package_format["count"]]
             for field, value in (("sim_ms", 0), ("current", 0), ("loaded[0]", sections[0]), ("loaded[1]", sections[1])):

@@ -167,9 +167,9 @@ fn section_name(section: u8) -> &'static [u8] {
     }
 }
 
-// Byte offsets avoid eighteen native four-byte slice descriptors. The tiny
-// offset table travels with PIXELS, while strings use checked constant RAM.
-#[cfg_attr(target_arch = "mos", link_section = ".rodata.hud_names")]
+// Byte offsets avoid eighteen native four-byte slice descriptors. PIXELS owns
+// both tables; keep the strings in its prefix so the helper tail stays bounded.
+#[cfg_attr(target_arch = "mos", link_section = ".phase.pixels.data")]
 static SECTOR_NAMES: [u8; 228] = *b"LOWLAND APPROACHCRYSTAL CAVEIRON CANYONCANYON GATE\
 ASHEN WASTESFOUNDRY BELTFORTRESS RUNCITADEL CORESTORM FRONTMETEOR REACH\
 CARRIER COASTCARRIER ASSAULTASTEROID BELTSHATTERED MOONSHIP GRAVEYARD\

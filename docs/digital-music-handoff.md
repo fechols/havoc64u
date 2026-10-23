@@ -1,3 +1,44 @@
+# Current development status: DLT4
+
+The working tree now implements the expanded soundtrack plan. **The DLT3 document below is a preserved historical snapshot, not the current format or runtime specification.** Its release measurements do not establish DLT4 performance or sound quality.
+
+| Use | Stored stream | Sampler output |
+|---|---|---|
+| Hammond Rocker and Galactic Dash | 20 kHz, independent 3-bit codes for each stereo channel | Rounded signed 8-bit true stereo |
+| Gameplay | 16 kHz, 3-bit mono | Rounded signed 8-bit mono, with the right output delayed 160 samples (10 ms) |
+
+The [catalog](../assets/music/catalog.json) contains **eight original recordings composed for H.A.V.O.C. by William Echols**, plus a temporary mono Galactic Dash fixture. Hammond Rocker and Galactic Dash retain the stereo title/victory roles. Six new mono recordings match the first six stages: Lowland Approach, Crystal Cave, Iron Canyon, Canyon Gate, Ashen Wastes, and Foundry Belt. Later stages retain the mono fixture until their recordings are supplied. The checked `DMC1` version 2 directory includes an explicit eighteen-stage map as well as the semantic cue map, so stages with shared SID cues can select different recordings.
+
+The supplied source recordings and encoded versions carry [William Echols's MIT license](../assets/music/LICENSE); player archives include it as `MUSIC-LICENSE.txt` alongside the game's existing license. See the [catalog authoring notes](../assets/music/README.md) for the current mapping and asset inventory. The original capacity projection for two stereo songs plus 27 minutes of mono music left about 119 KiB for catalog and alignment in the 15,597,568-byte region. That was a planning estimate; final capacity follows the actual recordings, track count, and encoded extents checked by the packer.
+
+The nine-asset catalog currently occupies **9,751,225 bytes**, including its 208-byte directory and alignment, leaving **5,846,343 bytes** free. The six stage recordings add 8:58.361 of music; the eight unique recordings total 15:01.841. The mono Galactic Dash fixture is a stored duplicate and is excluded from that unique duration. The native build uses 14,980 bytes for AUDIO, 15,089 bytes for BOOT, and 418 of the reserved 432 bytes for music/effects state. Startup iterates track IDs without placing a growing track-list copy in resident constant RAM.
+
+The implementation and checks are in:
+
+- [Shared DLT4 format and catalog](../src/digital.rs), [generated descriptors](../src/digital_catalog.rs), and [encoder instructions](../tools/encode-digital-music/README.md). Predictors retain signed-16 precision; only the published PCM is rounded to signed 8-bit. Codes form one continuous least-significant-bit-first stream, and cumulative CRC-8 checkpoints cover every 1,024 compressed bytes.
+- [Foreground player](../target-c64/src/digital.rs) and [6502 decoding kernel](../target-c64/asm/digital.S). Two independent decoder contexts use two 64 KiB REU slots. Stereo occupies a complete slot; mono uses its upper 32 KiB, preceded by a cleared 160-byte delay prefix. The sampler's right start and repeat offsets supply the delay without duplicating the PCM.
+- [Target integration](../target-c64/src/main.rs) and [separate effects engine](../src/audio.rs). The 50 Hz IRQ owns the two SID effects voices independently of the foreground music backend. Startup validates the catalog and track metadata, clears the sampler's retained low sample bytes with muted signed-16 playback, and caches calibration for both rates.
+- [Backend model tests](../tests/digital_backend.rs), [effects tests](../tests/audio.rs), and [linked native-player harness](../tools/test-digital-kernel.py). The host model covers complete loops, delayed mono, both ring slots, queued cancellation/replacement, scratch reuse, corruption and underrun muting. Native timing reports and physical Ultimate listening are separate acceptance steps.
+
+During a change of song, the current track keeps playing while the inactive slot is primed. Each AUDIO visit services the active stream first, then prepares at most 4,096 pending frames within the shared 32,768-frame work limit. A complete pending ring therefore needs at least eight visits. The completed ring is selected under a short interrupt mask; repeated requests for the same pending song preserve progress, and requesting the active song cancels the pending change.
+
+The encoder emits reference and decoded WAVs, including the delayed mono output, for matched-level listening. Profile-specific SNR excludes the bandwidth and stereo information removed by resampling/downmixing. Neither the model checks nor an SNR number establish perceived quality, sustained hardware throughput, or final mixer balance.
+
+The current nine-asset build (ELF SHA-256 beginning `d1b2b15267859594`) passes the full PAL and NTSC native suites: 160 assembly cases, all nine tracks, ten handoffs, Canyon Gate boss continuity, shared-cue stage changes, protected cues, fallback, 23 ring wraps, and ten corruption cases per standard. Reports are `target/digital-kernel/six-tracks-{pal,ntsc}.json`. The six stage tracks use 71.17–71.47 ms of modeled service per audio second on PAL and 68.57–68.82 ms on NTSC; stereo uses 159.22–159.57 / 153.43–153.78 ms respectively. All 137 VICE package-corruption cases also pass (`target/six-tracks-corrupt/summary.json`). Subsequent hardware feedback reported music below the SID effects; the current configuration raises both sampler mixer channels from 0 to +6 dB, with unchanged PRG/REU bytes. These timing and PCM checks do not measure the final analog/HDMI mix.
+
+**Historical three-asset DLT4 measurement, before the six stage recordings:** the optimized build passed 160 directed assembly decoder cases and the complete linked-player suite on PAL and NTSC. Its native model includes a CPU at 64 times the bus clock, DMA at one byte per bus tick, and the sampler at `6,250,000 / (divider + 2)` Hz. Steady service excludes startup primes, track preparation/handoffs and fatal calls:
+
+| Profile | PAL service time per audio second | NTSC service time per audio second |
+|---|---:|---:|
+| Previous 24 kHz stereo player, normalized to nominal rate | 479.8 ms | 462.5 ms |
+| DLT4 title stereo | 158.6 ms | 152.9 ms |
+| DLT4 victory stereo | 159.0 ms | 153.2 ms |
+| DLT4 mono fixture | 70.8 ms | 68.2 ms |
+
+That build achieved approximately **3× faster stereo servicing**, exceeding the 2× target in this model. This is not a whole-game frame-rate or physical-hardware measurement, and these reports predate the nine-asset catalog and stage mapping. The measured ELF SHA-256 begins `11c765121794d497`; reports are `target/digital-kernel/dlt4-{pal,ntsc}-optimized.json`, with the prior build under `target/digital-baseline/`. Its AUDIO image was 14,663 bytes, and music plus effects state used 418 of the reserved 432 bytes. Run `python3 tools/test-digital-kernel.py` for current native checks; its report includes calibrated rates, per-track steady aggregates, PCM checks, handoffs, effects continuity, ring wraps and fault cases. Current-build measurements and physical Ultimate listening remain separate acceptance steps.
+
+---
+
 # H.A.V.O.C. digital music: compression and real-time playback handoff
 
 This document specifies the existing digital music technology closely enough to implement a compatible decoder, reconstruct the encoder's decisions, and evaluate changes against the game's actual constraints. It covers the stereo recordings, DLT3 compression, the C64 foreground player, REU buffering, and Ultimate Audio output. The separate SID music system is outside its scope.

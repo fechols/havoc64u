@@ -50,11 +50,16 @@ def main():
                 for extension in ("prg", "elf", "reu", "cfg")}
     before = {extension: hashlib.sha256(data).hexdigest() for extension, data in original.items()}
     image = original["reu"]
+    # DMC1 builds validate music while BOOT owns the overlay. Their single
+    # BOOT-local diagnostic avoids referencing strings in the unloaded AUDIO
+    # image; old packages retain their separate page/directory/kernel messages.
+    def music_error(legacy):
+        return "INVALID MUSIC PACKAGE" if image[0x100000:0x100004] == b"DMC1" else legacy
     package_format = vice.package_model_layout(image, validate_size=True)
     space = package_format["space"]
     if (not package_format["campaign"]
             or image[0x100:0x104] != (b"OVL7" if space else b"OVL6")):
-        parser.error("input must be a matched v5/OVL6 or v6-v8/OVL7 campaign package")
+        parser.error("input must be a matched OVL6/OVL7 campaign package")
     score_offset = package_format["music_offset"]
     header_size, cue_count = (256, 21) if space else (128, 13)
     overlay_offsets = package_format["overlay_offsets"]
@@ -138,19 +143,19 @@ def main():
         start = int.from_bytes(music[entry:entry + 4], "little")
         pages = music[entry + 4]
         last_event = score_offset + start + (pages - 1) * page_size + 12 + music[5] * 5
-        cases.append((f"music-cue-{cue}", last_event, "INVALID MUSIC PAGE"))
-    cases.extend((("music-bank-bound", score_offset + 8, "INVALID MUSIC DIRECTORY"),
-                  ("music-offset-overflow", score_offset + 16 + (cue_count - 1)*8, "INVALID MUSIC DIRECTORY")))
+        cases.append((f"music-cue-{cue}", last_event, music_error("INVALID MUSIC PAGE")))
+    cases.extend((("music-bank-bound", score_offset + 8, music_error("INVALID MUSIC DIRECTORY")),
+                  ("music-offset-overflow", score_offset + 16 + (cue_count - 1)*8, music_error("INVALID MUSIC DIRECTORY"))))
     # Per-song music kernels: the directory, an entry, and the first and last
-    # images are all authenticated by the AUDIO validator before music starts.
+    # images are all authenticated by the BOOT validator before music starts.
     kernels_at = 0xb9000
     if image[kernels_at:kernels_at + 4] == b"SMK1" and any(image[kernels_at + 16:kernels_at + 16 + cue_count * 4]):
         slot = int.from_bytes(image[kernels_at + 6:kernels_at + 8], "little")
         cases += [
-            ("music-kernel-signature", kernels_at + 2, "INVALID MUSIC KERNEL"),
-            ("music-kernel-entry", kernels_at + 16, "INVALID MUSIC KERNEL"),
-            ("music-kernel-first-image", kernels_at + 0x100 + 16, "INVALID MUSIC KERNEL"),
-            ("music-kernel-last-image", kernels_at + 0x100 + (cue_count - 1) * slot + 40, "INVALID MUSIC KERNEL"),
+            ("music-kernel-signature", kernels_at + 2, music_error("INVALID MUSIC KERNEL")),
+            ("music-kernel-entry", kernels_at + 16, music_error("INVALID MUSIC KERNEL")),
+            ("music-kernel-first-image", kernels_at + 0x100 + 16, music_error("INVALID MUSIC KERNEL")),
+            ("music-kernel-last-image", kernels_at + 0x100 + (cue_count - 1) * slot + 40, music_error("INVALID MUSIC KERNEL")),
         ]
     if args.case:
         unknown = set(args.case) - {name for name, _, _ in cases}

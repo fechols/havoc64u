@@ -50,7 +50,7 @@ def checked_layout(symbols):
     slot_size = symbols['__reu_code_slot_size']
     assert size == 0x1000000 and slot_size == 0x4200, 'unsupported REU layout'
     assert symbols['__reu_digital_music'] == 0x100000, 'incorrect digital music address'
-    assert symbols['__reu_digital_victory'] == 0x500000, 'incorrect digital victory address'
+    assert symbols['__reu_digital_victory'] == symbols['__reu_digital_music'], 'incorrect digital victory alias'
     assert symbols['__reu_digital_ring'] == 0xfe0000, 'incorrect digital ring address'
     assert symbols['__reu_digital_ring_size'] == 0x20000, 'incorrect digital ring size'
     offsets = {name: symbols[f'__reu_{symbol}'] for name, symbol, _ in CODE_IMAGES}
@@ -60,8 +60,7 @@ def checked_layout(symbols):
                    (symbols['__reu_models'], symbols['__reu_models'] + 0x9000, 'models'),
                    (kernels_start, kernels_end, 'music kernels'),
                    (symbols['__reu_music'], symbols['__reu_music'] + 0x40000, 'music'),
-                   (symbols['__reu_digital_music'], symbols['__reu_digital_victory'], 'digital title music'),
-                   (symbols['__reu_digital_victory'], symbols['__reu_digital_ring'], 'digital victory music'),
+                   (symbols['__reu_digital_music'], symbols['__reu_digital_ring'], 'digital soundtrack'),
                    (symbols['__reu_digital_ring'], size, 'mutable PCM ring')]
     for name, offset in offsets.items():
         assert offset + slot_size <= 0x100000, f'{name}: code allocation exceeds REU code region'
@@ -144,7 +143,7 @@ def main():
     assert int.from_bytes(reu[4:8], 'little') == 0x534d0c00, 'expected v12 package'
     digital = validate_digital_payload(reu)
     for name, metadata in digital.items():
-        print(f'digital {name}: {metadata["asset_bytes"]:,} bytes, {metadata["sample_rate"]} Hz stereo; shared 128 KiB mutable PCM ring')
+        print(f'digital {name}: {metadata["asset_bytes"]:,} bytes, {metadata["sample_rate"]} Hz, {metadata["channels"]} channels; two 64 KiB mutable PCM slots')
     table_at = 2 + symbols['__code_reu_pages'] - 0x801
     expected_pages = bytearray(34)
     for name, _, logical_id in CODE_IMAGES:

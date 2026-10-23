@@ -115,12 +115,78 @@ fn music_registers(bus: &Bus) -> [[u8; 14]; 2] {
 #[test]
 fn quad_sid_engine_and_external_page_fit_the_resident_allocations() {
     let engine = core::mem::size_of::<AudioEngine>();
-    assert_eq!(engine, 400);
+    assert_eq!(engine, 418);
+    assert_eq!(core::mem::size_of::<havoc::audio::MusicEngine>(), 382);
+    assert_eq!(core::mem::size_of::<havoc::audio::EffectsEngine>(), 36);
     assert!(engine <= 432, "{engine}");
     assert_eq!(PAGE_SIZE, 224);
     assert_eq!(SID_COUNT, 4);
     assert_eq!(MUSIC_VOICES, 10);
     assert_eq!(SID_BASES, [0xd400, 0xd420, 0xd440, 0xd460]);
+}
+
+#[test]
+fn standalone_effects_survive_music_transport_replacement_and_silencing() {
+    use havoc::audio::{EffectsEngine, MusicEngine};
+
+    for standard in [VideoStandard::Pal, VideoStandard::Ntsc] {
+        let mut effects = EffectsEngine::new(standard);
+        let mut reference = EffectsEngine::new(standard);
+        let mut bus = Bus::default();
+        let mut reference_bus = Bus::default();
+        effects.reset(&mut bus);
+        reference.reset(&mut reference_bus);
+        for tick in 0..120 {
+            // The DAC owns music storage most of the time. Recreating the SID
+            // transport must leave both ongoing effects and queued events live.
+            if tick % 11 == 0 {
+                let event = event(Effect::MissileLaunch, if tick % 2 == 0 { -64 } else { 64 });
+                assert_eq!(effects.queue(event), reference.queue(event));
+            }
+            if tick % 17 == 0 {
+                let event = event(Effect::BirdCall, 64);
+                assert_eq!(effects.queue(event), reference.queue(event));
+            }
+            if tick % 19 == 0 {
+                effects.cancel_scene_effects();
+                reference.cancel_scene_effects();
+            }
+            if tick % 7 == 0 {
+                bus.writes.clear();
+                let mut music = MusicEngine::new(standard);
+                music.reset(&mut bus);
+                music.silence(&mut bus);
+                assert!(bus.writes.iter().all(|&(sid, reg, _)| {
+                    sid >= 2 || (!(14..21).contains(&reg) && reg != 24)
+                }), "music reset/silence touched effects at tick {tick}");
+            }
+            bus.writes.clear();
+            reference_bus.writes.clear();
+            effects.tick(&mut bus);
+            reference.tick(&mut reference_bus);
+            assert_eq!(bus.writes, reference_bus.writes, "tick {tick}, {standard:?}");
+            for sid in 0..2 {
+                assert_eq!(&bus.registers[sid][14..21], &reference_bus.registers[sid][14..21]);
+                assert_eq!(bus.registers[sid][24], 0x1c);
+            }
+        }
+    }
+}
+
+#[test]
+fn effects_only_silence_preserves_music_registers_and_volume() {
+    let (mut player, mut bus) = engine();
+    player.queue(event(Effect::Bomb, 0));
+    player.tick(&mut bus);
+    let before = bus.registers;
+    bus.writes.clear();
+    player.effects.silence(&mut bus);
+    assert!(bus.writes.iter().all(|&(sid, reg, _)| sid < 2 && reg == 18));
+    for sid in 0..SID_COUNT {
+        let music_end = if sid < 2 { 14 } else { 21 };
+        assert_eq!(&bus.registers[sid][..music_end], &before[sid][..music_end]);
+        assert_eq!(&bus.registers[sid][21..], &before[sid][21..]);
+    }
 }
 
 #[test]
@@ -1541,9 +1607,10 @@ mod kernels {
         }
         // Fields are two bytes of counters plus byte-sized data only, so the
         // host image is also the byte-aligned MOS image, with no padding.
-        let payload = 2 + PAGE_SIZE + 32 * SID_COUNT + 10 + 8 + 16 + 4 + 3 + 5;
+        let payload = core::mem::size_of::<havoc::audio::MusicEngine>()
+            + core::mem::size_of::<havoc::audio::EffectsEngine>();
         assert_eq!(image.len(), payload);
-        assert_eq!(image.len(), 400);
+        assert_eq!(image.len(), 418);
     }
 
     #[test]

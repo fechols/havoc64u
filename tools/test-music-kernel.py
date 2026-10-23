@@ -352,8 +352,11 @@ def main():
     engine = symbols["havoc_c64::AUDIO"]
     slot = symbols[SLOT_SYMBOL].address
     slot_size = symbols["__music_kernel_size"].address
-    if fixtures["engine_size"] not in (engine.size, engine.size + 1):
-        raise SystemExit(f"host engine image is {fixtures['engine_size']} bytes; the target engine is {engine.size}")
+    # AUDIO is a music/DAC union. The always-live effects record is separate;
+    # kernel fixtures cover only the exact MusicEngine transport image.
+    engine_size = fixtures["engine_size"]
+    if engine_size != 382 or engine_size > engine.size:
+        raise SystemExit(f"host MusicEngine image is {engine_size} bytes; target music union is {engine.size}")
     base = bytearray(65536)
     for name in RESIDENT_SECTIONS:
         section = sections.get(name)
@@ -362,7 +365,7 @@ def main():
     noinit = sections[".noinit"]
     irq_stack = (symbols["__irq_stack_bottom"].address, symbols["__irq_stack"].address)
     writable = [(0, 0x100), (0x100, 0x200), (noinit.address, noinit.address + noinit.size),
-                irq_stack, (0xD400, 0xD400 + 32 * sid_count), (engine.address, engine.address + engine.size)]
+                irq_stack, (0xD400, 0xD400 + 32 * sid_count), (engine.address, engine.address + engine_size)]
     report = {"elf": str(args.elf), "sid_count": sid_count, "slot": slot, "slot_size": slot_size, "kernels": {}}
     failures = []
     total = 0
@@ -378,8 +381,10 @@ def main():
             continue
         memory = bytearray(base)
         memory[slot:slot + section.size] = elf.contents(section)
-        before = bytes.fromhex(case["before"])[:engine.size]
-        memory[engine.address:engine.address + engine.size] = before
+        before = bytes.fromhex(case["before"])
+        if len(before) != engine_size:
+            raise KernelError("fixture MusicEngine image has an invalid extent")
+        memory[engine.address:engine.address + engine_size] = before
         memory[0x02] = irq_stack[1] & 0xFF
         memory[0x03] = irq_stack[1] >> 8
         cpu = Cpu(memory, writable)
@@ -393,12 +398,12 @@ def main():
                 steps += 1
                 if steps > args.budget:
                     raise KernelError("instruction budget exhausted")
-            after = bytes(memory[engine.address:engine.address + engine.size])
-            expected = bytes.fromhex(case["after"])[:engine.size]
+            after = bytes(memory[engine.address:engine.address + engine_size])
+            expected = bytes.fromhex(case["after"])
             sid = bytes(memory[0xD400:0xD400 + 32 * sid_count])
             expected_sid = bytes.fromhex(case["sid"])
             if after != expected:
-                diffs = [i for i in range(engine.size) if after[i] != expected[i]][:8]
+                diffs = [i for i in range(engine_size) if after[i] != expected[i]][:8]
                 detail = ", ".join(f"[{i}] ${after[i]:02X} vs ${expected[i]:02X}" for i in diffs)
                 raise KernelError(f"engine bytes differ (target vs host): {detail}")
             if sid != expected_sid:

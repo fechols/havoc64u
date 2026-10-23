@@ -26,8 +26,8 @@ Auto Address Mirroring=Disabled
 [Audio Mixer]
 Vol Socket 1=OFF
 Vol Socket 2=OFF
-Vol Sampler L= 0 dB
-Vol Sampler R= 0 dB
+Vol Sampler L=+6 dB
+Vol Sampler R=+6 dB
 Pan Sampler L=Left 3
 Pan Sampler R=Right 3
 """
@@ -39,8 +39,8 @@ class ReleasePackageTests(unittest.TestCase):
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name)
         self.package = self.root / "dist"
-        for name in ("dist", "config", "docs"):
-            (self.root / name).mkdir()
+        for name in ("dist", "config", "docs", "assets/music"):
+            (self.root / name).mkdir(parents=True)
         (self.root / "Cargo.toml").write_text('[package]\nname = "havoc"\nversion = "0.1.0"\n')
         (self.root / "config/havoc.cfg").write_bytes(CONFIG)
         (self.package / "havoc.cfg").write_bytes(CONFIG)
@@ -52,6 +52,8 @@ class ReleasePackageTests(unittest.TestCase):
         (self.package / "havoc.reu").write_bytes(reu)
         (self.root / "docs/launch.txt").write_bytes(b"Launch instructions\n")
         (self.root / "LICENSE").write_bytes(b"MIT License\n")
+        (self.root / "assets/music/LICENSE").write_bytes(
+            b"MIT License\n\nCopyright (c) 2026 William Echols\n")
 
     def build(self):
         return release.package_release(self.package, self.root)
@@ -62,11 +64,28 @@ class ReleasePackageTests(unittest.TestCase):
         output = self.build()
         self.assertEqual(output.name, "havoc-v0.1.0.zip")
         with zipfile.ZipFile(output) as archive:
-            self.assertEqual(archive.namelist(), ["havoc.cfg", "havoc.prg", "havoc.reu", "README.txt", "LICENSE"])
+            self.assertEqual(archive.namelist(), ["havoc.cfg", "havoc.prg", "havoc.reu", "README.txt",
+                                                "LICENSE", "MUSIC-LICENSE.txt"])
             for name in ("havoc.cfg", "havoc.prg", "havoc.reu"):
                 self.assertEqual(archive.read(name), (self.package / name).read_bytes())
             self.assertEqual(archive.read("README.txt"), (self.root / "docs/launch.txt").read_bytes())
             self.assertEqual(archive.read("LICENSE"), (self.root / "LICENSE").read_bytes())
+            self.assertEqual(archive.read("MUSIC-LICENSE.txt"), (self.root / "assets/music/LICENSE").read_bytes())
+
+    def test_missing_or_empty_music_license_does_not_replace_existing_release(self):
+        output = self.build()
+        original = output.read_bytes()
+        path = self.root / "assets/music/LICENSE"
+        for missing in (True, False):
+            with self.subTest(missing=missing):
+                if missing:
+                    path.unlink()
+                else:
+                    path.write_bytes(b"")
+                with self.assertRaises(FileNotFoundError if missing else ValueError):
+                    self.build()
+                self.assertEqual(output.read_bytes(), original)
+                self.assertEqual(list(self.package.glob(".*.tmp")), [])
 
     def test_missing_input_does_not_replace_existing_release(self):
         output = self.build()
@@ -115,8 +134,10 @@ class ReleasePackageTests(unittest.TestCase):
         for old, new, message in (
                 (b"REU Size=16 MB", b"REU Size=8 MB", "REU Size"),
                 (b"Map Ultimate Audio $DF20-DFFF=Enabled", b"Map Ultimate Audio $DF20-DFFF=Disabled", "Map Ultimate Audio"),
-                (b"Vol Sampler L= 0 dB", b"Vol Sampler L=OFF", "Vol Sampler L"),
-                (b"Vol Sampler R= 0 dB", b"Vol Sampler R=OFF", "Vol Sampler R"),
+                (b"Vol Sampler L=+6 dB", b"Vol Sampler L=OFF", "Vol Sampler L"),
+                (b"Vol Sampler R=+6 dB", b"Vol Sampler R=OFF", "Vol Sampler R"),
+                (b"Vol Sampler L=+6 dB", b"Vol Sampler L= 0 dB", "Vol Sampler L"),
+                (b"Vol Sampler R=+6 dB", b"Vol Sampler R= 0 dB", "Vol Sampler R"),
                 (b"Pan Sampler L=Left 3", b"Pan Sampler L=Center", "Pan Sampler L"),
                 (b"Pan Sampler R=Right 3", b"Pan Sampler R=Left 3", "Pan Sampler R")):
             with self.subTest(setting=message):

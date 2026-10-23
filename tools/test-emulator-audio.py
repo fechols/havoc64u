@@ -7,11 +7,15 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 
 spec = importlib.util.spec_from_file_location("vice_smoke", Path(__file__).with_name("vice-smoke.py"))
 vice = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(vice)
+spec = importlib.util.spec_from_file_location("bench_native", Path(__file__).with_name("bench-native.py"))
+bench = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(bench)
 SYMBOLS = {"main": 0x0900, "EMULATOR_SID_ONLY": 0x0300}
 
 
@@ -114,7 +118,141 @@ class EmulatorAudioTests(unittest.TestCase):
                  "--package-dir", str(package), "--out-dir", str(folder / "output"),
                  "--audio-backend", "native"], capture_output=True, text=True)
             self.assertEqual(result.returncode, 2)
-            self.assertIn("AudioEngine snapshots cannot restore DAC state", result.stderr)
+            self.assertIn("SID audio snapshots cannot restore DAC state", result.stderr)
+
+
+class Memory:
+    def __init__(self):
+        self.data = bytearray([0xa5]) * 65536
+        self.reads = []
+        self.writes = []
+
+    def read(self, address, size):
+        self.reads.append((address, size))
+        return self.data[address:address + size]
+
+    def write(self, address, data):
+        self.writes.append((address, len(data)))
+        self.data[address:address + len(data)] = data
+
+
+def audio_layouts(split):
+    """Synthetic DWARF deliberately separates owners and includes untouched bytes."""
+    layouts = bench.Layouts(None, None, None)
+    music = {
+        "underruns": {"offset": 2, "type": "u16"},
+        "row": {"offset": 5, "type": "u8"},
+        "row_ticks": {"offset": 6, "type": "u8"},
+        "loaded": {"offset": 8, "type": "bool"},
+        "ready": {"offset": 9, "type": "bool"},
+        "waiting": {"offset": 10, "type": "bool"},
+        "kernel": {"offset": 12, "type": "u8"},
+        "enabled": {"offset": 14, "type": "bool"},
+        "initialized": {"offset": 15, "type": "bool"},
+    }
+    if split:
+        layouts.structs = {
+            "MusicEngine": {"size": 18, "fields": music},
+            "EffectsEngine": {"size": 12, "fields": {
+                "event_count": {"offset": 1, "type": "u8"},
+                "enabled": {"offset": 4, "type": "bool"},
+                "initialized": {"offset": 6, "type": "bool"},
+                "remaining": {"offset": 9, "type": "u8"},
+            }},
+        }
+    else:
+        layouts.structs = {"AudioEngine": {"size": 30, "fields": dict(
+            music, event_count={"offset": 22, "type": "u8"},
+            remaining={"offset": 27, "type": "u8"})}}
+    return layouts
+
+
+class BenchmarkAudioTests(unittest.TestCase):
+    def initialized(self, split=True):
+        layouts = audio_layouts(split)
+        # Actual local Rust statics have mangled symbols, unlike exported hooks.
+        symbols = {"_ZN9havoc_c645AUDIO17habc123E": 0x2200}
+        if split:
+            symbols["_ZN9havoc_c647EFFECTS17hdef456E.1"] = 0x2600
+        audio = bench.AudioState(layouts, symbols)
+        mon = Memory()
+        for kind, address in audio.regions.items():
+            size = layouts.size(kind)
+            mon.data[address:address + size] = bytes(range(11, 11 + size))
+            for field in ("initialized", "enabled"):
+                offset, _ = layouts.member(kind, field)
+                mon.data[address + offset] = 1
+        return audio, mon
+
+    def test_split_snapshot_restores_both_owners_without_touching_surrounding_memory(self):
+        audio, mon = self.initialized()
+        before = bytes(mon.data)
+        snapshot = audio.capture(mon)
+        self.assertEqual(mon.reads, [(0x2200, 18), (0x2600, 12)])
+        for address, size in mon.reads:
+            mon.data[address:address + size] = bytes(size)
+        audio.restore(mon.write, snapshot)
+        self.assertEqual(mon.writes, [(0x2200, 18), (0x2600, 12)])
+        self.assertEqual(bytes(mon.data), before)
+
+    def test_split_restart_seed_resets_transport_and_queue_in_their_actual_owners(self):
+        audio, mon = self.initialized()
+        snapshot = audio.capture(mon)
+        before = dict(snapshot)
+        seed = audio.restart_seed(snapshot)
+        expected_music = bytearray(snapshot["MusicEngine"])
+        for offset in (2, 3, 5, 6, 8, 9, 10):
+            expected_music[offset] = 0
+        expected_music[12] = 255
+        expected_effects = bytearray(snapshot["EffectsEngine"])
+        expected_effects[1] = 0
+        self.assertEqual(seed, {"MusicEngine": bytes(expected_music),
+                                "EffectsEngine": bytes(expected_effects)})
+        self.assertEqual(snapshot, before)
+
+    def test_legacy_snapshot_and_restart_keep_the_single_owner_layout(self):
+        audio, mon = self.initialized(split=False)
+        snapshot = audio.capture(mon)
+        self.assertEqual(mon.reads, [(0x2200, 30)])
+        seed = audio.restart_seed(snapshot)
+        expected = bytearray(snapshot["AudioEngine"])
+        for offset in (2, 3, 5, 6, 8, 9, 10, 22):
+            expected[offset] = 0
+        expected[12] = 255
+        self.assertEqual(seed, {"AudioEngine": bytes(expected)})
+        audio.restore(mon.write, seed)
+        self.assertEqual(mon.writes, [(0x2200, 30)])
+        self.assertEqual(mon.data[0x2200:0x221e], expected)
+
+    def test_uninitialized_or_disabled_split_owners_reject_the_warmup(self):
+        audio, mon = self.initialized()
+        for kind in ("MusicEngine", "EffectsEngine"):
+            for field in ("initialized", "enabled"):
+                with self.subTest(kind=kind, field=field):
+                    snapshot = audio.capture(mon)
+                    raw = bytearray(snapshot[kind])
+                    audio.layouts.patch(raw, kind, field, 0)
+                    snapshot[kind] = bytes(raw)
+                    with self.assertRaisesRegex(RuntimeError, f"did not initialize SID {kind}"):
+                        audio.restart_seed(snapshot)
+
+    def test_ambiguous_symbols_and_missing_split_layout_do_not_use_legacy_state(self):
+        layouts = audio_layouts(split=True)
+        with self.assertRaisesRegex(RuntimeError, "Expected one resident EFFECTS ELF symbol"):
+            bench.AudioState(layouts, {"AUDIO": 0x2200, "EFFECTS": 0x2600,
+                                      "_ZN9havoc_c647EFFECTS17habc123E": 0x2800})
+        with self.assertRaisesRegex(RuntimeError, "Expected one resident AUDIO ELF symbol"):
+            bench.AudioState(layouts, {"EFFECTS": 0x2600})
+        original_load = layouts.load
+
+        def load(kind):
+            if kind == "EffectsEngine":
+                raise RuntimeError("Missing DWARF type EffectsEngine")
+            return original_load(kind)
+
+        with mock.patch.object(layouts, "load", side_effect=load):
+            with self.assertRaisesRegex(RuntimeError, "Missing DWARF type EffectsEngine"):
+                bench.AudioState(layouts, {"AUDIO": 0x2200, "EFFECTS": 0x2600})
 
 
 if __name__ == "__main__":

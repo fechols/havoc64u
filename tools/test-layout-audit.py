@@ -107,7 +107,7 @@ def main():
             ("__staged_color_end", 0x7751, "staged colors must reuse overflow flags only"),
             ("__reu_size", 0x800000, "incorrect 16 MiB REU image size"),
             ("__reu_digital_music", 0xf0000, "incorrect digital music address"),
-            ("__reu_digital_victory", 0x200000, "incorrect digital victory address"),
+            ("__reu_digital_victory", 0x200000, "incorrect digital victory alias"),
             ("__reu_digital_ring", 0x3e0000, "incorrect digital ring address"),
             ("__reu_digital_ring_size", 0x10000, "incorrect digital ring size"),
             ("__reu_code_slot_size", 0x4000, "incorrect REU code slot size"),
