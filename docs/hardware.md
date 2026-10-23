@@ -307,6 +307,40 @@ reports, host tests, audits and package hashes. These monitor-assisted checks ar
 not continuous campaign playthroughs or physical-machine measurements; four-UltiSID
 listening and shared mixer balance still need physical-hardware confirmation.
 
+## v0.1.2 release validation (2026-10-23)
+
+The stereo-music release passes 371 default host tests and 383 with music
+kernels, with one existing fixture-export test ignored in each configuration.
+All nine release-packaging tests and seventeen encoder tests pass. The native
+build passes its layout and overlay audits with zero cross-phase references;
+146 negative layout fixtures, 76 negative overlay fixtures, and 131 corrupted
+package cases are rejected as expected. The production PRG is 38,913 bytes,
+with 64 bytes of resident headroom. AUDIO occupies 16,040 bytes, including a
+13,421-byte runtime prefix.
+
+The linked keyboard scanner passes 160 fixtures and 549 scans, including song
+switching and joystick interference. All 1,181 SID kernel replay states pass
+across twenty kernels. The maintainer also reports checking the new music on a
+physical C64 Ultimate.
+
+The final release ELF and REU pass the linked digital-player model on both PAL
+and NTSC: both stereo tracks, menu continuity and switching, calibration reuse,
+ring wrapping, scratch reuse, SID handoff, recovery from a safe service gap,
+and intentional underrun muting. Missing sampler hardware is rejected in the
+production path; the explicit emulator-only SID substitutions also pass.
+
+Both PAL and NTSC emulator suites pass the exact title comparison, four control
+scenarios, pause/resume, 34 weapon scenarios, HUD updates, 43 streaming and
+victory/restart scenarios, seven attract scenarios, and all 21 complete SID music
+loops. Every score page is observed with no underruns. These runs explicitly
+substitute SID menu cues because the calibrated VICE companion lacks Ultimate
+Audio; digital playback is covered by the separate model above. All reports
+identify the final release artifacts, which remain unchanged throughout testing.
+
+Build logs, test reports, source provenance and package hashes are retained in
+`target/release-v0.1.2-publish/`. The release ZIP contains exactly the matching
+configuration, PRG, 16,777,216-byte REU, launch instructions and MIT license.
+
 ## Build and verification
 
 Host tools require Rust and Cargo. The target build and release packager additionally require Linux/WSL, Python 3.11 or later, LLVM-MOS SDK **v22.5.0**, and a Rust-MOS toolchain with the `mos-c64-none` target and Rust sources. This workspace was built with `rustc 1.87.0-dev` registered as the `mos` rustup toolchain; `target-c64/rust-toolchain.toml` selects that alias. `scripts/env.sh` defaults to `$HOME/.local/llvm-mos` and `$HOME/.local/rust-mos-targets`. Override `LLVM_MOS`, `MOS_CLANG`, and `RUST_TARGET_PATH` for another compatible installation.
@@ -323,7 +357,7 @@ Or from Linux/WSL:
 bash scripts/build.sh
 ```
 
-The complete build tests the host with and without music kernels, bakes assets, links one C64 program, audits memory and overlays, and produces matching `havoc.prg`, `havoc.reu`, and `havoc.cfg` files in `dist/`. It also creates `havoc-v0.1.1.zip` with the three runtime files, launch instructions, and license. The native build uses `target-c64/target`. Generated packages are ignored by Git; cloning the repository does not supply `dist/`.
+The complete build tests the host with and without music kernels, bakes assets, links one C64 program, audits memory and overlays, and produces matching `havoc.prg`, `havoc.reu`, and `havoc.cfg` files in `dist/`. It also creates `havoc-v0.1.2.zip` with the three runtime files, launch instructions, and license. The native build uses `target-c64/target`. Generated packages are ignored by Git; cloning the repository does not supply `dist/`.
 
 After changing assets, bake with `cargo +stable run --release -- bake dist`, then run `bash scripts/build-target.sh`. The bake step alone does not produce executable overlays. Use the full build script to run checks and produce the release ZIP. On Windows, `scripts/build-windows.ps1` runs the same build through WSL; its optional output directory receives the single package and ZIP. SID-profile arguments and the `four-sid` Cargo feature have been removed.
 

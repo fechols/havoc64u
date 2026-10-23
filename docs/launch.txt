@@ -1,9 +1,9 @@
-H.A.V.O.C. - Heavy Assault Vessel: Orbital Combat
+H.A.V.O.C. v0.1.2 - Heavy Assault Vessel: Orbital Combat
 
 Requires a C64 Ultimate at 64 MHz with 16 MiB of REU memory and a joystick
-connected to port 2. The supplied configuration enables four built-in SID
-instances using UltiSID range splitting, plus Ultimate Audio for normalized
-stereo title, attract and victory music. No physical SID chips are needed.
+connected to port 2. The supplied configuration enables the four built-in SIDs
+and Ultimate Audio for stereo rock music on the title, attract and victory
+screens. No extra sound chips are needed.
 
 Launch
 1. Copy havoc.cfg, havoc.reu, and havoc.prg to the Ultimate's storage.
@@ -15,6 +15,9 @@ Keep these three files from this package together. Import the configuration
 again after using the Ultimate's SID player, which can change sound routing.
 If startup reports a mismatch or invalid REU data, reload this package's REU
 at zero before running its PRG again.
+
+Upgrading from v0.1.1 or an earlier download? Replace all three runtime files
+and re-import havoc.cfg to enable the 16 MiB REU and stereo music.
 
 Turn your joystick's hardware autofire off. The game supplies its own autofire;
 controller-generated fire pulses can accidentally spend your bombs.

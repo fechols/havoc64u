@@ -10,7 +10,7 @@ Fly an original 3D rail shooter for the **64 MHz C64 Ultimate**. Skim green hill
 
 - **3D worlds** — Dive through colorful landscapes and orbital scenery.
 - **Quad-SID music** — Enjoy the complete original score through four built-in UltiSIDs.
-- **Stereo digital music** — Hammond Rocker plays continuously through the title and attract tour, with SID music taking over when you launch. Earn the final gold medal to select Galactic Dash for the victory, title and attract screens.
+- **Stereo rock music** — Rock out to Hammond Rocker through the title and attract tour, with SID music taking over when you launch. Earn the final gold medal to hear Galactic Dash on the victory, title and attract screens.
 - **18 varied stages** — Journey from green hills to orbital battlefields.
 - **Five bosses** — Break their defenses and strike their exposed cores.
 - **Aircraft-like handling** — Bank, climb, and dive with weight and momentum.
@@ -44,9 +44,9 @@ Screenshots: **original v0.1.0 four-SID build**, captured in a PAL emulator.
 
 ## Download and launch
 
-**[Download H.A.V.O.C. v0.1.1](https://github.com/fechols/havoc64u/releases/download/v0.1.1/havoc-v0.1.1.zip)** — the complete eighteen-stage campaign and full four-SID score in one package. It uses the C64 Ultimate's built-in UltiSIDs; no extra chips or hardware installation needed.
+**[Download H.A.V.O.C. v0.1.2](https://github.com/fechols/havoc64u/releases/download/v0.1.2/havoc-v0.1.2.zip)** — the complete eighteen-stage campaign, full four-SID score, and new stereo rock music for the title and victory screens. It uses the C64 Ultimate's built-in audio; no extra chips or hardware installation needed.
 
-Current source builds need a **C64 Ultimate running at 64 MHz**, **16 MiB of REU memory**, and a joystick connected to **port 2**. The supplied configuration enables Ultimate Audio and sets the speed, memory, and SID routing. A stock C64 cannot run the game. The published v0.1.1 download predates digital title music and retains its original 1 MiB configuration.
+You need a **C64 Ultimate running at 64 MHz**, **16 MiB of REU memory**, and a joystick connected to **port 2**. The supplied configuration enables Ultimate Audio and sets the speed, memory, and SID routing. A stock C64 cannot run the game.
 
 1. Unzip the package and copy its three runtime files — `havoc.cfg`, `havoc.reu`, and `havoc.prg` — to the Ultimate's storage.
 2. Import `havoc.cfg`.
@@ -55,7 +55,7 @@ Current source builds need a **C64 Ultimate running at 64 MHz**, **16 MiB of REU
 
 Keep all three files from the **same package and version** together. If startup reports a mismatch or invalid REU data, reload the matching REU at zero before running the PRG again.
 
-Upgrading from an earlier two-SID or four-SID download? Replace all three runtime files and re-import the new configuration. The refreshed package supplies four built-in SIDs with gentle level-1 stereo panning.
+Upgrading from v0.1.1 or an earlier download? Replace all three runtime files and re-import `havoc.cfg` to enable the 16 MiB REU and stereo music. Earlier configurations do not include the new audio setup.
 
 **Turn your joystick's hardware autofire off.** The game supplies its own autofire; controller-generated fire pulses can accidentally spend your bombs.
 
@@ -91,7 +91,7 @@ Secret music preview: press **CTRL + C= (Commodore) + DEL** at the title or duri
 
 ## Help
 
-See the [setup and troubleshooting guide](docs/hardware.md) for help getting started, or the [release notes](https://github.com/fechols/havoc64u/releases/tag/v0.1.1) for what's new. Found a problem? [Report it](https://github.com/fechols/havoc64u/issues) with your hardware, video standard, and what happened.
+See the [setup and troubleshooting guide](docs/hardware.md) for help getting started, or the [release notes](https://github.com/fechols/havoc64u/releases/tag/v0.1.2) for what's new. Found a problem? [Report it](https://github.com/fechols/havoc64u/issues) with your hardware, video standard, and what happened.
 
 ## License
 
