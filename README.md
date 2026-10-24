@@ -83,7 +83,7 @@ Watch the weapon meter: **HOMING MISSILE** means your next shot tracks a random 
 
 - **Roll through shots, dodge scenery.** Keep steering and firing during a roll, but avoid solid obstacles.
 - **Clear a path.** Shoot small orbital fragments; bomb large rocks and wreckage. Every five enemy kills restore one bomb, up to three.
-- **Collect supplies.** Green shields restore 60 points, up to 100; yellow rectangles add one bomb, up to three.
+- **Collect supplies.** Green shields restore 60 points, up to 100; purple rectangles add one bomb, up to three.
 - **Break the boss's defenses.** Destroy both side units, then the core, to advance. Each boss defeat restores full shields and three bombs.
 - **Make each life count.** Normal mode starts with three lives. The development build also offers Story mode with 99 lives: press **S** at the title to select it, then press fire. The choice remains selected until you toggle it again or restart the program. Losing a life restarts the current stage with your score intact; losing all lives ends the run. A fresh fire press retries with the selected starting lives.
 - **Catch your breath.** Scenic crossings are safe, but bombs still consume inventory. Leaving a cleared boss stage restores one life, up to the selected mode's starting lives.

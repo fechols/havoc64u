@@ -96,12 +96,14 @@ fn resource_labels_and_bomb_rectangles_fit_their_four_corner_footprints() {
         for boss_shield in [0, 25, 100] {
             status.boss_shield = boss_shield;
             let state = DisplayState::from_hud(&status, 0, None);
-            assert_eq!(state.accent(1), 7, "loaded bombs must stay yellow");
+            assert_eq!(state.accent(1), 4, "loaded bombs must stay purple");
             let inventory = image(1, &state);
             for y in 9..14 {
                 for x in 0..24 {
                     let expected = if x % 8 == 0 || x % 8 == 7 {
                         0
+                    } else if y == 9 || y == 13 || x % 8 == 1 || x % 8 == 6 {
+                        3
                     } else if x / 8 < bombs.min(3) as usize {
                         2
                     } else {
@@ -210,7 +212,7 @@ fn gauges_have_grey_empty_space_white_frames_and_status_colors() {
             }
         }
         assert_eq!(state.accent(2), if shield_value <= 25 { 10 } else { 13 });
-        assert_eq!(state.accent(1), 7);
+        assert_eq!(state.accent(1), 4);
         assert_eq!(state.accent(3), if charge_value == 255 { 7 } else { 3 });
     }
 }

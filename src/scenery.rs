@@ -800,18 +800,6 @@ fn wildlife(sink: &mut SceneSink<'_>, context: &Decoration) {
         let x = -4700 + elapsed as i16 * 24 + bird * 180;
         let y = 1050 + bird * 110;
         let z = 2800 + bird * 160;
-        if sink.shadow_enabled() {
-            sink.shadow_caster(crate::shadow::Caster {
-                center: Vec3 {
-                    x,
-                    y: y - camera_y,
-                    z,
-                },
-                half_x: 95,
-                half_z: 24,
-                shape: 1,
-            });
-        }
         let flap = crate::math::sin8(
             (elapsed as u8)
                 .wrapping_mul(5)
@@ -907,20 +895,6 @@ fn transport(sink: &mut SceneSink<'_>, elapsed: u16, camera_y: i16) {
     }
     let x = 4800 - elapsed as i16 * 24;
     let y = 700 + crate::math::sin8((elapsed as u8).wrapping_mul(2)) / 8;
-    // The side-on artwork has no modeled depth; give its downward silhouette
-    // a shallow authored hull, headed left across the flight corridor.
-    if sink.shadow_enabled() {
-        sink.shadow_caster(crate::shadow::Caster {
-            center: Vec3 {
-                x: x - 32,
-                y: y - camera_y,
-                z: 2000,
-            },
-            half_x: 160,
-            half_z: 768,
-            shape: 2 | (3 << 4),
-        });
-    }
     for face in TRANSPORT_FACES {
         let points = core::array::from_fn(|corner| {
             let p = TRANSPORT_POINTS[face[corner] as usize];
@@ -1037,16 +1011,6 @@ fn meteors(sink: &mut SceneSink<'_>, elapsed: u16) {
         let y = 1550 + (index as i16 % 3) * 90 - age as i16 * 12;
         let remaining = crate::transition::METEOR_DURATION - age;
         let width = age.min(remaining).min(8) as i16 * 5;
-        // Meteors use sky-camera coordinates already; only the solid head
-        // casts. Their luminous trails are not separate objects.
-        if sink.shadow_enabled() {
-            sink.shadow_caster(crate::shadow::Caster {
-                center: Vec3 { x, y, z: 2600 },
-                half_x: width,
-                half_z: width,
-                shape: 3,
-            });
-        }
         let tail = if age < 24 {
             age as i16 * 28
         } else if remaining < 16 {
@@ -1261,6 +1225,12 @@ mod tests {
                         continue;
                     }
                     let scene = shadow_scene(stage, elapsed, crossing, 40, true);
+                    if stage < 11 {
+                        assert!(
+                            scene.casters.is_empty(),
+                            "background animation shadow: stage {stage}, tick {elapsed}"
+                        );
+                    }
                     assert!(
                         scene.casters.len() <= 16,
                         "casters: stage {stage}, tick {elapsed}"
@@ -1291,17 +1261,15 @@ mod tests {
 
     #[test]
     fn decorative_casters_follow_geometry_camera_offsets_exactly_once() {
-        for stage in [0, 2, 4, 12, 13, 14, 15, 16] {
-            let a = shadow_scene(stage, 150, stage < 12, 24, true);
-            let b = shadow_scene(stage, 150, stage < 12, 56, true);
+        for stage in [12, 13, 14, 15, 16] {
+            let a = shadow_scene(stage, 150, false, 24, true);
+            let b = shadow_scene(stage, 150, false, 56, true);
             assert_eq!(a.casters.len(), b.casters.len());
             assert!(!a.casters.is_empty());
             for (a, b) in a.casters.iter().zip(&b.casters) {
                 assert_eq!(a.center.x, b.center.x);
                 assert_eq!(a.center.z, b.center.z);
-                // Meteors are authored in camera-space sky coordinates; every
-                // other physical decoration follows the same camera as its mesh.
-                assert_eq!(a.center.y - b.center.y, if stage == 4 { 0 } else { 32 });
+                assert_eq!(a.center.y - b.center.y, 32);
                 assert_eq!((a.half_x, a.half_z, a.shape), (b.half_x, b.half_z, b.shape));
             }
         }

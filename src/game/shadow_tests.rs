@@ -193,6 +193,37 @@ fn stage_shadow_switches_include_the_space_carrier_and_disable_orbital_crossings
 }
 
 #[test]
+fn scenic_crossings_keep_foreground_shadows_without_background_casters() {
+    use crate::render::Renderer;
+
+    for stage in 0..assets::SEGMENT_COUNT - 1 {
+        let model_bytes = baked::model_bank(stage);
+        let bank = AssetBank::new(&model_bytes).unwrap();
+        let segment_bytes = baked::segment_bank(stage);
+        let segment = Segment::new(&segment_bytes).unwrap();
+        for elapsed in [0, 99, 150, 199, 200, 250, 299, 399] {
+            let game = Game::preview_transition(stage, elapsed);
+            let mut foreground = ShadowFrame::new();
+            game.collect_shadow_casters(&mut foreground, &bank);
+            assert_eq!(
+                foreground.caster_count(),
+                u8::from(game.shadow_ground_y().is_some()),
+                "player shadow: stage {stage}, tick {elapsed}"
+            );
+            let mut renderer = Renderer::new();
+            renderer.begin(game.sky_color());
+            let mut complete = ShadowFrame::new();
+            game.render_with_shadows(&mut renderer, &mut complete, &bank, &segment);
+            assert_eq!(
+                complete.casters(),
+                foreground.casters(),
+                "background shadow: stage {stage}, tick {elapsed}"
+            );
+        }
+    }
+}
+
+#[test]
 fn disabled_levels_skip_all_gameplay_casters() {
     for stage in [12, 13, 14, 15, 17] {
         let game = populated(stage);

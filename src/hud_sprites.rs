@@ -92,9 +92,8 @@ impl DisplayState {
     pub fn accent(&self, corner: u8) -> u8 {
         match corner {
             0 => 3,
-            // Bomb inventory shares this pair with the boss meter. Keep its
-            // status colour yellow so loaded bombs never inherit boss colours.
-            1 => 7,
+            // Bomb inventory and the boss meter share this pair's purple accent.
+            1 => 4,
             2 if self.flags & SHIELD_LOW != 0 => 10,
             2 => 13,
             3 if self.flags & READY != 0 => 7,
@@ -179,13 +178,10 @@ pub fn render_corner(corner: u8, state: &DisplayState, output: &mut [u8; 128]) {
             1 => {
                 text(output, 0, 2, &LABELS[23..27], WHITE);
                 text(output, 16, 2, &crate::hud::life_digits(state.lives), WHITE);
-                // Three 6x5 rectangles, with transparent gaps. Shared grey
-                // marks spent bombs; the pair's individual colour is yellow.
+                // Three 6x5 rectangles, with transparent gaps. White outlines
+                // keep purple bombs visible on matching skies; grey marks spent bombs.
                 for bomb in 0..3 {
-                    let color = if bomb < state.bombs { ACCENT } else { GREY };
-                    for y in 9..14 {
-                        span(output, 1 + bomb * 8, 7 + bomb * 8, y, color);
-                    }
+                    gauge(output, 1 + bomb * 8, 9, 4, if bomb < state.bombs { 4 } else { 0 });
                 }
                 if state.flags & BOSS != 0 {
                     text(output, 1, 15, &[b'B'], WHITE);

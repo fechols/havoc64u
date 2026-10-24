@@ -86,12 +86,13 @@ fn unpack_band(bitmap: &[u8; 320], screen: &[u8; 40], color: &[u8; 40]) -> [u8; 
 }
 
 #[test]
-fn ashen_scenery_preserves_isolated_red_shots_at_every_cell_position_and_old_palette() {
+fn ashen_scenery_preserves_effect_colors_at_every_cell_position_and_old_palette() {
     // Black is the global VIC-II color: orange and charcoal leave the third
-    // per-cell slot free for a red enemy or shot, even when it covers one pixel.
+    // per-cell slot free for red enemies, yellow shots, or purple pickups,
+    // even when the foreground color covers only one pixel.
     assert_eq!(CLOUD_PALETTES[5], [11, 8, 0]);
     assert_eq!(HORIZON_PALETTES[5], [11, 8, 0]);
-    for shot in [2, 10] {
+    for shot in [2, 10, 7, 4] {
         for distribution in 0..2 {
             for position in 0..32 {
                 let mut pixels = background_pattern(5, distribution);
@@ -140,6 +141,63 @@ fn ashen_scenery_preserves_isolated_red_shots_at_every_cell_position_and_old_pal
                         "retained shot {shot}, distribution {distribution}, position {position}, old base {base}"
                     );
                 }
+            }
+        }
+    }
+}
+
+#[test]
+fn yellow_shots_and_purple_bomb_outlines_match_in_both_packing_paths() {
+    use havoc::cells::{unpack_band as unpack_background, CellBand};
+
+    // Use actual sky/horizon colors, including purple skies where the bomb's
+    // pale rim supplies contrast. Each cell has room for its foreground ink.
+    for (background, scenery, effect) in [
+        (11, [11, 8, 0], [7, 7]),
+        (4, [4, 6, 11], [7, 7]),
+        (4, [4, 10, 12], [7, 7]),
+        (4, [4, 6, 11], [15, 4]),
+        (4, [4, 10, 12], [15, 4]),
+    ] {
+        for position in 0..32 {
+            let mut pixels = band_pattern(&scenery, 0);
+            let mut cells = CellBand::new();
+            cells.clear(background);
+            for row in 0..8 {
+                for column in 0..160 {
+                    cells.geometry_span(row, column, column + 1, pixels[row * 160 + column]);
+                }
+            }
+            for cell in 0..40 {
+                for (offset, ink) in effect.into_iter().enumerate() {
+                    let at = (position + offset) % 32;
+                    let row = at / 4;
+                    let column = cell * 4 + at % 4;
+                    pixels[row * 160 + column] = ink;
+                    cells.geometry_span(row, column, column + 1, ink);
+                }
+            }
+            for (old_screen, old_color) in [(0, 0), (0x47, 15), (0xbc, 8)] {
+                let (mut bitmap, mut screen, mut color) = ([0; 320], [0; 40], [0; 40]);
+                pack_band(
+                    &pixels,
+                    &[old_screen; 40],
+                    &[old_color; 40],
+                    background,
+                    &mut bitmap,
+                    &mut screen,
+                    &mut color,
+                );
+                let expected = unpack_background(&bitmap, &screen, &color, background);
+                assert_eq!(expected, pixels, "background {background}, effect {effect:?}");
+                cells.finish(
+                    &[old_screen; 40],
+                    &[old_color; 40],
+                    &mut bitmap,
+                    &mut screen,
+                    &mut color,
+                );
+                assert_eq!(unpack_background(&bitmap, &screen, &color, background), expected);
             }
         }
     }
