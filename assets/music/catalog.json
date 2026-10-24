@@ -9,7 +9,8 @@
     { "name": "iron-canyon", "rust_name": "IronCanyon", "profile": "mono16k3" },
     { "name": "canyon-gate", "rust_name": "CanyonGate", "profile": "mono16k3" },
     { "name": "ashen-wastes", "rust_name": "AshenWastes", "profile": "mono16k3" },
-    { "name": "foundry-belt", "rust_name": "FoundryBelt", "profile": "mono16k3" }
+    { "name": "foundry-belt", "rust_name": "FoundryBelt", "profile": "mono16k3" },
+    { "name": "fortress-run", "rust_name": "FortressRun", "profile": "mono16k3" }
   ],
   "default_gameplay": "galactic-dash-mono",
   "cues": { "Title": "hammond-rocker", "Victory": "galactic-dash" },
@@ -20,7 +21,7 @@
     "canyon-gate",
     "ashen-wastes",
     "foundry-belt",
-    null, null, null, null, null, null,
+    "fortress-run", null, null, null, null, null,
     null, null, null, null, null, null
   ]
 }

@@ -4,8 +4,12 @@ use crate::render::{Renderer, BAND_PIXELS};
 use std::vec::Vec;
 
 fn cave() -> Game {
+    stage(1)
+}
+
+fn stage(level: u8) -> Game {
     let mut game = Game::new();
-    game.reset_scene(Mode::Playing, 1, 0);
+    game.reset_scene(Mode::Playing, level, 0);
     game
 }
 
@@ -49,6 +53,136 @@ struct Capture(Vec<([Vec3; 3], u8)>);
 impl GeometrySink for Capture {
     fn triangle(&mut self, a: Vec3, b: Vec3, c: Vec3, color: u8, _flags: u8) {
         self.0.push(([a, b, c], color));
+    }
+}
+
+#[test]
+fn every_stage_actor_keeps_its_model_palette_at_distance_and_budget_boundaries() {
+    for level in 0..assets::SEGMENT_COUNT {
+        let bank = test_bank(level);
+        for kind in [
+            assets::FIGHTER,
+            assets::DIVER,
+            assets::TURRET,
+            assets::BUILDING,
+            assets::ROCK,
+        ] {
+            for small in [false, true] {
+                if small && (kind != assets::ROCK || level < 12) {
+                    continue;
+                }
+                let mut game = stage(level);
+                game.actors[0] = actor(kind, 0, 1200);
+                if matches!(kind, assets::BUILDING | assets::ROCK) {
+                    game.actors[0].hp = if small { 2 } else { 255 };
+                }
+                if small {
+                    game.actors[0].flags = assets::SMALL_DEBRIS;
+                }
+                let mut detailed = Capture::default();
+                assert_eq!(
+                    draw(&game, &bank, &mut detailed, 200),
+                    bank.face_count(kind) as u16,
+                    "stage {level}, kind {kind} stays detailed at z=1200"
+                );
+                assert!(detailed.0.len() > 2);
+                let mut distance_colors = None;
+                for (z, limit) in [(1201, 200), (700, 2)] {
+                    game.actors[0].pos.z = z;
+                    let mut capture = Capture::default();
+                    assert_eq!(draw(&game, &bank, &mut capture, limit), 2);
+                    let colors: Vec<_> = capture.0.iter().map(|face| face.1).collect();
+                    for color in &colors {
+                        assert!(
+                            detailed.0.iter().any(|face| face.1 == *color),
+                            "stage {level}, kind {kind}, small {small}, z {z}: foreign color {color}"
+                        );
+                    }
+                    if let Some(expected) = &distance_colors {
+                        assert_eq!(
+                            &colors, expected,
+                            "stage {level}, kind {kind}, small {small}"
+                        );
+                    } else {
+                        distance_colors = Some(colors);
+                    }
+
+                    // HP is gameplay state, not a palette selector. This also
+                    // covers the former gray proxy used by invulnerable hazards.
+                    let hp = game.actors[0].hp;
+                    game.actors[0].hp = if hp == 255 { 3 } else { 255 };
+                    let mut other_hp = Capture::default();
+                    draw(&game, &bank, &mut other_hp, limit);
+                    assert_eq!(other_hp.0, capture.0);
+                    game.actors[0].hp = hp;
+
+                    // A damage flash still overrides both facets, and clearing
+                    // it restores the exact normal geometry and model colors.
+                    game.actor_hit_flash_ticks[0] = ENEMY_HIT_FLASH_TICKS + 1;
+                    let mut flashed = Capture::default();
+                    draw(&game, &bank, &mut flashed, limit);
+                    assert_eq!(flashed.0.len(), capture.0.len());
+                    for (normal, white) in capture.0.iter().zip(&flashed.0) {
+                        assert_eq!(normal.0, white.0);
+                        assert_eq!(white.1, 1);
+                    }
+                    game.actor_hit_flash_ticks[0] = 0;
+                    let mut restored = Capture::default();
+                    draw(&game, &bank, &mut restored, limit);
+                    assert_eq!(restored.0, capture.0);
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn accent_first_models_use_the_visible_hull_colors_in_their_proxies() {
+    for (level, kind, expected) in [
+        (2, assets::DIVER, [9, 7]),
+        (3, assets::DIVER, [9, 7]),
+        (10, assets::FIGHTER, [11, 14]),
+        (11, assets::FIGHTER, [11, 14]),
+        (14, assets::DIVER, [3, 15]),
+    ] {
+        let bank = test_bank(level);
+        for (z, limit) in [(1201, 200), (700, 2)] {
+            let mut game = stage(level);
+            game.actors[0] = actor(kind, 0, z);
+            let mut capture = Capture::default();
+            assert_eq!(draw(&game, &bank, &mut capture, limit), 2);
+            assert_eq!(
+                [capture.0[0].1, capture.0[1].1],
+                expected,
+                "stage {level}, kind {kind}, z {z}"
+            );
+        }
+    }
+}
+
+#[test]
+fn every_stage_reserves_complete_model_colored_proxies_for_later_actors() {
+    for level in 0..assets::SEGMENT_COUNT {
+        let bank = test_bank(level);
+        for z in [700, 1201] {
+            let mut game = stage(level);
+            game.actors[0] = actor(assets::FIGHTER, -180, z);
+            game.actors[ACTORS - 1] = actor(assets::DIVER, 180, z);
+            let mut renderer = Renderer::new();
+            assert_eq!(draw(&game, &bank, &mut renderer, 4), 4);
+            assert_eq!((renderer.triangle_count, renderer.dropped), (4, 0));
+            let mut expected = Renderer::new();
+            for slot in [0, ACTORS - 1] {
+                let mut single = stage(level);
+                single.actors[slot] = game.actors[slot];
+                assert_eq!(draw(&single, &bank, &mut expected, 2), 2);
+            }
+            assert_eq!(
+                pixels(&mut renderer),
+                pixels(&mut expected),
+                "stage {level}, z {z}"
+            );
+        }
     }
 }
 

@@ -175,8 +175,8 @@ fn planar_effects_preserve_ordered_vertices_colors_and_flags() {
             self.0.push(([a, b, c], color, flags));
         }
     }
-    for x in [-32700, -300, 0, 299, 32700] {
-        for y in [-32700, -120, 0, 140, 32700] {
+    for x in [-32000, -300, 0, 299, 32000] {
+        for y in [-32000, -120, 0, 140, 32000] {
             for z in [79, 80, 599, 600, 601, 32767] {
                 let p = Vec3 { x, y, z };
                 for r in [-58, -1, 0, 1, 3, 5, 13, 22, 44, 58] {
@@ -213,10 +213,14 @@ fn planar_effects_preserve_ordered_vertices_colors_and_flags() {
                 shield_pickup(&mut actual, p);
                 assert_eq!(actual.0, expected);
                 // The bomb pickup is the HUD icon's 4:3 rectangle with the
-                // shield's rim rule, wound like the diamond and split along
-                // the top-left/bottom-right diagonal.
+                // pale rim at every distance, wound like the diamond and split
+                // along the top-left/bottom-right diagonal. Its outer margin
+                // grows with depth so the rim survives projection.
                 let mut expected = std::vec::Vec::new();
-                for ((rx, ry), color) in [((16, 12), if z > 600 { 7 } else { 15 }), ((13, 9), 7)] {
+                for ((rx, ry), color) in [
+                    ((13 + ((z >> 6) + 1).max(3), 9 + ((z >> 7) + 1).max(3)), 15),
+                    ((13, 9), 4),
+                ] {
                     let upper_left = Vec3 {
                         x: x - rx,
                         y: y + ry,
@@ -247,6 +251,83 @@ fn planar_effects_preserve_ordered_vertices_colors_and_flags() {
                 assert_eq!(actual.0, expected);
             }
         }
+    }
+}
+
+#[test]
+fn purple_bomb_pickups_keep_visible_pale_rims_after_projection_and_packing() {
+    use crate::render::{pack_band, Renderer, BAND_PIXELS};
+
+    // Include depth-shift boundaries and distances where the old fixed-width
+    // rim vanished at some subpixel alignments against the purple sky.
+    for z in [
+        180, 181, 255, 256, 399, 400, 511, 512, 598, 599, 600, 601, 639, 640,
+        767, 768, 799, 800, 895, 896, 899, 900, 1023, 1024, 1199, 1200,
+        1279, 1280, 1499, 1500, 1799, 1800,
+    ] {
+        for x in -20..=20 {
+            for camera_y in [24, 40, 56] {
+                let mut renderer = Renderer::new();
+                renderer.begin(4);
+                bomb_pickup(&mut renderer, Vec3 { x, y: -camera_y, z });
+                renderer.finish();
+                assert_eq!(renderer.dropped, 0);
+                let mut visible_rim = 0;
+                for band in 0..25 {
+                    let mut pixels = [0; BAND_PIXELS];
+                    renderer.render_band(band, &mut pixels);
+                    let rim_pixels = pixels.iter().filter(|&&color| color == 15).count();
+                    if rim_pixels == 0 {
+                        continue;
+                    }
+                    let (mut bitmap, mut screen, mut color) = ([0; 320], [0; 40], [0; 40]);
+                    pack_band(
+                        &pixels,
+                        &[0x27; 40],
+                        &[6; 40],
+                        4,
+                        &mut bitmap,
+                        &mut screen,
+                        &mut color,
+                    );
+                    let packed = crate::cells::unpack_band(&bitmap, &screen, &color, 4);
+                    assert_eq!(packed, pixels, "x {x}, z {z}, camera {camera_y}");
+                    visible_rim += packed.iter().filter(|&&color| color == 15).count();
+                }
+                assert!(visible_rim > 0, "invisible bomb at x {x}, z {z}, camera {camera_y}");
+            }
+        }
+    }
+}
+
+#[test]
+fn hostile_shots_are_yellow_and_player_shots_keep_their_weapon_colors() {
+    #[derive(Default)]
+    struct Colors(Vec<u8>);
+    impl GeometrySink for Colors {
+        fn triangle(&mut self, _a: Vec3, _b: Vec3, _c: Vec3, color: u8, _flags: u8) {
+            self.0.push(color);
+        }
+    }
+    for (kind, damage, expected) in [(1, 1, 3), (1, 4, 7), (2, 1, 7), (2, 6, 7), (3, 6, 7)] {
+        let mut game = running();
+        game.shots[0] = Shot {
+            kind,
+            damage,
+            pos: Vec3 { x: 0, y: 0, z: 400 },
+            ..Shot::EMPTY
+        };
+        let mut colors = Colors::default();
+        let mut budget = SceneBudget {
+            sink: &mut colors,
+            count: 0,
+            limit: 174,
+            camera_y: 0,
+            color_override: 0,
+            extra_flags: 0,
+        };
+        game.render_effects(&mut budget);
+        assert_eq!(colors.0, [expected; 2], "kind {kind}, damage {damage}");
     }
 }
 

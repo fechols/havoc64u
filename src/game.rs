@@ -143,6 +143,7 @@ pub enum PresentationEvent {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Hud {
     pub mode: Mode,
+    pub story_mode: bool,
     pub shield: u8,
     pub bombs: u8,
     pub lives: u8,
@@ -390,6 +391,8 @@ pub struct Game {
     menu_activity: bool,
     /// Menu track selection survives scene resets; victory selects Galactic.
     menu_music_galactic: bool,
+    /// Title selection persists until the program restarts.
+    story_mode: bool,
     audio_head: u8,
     audio_len: u8,
     spawn_cursor: u8,
@@ -458,6 +461,7 @@ impl Game {
             menu_ticks: 0,
             menu_activity: false,
             menu_music_galactic: false,
+            story_mode: false,
             actors: [Actor::EMPTY; ACTORS],
             shots: [Shot::EMPTY; SHOTS],
             missile_targets: [0; SHOTS / 2],
@@ -688,6 +692,7 @@ impl Game {
     pub fn hud(&self) -> Hud {
         Hud {
             mode: self.mode,
+            story_mode: self.story_mode,
             shield: self.shield,
             bombs: self.bombs,
             lives: self.lives,
@@ -711,6 +716,15 @@ impl Game {
     pub fn toggle_menu_music(&mut self) {
         if matches!(self.mode, Mode::Title | Mode::Attract) {
             self.menu_music_galactic = !self.menu_music_galactic;
+        }
+    }
+    /// Change the next run's life allowance from the title screen only.
+    /// Inlined into the native PIXELS keyboard scan without an overlay call.
+    #[inline(always)]
+    pub fn toggle_story_mode(&mut self) {
+        if self.mode == Mode::Title {
+            self.story_mode = !self.story_mode;
+            self.menu_activity = true;
         }
     }
     #[inline(never)]
@@ -810,9 +824,12 @@ impl Game {
         let bits = self.controls.bits;
         let now = self.controls.now;
         let menu_music_galactic = self.menu_music_galactic;
+        let story_mode = self.story_mode;
         let encounter_seed = self.encounter_seed;
         self.reset_in_place();
         self.menu_music_galactic = menu_music_galactic;
+        self.story_mode = story_mode;
+        self.lives = if story_mode { 99 } else { 3 };
         self.encounter_seed = encounter_seed;
         self.presentation_event = PresentationEvent::Reset;
         self.mode = mode;
@@ -918,7 +935,9 @@ impl Game {
                 self.mode = Mode::Transition;
                 self.transition_ticks = 0;
                 if self.stage_info.boss_kind != 0 {
-                    self.lives = (self.lives + 1).min(3);
+                    let cap = if self.story_mode { 99 } else { 3 };
+                    // Run initialization and this cap keep lives at most 99.
+                    self.lives = (self.lives + 1).min(cap);
                 }
                 self.actors = [Actor::EMPTY; ACTORS];
                 self.actor_hit_flash_ticks = [0; ACTORS];
@@ -1660,8 +1679,9 @@ impl Game {
             locks >> 4
         }
     }
+    // Resident: shared by SIM and its attack helper, leaving room for the
+    // selected life cap in every composed simulation profile.
     #[inline(never)]
-    #[cfg_attr(target_arch = "mos", link_section = ".phase.sim")]
     fn set_missile_lock(&mut self, index: usize, target: u8) {
         let locks = &mut self.missile_targets[index / 2];
         if index & 1 == 0 {
@@ -2382,7 +2402,7 @@ impl Game {
                     s.pos,
                     if s.kind == 2 { 5 } else { 3 + s.damage as i16 },
                     if s.kind == 2 {
-                        2
+                        7
                     } else if s.damage > 1 {
                         7
                     } else {
@@ -2539,8 +2559,10 @@ impl Game {
                     {
                         cave_flyer_proxy(sink, bank, a.kind, a.pos);
                     } else {
-                        diamond(
+                        actor_proxy(
                             sink,
+                            bank,
+                            a.kind,
                             actor_center(*a, bank),
                             if a.kind == assets::FIGHTER {
                                 assets::enemy_scaled(22)
@@ -2551,7 +2573,6 @@ impl Game {
                             } else {
                                 18
                             },
-                            if a.hp == 255 { 12 } else { 2 },
                         );
                     }
                     sink.finish_group(checkpoint);
@@ -2992,9 +3013,11 @@ fn flat_shape(
     p: Vec3,
     rx: i16,
     ry: i16,
-    color: u8,
+    mut colors: u8,
     faces: &[[u8; 3]],
 ) {
+    // Alternate the packed palette nibbles between facets. Uniform shapes
+    // repeat their color in both nibbles; actor proxies retain two hull shades.
     // The spare center entry makes every masked selector a valid array index.
     let x = [p.x - rx, p.x, p.x + rx, p.x];
     let y = [p.y - ry, p.y, p.y + ry, p.y];
@@ -3005,14 +3028,15 @@ fn flat_shape(
             points[corner].x = x[(selector & 3) as usize];
             points[corner].y = y[((selector >> 2) & 3) as usize];
         }
-        tri(sink, points[0], points[1], points[2], color);
+        tri(sink, points[0], points[1], points[2], colors & 15);
+        colors = colors.rotate_right(4);
     }
 }
 
 #[inline(never)]
 #[cfg_attr(target_arch = "mos", link_section = ".phase.geometry")]
 fn diamond(sink: &mut impl GeometrySink, p: Vec3, r: i16, color: u8) {
-    flat_shape(sink, p, r, r, color, &DIAMOND_FACES);
+    flat_shape(sink, p, r, r, color | color << 4, &DIAMOND_FACES);
 }
 
 #[inline(never)]
@@ -3034,6 +3058,34 @@ fn cave_flyer_proxy(sink: &mut impl GeometrySink, bank: &AssetBank<'_>, kind: u8
 }
 
 #[inline(never)]
+#[cfg_attr(target_arch = "mos", link_section = ".phase.geometry.combat")]
+fn actor_proxy(
+    sink: &mut impl GeometrySink,
+    bank: &AssetBank<'_>,
+    kind: u8,
+    p: Vec3,
+    radius: i16,
+) {
+    // Most models lead with their broad front facets. These three families
+    // instead lead with accent panels; use their visible hull colors so the
+    // distance and budget proxies retain the detailed model's appearance.
+    // Low nibble selects the first facet; every second index is nonzero.
+    // One bounded color lookup loop keeps the native combat overlay compact.
+    let mut faces = match (bank.level(), kind) {
+        (2 | 3, assets::DIVER) => 0x24,
+        (10 | 11, assets::FIGHTER) => 0x19,
+        (14, assets::DIVER) => 0x23,
+        _ => 0x10,
+    };
+    let mut colors = 0u8;
+    while faces != 0 {
+        colors = colors.rotate_right(4) | bank.face(kind, faces & 15).1 << 4;
+        faces >>= 4;
+    }
+    flat_shape(sink, p, radius, radius, colors, &DIAMOND_FACES);
+}
+
+#[inline(never)]
 #[cfg_attr(target_arch = "mos", link_section = ".phase.geometry")]
 fn shield_pickup(sink: &mut impl GeometrySink, p: Vec3) {
     // Paint the pale rim before the green inset. Equal depths retain this
@@ -3041,22 +3093,29 @@ fn shield_pickup(sink: &mut impl GeometrySink, p: Vec3) {
     // Use green for subpixel rims: a distant gray edge can otherwise
     // displace the green face when terrain competes for cell colors.
     let rim = if p.z > 600 { 5 } else { 15 };
-    flat_shape(sink, p, 13, 13, rim, &SHIELD_FACES);
-    flat_shape(sink, p, 10, 10, 5, &SHIELD_FACES);
+    flat_shape(sink, p, 13, 13, rim | rim << 4, &SHIELD_FACES);
+    flat_shape(sink, p, 10, 10, 0x55, &SHIELD_FACES);
 }
 
 /// The HUD's bomb icon as a camera-facing 4:3 rectangle with the shield
-/// pickup's pale rim: rim first, then the yellow inset at equal depth.
+/// pickup's pale rim: rim first, then the purple inset at equal depth.
 #[inline(never)]
 #[cfg_attr(target_arch = "mos", link_section = ".phase.geometry")]
 fn bomb_pickup(sink: &mut impl GeometrySink, p: Vec3) {
-    let rim = if p.z > 600 { 7 } else { 15 };
-    flat_shape(sink, p, 16, 12, rim, &BOMB_FACES);
-    flat_shape(sink, p, 13, 9, 7, &BOMB_FACES);
+    // Keep at least one projected pixel of pale rim on purple skies. The
+    // projection scales are 80 horizontally and 133 vertically; these cheap
+    // depth shifts retain the original three-unit margin on nearby pickups.
+    let margin_x = ((p.z >> 6) + 1).max(3);
+    let margin_y = ((p.z >> 7) + 1).max(3);
+    flat_shape(sink, p, 13 + margin_x, 9 + margin_y, 0xff, &BOMB_FACES);
+    flat_shape(sink, p, 13, 9, 0x44, &BOMB_FACES);
 }
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod story_tests;
 
 #[cfg(test)]
 mod balance_tests;

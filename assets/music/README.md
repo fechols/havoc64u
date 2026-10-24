@@ -5,7 +5,7 @@ order, semantic music cues, and stage overrides. Append new tracks to preserve
 numeric track IDs. Galactic Dash, Hammond Rocker, and the mono Galactic Dash
 placeholder remain at IDs 0, 1, and 2.
 
-William Echols composed the eight supplied recordings for H.A.V.O.C.; they and
+William Echols composed the nine supplied recordings for H.A.V.O.C.; they and
 their encoded versions are released under the [MIT License](LICENSE).
 
 Each track names its `.dlt` and adjacent `.json` metadata, a Rust identifier,
@@ -16,16 +16,18 @@ supplies every cue not explicitly listed under `cues`; cue names match
 `fixture` and remains the fallback for stages without their own recordings.
 It is included in the actual packed catalog's size check.
 
-The `stages` array has exactly 18 entries in campaign order. Its first six
+The `stages` array has exactly 18 entries in campaign order. Its first seven
 entries select Lowland Approach, Crystal Cave, Iron Canyon, Canyon Gate,
-Ashen Wastes, and Foundry Belt. The remaining twelve entries are `null`, which
-uses the cue mapping. Each stage recording plays throughout its stage; Canyon
-Gate keeps playing when its boss starts. Title and attract music, victory,
-defeat, and the ascent cue always use their cue mapping, regardless of stage.
-This preserves the existing SID cue assignments, including the cues shared
-by Iron Canyon/Canyon Gate and Ashen Wastes/Foundry Belt.
+Ashen Wastes, Foundry Belt, and Fortress Run. The remaining eleven entries are
+`null`, which uses the cue mapping. Each stage recording plays throughout its
+stage; Canyon Gate keeps playing when its boss starts. Title and attract music,
+victory, defeat, and the ascent cue always use their cue mapping, regardless of
+stage.
+This preserves the existing semantic cue assignments, including the cues shared
+by Iron Canyon/Canyon Gate, Ashen Wastes/Foundry Belt, and Fortress Run/Citadel
+Core. Fortress Run is appended as track ID 9; Citadel Core retains the fallback.
 
-The two menu/reward recordings use true stereo. All six stage recordings and
+The two menu/reward recordings use true stereo. All seven stage recordings and
 the placeholder use mono decoding with the right output delayed by 160 samples
 (10 ms at 16 kHz).
 
@@ -52,7 +54,7 @@ count, sample rate, absolute REU address, byte length, whole-asset Fletcher,
 and header Fletcher. The entry index is its track ID. One byte per cue follows
 the entries, then one byte per stage. Stage ID 255 means cue fallback; every
 other ID must name a catalog track. Zero padding aligns the directory to 16
-bytes. The nine-track directory occupies 208 bytes. Assets follow
+bytes. The ten-track directory occupies 224 bytes. Assets follow
 in manifest order at 16-byte alignment. All remaining bytes before `$FE0000`
 must be zero. `$FE0000–$FFFFFF` is mutable playback memory and is excluded from
 immutable soundtrack validation.

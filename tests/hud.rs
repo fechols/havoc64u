@@ -30,6 +30,7 @@ const LEVEL_NAMES: [&[u8]; SEGMENT_COUNT as usize] = [
 fn state(mode: Mode) -> Hud {
     Hud {
         mode,
+        story_mode: false,
         shield: 75,
         bombs: 2,
         lives: 3,
@@ -54,6 +55,32 @@ fn frame(hud_state: &Hud, frame: u16) -> Vec<u8> {
     pixels
 }
 
+fn assert_centered_caption(pixels: &[u8], y: usize, text: &[u8], color: u8, panel: (usize, usize)) {
+    let mut reference = [0; 1280];
+    draw_text(
+        0,
+        &mut reference,
+        ((160 - (text.len() * 4 - 1)) / 2) as i16,
+        0,
+        text,
+        color,
+    );
+    for row in 0..5 {
+        for x in 0..160 {
+            let expected = if (panel.0..panel.1).contains(&x) {
+                reference[row * 160 + x]
+            } else {
+                6
+            };
+            assert_eq!(
+                pixels[(y + row) * 160 + x],
+                expected,
+                "caption {text:?} at {x},{row}"
+            );
+        }
+    }
+}
+
 #[test]
 fn title_has_large_lettering_and_keeps_the_ship_visible() {
     let pixels = frame(&state(Mode::Title), 0);
@@ -72,6 +99,26 @@ fn title_has_large_lettering_and_keeps_the_ship_visible() {
 }
 
 #[test]
+fn title_names_the_selected_mode_without_moving_the_other_rows() {
+    for (tick, color) in [(0, 1), (16, 3)] {
+        let mut status = state(Mode::Title);
+        let normal = frame(&status, tick);
+        assert_centered_caption(
+            &normal,
+            189,
+            b"S: NORMAL 3 / FIRE: START",
+            color,
+            (10, 150),
+        );
+        status.story_mode = true;
+        let story = frame(&status, tick);
+        assert_centered_caption(&story, 189, b"S: STORY 99 / FIRE: START", color, (10, 150));
+        assert_eq!(&normal[..189 * 160], &story[..189 * 160]);
+        assert_eq!(&normal[194 * 160..], &story[194 * 160..]);
+    }
+}
+
+#[test]
 fn respawn_and_defeat_show_status_and_restart_cues() {
     let respawn = frame(&state(Mode::Respawning), 0);
     assert!(respawn[84 * 160..89 * 160]
@@ -84,6 +131,24 @@ fn respawn_and_defeat_show_status_and_restart_cues() {
     assert!(defeat[124 * 160..129 * 160]
         .iter()
         .any(|&p| p == HUD_INK | 1));
+}
+
+#[test]
+fn respawn_lives_are_centered_at_their_actual_width_and_saturate_at_99() {
+    for (lives, caption) in [
+        (0, &b"SHIPS REMAINING: 0"[..]),
+        (3, &b"SHIPS REMAINING: 3"[..]),
+        (9, &b"SHIPS REMAINING: 9"[..]),
+        (10, &b"SHIPS REMAINING: 10"[..]),
+        (98, &b"SHIPS REMAINING: 98"[..]),
+        (99, &b"SHIPS REMAINING: 99"[..]),
+        (u8::MAX, &b"SHIPS REMAINING: 99"[..]),
+    ] {
+        let mut status = state(Mode::Respawning);
+        status.story_mode = true;
+        status.lives = lives;
+        assert_centered_caption(&frame(&status, 0), 106, caption, 3, (26, 134));
+    }
 }
 
 #[test]
@@ -202,7 +267,7 @@ fn attract_names_survive_native_packing_and_previous_cell_palettes() {
 
 #[test]
 fn every_mode_survives_native_bitmap_packing_with_readable_ink() {
-    for mode in [
+    for (mode, story_mode) in [
         Mode::Title,
         Mode::Playing,
         Mode::Respawning,
@@ -210,10 +275,15 @@ fn every_mode_survives_native_bitmap_packing_with_readable_ink() {
         Mode::GameOver,
         Mode::Attract,
         Mode::Transition,
-    ] {
+    ]
+    .into_iter()
+    .flat_map(|mode| [false, true].map(|story_mode| (mode, story_mode)))
+    {
         for band in 0..25 {
             let mut pixels = [6; 1280];
             let mut status = state(mode);
+            status.story_mode = story_mode;
+            status.lives = if story_mode { 99 } else { 3 };
             status.victory_ticks = REVEAL_TICKS;
             hud::draw(band, &mut pixels, &status, 0);
             let mut bitmap = [0; 320];
@@ -240,7 +310,7 @@ fn every_mode_survives_native_bitmap_packing_with_readable_ink() {
                 assert_eq!(
                     packed,
                     pixel & 15,
-                    "mode {mode:?}, band {band}, pixel {x},{y}"
+                    "mode {mode:?}, story {story_mode}, band {band}, pixel {x},{y}"
                 );
             }
         }

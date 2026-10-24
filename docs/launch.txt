@@ -11,6 +11,12 @@ Launch
 3. Load havoc.reu into the REU at address zero.
 4. Run havoc.prg and press fire to launch.
 
+Normal mode starts with 3 lives. On the title, press S to select Story mode
+with 99 lives, then press fire to launch. Press S again to return to Normal.
+This choice persists through retries and attract mode until you change it or
+restart the program. S has no effect outside the title. Each lost life restarts
+the current stage; fire after Game Over retries with 99 or 3 lives as selected.
+
 Keep these three files from this package together. Import the configuration
 again after using the Ultimate's SID player, which can change sound routing.
 Re-import the current havoc.cfg to raise both digital music outputs to +6 dB;
@@ -46,8 +52,8 @@ Shots and impacts choose a side from their screen position when triggered.
 Only a narrow band around the center uses a stereo pair; existing tails keep
 their original side. Bombs, boss explosions and player death remain stereo.
 Starting a game selects its digital stage music while SID combat effects
-continue. The first six stages have original tracks: Lowland Approach,
-Crystal Cave, Iron Canyon, Canyon Gate, Ashen Wastes, and Foundry Belt.
+continue. The first seven stages have original tracks: Lowland Approach,
+Crystal Cave, Iron Canyon, Canyon Gate, Ashen Wastes, Foundry Belt, and Fortress Run.
 Later stages currently use a temporary mono Galactic Dash recording.
 Gameplay music uses 16 kHz, 3-bit mono with a 10 ms delay between outputs;
 the title and victory recordings retain true stereo. Track changes fade the
@@ -59,7 +65,7 @@ https://github.com/fechols/havoc64u
 
 Original game, quad-SID effects, models, and tools. See LICENSE for the MIT License.
 
-All eight original digital recordings were composed for H.A.V.O.C. by
+All nine original digital recordings were composed for H.A.V.O.C. by
 William Echols: Hammond Rocker, Galactic Dash, Lowland Approach, Crystal Cave,
-Iron Canyon, Canyon Gate, Ashen Wastes, and Foundry Belt. Their source recordings
+Iron Canyon, Canyon Gate, Ashen Wastes, Foundry Belt, and Fortress Run. Their source recordings
 and encoded versions use the MIT License in MUSIC-LICENSE.txt.

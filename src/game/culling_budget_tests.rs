@@ -230,7 +230,7 @@ fn failed_full_actor_becomes_a_complete_proxy_and_preserves_later_active_actor()
             &mut expected,
             game.actors[slot].pos,
             assets::enemy_scaled(22),
-            2,
+            5,
         );
     }
     assert_eq!(pixels(&mut renderer), pixels(&mut expected));
@@ -255,9 +255,16 @@ fn extra_mesh_backfaces_and_empty_actor_slots_do_not_reduce_accepted_detail() {
             );
         }
         let actual = pixels(&mut renderer);
-        assert!(actual.contains(&5), "the first actor retains its full mesh");
         assert!(
-            actual.contains(&2),
+            actual.iter().enumerate().any(|(index, &color)| {
+                color == 5 && index % crate::render::WIDTH < crate::render::WIDTH / 2
+            }),
+            "the first actor retains its full mesh"
+        );
+        assert!(
+            actual.iter().enumerate().any(|(index, &color)| {
+                color == 5 && index % crate::render::WIDTH >= crate::render::WIDTH / 2
+            }),
             "the last actor retains its complete proxy"
         );
         if let Some(expected) = &reference {

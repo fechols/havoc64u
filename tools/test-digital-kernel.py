@@ -23,6 +23,7 @@ Cpu, KernelError, load_elf = (KERNEL[name] for name in ("Cpu", "KernelError", "l
 SENTINEL = 0xffff
 FRAMES = 32768
 DELAY = 160
+DECODE_BUDGET_UNITS = 20000  # 80,000 units/second: 4 per stereo frame, 5 per mono frame.
 
 
 def require(condition, message):
@@ -214,9 +215,13 @@ class Machine(Cpu):
         self.ring_banks = set()
         self.catalog = CATALOG["load_catalog"](validate=False)
         self.references = self.catalog["tracks"]
-        self.last_source_track = None
+        self.decoder_tracks = {}
+        self.decoder_slots = {}
+        self.staging_decoder = None
         self.rings = [None, None]
         self.pcm_samples = {entry["name"]: 0 for entry in self.references}
+        self.decoded_samples = self.pcm_samples.copy()
+        self.decoded_units = 0
         self.calls = []
         self.reported_profiles = set()
         self.first_kernel_call = None
@@ -302,6 +307,30 @@ class Machine(Cpu):
         self.call("havoc_c64::initialize_music_boot", budget, expect_fault=expect_fault)
         if not expect_fault:
             self.load_phase("audio")
+            # Production main enables IRQs before each foreground AUDIO visit.
+            # This harness enters the overlay directly, after the BOOT probe.
+            self.p &= ~KERNEL["I"]
+
+    def prime(self, budget):
+        """Drive the real per-frame startup without bypassing its decoding cap."""
+        require(self.active_name() is None and self.starts == [0, 0], "prime requires stopped startup")
+        name = self.requested_track()
+        entry = next(entry for entry in self.references if entry["name"] == name)
+        cost = 4 if entry["metadata"]["channels"] == 2 else 5
+        per_visit = DECODE_BUDGET_UNITS // cost
+        visits = (FRAMES + per_visit - 1) // per_visit
+        for visit in range(visits):
+            if visit:
+                self.delay(0.02)
+            self.call("havoc_c64::service_audio", budget)
+            require(self.get("MUSIC_BACKEND") == 1, "priming must retain DAC ownership")
+            require(self.pcm_samples[name] == min(FRAMES, (visit + 1) * per_visit),
+                    "initial prime did not use its bounded per-visit allowance")
+            if visit + 1 < visits:
+                require(self.starts == [0, 0] and self.control == self.volume == [0, 0],
+                        "sampler started before the initial ring was complete")
+        require(self.starts == [1, 1] and self.active_name() == name, "completed prime did not start once")
+        return visits
 
     def read(self, address):
         address &= 0xffff
@@ -378,6 +407,7 @@ class Machine(Cpu):
             require(len(audible_slots) <= 1, "two source tracks were audible simultaneously")
 
     def start_voice(self, channel, address, control):
+        require(self.p & KERNEL["I"], "sampler starts must mask IRQs")
         channels = 2 if control == 0x43 else 1
         start, repeat_a, repeat_b = (self.be24(address + offset) for offset in (5, 17, 21))
         delay = DELAY if channels == 1 and channel else 0
@@ -483,8 +513,15 @@ class Machine(Cpu):
             self.fetches += 1
             if self.phase == "audio":
                 for entry in self.references:
-                    if entry["offset"] <= reu < entry["end"]:
-                        self.last_source_track = entry
+                    stream = entry["offset"] + entry["metadata"]["stream_offset"]
+                    if stream <= reu < stream + entry["metadata"]["stream_bytes"]:
+                        audio = self.symbols["havoc_c64::AUDIO"]
+                        require(audio.address <= ram and ram + count <= audio.address + audio.size,
+                                "compressed cache must belong to a decoder")
+                        # Decoder's repr(C) cache immediately follows its 40-byte
+                        # Kernel. Keep ownership per decoder: a short cached
+                        # tail may follow a fetch for the other ring slot.
+                        self.decoder_tracks[ram - 40] = entry
                         break
         elif command == 0x90:
             require(self.ring <= reu and reu + count <= self.ring + self.ring_size, "write outside mutable PCM arena")
@@ -493,13 +530,16 @@ class Machine(Cpu):
             self.ring_banks.add(slot)
             if self.phase == "boot":
                 require(not any(data) and self.control == [0, 0], "boot ring clear must be silent")
-            elif offset == 32768 - DELAY and count == DELAY:
+            elif self.staging_decoder is None and offset == 32768 - DELAY and count == DELAY:
                 require(not any(data), "mono delay prefix was not cleared on preparation")
                 require(all(v is None or v["slot"] != slot for v in self.playback), "prefix changed under active reader")
                 self.prefix_clears += 1
             else:
-                entry = self.last_source_track
-                require(entry is not None, "PCM publication without source fetch")
+                decoder = self.staging_decoder
+                require(decoder in self.decoder_tracks, "PCM publication without decoder ownership")
+                entry = self.decoder_tracks[decoder]
+                previous_slot = self.decoder_slots.setdefault(decoder, slot)
+                require(previous_slot == slot, "decoder changed PCM ring slot")
                 channels = entry["metadata"]["channels"]
                 base = 32768 if channels == 1 else 0
                 active = any(v is not None and v["slot"] == slot for v in self.playback)
@@ -519,6 +559,7 @@ class Machine(Cpu):
                     self.ring_wraps += 1
                 ring["produced"] += count // channels
                 self.pcm_samples[entry["name"]] += count // channels
+                self.staging_decoder = None
             self.reu[reu:reu + count] = data
             self.stashes += 1
         else:
@@ -532,23 +573,38 @@ class Machine(Cpu):
         self.push((SENTINEL - 1) & 255)
         self.pc = self.symbols[name].address
         start, ticks, samples = self.cycles, self.ticks, sum(self.pcm_samples.values())
-        samples_by_track = self.pcm_samples.copy()
+        decoded_before, units_before = self.decoded_samples.copy(), self.decoded_units
         active = self.active_name()
         starts = self.starts.copy()
         divider = self.be16(0xdf2e) if active is not None else None
         requested = self.requested_track()
         steady = name.endswith("service_audio") and active is not None and active == requested
         failure = self.symbols["havoc_c64::fail"].address
+        decoder = self.symbols["digital_decode_run"].address
         for steps in range(budget):
             if self.pc in (SENTINEL, failure):
                 break
-            if self.first_kernel_call is None and self.pc == self.symbols["digital_decode_run"].address:
+            if self.phase == "audio" and self.pc == decoder:
+                require(not self.p & KERNEL["I"], "PCM preparation must remain interruptible")
                 pointer = int.from_bytes(self.mem[4:6], "little")
-                source = int.from_bytes(self.mem[6:8], "little")
-                self.first_kernel_call = dict(pointer=hex(pointer), state=self.mem[pointer:pointer+40].hex(),
-                    source=hex(source), input=self.mem[source:source+16].hex(),
-                    output=hex(int.from_bytes(self.mem[8:10], "little")), count=self.a,
-                    registers=self.mem[2:18].hex())
+                entry = self.decoder_tracks.get(pointer)
+                require(entry is not None, "decode kernel has no compressed-cache owner")
+                require(self.staging_decoder in (None, pointer), "mixed decoder output in one PCM batch")
+                self.staging_decoder = pointer
+                channels = self.mem[pointer + 39]
+                require(channels == entry["metadata"]["channels"] and 1 <= self.a <= 128,
+                        "decode kernel profile/frame count")
+                self.decoded_samples[entry["name"]] += self.a
+                self.decoded_units += self.a * (4 if channels == 2 else 5)
+                if name.endswith("service_audio"):
+                    require(self.decoded_units - units_before <= DECODE_BUDGET_UNITS,
+                            "audio service decoded more than 250 ms across both slots")
+                if self.first_kernel_call is None:
+                    source = int.from_bytes(self.mem[6:8], "little")
+                    self.first_kernel_call = dict(pointer=hex(pointer), state=self.mem[pointer:pointer+40].hex(),
+                        source=hex(source), input=self.mem[source:source+16].hex(),
+                        output=hex(int.from_bytes(self.mem[8:10], "little")), count=self.a,
+                        registers=self.mem[2:18].hex())
             self.step()
         else:
             raise KernelError(f"instruction budget exhausted in {name} at ${self.pc:04x}")
@@ -557,21 +613,23 @@ class Machine(Cpu):
                 f"{name}: failure={faulted}, digital fault={self.get('DIGITAL_FAULT')}, call={len(self.calls)}")
         if not faulted:
             require(self.s == 0xfd and self.mem[2:4] == stack, "stack imbalance")
+            if name.endswith("service_audio"):
+                require(not self.p & KERNEL["I"], "audio service must restore IRQs")
+                require(self.staging_decoder is None, "audio service left decoded PCM unpublished")
         result = dict(entry=name, instructions=steps, cpu_cycles=self.cycles - start,
                       bus_ticks=self.ticks - ticks, pcm_samples=sum(self.pcm_samples.values()) - samples,
+                      decoded_frames={track: count - decoded_before[track]
+                                      for track, count in self.decoded_samples.items()
+                                      if count != decoded_before[track]},
+                      decoded_budget_units=self.decoded_units - units_before,
                       active_track=active,
                       sampler_divider=divider,
                       modeled_sampler_rate_hz=None if divider is None else 6250000 / (divider + 2),
                       steady=steady and not faulted and self.active_name() == active and self.starts == starts,
                       fault=faulted)
-        decoded = {track: count - samples_by_track[track] for track, count in self.pcm_samples.items()
-                   if count != samples_by_track[track]}
-        units = sum(decoded.get(entry["name"], 0) * (80000 // entry["metadata"]["sample_rate"])
-                    for entry in self.references)
-        result.update(decoded_frames_by_track=decoded, decoded_audio_ms=units / 80,
-                      startup_priming=name.endswith("service_audio") and active is None and units != 0)
-        if name.endswith("service_audio") and active is not None:
-            require(units <= 20000, f"running audio service decoded more than 250 ms: {units / 80}")
+        result.update(decoded_audio_ms=result["decoded_budget_units"] / 80,
+                      startup_priming=name.endswith("service_audio") and active is None
+                                      and result["decoded_budget_units"] != 0)
         self.calls.append(result)
         if result["steady"] and result["pcm_samples"] and active not in self.reported_profiles:
             elapsed = result["bus_ticks"] / self.bus_hz
@@ -589,8 +647,8 @@ def exercise(elf, symbols, image, standard, budget):
     cpu = Machine(elf, symbols, image, standard)
     cpu.boot(budget)
     service = lambda **kw: cpu.call("havoc_c64::service_audio", budget, **kw)
-    service()
-    require(cpu.get("MUSIC_BACKEND") == 1 and cpu.starts == [1, 1], "DAC startup")
+    stereo_prime_visits = cpu.prime(budget)
+    require(stereo_prime_visits == 7, "stereo startup must take seven bounded visits")
     require(cpu.active_name() == "hammond-rocker" and cpu.wide_clears > 0, "stereo title and cleared sampler")
     require(cpu.volume == [32, 32] and cpu.state_value("volume") == 32, "initial playback must start at full gain")
     calibration_count = cpu.calibrations
@@ -762,7 +820,8 @@ def exercise(elf, symbols, image, standard, budget):
                                  (2, 2, "iron-canyon"),
                                  (2, 3, "canyon-gate"),
                                  (8, 4, "ashen-wastes"),
-                                 (8, 5, "foundry-belt")):
+                                 (8, 5, "foundry-belt"),
+                                 (3, 6, "fortress-run")):
         select(cue, stage, expected)
         if stage == 3:
             starts = cpu.starts.copy()
@@ -770,7 +829,7 @@ def exercise(elf, symbols, image, standard, budget):
             play(3)
             require(cpu.active_name() == expected and cpu.starts == starts,
                     "Canyon Gate restarted at boss entrance")
-    select(3, 6, "galactic-dash-mono")  # Unrecorded Fortress Run.
+    select(3, 7, "galactic-dash-mono")  # Unrecorded Citadel Core.
     starts = cpu.starts.copy()
     for stage in (18, 255):
         cpu.put("havoc_c64::REQUESTED_STAGE", stage)
@@ -786,7 +845,7 @@ def exercise(elf, symbols, image, standard, budget):
                 "protected cue was overridden by stale gameplay stage")
     select(5, 0, "galactic-dash")
     select(0, 5, "hammond-rocker")
-    select(3, 6, "galactic-dash-mono", cadence=0.02)  # Primed early; must wait for fade.
+    select(3, 7, "galactic-dash-mono", cadence=0.02)  # Primed early; must wait for fade.
     require(cpu.prefix_clears >= 3, "mono prefixes not re-cleared across preparations")
     cpu.delay(1.25)
     service()
@@ -797,7 +856,15 @@ def exercise(elf, symbols, image, standard, budget):
     require(cpu.get("DIGITAL_FAULT") == 5 and cpu.control == cpu.volume == [0, 0], "underrun did not stop/mute")
     require(cpu.ring_banks == {0, 1} and cpu.ring_wraps > 0, "both slots and ring wraps")
     require(min(cpu.playback_checked) > 100000, "both hardware readers must be exercised")
+    mono = Machine(elf, symbols, image, standard)
+    mono.put("havoc_c64::REQUESTED_CUE", 1)
+    mono.put("havoc_c64::REQUESTED_STAGE", 0)
+    mono.boot(budget)
+    mono_prime_visits = mono.prime(budget)
+    require(mono_prime_visits == 9, "mono startup must take nine bounded visits")
     return dict(pcm_samples_checked=cpu.pcm_samples, starts=cpu.starts,
+                initial_prime_visits=dict(stereo=stereo_prime_visits, mono=mono_prime_visits),
+                mono_initial_prime_calls=[call for call in mono.calls if call["entry"].endswith("service_audio")],
                 sampler_channel_frames_checked=cpu.playback_checked, calibration_shots=cpu.calibrations,
                 ring_wraps=cpu.ring_wraps, mono_prefix_clears=cpu.prefix_clears,
                 fetches=cpu.fetches, stashes=cpu.stashes, max_dma_bytes=cpu.max_dma,
@@ -809,9 +876,9 @@ def exercise(elf, symbols, image, standard, budget):
                                      replacement_preserves_progress=True, sample_rebase_during_fade=True,
                                      cia_wrap_during_fade=True,
                                      only_one_audible_source_slot=True, initial_full_gain=True),
-                decode_budget=dict(maximum_running_audio_ms=max(call["decoded_audio_ms"] for call in cpu.calls
-                    if call["entry"].endswith("service_audio") and call["active_track"] is not None),
-                    limit_ms=250, scope="Active and pending decoded duration summed per service call; initial full-ring startup priming is exempt"),
+                decode_budget=dict(maximum_audio_ms=max(call["decoded_audio_ms"] for call in cpu.calls + mono.calls
+                    if call["entry"].endswith("service_audio")),
+                    limit_ms=250, scope="Startup, active and pending decoded duration summed per service call"),
                 steady_service=steady_aggregates(cpu.calls, cpu.bus_hz), calls=cpu.calls)
 
 
@@ -855,7 +922,7 @@ def exercise_corruption(elf, symbols, image, standard, budget):
             cpu.allow_corrupt_pcm = True
             require(cpu.get("DIGITAL_STREAM_CRC") == 0, "stream CRC must default off")
             cpu.boot(budget)
-            cpu.call("havoc_c64::service_audio", budget)
+            cpu.prime(budget)
             require(cpu.get("MUSIC_BACKEND") == 1 and cpu.starts == [1, 1] and cpu.volume == [32, 32],
                     "unchecked stream corruption must keep playing")
         else:

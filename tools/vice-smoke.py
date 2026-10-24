@@ -260,13 +260,13 @@ def composite_pixels(bitmap_pixels, state):
 
 
 def sprite_shake_alignment(state):
-    """Verify all eight fixed origins follow the exact bitmap fine scroll."""
+    """Verify all eight fixed origins oppose the exact bitmap displacement."""
     registers = state["registers"]
     dx, dy = registers[0x16] & 7, (registers[0x11] & 7) - 3
     actual = []
     for sprite in range(8):
         corner_x, corner_y = ((3, 4), (133, 4), (3, 175), (133, 175))[sprite // 2]
-        expected = (24 + corner_x * 2 + (sprite % 2) * 24 + dx, 50 + corner_y + dy)
+        expected = (24 + corner_x * 2 + (sprite % 2) * 24 - dx, 50 + corner_y - dy)
         position = (registers[sprite * 2] + (((registers[0x10] >> sprite) & 1) * 256),
                     registers[sprite * 2 + 1])
         if position != expected:
@@ -483,6 +483,18 @@ def resident_symbol(syms, name):
     if len(candidates) != 1:
         raise RuntimeError(f"Expected one resident {name} ELF symbol, got {candidates}")
     return candidates[0]
+
+
+def segment_cache_addresses(syms):
+    """Read encounter buffers from this ELF, including relocated low memory."""
+    addresses = []
+    for slot in range(2):
+        start = syms.get(f"__segment{slot}_start")
+        end = syms.get(f"__segment{slot}_end")
+        if start is None or end is None or end - start != 512:
+            raise RuntimeError(f"Missing or invalid encounter cache {slot} ELF bounds")
+        addresses.append(start)
+    return tuple(addresses)
 
 
 def dwarf_game_layout(elf, tool, syms, output, controls=False):
@@ -876,7 +888,9 @@ def streaming_checks(mon, syms, failures, elf, reu, dwarf_tool, output, result):
     format = package_model_layout(data)
     if format["digital"]:
         menu_music_fixture(format, layout["fields"], 5)
-        result["scope"] += " Digital-package cues use emulator SID substitution; no DAC playback is validated."
+        result["scope"] += (" Digital-package cue selection is checked with DAC disabled; no DAC playback is validated."
+                            if format.get("quad_sfx") else
+                            " Digital-package cues use emulator SID substitution; no DAC playback is validated.")
     boss_health = result["full_boss_health"]
     # Preserve old-binary smoke compatibility while checking the revised policy
     # explicitly for the doubled-health balance revision.
@@ -911,10 +925,10 @@ def streaming_checks(mon, syms, failures, elf, reu, dwarf_tool, output, result):
         mon.command("bank cpu")
 
     def caches(snapshot_name=None):
-        # These are published platform cache addresses, not Rust struct offsets.
+        # The linked symbols follow memory moves without assuming Rust offsets.
         mon.command("bank ram")
         views = []
-        for slot, address in enumerate((0x2e00, 0x9700)):
+        for slot, address in enumerate(segment_cache_addresses(syms)):
             cache = mon.read(address, 512)
             index = cache[4]
             if cache[:4] != format["segment_magic"] or index >= format["count"]:
@@ -1019,12 +1033,12 @@ def streaming_checks(mon, syms, failures, elf, reu, dwarf_tool, output, result):
         return frame
 
     # Ordinary traces and metrics have already been finalized. Trace only the
-    # core SID gate registers here; the two third voices belong to effects.
+    # SID gate registers here; every voice can belong to a layered effect.
     # This catches silent crossings without adding full per-register logs.
     mon.command("delete")
     for address in failures:
         mon.command(f"break exec {address:04x}")
-    for base in (0xd400, 0xd420):
+    for base in (0xd400 + 32 * sid for sid in range(data[17])):
         for register in (4, 11, 18):
             address = base + register
             mon.command(f"trace store {address:04x} if @cpu:$01 == $35")
@@ -1084,7 +1098,8 @@ def streaming_checks(mon, syms, failures, elf, reu, dwarf_tool, output, result):
                       if sounding[0]["bus_cycles"] < event["bus_cycles"] <= sounding[-1]["bus_cycles"]]
             summary = sid_summary(path, events, data[17])
             if format.get("quad_sfx"):
-                if not any(all(voice["gate_on"] for voice in chip["voices"]) for chip in summary.values()):
+                if not any(all(voice["gate_on"] for voice in chip["voices"])
+                           for chip in summary.values() if isinstance(chip, dict)):
                     raise RuntimeError("Scenic flight never sounded a layered SID effect")
             else:
                 for chip in ("left_d400", "right_d420"):
@@ -1093,7 +1108,7 @@ def streaming_checks(mon, syms, failures, elf, reu, dwarf_tool, output, result):
             scenario["transition"]["sound"] = {
                 "from_tick": sounding[0]["game"]["transition_ticks"],
                 "through_tick": sounding[-1]["game"]["transition_ticks"],
-                "scope": "Core SID control-register traces; layered effects during scenic flight.",
+                "scope": "All SID control-register traces; layered effects during scenic flight.",
                 "sid": summary,
             }
             mon.command("log on")
@@ -1254,7 +1269,9 @@ def attract_checks(mon, syms, failures, elf, reu, dwarf_tool, output, result):
     if format["digital"]:
         menu_music_fixture(format, fields, 0)
         observed += ("menu_music_galactic",)
-        result["scope"] += " Selected menu cue and SID score pages remain continuous across the tour; emulator SID substitution does not validate DAC playback."
+        result["scope"] += (" Selected menu cue remains continuous across the tour with DAC disabled; no DAC playback is validated."
+                            if format.get("quad_sfx") else
+                            " Selected menu cue and SID score pages remain continuous across the tour; emulator SID substitution does not validate DAC playback.")
     expected_menu_cue = None
     previous_menu_music = None
     tour = (0, 1, 6, 10, 12, 14, 16) if format["space"] else (0, 1, 6, 10) if format["campaign"] else (0, 1, 2, 3)
@@ -1330,7 +1347,7 @@ def attract_checks(mon, syms, failures, elf, reu, dwarf_tool, output, result):
         frame["stack_guards"] = {name: mon.integer(syms[name], 1)
                                  for name in ("__stack_bottom", "__irq_stack_bottom")}
         frame["cache_sections"] = []
-        for address in (0x2e00, 0x9700):
+        for address in segment_cache_addresses(syms):
             cache = mon.read(address, 512)
             if cache[4] >= format["count"] or cache != references[cache[4]]:
                 raise RuntimeError("Attract section cache differs from packaged bytes")
@@ -1353,8 +1370,8 @@ def attract_checks(mon, syms, failures, elf, reu, dwarf_tool, output, result):
             cue = 5 if frame["game"]["menu_music_galactic"] else 0
             if expected_menu_cue is not None and cue != expected_menu_cue:
                 raise RuntimeError("Menu tune selection changed during the attract tour or a scene reset")
-            pages = data[format["music_offset"] + 16 + cue * 8 + 4]
-            if not pages:
+            pages = None if format.get("quad_sfx") else data[format["music_offset"] + 16 + cue * 8 + 4]
+            if pages == 0:
                 raise RuntimeError("Selected menu score has no pages")
             previous_menu_music = check_menu_music(frame, cue, previous_menu_music, pages)
         else:
@@ -2519,8 +2536,8 @@ def weapon_checks(mon, syms, failures, elf, dwarf_tool, output, result, video, p
                 else:
                     sprite, axis = divmod(address - 0xd000, 2)
                     corner_x, corner_y = ((3, 4), (133, 4), (3, 175), (133, 175))[sprite // 2]
-                    expected = ((24 + corner_x * 2 + (sprite % 2) * 24 + applied[0]) & 255
-                                if axis == 0 else 50 + corner_y + applied[1] - 3)
+                    expected = ((24 + corner_x * 2 + (sprite % 2) * 24 - applied[0]) & 255
+                                if axis == 0 else 50 + corner_y - (applied[1] - 3))
                 if value != expected:
                     raise RuntimeError(f"Sprite shake register ${address:04x} wrote {value}, expected {expected}")
                 sprite_position_writes += 1

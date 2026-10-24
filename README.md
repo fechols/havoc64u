@@ -20,13 +20,13 @@ Fly an original 3D rail shooter for the **64 MHz C64 Ultimate**. Skim green hill
 - **Checkpoints and pause** — Retain your score after losing a life; take breaks.
 - **Punchy impacts** — Feel hits and bombs through screen shake and flashes.
 
-The development build includes eight original digital recordings composed for H.A.V.O.C. by William Echols. The first six stages have their own songs: Lowland Approach, Crystal Cave, Iron Canyon, Canyon Gate, Ashen Wastes, and Foundry Belt. Gameplay music uses 16 kHz, 3-bit mono compression with a 10 ms delay between outputs; later stages currently use a temporary mono Galactic Dash fixture. Title and victory songs retain true stereo, and SID combat effects remain active. See the [current implementation status](docs/digital-music-handoff.md#current-development-status-dlt4). The v0.1.2 download below retains its released soundtrack and playback behavior.
+The development build includes nine original digital recordings composed for H.A.V.O.C. by William Echols. The first seven stages have their own songs: Lowland Approach, Crystal Cave, Iron Canyon, Canyon Gate, Ashen Wastes, Foundry Belt, and Fortress Run. Gameplay music uses 16 kHz, 3-bit mono compression with a 10 ms delay between outputs; later stages currently use a temporary mono Galactic Dash fixture. Title and victory songs retain true stereo, and SID combat effects remain active. See the [current implementation status](docs/digital-music-handoff.md#current-development-status-dlt4). The v0.1.2 download below retains its released soundtrack and playback behavior.
 
-The v16 development revision raises the cannon and impact bodies one octave, with smaller pitch lifts for other ordinary cues while preserving deep bombs and large explosions. The effects player remains at 50 Hz. Each effect uses at most one SID per channel; a stereo bomb leaves one left and one right chip available for ship explosions, and repeating it restarts its existing pair. Shots and impacts follow their screen position with a narrow center band and gentle headphone separation. Pitch and pulse-width movement, staged waveforms, sync, ring modulation and filter sweeps remain. Track changes fade the outgoing digital music for about one second before the next song starts, without a crossfade. Current validation and the sustained-combat CPU measurements are tracked in the [audio implementation notes](docs/hardware.md#quad-sid-effects).
+The development revision runs the four-SID effects engine in resident assembly at 50 Hz. Each chip acts as one instrument with three hardware voices shaping its attack, body, and tail. Each effect uses at most one SID per channel; a stereo bomb leaves one left and one right chip available for ship explosions, and repeating it restarts its existing pair. Shots and impacts follow their screen position with a narrow center band and gentle headphone separation. Pitch and pulse-width movement, staged waveforms, sync, ring modulation and filter sweeps remain. Track changes fade the outgoing digital music for about one second before the next song starts, without a crossfade. Current validation and the sustained-combat CPU measurements are tracked in the [audio implementation notes](docs/hardware.md#quad-sid-effects).
 
 ## See it in action
 
-**Sound on!** Hear the four-SID score and combat effects as the action climbs into orbit. Recorded in a PAL emulator at the game's original speed (72 seconds).
+**Sound on!** This earlier trailer features the original four-SID score and combat effects as the action climbs into orbit. Recorded in a PAL emulator at the game's original speed (72 seconds).
 
 https://github.com/user-attachments/assets/f2c0d2a9-250d-456e-89e2-7e5f1bc5605a
 
@@ -77,6 +77,7 @@ Your ship flies forward automatically. You steer around enemies, incoming shots,
 | Double-tap fire within half a second | Spend one bomb, as well as firing normally |
 | Double-tap left or right within half a second | Barrel roll and dodge in that direction |
 | Fire at the title or after a run | Start a new game |
+| S at the title (development build) | Toggle Normal / Story mode, then press fire to launch |
 | Space bar | Pause and resume the flight |
 | F | Toggle the frame-rate readout in the top-left HUD corner |
 
@@ -84,10 +85,10 @@ Watch the weapon meter: **HOMING MISSILE** means your next shot tracks a random 
 
 - **Roll through shots, dodge scenery.** Keep steering and firing during a roll, but avoid solid obstacles.
 - **Clear a path.** Shoot small orbital fragments; bomb large rocks and wreckage. Every five enemy kills restore one bomb, up to three.
-- **Collect supplies.** Green shields restore 60 points, up to 100; yellow rectangles add one bomb, up to three.
+- **Collect supplies.** Green shields restore 60 points, up to 100; purple rectangles add one bomb, up to three.
 - **Break the boss's defenses.** Destroy both side units, then the core, to advance. Each boss defeat restores full shields and three bombs.
-- **Make each life count.** You start with three lives. Losing one restarts the current stage with your score intact; losing all three ends the run.
-- **Catch your breath.** Scenic crossings are safe, but bombs still consume inventory. Leaving a cleared boss stage restores one life, up to three.
+- **Make each life count.** Normal mode starts with three lives. The development build also offers Story mode with 99 lives: press **S** at the title to select it, then press fire. The choice remains selected until you toggle it again or restart the program. Losing a life restarts the current stage with your score intact; losing all lives ends the run. A fresh fire press retries with the selected starting lives.
+- **Catch your breath.** Scenic crossings are safe, but bombs still consume inventory. Leaving a cleared boss stage restores one life, up to the selected mode's starting lives.
 
 Wait fifteen seconds at the title for a scenery tour. The digital track continues across every attract map and the return to the title. Move or press fire to return, then release and press fire to start. Release held fire before restarting after a run, too. Completing the campaign starts Galactic Dash with the gold-medal reveal; a fresh fire press returns to the title with that track still playing.
 
@@ -101,6 +102,6 @@ See the [setup and troubleshooting guide](docs/hardware.md) for help getting sta
 
 The game, its original tools, models, SID score, and screenshots are released under the [MIT License](LICENSE).
 
-All eight original digital recordings were composed for H.A.V.O.C. by **William Echols**: Hammond Rocker, Galactic Dash, Lowland Approach, Crystal Cave, Iron Canyon, Canyon Gate, Ashen Wastes, and Foundry Belt. Their source recordings and encoded versions are covered by the [music MIT License](assets/music/LICENSE), included in player archives as `MUSIC-LICENSE.txt`.
+All nine original digital recordings were composed for H.A.V.O.C. by **William Echols**: Hammond Rocker, Galactic Dash, Lowland Approach, Crystal Cave, Iron Canyon, Canyon Gate, Ashen Wastes, Foundry Belt, and Fortress Run. Their source recordings and encoded versions are covered by the [music MIT License](assets/music/LICENSE), included in player archives as `MUSIC-LICENSE.txt`.
 
 The digital encoder also includes public-domain code under its accompanying [Unlicense](tools/encode-digital-music/UNLICENSE).

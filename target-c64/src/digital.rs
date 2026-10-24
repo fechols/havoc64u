@@ -6,6 +6,10 @@ const STAGING: u16 = 0x8e00;
 const BOOK_STAGING: u16 = STAGING + 768;
 const CHECK_STAGING: u16 = STAGING + 1023;
 const MAX_BATCH: u16 = 128;
+// Nominal decoded audio duration, shared by both slots on each AUDIO visit.
+// The validated profiles are 20 kHz stereo and 16 kHz mono.
+const STEREO_FRAME_BUDGET: u16 = 5_000;
+const MONO_FRAME_BUDGET: u16 = 4_000;
 const SAMPLER: u16 = 0xdf20;
 const RIGHT: u16 = SAMPLER + 0x20;
 const NONE: u8 = 255;
@@ -126,6 +130,15 @@ impl Decoder {
     };
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+enum Transport {
+    // clear() zero-initializes the state.
+    Stopped = 0,
+    Priming,
+    Running,
+}
+
 #[repr(C)]
 pub struct State {
     decoders: [Decoder; 2],
@@ -137,8 +150,7 @@ pub struct State {
     pub minimum_lead: u16,
     active: u8,
     pending: u8,
-    running: bool,
-    ready: bool,
+    transport: Transport,
     pub fault: u8,
     pub track: Track,
     fade_tick: u32,
@@ -160,8 +172,7 @@ impl State {
             minimum_lead: RING_SAMPLES as u16,
             active: 0,
             pending: NONE,
-            running: false,
-            ready: false,
+            transport: Transport::Stopped,
             fault: 0,
             track: Track::GalacticDash,
             fade_tick: 0,
@@ -169,6 +180,13 @@ impl State {
             volume: 0,
             fading: false,
         }
+    }
+}
+
+impl State {
+    #[inline(always)]
+    pub fn is_running(&self) -> bool {
+        self.transport == Transport::Running
     }
 }
 
@@ -223,7 +241,7 @@ unsafe fn volume(state: &mut State, value: u8) {
 #[link_section = ".phase.audio"]
 pub unsafe fn stop(state: &mut State) {
     mute();
-    state.running = false;
+    state.transport = Transport::Stopped;
     state.volume = 0;
     state.fading = false;
 }
@@ -231,7 +249,6 @@ pub unsafe fn stop(state: &mut State) {
 #[link_section = ".phase.audio"]
 unsafe fn failed(state: &mut State, fault: Fault) -> Fault {
     stop(state);
-    state.ready = false;
     state.fault = fault as u8;
     if fault == Fault::Underrun {
         state.underruns = state.underruns.wrapping_add(1);
@@ -557,8 +574,7 @@ unsafe fn refill_cache(d: &mut Decoder) -> Result<(), Fault> {
     super::digital_test_fetch(source, &mut d.cache[..d.cache_len as usize]);
     d.stream_pos += d.cache_len as u32;
     d.cache_pos = 0;
-    // The stream CRC is a debug hook (DIGITAL_STREAM_CRC); the production
-    // decoder skips this per-byte work and its 1 KiB checkpoint fetches.
+    // Production skips the optional per-byte CRC work and its checkpoint reads.
     if super::rd(core::ptr::addr_of!(super::DIGITAL_STREAM_CRC)) == 0 {
         return Ok(());
     }
@@ -688,8 +704,7 @@ unsafe fn advance(state: &mut State) -> Result<u32, Fault> {
         .minimum_lead
         .min((d.produced - state.clock.samples) as u16);
     if state.fading && state.volume != 0 {
-        // Reuse this clock observation: no extra timer reads or sample scaling.
-        // Countdown subtraction is wrap-safe and independent of ring rebasing.
+        // Reuse this wrap-safe clock observation; PCM samples remain untouched.
         let mut elapsed = state.fade_tick.wrapping_sub(now);
         let mut next = state.volume;
         while next != 0 && elapsed >= state.fade_step as u32 {
@@ -705,7 +720,7 @@ unsafe fn advance(state: &mut State) -> Result<u32, Fault> {
 #[link_section = ".phase.audio"]
 unsafe fn produce(state: &mut State, slot: u8, frames: u16) -> Result<(), Fault> {
     decode(&mut state.decoders[slot as usize], frames)?;
-    if state.running {
+    if state.is_running() {
         advance(state)?;
     }
     let d = &mut state.decoders[slot as usize];
@@ -771,6 +786,7 @@ pub unsafe fn clear(state: *mut State) {
     (*state).pending = NONE;
     (*state).minimum_lead = RING_SAMPLES as u16;
 }
+/// Prepare without decoding PCM. service() primes the ring over bounded visits.
 /// The target already validated/calibrated in BOOT; tests exercise that path here.
 #[inline(never)]
 #[link_section = ".phase.audio"]
@@ -792,24 +808,19 @@ pub unsafe fn init(
         }
         state.rates = saved.rates;
         // One second in 32 equal CIA-clock steps, rounded to the nearest tick.
-        // These fit u16 on both standards and require no runtime division.
         state.fade_step = if pal { 30_789 } else { 31_960 };
         prepare(&mut state.decoders[0], 0, track);
-        while state.decoders[0].produced < RING_SAMPLES {
-            produce(state, 0, MAX_BATCH)?;
-        }
         state.track = track;
-        state.ready = true;
+        state.transport = Transport::Priming;
         Ok(())
     })();
     result.map_err(|fault| failed(state, fault))
 }
 #[inline(never)]
 #[link_section = ".phase.audio"]
-pub unsafe fn start(state: &mut State) {
-    if !state.ready || state.running || state.fault != 0 {
-        return;
-    }
+// Only service() activates a fully primed ring, with IRQs masked across both
+// gate writes so the two sampler clocks cannot start on different IRQ ticks.
+unsafe fn start(state: &mut State) {
     let channels = state.decoders[state.active as usize].kernel.channels;
     let rate = state.rates[rate_index(channels)];
     configure(state.active, channels, rate.divider, RING_SAMPLES, true);
@@ -821,20 +832,26 @@ pub unsafe fn start(state: &mut State) {
     let control = if channels == 2 { 0x43 } else { 0x03 };
     poke(SAMPLER, control);
     poke(RIGHT, control);
-    state.running = true;
+    state.transport = Transport::Running;
 }
 #[inline(never)]
 #[link_section = ".phase.audio"]
 pub unsafe fn request(state: &mut State, track: Track) {
-    if !state.ready || state.fault != 0 {
+    if state.transport == Transport::Stopped {
         return;
     }
     if state.track == track {
-        if state.pending != NONE && state.running {
+        if state.pending != NONE && state.is_running() {
             volume(state, FULL_VOLUME);
         }
         state.pending = NONE;
         state.fading = false;
+        return;
+    }
+    if state.transport == Transport::Priming {
+        prepare(&mut state.decoders[state.active as usize], state.active, track);
+        state.track = track;
+        state.pending = NONE;
         return;
     }
     if state.pending != NONE && state.decoders[state.pending as usize].track == track {
@@ -847,14 +864,35 @@ pub unsafe fn request(state: &mut State, track: Track) {
 #[inline(never)]
 #[link_section = ".phase.audio"]
 pub unsafe fn service(state: &mut State) -> Result<(), Fault> {
-    if !state.running {
+    if state.transport == Transport::Stopped {
         return Ok(());
     }
     let result = (|| {
-        // One rendered frame may decode at most 250 ms of PCM in total.
-        // Both profiles share that duration when preparing a replacement.
         let channels = state.decoders[state.active as usize].kernel.channels;
-        let mut budget = if channels == 2 { 5000u16 } else { 4000u16 };
+        let mut budget = if channels == 2 {
+            STEREO_FRAME_BUDGET
+        } else {
+            MONO_FRAME_BUDGET
+        };
+        if state.transport == Transport::Priming {
+            while budget != 0 {
+                let remaining = RING_SAMPLES - state.decoders[state.active as usize].produced;
+                if remaining == 0 {
+                    break;
+                }
+                let count = remaining.min(MAX_BATCH as u32).min(budget as u32) as u16;
+                produce(state, state.active, count)?;
+                budget -= count;
+            }
+            if state.decoders[state.active as usize].produced == RING_SAMPLES {
+                #[cfg(not(test))]
+                super::disable_irq();
+                start(state);
+                #[cfg(not(test))]
+                super::enable_irq();
+            }
+            return Ok(());
+        }
         advance(state)?;
         loop {
             // produce() advances the clock after decoding and before DMA.
@@ -873,18 +911,17 @@ pub unsafe fn service(state: &mut State) -> Result<(), Fault> {
             produce(state, state.active, count)?;
             budget -= count;
         }
-        if state.pending != NONE
-            && state.decoders[state.pending as usize].kernel.channels != channels
+        // Convert the unused duration once, rounding down. The inner loops
+        // only subtract frame counts; no per-batch division or extra timer.
+        let mut pending_budget = if state.pending == NONE
+            || state.decoders[state.pending as usize].kernel.channels == channels
         {
-            // Convert only the unused duration, once per service. The private
-            // AUDIO divider avoids adding a generic resident math helper.
-            budget = if channels == 2 {
-                timing::quotient_remainder((budget as u32) << 2, 5).0 as u16
-            } else {
-                (budget + (budget << 2)) >> 2
-            };
-        }
-        let mut pending_budget = 4096u16.min(budget);
+            budget
+        } else if channels == 2 {
+            timing::quotient_remainder((budget << 2) as u32, 5).0 as u16
+        } else {
+            budget + (budget >> 2)
+        };
         while state.pending != NONE && pending_budget != 0 {
             let slot = state.pending;
             let remaining = RING_SAMPLES - state.decoders[slot as usize].produced;
@@ -898,8 +935,8 @@ pub unsafe fn service(state: &mut State) -> Result<(), Fault> {
         if state.pending != NONE && state.decoders[state.pending as usize].produced == RING_SAMPLES
         {
             if !state.fading {
-                // Preserve uninterrupted old music while decoding the new ring
-                // under the shared frame budget, then fade before switching.
+                // Decode the full new ring within the shared budget before the
+                // old music fades. The DAC keeps consuming only the old ring.
                 state.fade_tick = timer_read();
                 state.fading = true;
             }

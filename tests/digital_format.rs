@@ -86,6 +86,7 @@ fn recorded_stages_override_shared_cues_and_special_scenes_keep_their_music() {
         (MusicState::Canyon, Track::CanyonGate),
         (MusicState::AshesAndSteel, Track::AshenWastes),
         (MusicState::AshesAndSteel, Track::FoundryBelt),
+        (MusicState::Fortress, Track::FortressRun),
     ];
     for (stage, (cue, track)) in stages.into_iter().enumerate() {
         assert_eq!(track_for_scene(cue, stage as u8), track);
@@ -105,7 +106,7 @@ fn recorded_stages_override_shared_cues_and_special_scenes_keep_their_music() {
             assert_eq!(track_for_scene(cue, stage), track_for_cue(cue));
         }
     }
-    for stage in 6..=255 {
+    for stage in 7..=255 {
         for cue in 0..havoc::audio::CUE_COUNT as u8 {
             let cue = MusicState::from_cue(cue).unwrap();
             assert_eq!(track_for_scene(cue, stage), track_for_cue(cue));
@@ -230,12 +231,12 @@ fn directory_padding_and_packed_catalog_are_bound_to_compiled_descriptors() {
     assert_eq!(directory[10] as usize, STAGE_COUNT);
     assert_eq!(&directory[11..14], &[0; 3]);
     assert_eq!(
-        &directory[stage_offset..stage_offset + 6],
-        &[3, 4, 5, 6, 7, 8]
+        &directory[stage_offset..stage_offset + 7],
+        &[3, 4, 5, 6, 7, 8, 9]
     );
     assert_eq!(
-        &directory[stage_offset + 6..stage_offset + STAGE_COUNT],
-        &[255; 12]
+        &directory[stage_offset + 7..stage_offset + STAGE_COUNT],
+        &[255; 11]
     );
     assert!(directory[stage_offset + STAGE_COUNT..]
         .iter()
@@ -256,6 +257,7 @@ fn directory_padding_and_packed_catalog_are_bound_to_compiled_descriptors() {
         MUSIC_OFFSET + 14,
         MUSIC_OFFSET + stage_offset as u32,
         MUSIC_OFFSET + stage_offset as u32 + 6,
+        MUSIC_OFFSET + stage_offset as u32 + 7,
         MUSIC_OFFSET + DIRECTORY_BYTES as u32 - 1,
         CATALOG_END,
         RING_OFFSET - 1,

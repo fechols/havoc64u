@@ -52,7 +52,7 @@ pub fn draw(band: u8, canvas: &mut impl Canvas, hud: &Hud, frame: u16) -> bool {
     }
     match hud.mode {
         Mode::Attract | Mode::Transition | Mode::Victory => false,
-        Mode::Title => title(band, canvas, frame),
+        Mode::Title => title(band, canvas, frame, hud.story_mode),
         Mode::Playing => {
             let banner = (3..=6).contains(&band) && sector_banner_visible(hud);
             if banner {
@@ -77,9 +77,17 @@ pub fn draw(band: u8, canvas: &mut impl Canvas, hud: &Hud, frame: u16) -> bool {
             panel(band, canvas, 26, 78, 108, 37, 12);
             centered(band, canvas, 84, b"SHIP LOST", 10);
             centered(band, canvas, 96, b"RETURNING TO CHECKPOINT", 15);
-            let mut lives = *b"SHIPS REMAINING: 0";
-            lives[17] = b'0' + hud.lives.min(9);
-            centered(band, canvas, 106, &lives, 3);
+            let mut lives = *b"SHIPS REMAINING: 00";
+            let count = life_digits(hud.lives);
+            let length = if count[0] == b' ' {
+                lives[17] = count[1];
+                18
+            } else {
+                lives[17] = count[0];
+                lives[18] = count[1];
+                19
+            };
+            centered(band, canvas, 106, &lives[..length], 3);
             true
         }
         Mode::GameOver => {
@@ -129,7 +137,7 @@ fn victory(band: u8, canvas: &mut impl Canvas, hud: &Hud, frame: u16) -> bool {
 
 #[inline(never)]
 #[cfg_attr(target_arch = "mos", link_section = ".phase.pixels")]
-fn title(band: u8, canvas: &mut impl Canvas, frame: u16) -> bool {
+fn title(band: u8, canvas: &mut impl Canvas, frame: u16, story_mode: bool) -> bool {
     // Keep the center open so the original Kestrel model remains visible.
     if band == 0 || (9..16).contains(&band) {
         return false;
@@ -150,7 +158,17 @@ fn title(band: u8, canvas: &mut impl Canvas, frame: u16) -> bool {
     centered(band, canvas, 164, b"DOUBLE FIRE: BOMB", 15);
     centered(band, canvas, 173, b"DOUBLE LEFT/RIGHT: ROLL", 15);
     centered(band, canvas, 181, b"DIGITAL MUSIC BY WILLIAM ECHOLS", 12);
-    centered(band, canvas, 189, b"PUSH FIRE TO LAUNCH", blink(frame));
+    centered(
+        band,
+        canvas,
+        189,
+        if story_mode {
+            b"S: STORY 99 / FIRE: START"
+        } else {
+            b"S: NORMAL 3 / FIRE: START"
+        },
+        blink(frame),
+    );
     true
 }
 
@@ -167,9 +185,9 @@ fn section_name(section: u8) -> &'static [u8] {
     }
 }
 
-// Byte offsets avoid eighteen native four-byte slice descriptors. The tiny
-// offset table travels with PIXELS, while strings use checked constant RAM.
-#[cfg_attr(target_arch = "mos", link_section = ".rodata.hud_names")]
+// Byte offsets avoid eighteen native four-byte slice descriptors. PIXELS owns
+// both tables; keep the strings in its prefix so the helper tail stays bounded.
+#[cfg_attr(target_arch = "mos", link_section = ".phase.pixels.data")]
 static SECTOR_NAMES: [u8; 228] = *b"LOWLAND APPROACHCRYSTAL CAVEIRON CANYONCANYON GATE\
 ASHEN WASTESFOUNDRY BELTFORTRESS RUNCITADEL CORESTORM FRONTMETEOR REACH\
 CARRIER COASTCARRIER ASSAULTASTEROID BELTSHATTERED MOONSHIP GRAVEYARD\
@@ -247,9 +265,52 @@ pub(crate) fn digits(mut value: u32, output: &mut [u8]) {
     }
 }
 
+/// Two decimal places for the life counter, with a blank leading zero.
+#[inline(never)]
+#[cfg_attr(target_arch = "mos", link_section = ".phase.pixels")]
+pub(crate) fn life_digits(value: u8) -> [u8; 2] {
+    let mut units = value.min(99);
+    let mut tens = b'0';
+    // A fixed ladder avoids LLVM replacing a subtraction loop with a native
+    // division helper in scarce resident memory.
+    if units >= 80 {
+        units -= 80;
+        tens += 8;
+    }
+    if units >= 40 {
+        units -= 40;
+        tens += 4;
+    }
+    if units >= 20 {
+        units -= 20;
+        tens += 2;
+    }
+    if units >= 10 {
+        units -= 10;
+        tens += 1;
+    }
+    [if tens == b'0' { b' ' } else { tens }, b'0' + units]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn title_mode_cues_use_visible_glyphs() {
+        for cue in [b"S: NORMAL 3 / FIRE: START", b"S: STORY 99 / FIRE: START"] {
+            for &character in cue {
+                if character != b' ' {
+                    assert!(
+                        crate::render::glyph(character).iter().any(|&row| row != 0),
+                        "missing title glyph {}",
+                        character as char
+                    );
+                }
+            }
+        }
+    }
+
     #[test]
     fn decimal_score_is_fixed_width_and_saturates() {
         let mut output = [0; 6];

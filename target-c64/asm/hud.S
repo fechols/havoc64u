@@ -33,7 +33,7 @@ publish_hud_corner:
     ror
     sta __rc4
     ; Top sprites begin at Y=54, bottom at Y=225. Guard every possible
-    ; fine-scroll offset (-3..+4), with at least seven leading lines and
+    ; opposite fine-scroll offset (-4..+3), with at least six leading lines and
     ; trailing fetch margin. The measured copy bound is below two lines.
     lda __rc7
     cmp #2
@@ -125,9 +125,9 @@ hud_publish_done:
     rts
 .size publish_hud_corner, .-publish_hud_corner
 
-; Resident: the line-251 IRQ applies the same packed scroll sample to the
-; bitmap and sprites. The normal bitmap scroll is (0,3); subtract it here.
-; Each position is recomputed from its base, never accumulated.
+; Resident: the line-251 IRQ supplies the bitmap's packed scroll sample.
+; Normal bitmap scroll is (0,3). Subtract its displacement from each sprite's
+; fixed base for equal, opposite cockpit motion without accumulated drift.
 .section .text.hud_apply_scroll,"ax",@progbits
 .globl hud_apply_scroll
 .type hud_apply_scroll,@function
@@ -147,19 +147,19 @@ hud_apply_scroll:
     ldy #0
 .Lhud_position:
     lda .Lhud_base_x,x
-    clc
-    adc __rc2
+    sec
+    sbc __rc2
     sta $d000,y
     lda .Lhud_base_y,x
-    clc
-    adc __rc3
+    sec
+    sbc __rc3
     sta $d001,y
     inx
     iny
     iny
     cpx #8
     bne .Lhud_position
-    ; Right corners are X=290/314, left are X=30/54. Adding X scroll 0..7
+    ; Right corners are X=290/314, left are X=30/54. Subtracting X scroll 0..7
     ; cannot cross a 256-pixel boundary, so all nine-bit X values use $CC.
     lda #$cc
     sta $d010

@@ -7,6 +7,7 @@ use havoc::{
 fn hud(mode: Mode) -> Hud {
     Hud {
         mode,
+        story_mode: false,
         shield: 75,
         charge: 128,
         bombs: 2,
@@ -89,18 +90,20 @@ fn resource_labels_and_bomb_rectangles_fit_their_four_corner_footprints() {
     status.bombs = u8::MAX;
     let state = DisplayState::from_hud(&status, 0, None);
     let inventory = image(1, &state);
-    assert_text(&inventory, 0, 2, b"LIFE 9", 3);
+    assert_text(&inventory, 0, 2, b"LIFE99", 3);
     for bombs in [0, 1, 2, 3, u8::MAX] {
         status.bombs = bombs;
         for boss_shield in [0, 25, 100] {
             status.boss_shield = boss_shield;
             let state = DisplayState::from_hud(&status, 0, None);
-            assert_eq!(state.accent(1), 7, "loaded bombs must stay yellow");
+            assert_eq!(state.accent(1), 4, "loaded bombs must stay purple");
             let inventory = image(1, &state);
             for y in 9..14 {
                 for x in 0..24 {
                     let expected = if x % 8 == 0 || x % 8 == 7 {
                         0
+                    } else if y == 9 || y == 13 || x % 8 == 1 || x % 8 == 6 {
+                        3
                     } else if x / 8 < bombs.min(3) as usize {
                         2
                     } else {
@@ -129,6 +132,61 @@ fn resource_labels_and_bomb_rectangles_fit_their_four_corner_footprints() {
 }
 
 #[test]
+fn lives_fit_two_digits_without_moving_single_digits_or_inventory_gauges() {
+    let mut status = hud(Mode::Playing);
+    status.boss_shield = 75;
+    let baseline = DisplayState::from_hud(&status, 0, None);
+    let inventory = image(1, &baseline);
+    for lives in 0..=u8::MAX {
+        let expected = format!("LIFE{:2}", lives.min(99));
+        status.lives = lives;
+        let state = DisplayState::from_hud(&status, 0, None);
+        let actual = image(1, &state);
+        assert_text(&actual, 0, 2, expected.as_bytes(), 3);
+        for y in 0..21 {
+            assert_eq!(pixel(&actual, 23, y), pixel(&inventory, 23, y));
+            if !(2..7).contains(&y) {
+                for x in 0..24 {
+                    assert_eq!(pixel(&actual, x, y), pixel(&inventory, x, y));
+                }
+            }
+        }
+        for corner in [0, 2, 3] {
+            assert_eq!(image(corner, &state), image(corner, &baseline));
+        }
+    }
+}
+
+#[test]
+fn lives_changes_dirty_only_inventory_and_clear_the_old_tens_digit() {
+    let mut status = hud(Mode::Playing);
+    status.story_mode = true;
+    for (old, new) in [(99, 98), (10, 9), (3, 99)] {
+        status.lives = old;
+        let before = DisplayState::from_hud(&status, 0, None);
+        let mut published = image(1, &before);
+        status.lives = new;
+        let after = DisplayState::from_hud(&status, 0, None);
+        assert_eq!(after.changed_corners(Some(&before)), 2);
+        render_corner(1, &after, &mut published);
+        assert_eq!(published, image(1, &after));
+        assert_ne!(published, image(1, &before));
+        if new < 10 {
+            assert_text(&published, 16, 2, b" ", 3);
+        }
+    }
+    status.lives = 99;
+    let capped = DisplayState::from_hud(&status, 0, None);
+    for lives in [100, u8::MAX] {
+        status.lives = lives;
+        let same = DisplayState::from_hud(&status, 0, None);
+        assert_eq!(same, capped);
+        assert_eq!(same.changed_corners(Some(&capped)), 0);
+        assert_eq!(image(1, &same), image(1, &capped));
+    }
+}
+
+#[test]
 fn gauges_have_grey_empty_space_white_frames_and_status_colors() {
     for (shield_value, charge_value, boss_value) in [(0, 0, 1), (25, 128, 25), (100, 255, 100)] {
         let mut status = hud(Mode::Playing);
@@ -154,7 +212,7 @@ fn gauges_have_grey_empty_space_white_frames_and_status_colors() {
             }
         }
         assert_eq!(state.accent(2), if shield_value <= 25 { 10 } else { 13 });
-        assert_eq!(state.accent(1), 7);
+        assert_eq!(state.accent(1), 4);
         assert_eq!(state.accent(3), if charge_value == 255 { 7 } else { 3 });
     }
 }
@@ -169,6 +227,7 @@ fn unchanged_visible_fields_and_subpixel_gauge_changes_do_not_dirty_images() {
     status.roll_ticks = 10;
     status.victory_ticks = 20;
     status.boss_kind = 4;
+    status.story_mode = true;
     status.shield = 76;
     status.charge = 129;
     let unchanged = DisplayState::from_hud(&status, 16, None);
@@ -235,7 +294,9 @@ fn palette_thresholds_and_ready_blink_invalidate_only_their_corner() {
 #[test]
 fn fps_preserves_tenths_and_is_the_only_sprite_content_in_menu_modes() {
     for mode in [Mode::Title, Mode::Attract, Mode::Victory] {
-        let status = hud(mode);
+        let mut status = hud(mode);
+        status.story_mode = true;
+        status.lives = 99;
         let hidden = DisplayState::from_hud(&status, 0, None);
         assert_eq!(hidden.enabled_mask(), 0);
         assert_eq!(hidden.changed_corners(None), 0);

@@ -45,6 +45,20 @@ def layout(space):
 
 
 class CampaignTools(unittest.TestCase):
+    def test_encounter_cache_reads_follow_linked_addresses(self):
+        for first in (0x0600, 0x2e00):
+            symbols = dict(__segment0_start=first, __segment0_end=first + 512,
+                           __segment1_start=0x9700, __segment1_end=0x9900)
+            self.assertEqual(vice.segment_cache_addresses(symbols), (first, 0x9700))
+            for field in symbols:
+                missing = dict(symbols)
+                del missing[field]
+                with self.assertRaisesRegex(RuntimeError, "encounter cache"):
+                    vice.segment_cache_addresses(missing)
+            symbols["__segment0_end"] -= 1
+            with self.assertRaisesRegex(RuntimeError, "encounter cache 0"):
+                vice.segment_cache_addresses(symbols)
+
     def test_hit_feedback_flashes_gray_hull_facets_but_preserves_gray_shadows(self):
         def triangle(depth, color, flags=0):
             return dict(x=[10, 20, 15], y=[20, 20, 10], depth=depth,

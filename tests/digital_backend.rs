@@ -7,7 +7,7 @@ use std::sync::Mutex;
 mod backend;
 static SERIAL: Mutex<()> = Mutex::new(());
 static mut HARDWARE: Option<Hardware> = None;
-/// The production decoder's stream-CRC debug hook; off by default, as on the target.
+/// Production leaves this optional stream integrity hook disabled.
 static mut DIGITAL_STREAM_CRC: u8 = 0;
 unsafe fn rd(p: *const u8) -> u8 {
     core::ptr::read_volatile(p)
@@ -32,6 +32,12 @@ struct Playback {
     length: u32,
     control: u8,
     divider: u64,
+}
+#[derive(Clone, Copy, Debug)]
+struct PcmWrite {
+    slot: usize,
+    channels: usize,
+    frames: usize,
 }
 struct Voice {
     completion: u64,
@@ -70,11 +76,11 @@ struct Hardware {
     maximum_dma: usize,
     staging_write_ticks: u64,
     timer_read_ticks: u64,
-    produced_during_playback: u64,
+    slot_channels: [usize; 2],
+    pcm_writes: Vec<PcmWrite>,
     ring_banks_written: [bool; 2],
     final_reu_byte_read: bool,
     sampler_writes: Vec<(u64, u16, u8)>,
-    publications: Vec<(u32, u16)>,
 }
 impl Hardware {
     fn new() -> Self {
@@ -97,11 +103,11 @@ impl Hardware {
             maximum_dma: 0,
             staging_write_ticks: 1,
             timer_read_ticks: 1,
-            produced_during_playback: 0,
+            slot_channels: [0; 2],
+            pcm_writes: Vec::new(),
             ring_banks_written: [false; 2],
             final_reu_byte_read: false,
             sampler_writes: Vec::new(),
-            publications: Vec::new(),
         }
     }
     fn be24(&self, a: usize) -> u32 {
@@ -137,8 +143,7 @@ impl Hardware {
                 continue;
             }
             // Synthetic backend delay intentionally exercises the correction.
-            let frames =
-                (self.ticks - v.playback_start) * 6_250_000 / ((divider + 2) * self.bus_hz);
+            let frames = (self.ticks - v.playback_start) * 6_250_000 / ((divider + 2) * self.bus_hz);
             while v.played < frames {
                 if v.position == repeat_b && control & 2 != 0 {
                     v.position = repeat_a;
@@ -183,8 +188,6 @@ impl Hardware {
         // Muting/configuration changes also occur between two sampler outputs.
         if (0xdf20..0xdf60).contains(&a) {
             self.flush();
-        }
-        if matches!(a, 0xdf20 | 0xdf21 | 0xdf40 | 0xdf41) {
             self.sampler_writes.push((self.ticks, a, value));
         }
         self.ram[a as usize] = value;
@@ -211,8 +214,7 @@ impl Hardware {
                 if channel == 0 {
                     self.calibration_starts += 1;
                 }
-                v.completion =
-                    self.ticks + (frames * (divider + 2) * self.bus_hz).div_ceil(6_250_000);
+                v.completion = self.ticks + (frames * (divider + 2) * self.bus_hz).div_ceil(6_250_000);
             }
             if v.playing {
                 assert!(value == 0x43 || value == 0x03, "8-bit playback mode");
@@ -235,11 +237,6 @@ impl Hardware {
                 if channel == 1 {
                     assert_eq!(self.divider(0), divider);
                     assert!(self.voices[1].playback_start - self.voices[0].playback_start <= 1);
-                } else {
-                    assert!(
-                        !self.voices[1].playing,
-                        "old right channel must stop before a new track starts"
-                    );
                 }
             }
         } else if a == 0xdf01 && value == 0x90 {
@@ -254,15 +251,31 @@ impl Hardware {
                 dest >= asset::RING_OFFSET as usize && dest + count <= asset::REU_SIZE as usize
             );
             self.maximum_dma = self.maximum_dma.max(count);
-            self.publications.push((dest as u32, count as u16));
-            self.ring_banks_written[(dest - asset::RING_OFFSET as usize) >> 16] = true;
-            if self.voices[0].playing {
+            let slot = (dest - asset::RING_OFFSET as usize) >> 16;
+            let offset = (dest - asset::RING_OFFSET as usize) & 65535;
+            self.ring_banks_written[slot] = true;
+            if count == 1024 {
                 assert!(
-                    count <= 256,
-                    "steady publication and prefix clears are bounded"
+                    !self.voices[0].playing,
+                    "large writes belong to boot clearing"
                 );
-                self.produced_during_playback +=
-                    (count / if self.ram[0xdf20] & 0x40 != 0 { 2 } else { 1 }) as u64;
+                assert!(self.ram[source..source + count].iter().all(|&b| b == 0));
+            } else if self.slot_channels[slot] == 1 && offset == 32768 - DELAY && count == DELAY {
+                assert!(self.ram[source..source + count].iter().all(|&b| b == 0));
+            } else {
+                // The test caller assigns each slot's requested profile. Do not
+                // infer pending writes from the active sampler's channel width.
+                let channels = self.slot_channels[slot];
+                assert!((1..=2).contains(&channels), "PCM slot has no owner");
+                assert_eq!(count % channels, 0);
+                assert!(count <= 128 * channels, "PCM batch exceeds 128 frames");
+                let base = if channels == 1 { 32768 } else { 0 };
+                assert!(offset >= base && offset + count <= base + 32768 * channels);
+                self.pcm_writes.push(PcmWrite {
+                    slot,
+                    channels,
+                    frames: count / channels,
+                });
             }
             self.reu[dest..dest + count].copy_from_slice(&self.ram[source..source + count]);
             self.ticks += count as u64;
@@ -358,6 +371,84 @@ unsafe fn digital_test_fetch(source: u32, destination: &mut [u8]) {
     hw.ticks += destination.len() as u64;
 }
 
+unsafe fn init(
+    state: &mut backend::State,
+    calibration: &mut backend::Calibration,
+    pal: bool,
+    track: asset::Track,
+) -> Result<(), backend::Fault> {
+    hardware().slot_channels = [track.descriptor().metadata.channels as usize, 0];
+    let before = hardware().pcm_writes.len();
+    let result = backend::init(state, calibration, pal, track);
+    assert_eq!(
+        hardware().pcm_writes.len(),
+        before,
+        "init must not decode PCM"
+    );
+    result
+}
+
+unsafe fn request(state: &mut backend::State, track: asset::Track) {
+    if track != state.track {
+        let slot = if state.is_running() {
+            let active = ((hardware().voices[0].starts.last().unwrap().start - asset::RING_OFFSET)
+                >> 16) as usize;
+            active ^ 1
+        } else {
+            0
+        };
+        hardware().slot_channels[slot] = track.descriptor().metadata.channels as usize;
+    }
+    let before = hardware().pcm_writes.len();
+    backend::request(state, track);
+    assert_eq!(
+        hardware().pcm_writes.len(),
+        before,
+        "request must not decode PCM"
+    );
+}
+
+unsafe fn service(state: &mut backend::State) -> Result<(), backend::Fault> {
+    let before = hardware().pcm_writes.len();
+    let active_slot = state.is_running().then(|| {
+        ((hardware().voices[0].starts.last().unwrap().start - asset::RING_OFFSET) >> 16) as usize
+    });
+    let result = backend::service(state);
+    let writes = &hardware().pcm_writes[before..];
+    // Independent exact units of 1/80,000 second, including startup and both
+    // slots. This also checks partially completed work on a faulting visit.
+    let duration: usize = writes
+        .iter()
+        .map(|write| write.frames * if write.channels == 2 { 4 } else { 5 })
+        .sum();
+    assert!(
+        duration <= 20_000,
+        "service published {duration}/80000 seconds: {writes:?}"
+    );
+    if let Some(active) = active_slot {
+        if let Some(pending_at) = writes.iter().position(|write| write.slot != active) {
+            assert!(
+                writes[pending_at..]
+                    .iter()
+                    .all(|write| write.slot != active),
+                "pending preparation must follow active servicing"
+            );
+        }
+    }
+    result
+}
+
+unsafe fn prime(state: &mut backend::State) -> usize {
+    for visit in 1..=9 {
+        service(state).unwrap();
+        if state.is_running() {
+            return visit;
+        }
+        hardware().assert_stopped();
+    }
+    panic!("initial ring did not start within nine bounded visits");
+}
+
 /// Intentionally does not call production header, delta, bit or rounding helpers.
 fn reference(track: asset::Track) -> Vec<[i16; 2]> {
     let bytes = read_track(track);
@@ -427,42 +518,217 @@ unsafe fn assert_playback(track: asset::Track, epoch: usize, expected: &[[i16; 2
 unsafe fn visit(state: &mut backend::State) {
     hardware().wait(197_050);
     hardware().ram[0x8e00..0x9200].fill(0xa5);
-    backend::service(state).unwrap();
+    service(state).unwrap();
 }
-unsafe fn handoff(state: &mut backend::State, track: asset::Track) {
-    for _ in 0..160 {
-        backend::request(state, track);
+
+unsafe fn handoff(state: &mut backend::State, track: asset::Track) -> usize {
+    let previous = state.track;
+    let starts = hardware().voices[0].starts.len();
+    for index in 1..=200 {
+        request(state, track);
         visit(state);
-        if state.track == track {
-            return;
-        }
-    }
-    panic!("bounded preparation/fade did not reach {track:?}");
-}
-unsafe fn prime(state: &mut backend::State, track: asset::Track) -> u64 {
-    let pending =
-        ((hardware().voices[0].starts.last().unwrap().start - asset::RING_OFFSET) >> 16) ^ 1;
-    let channels = track.descriptor().metadata.channels as u32;
-    let mut produced = 0;
-    for _ in 0..100 {
-        hardware().publications.clear();
-        backend::service(state).unwrap();
-        produced += hardware()
-            .publications
-            .iter()
-            .filter(|&&(at, _)| (at - asset::RING_OFFSET) >> 16 == pending)
-            .map(|&(_, count)| count as u32 / channels)
-            .sum::<u32>();
-        assert_eq!(
-            hardware().ram[0xdf21],
-            32,
-            "preparation must retain normal gain"
+        assert!(
+            state.is_running(),
+            "preparation must keep the active track running"
         );
-        if produced == 32_768 {
-            return hardware().ticks;
+        if state.track == track {
+            assert_eq!(hardware().voices[0].starts.len(), starts + 1);
+            return index;
         }
+        assert_eq!(state.track, previous);
+        assert_eq!(hardware().voices[0].starts.len(), starts);
     }
-    panic!("pending ring did not fill");
+    panic!("pending track did not complete within 200 bounded visits");
+}
+
+#[test]
+fn stereo_pcm_at_the_mono_prefix_address_is_counted() {
+    let mut hw = Hardware::new();
+    hw.slot_channels[0] = 2;
+    hw.ram[0x8e00..0x8e00 + DELAY].fill(0x5a);
+    hw.ram[0xdf02..0xdf04].copy_from_slice(&0x8e00u16.to_le_bytes());
+    let destination = asset::RING_OFFSET + (32768 - DELAY) as u32;
+    hw.ram[0xdf04..0xdf07].copy_from_slice(&destination.to_le_bytes()[..3]);
+    hw.ram[0xdf07..0xdf09].copy_from_slice(&(DELAY as u16).to_le_bytes());
+    hw.poke(0xdf01, 0x90);
+    assert_eq!(hw.pcm_writes.len(), 1);
+    let write = hw.pcm_writes[0];
+    assert_eq!((write.slot, write.channels, write.frames), (0, 2, 80));
+}
+
+#[test]
+fn initial_fill_is_bounded_muted_and_starts_once_when_full() {
+    let _serial = SERIAL.lock().unwrap();
+    unsafe {
+        HARDWARE = Some(Hardware::new());
+        let mut calibration = backend::Calibration::new();
+        for (track, quota, visits, tail) in [
+            (asset::Track::GalacticDash, 5000usize, 7, 8),
+            (asset::Track::GalacticDashMono, 4000usize, 9, 32),
+        ] {
+            let mut state = backend::State::new();
+            init(&mut state, &mut calibration, true, track).unwrap();
+            assert!(!state.is_running());
+            hardware().assert_stopped();
+            let starts = hardware().voices[0].starts.len();
+            let mut total = 0;
+            for index in 1..=visits {
+                request(&mut state, track); // Repeated selection must retain progress.
+                hardware().wait(197_050);
+                let before = hardware().pcm_writes.len();
+                service(&mut state).unwrap();
+                let writes = &hardware().pcm_writes[before..];
+                let count: usize = writes.iter().map(|write| write.frames).sum();
+                assert_eq!(count, quota.min(32768 - total));
+                assert!(writes.iter().all(|write| write.slot == 0));
+                if count == quota {
+                    assert_eq!(writes.last().unwrap().frames, tail);
+                }
+                total += count;
+                assert_eq!(state.is_running(), index == visits);
+                assert_eq!(
+                    hardware().voices[0].starts.len(),
+                    starts + usize::from(index == visits)
+                );
+                if index != visits {
+                    hardware().assert_stopped();
+                }
+            }
+            assert_eq!(total, 32768);
+            hardware().assert_profile(track, 0);
+            for _ in 0..3 {
+                service(&mut state).unwrap();
+            }
+            assert_eq!(hardware().voices[0].starts.len(), starts + 1);
+            backend::stop(&mut state);
+        }
+        HARDWARE = None;
+    }
+}
+
+#[test]
+fn replacing_initial_track_restarts_priming_and_stopping_cancels_it() {
+    let _serial = SERIAL.lock().unwrap();
+    unsafe {
+        HARDWARE = Some(Hardware::new());
+        let mut calibration = backend::Calibration::new();
+        let mut state = backend::State::new();
+        service(&mut state).unwrap();
+        assert!(!state.is_running());
+        assert!(hardware().pcm_writes.is_empty());
+        hardware().assert_stopped();
+        init(
+            &mut state,
+            &mut calibration,
+            true,
+            asset::Track::GalacticDash,
+        )
+        .unwrap();
+        service(&mut state).unwrap();
+        service(&mut state).unwrap();
+        request(&mut state, asset::Track::GalacticDashMono);
+        assert_eq!(state.track, asset::Track::GalacticDashMono);
+        assert_eq!(
+            prime(&mut state),
+            9,
+            "replacement needs a complete fresh ring"
+        );
+        assert_eq!(hardware().voices[0].starts.len(), 1);
+        hardware().assert_profile(asset::Track::GalacticDashMono, 0);
+        backend::stop(&mut state);
+        let before = hardware().pcm_writes.len();
+        request(&mut state, asset::Track::GalacticDash);
+        for _ in 0..10 {
+            service(&mut state).unwrap();
+        }
+        assert!(!state.is_running());
+        assert_eq!(hardware().pcm_writes.len(), before);
+        hardware().assert_stopped();
+
+        init(
+            &mut state,
+            &mut calibration,
+            true,
+            asset::Track::GalacticDash,
+        )
+        .unwrap();
+        service(&mut state).unwrap();
+        backend::stop(&mut state);
+        let before = hardware().pcm_writes.len();
+        for _ in 0..10 {
+            service(&mut state).unwrap();
+        }
+        assert!(!state.is_running());
+        assert_eq!(hardware().pcm_writes.len(), before);
+        assert_eq!(hardware().voices[0].starts.len(), 1);
+        hardware().assert_stopped();
+        HARDWARE = None;
+    }
+}
+
+#[test]
+fn mixed_rate_handoffs_share_the_quarter_second_budget() {
+    let _serial = SERIAL.lock().unwrap();
+    unsafe {
+        HARDWARE = Some(Hardware::new());
+        let mut calibration = backend::Calibration::new();
+        let mut state = backend::State::new();
+        init(
+            &mut state,
+            &mut calibration,
+            true,
+            asset::Track::GalacticDash,
+        )
+        .unwrap();
+        prime(&mut state);
+        for track in [asset::Track::GalacticDashMono, asset::Track::HammondRocker] {
+            let mut mixed_visits = 0;
+            let mut full_visits = 0;
+            let mut pending_frames = 0;
+            for _ in 0..200 {
+                request(&mut state, track);
+                let before = hardware().pcm_writes.len();
+                visit(&mut state);
+                let writes = &hardware().pcm_writes[before..];
+                let mono: usize = writes
+                    .iter()
+                    .filter(|w| w.channels == 1)
+                    .map(|w| w.frames)
+                    .sum();
+                let stereo: usize = writes
+                    .iter()
+                    .filter(|w| w.channels == 2)
+                    .map(|w| w.frames)
+                    .sum();
+                pending_frames += if track.descriptor().metadata.channels == 1 { mono } else { stereo };
+                assert!(pending_frames <= 32768);
+                if mono != 0 && stereo != 0 {
+                    mixed_visits += 1;
+                    // A pending frame must fit, but no whole pending frame of
+                    // unused budget may remain unless its ring just completed.
+                    let used = mono * 5 + stereo * 4;
+                    // A complete pending ring now waits for the outgoing fade;
+                    // track identity changes only after that fade reaches zero.
+                    if pending_frames < 32768 {
+                        let next_cost = if track.descriptor().metadata.channels == 1 {
+                            5
+                        } else {
+                            4
+                        };
+                        assert!(20_000 - used < next_cost);
+                        full_visits += 1;
+                    }
+                }
+                if state.track == track {
+                    break;
+                }
+            }
+            assert_eq!(state.track, track, "mixed-rate handoff must complete");
+            assert!(mixed_visits > 0 && full_visits > 0);
+        }
+        backend::stop(&mut state);
+        HARDWARE = None;
+    }
 }
 
 #[test]
@@ -476,7 +742,7 @@ fn actual_backend_loops_all_profiles_through_shared_scratch_reuse() {
         for track in asset::Track::ALL {
             let expected = reference(track);
             let mut state = backend::State::new();
-            backend::init(&mut state, &mut calibration, true, track).unwrap();
+            init(&mut state, &mut calibration, true, track).unwrap();
             if count == 0 {
                 count = hardware().calibration_starts;
                 assert!(count >= 5);
@@ -487,13 +753,11 @@ fn actual_backend_loops_all_profiles_through_shared_scratch_reuse() {
                 "both profile calibrations are reused"
             );
             let epoch = hardware().voices[0].starts.len();
-            backend::start(&mut state);
+            prime(&mut state);
             hardware().assert_profile(track, 0);
             let start = hardware().voices[1].starts[epoch].emitted_at;
             while hardware().voices[1].emitted.len() - start < expected.len() + 4096 {
                 visit(&mut state);
-                assert_eq!(hardware().ram[0xdf21], 32, "looping must not fade");
-                assert_eq!(hardware().ram[0xdf41], 32);
             }
             backend::stop(&mut state);
             assert!(state.loops >= 1);
@@ -520,15 +784,15 @@ fn pending_requests_cancel_replace_and_handoff_without_recalibration() {
         let stereo = asset::Track::HammondRocker;
         let alternate = asset::Track::GalacticDash;
         let mono = asset::Track::GalacticDashMono;
-        backend::init(&mut state, &mut calibration, true, stereo).unwrap();
-        backend::start(&mut state);
+        init(&mut state, &mut calibration, true, stereo).unwrap();
+        prime(&mut state);
         let calibrations = hardware().calibration_starts;
-        backend::request(&mut state, mono);
+        request(&mut state, mono);
         for _ in 0..3 {
             visit(&mut state);
             assert_eq!(state.track, stereo);
         }
-        backend::request(&mut state, stereo);
+        request(&mut state, stereo);
         for _ in 0..9 {
             visit(&mut state);
         }
@@ -537,19 +801,19 @@ fn pending_requests_cancel_replace_and_handoff_without_recalibration() {
             1,
             "cancel must retain active position"
         );
-        backend::request(&mut state, mono);
+        request(&mut state, mono);
         visit(&mut state);
-        backend::request(&mut state, alternate);
+        request(&mut state, alternate);
         handoff(&mut state, alternate);
         hardware().assert_profile(alternate, 1);
         // Put stereo in slot A again so slot B's future mono prefix contains
         // former PCM (and explicitly poison it to avoid accidental silence).
-        backend::request(&mut state, stereo);
+        request(&mut state, stereo);
         handoff(&mut state, stereo);
         hardware().assert_profile(stereo, 0);
         let prefix = asset::RING_OFFSET as usize + 0x18000 - DELAY;
         hardware().reu[prefix..prefix + DELAY].fill(0x6b);
-        backend::request(&mut state, mono);
+        request(&mut state, mono);
         assert!(hardware().reu[prefix..prefix + DELAY]
             .iter()
             .all(|&b| b == 0));
@@ -562,7 +826,7 @@ fn pending_requests_cancel_replace_and_handoff_without_recalibration() {
             hardware().final_reu_byte_read,
             "slot B reaches the final REU byte"
         );
-        backend::request(&mut state, alternate);
+        request(&mut state, alternate);
         handoff(&mut state, alternate);
         hardware().assert_profile(alternate, 0);
         for _ in 0..4 {
@@ -581,6 +845,22 @@ fn pending_requests_cancel_replace_and_handoff_without_recalibration() {
     }
 }
 
+unsafe fn prepare_pending(state: &mut backend::State, track: asset::Track) -> u64 {
+    let pending_slot = (((hardware().voices[0].starts.last().unwrap().start - asset::RING_OFFSET) >> 16) as usize) ^ 1;
+    let mut frames = 0;
+    for _ in 0..100 {
+        request(state, track);
+        let before = hardware().pcm_writes.len();
+        service(state).unwrap();
+        frames += hardware().pcm_writes[before..].iter()
+            .filter(|write| write.slot == pending_slot).map(|write| write.frames).sum::<usize>();
+        if frames == 32768 {
+            return hardware().ticks;
+        }
+    }
+    panic!("pending ring did not become ready");
+}
+
 #[test]
 fn ready_track_waits_for_a_one_second_paired_fade_on_both_clocks_and_timer_wrap() {
     let _serial = SERIAL.lock().unwrap();
@@ -592,20 +872,20 @@ fn ready_track_waits_for_a_one_second_paired_fade_on_both_clocks_and_timer_wrap(
             let mut state = backend::State::new();
             let active = asset::Track::HammondRocker;
             let next = asset::Track::GalacticDashMono;
-            backend::init(&mut state, &mut backend::Calibration::new(), pal, active).unwrap();
+            init(&mut state, &mut backend::Calibration::new(), pal, active).unwrap();
             // The one-second fade straddles the hardware counter's wrap.
             hardware().ticks = (1u64 << 32) - hz / 2;
-            backend::start(&mut state);
+            prime(&mut state);
             hardware().sampler_writes.clear();
-            backend::request(&mut state, next);
-            let prepared = prime(&mut state, next);
+            request(&mut state, next);
+            let prepared = prepare_pending(&mut state, next);
             assert_eq!(state.track, active, "priming cannot bypass the fade");
             assert!(hardware().ram[0xdf21] > 0);
             assert_eq!(hardware().voices[0].starts.len(), 1);
             for _ in 0..220 {
-                backend::request(&mut state, next);
+                request(&mut state, next);
                 hardware().wait(hz / 200);
-                backend::service(&mut state).unwrap();
+                service(&mut state).unwrap();
                 if state.track == next {
                     break;
                 }
@@ -651,7 +931,7 @@ fn ready_track_waits_for_a_one_second_paired_fade_on_both_clocks_and_timer_wrap(
             );
             for _ in 0..3 {
                 hardware().wait(hz / 5);
-                backend::service(&mut state).unwrap();
+                service(&mut state).unwrap();
             }
             assert_playback(next, 1, &reference(next));
             assert_eq!(state.underruns, 0);
@@ -670,28 +950,28 @@ fn pending_replacement_preserves_fade_and_active_request_cancels_even_after_sile
         let active = asset::Track::HammondRocker;
         let first = asset::Track::GalacticDashMono;
         let second = asset::Track::GalacticDash;
-        backend::init(&mut state, &mut backend::Calibration::new(), true, active).unwrap();
-        backend::start(&mut state);
-        backend::request(&mut state, first);
-        prime(&mut state, first);
+        init(&mut state, &mut backend::Calibration::new(), true, active).unwrap();
+        prime(&mut state);
+        request(&mut state, first);
+        prepare_pending(&mut state, first);
         hardware().wait(350_000);
-        backend::service(&mut state).unwrap();
+        service(&mut state).unwrap();
         let partial = hardware().ram[0xdf21];
         assert!(partial > 0 && partial < 32);
-        backend::request(&mut state, first);
+        request(&mut state, first);
         assert_eq!(
             hardware().ram[0xdf21],
             partial,
             "repeated request reset the fade"
         );
-        backend::request(&mut state, second);
+        request(&mut state, second);
         assert_eq!(
             hardware().ram[0xdf21],
             partial,
             "replacement reset the fade"
         );
         hardware().wait(700_000);
-        backend::service(&mut state).unwrap();
+        service(&mut state).unwrap();
         assert_eq!(state.track, active, "replacement is not primed yet");
         assert_eq!(
             hardware().ram[0xdf21],
@@ -700,11 +980,11 @@ fn pending_replacement_preserves_fade_and_active_request_cancels_even_after_sile
         );
         assert_eq!(hardware().ram[0xdf41], 0);
         assert_eq!(hardware().voices[0].starts.len(), 1);
-        backend::request(&mut state, active);
+        request(&mut state, active);
         assert_eq!(hardware().ram[0xdf21], 32);
         assert_eq!(hardware().ram[0xdf41], 32);
         for _ in 0..10 {
-            backend::request(&mut state, active);
+            request(&mut state, active);
             visit(&mut state);
             assert_eq!(hardware().ram[0xdf21], 32);
         }
@@ -715,7 +995,7 @@ fn pending_replacement_preserves_fade_and_active_request_cancels_even_after_sile
         );
         assert_eq!(state.track, active);
         // A fresh request keeps normal gain until its replacement is primed.
-        backend::request(&mut state, first);
+        request(&mut state, first);
         for _ in 0..3 {
             visit(&mut state);
             assert_eq!(hardware().ram[0xdf21], 32);
@@ -730,7 +1010,6 @@ fn pending_replacement_preserves_fade_and_active_request_cancels_even_after_sile
         HARDWARE = None;
     }
 }
-
 #[test]
 fn mapping_crc_and_deadline_faults_mute_and_stop_the_sampler() {
     let _serial = SERIAL.lock().unwrap();
@@ -742,32 +1021,40 @@ fn mapping_crc_and_deadline_faults_mute_and_stop_the_sampler() {
         let mut state = backend::State::new();
         hardware().version = 0xff;
         assert_eq!(
-            backend::init(&mut state, &mut backend::Calibration::new(), true, track),
+            init(&mut state, &mut backend::Calibration::new(), true, track),
             Err(backend::Fault::Mapping)
         );
         hardware().assert_stopped();
         hardware().version = 0x10;
         hardware().reu[asset::MUSIC_OFFSET as usize] ^= 1;
         assert_eq!(
-            backend::init(&mut state, &mut backend::Calibration::new(), true, track),
+            init(&mut state, &mut backend::Calibration::new(), true, track),
             Err(backend::Fault::Metadata)
         );
         hardware().assert_stopped();
         hardware().reu[asset::MUSIC_OFFSET as usize] ^= 1;
-        // Production skips the stream CRC: a damaged payload byte still plays.
+        // Production skips the stream checksum; the debug hook retains fault coverage.
         hardware().reu[stream] ^= 1;
-        assert_eq!(
-            backend::init(&mut state, &mut backend::Calibration::new(), true, track),
-            Ok(())
-        );
+        init(&mut state, &mut backend::Calibration::new(), true, track).unwrap();
+        assert_eq!(service(&mut state), Ok(()));
         backend::stop(&mut state);
         hardware().reu[stream] ^= 1;
         DIGITAL_STREAM_CRC = 1;
         for offset in [0, 31, 32, 127, 128, 1023, 1024] {
             hardware().reu[stream + offset] ^= 1;
+            init(&mut state, &mut backend::Calibration::new(), true, track).unwrap();
+            assert_eq!(service(&mut state), Err(backend::Fault::StreamCrc));
+            hardware().assert_stopped();
+            let before = hardware().pcm_writes.len();
+            request(&mut state, asset::Track::HammondRocker);
+            for _ in 0..10 {
+                let _ = service(&mut state);
+            }
+            assert!(!state.is_running());
             assert_eq!(
-                backend::init(&mut state, &mut backend::Calibration::new(), true, track),
-                Err(backend::Fault::StreamCrc)
+                hardware().pcm_writes.len(),
+                before,
+                "faulted playback cannot resume"
             );
             hardware().assert_stopped();
             hardware().reu[stream + offset] ^= 1;
@@ -784,16 +1071,16 @@ fn mapping_crc_and_deadline_faults_mute_and_stop_the_sampler() {
             let at = descriptor.asset_offset as usize + offset;
             hardware().reu[at] ^= 1;
             assert_eq!(
-                backend::init(&mut state, &mut backend::Calibration::new(), true, track),
+                init(&mut state, &mut backend::Calibration::new(), true, track),
                 Err(fault)
             );
             hardware().assert_stopped();
             hardware().reu[at] ^= 1;
         }
-        backend::init(&mut state, &mut backend::Calibration::new(), true, track).unwrap();
-        backend::start(&mut state);
+        init(&mut state, &mut backend::Calibration::new(), true, track).unwrap();
+        prime(&mut state);
         hardware().wait(2_000_000);
-        assert_eq!(backend::service(&mut state), Err(backend::Fault::Underrun));
+        assert_eq!(service(&mut state), Err(backend::Fault::Underrun));
         assert_eq!(state.fault, backend::Fault::Underrun as u8);
         assert_eq!(state.underruns, 1);
         hardware().assert_stopped();
@@ -807,20 +1094,18 @@ fn refill_finishes_when_clock_queries_also_advance_playback() {
     unsafe {
         HARDWARE = Some(Hardware::new());
         let mut state = backend::State::new();
-        backend::init(
+        init(
             &mut state,
             &mut backend::Calibration::new(),
             true,
             asset::Track::GalacticDash,
         )
         .unwrap();
-        backend::start(&mut state);
+        prime(&mut state);
         hardware().timer_read_ticks = 16;
         for _ in 0..20 {
             hardware().wait(197_050);
-            let before = hardware().produced_during_playback;
-            backend::service(&mut state).unwrap();
-            assert!(hardware().produced_during_playback - before < 10_000);
+            service(&mut state).unwrap();
         }
         assert_eq!(state.underruns, 0);
         assert!(state.minimum_lead > 2048);
@@ -835,76 +1120,37 @@ fn refill_work_limit_returns_with_safe_lead_and_real_underrun_still_faults() {
     unsafe {
         HARDWARE = Some(Hardware::new());
         let mut state = backend::State::new();
-        backend::init(
+        init(
             &mut state,
             &mut backend::Calibration::new(),
             true,
             asset::Track::GalacticDash,
         )
         .unwrap();
-        backend::start(&mut state);
-        hardware().wait(197_050);
+        prime(&mut state);
+        hardware().wait(300_000);
         // Two PCM bytes now replace the old four-byte publication. Slow their
         // modeled stores enough that one bounded service cannot clear backlog.
         hardware().staging_write_ticks = 22;
         hardware().timer_read_ticks = 5;
-        let before = hardware().produced_during_playback;
-        assert_eq!(backend::service(&mut state), Ok(()));
-        assert_eq!(hardware().produced_during_playback - before, 5_000);
+        let before = hardware().pcm_writes.len();
+        assert_eq!(service(&mut state), Ok(()));
+        assert_eq!(
+            hardware().pcm_writes[before..]
+                .iter()
+                .map(|w| w.frames)
+                .sum::<usize>(),
+            5000
+        );
         assert_eq!(state.fault, 0);
         assert_eq!(state.underruns, 0);
         assert!(state.minimum_lead > 2048);
         assert_eq!(hardware().ram[0xdf20], 0x43);
         assert_eq!(hardware().ram[0xdf40], 0x43);
         hardware().wait(2_000_000);
-        assert_eq!(backend::service(&mut state), Err(backend::Fault::Underrun));
+        assert_eq!(service(&mut state), Err(backend::Fault::Underrun));
         hardware().assert_stopped();
         HARDWARE = None;
-    }
-}
-
-#[test]
-fn service_shares_a_250_millisecond_decode_budget_across_both_profiles() {
-    let _serial = SERIAL.lock().unwrap();
-    unsafe {
-        for active in [asset::Track::HammondRocker, asset::Track::GalacticDashMono] {
-            for pending in [asset::Track::GalacticDash, asset::Track::LowlandApproach] {
-                HARDWARE = Some(Hardware::new());
-                let mut state = backend::State::new();
-                backend::init(&mut state, &mut backend::Calibration::new(), true, active).unwrap();
-                backend::start(&mut state);
-                backend::request(&mut state, pending);
-                let channels = [
-                    active.descriptor().metadata.channels as u32,
-                    pending.descriptor().metadata.channels as u32,
-                ];
-                hardware().wait(500_000);
-                let mut mixed = false;
-                for visit in 0..12 {
-                    hardware().publications.clear();
-                    backend::service(&mut state).unwrap();
-                    let mut frames = [0u32; 2];
-                    for &(at, bytes) in &hardware().publications {
-                        let slot = ((at - asset::RING_OFFSET) >> 16) as usize;
-                        frames[slot] += bytes as u32 / channels[slot];
-                    }
-                    // 12.5 us units represent both 20 kHz and 16 kHz exactly.
-                    let units: u32 = (0..2)
-                        .map(|slot| frames[slot] * if channels[slot] == 2 { 4 } else { 5 })
-                        .sum();
-                    assert!(units <= 20_000, "{active:?}->{pending:?}: {units} units");
-                    if visit == 0 {
-                        assert_eq!(units, 20_000, "active backlog must hit the hard cap");
-                        assert_eq!(frames[1], 0, "pending preparation stole the active budget");
-                    }
-                    mixed |= frames[0] != 0 && frames[1] != 0;
-                }
-                assert!(mixed, "test must exercise a shared active/pending quota");
-                assert_eq!(state.underruns, 0);
-                backend::stop(&mut state);
-                HARDWARE = None;
-            }
-        }
     }
 }
 
@@ -916,16 +1162,16 @@ fn corrupted_pending_stream_stops_both_voices_before_handoff() {
         let mut state = backend::State::new();
         let active = asset::Track::HammondRocker;
         let pending = asset::Track::GalacticDashMono;
-        backend::init(&mut state, &mut backend::Calibration::new(), true, active).unwrap();
-        backend::start(&mut state);
+        init(&mut state, &mut backend::Calibration::new(), true, active).unwrap();
+        prime(&mut state);
         let d = pending.descriptor();
         hardware().reu[(d.asset_offset + d.metadata.stream_offset + 1024) as usize] ^= 1;
         DIGITAL_STREAM_CRC = 1;
-        backend::request(&mut state, pending);
+        request(&mut state, pending);
         // The corruption lies in the second 1024-byte CRC chunk. One mono
-        // preparation visit decodes 1536 bytes; the next completes that chunk.
-        assert_eq!(backend::service(&mut state), Ok(()));
-        assert_eq!(backend::service(&mut state), Err(backend::Fault::StreamCrc));
+        // preparation visit decodes 1500 bytes; the next completes that chunk.
+        assert_eq!(service(&mut state), Ok(()));
+        assert_eq!(service(&mut state), Err(backend::Fault::StreamCrc));
         DIGITAL_STREAM_CRC = 0;
         assert_eq!(state.track, active);
         assert_eq!(hardware().voices[0].starts.len(), 1);

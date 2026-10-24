@@ -110,11 +110,11 @@ class DigitalCatalogTests(unittest.TestCase):
         directory = catalog['directory']
         cue_at = 16 + 16 * len(catalog['tracks'])
         stage_at = cue_at + len(digital.CUES)
-        self.assertEqual(directory[:8], b'DMC1' + bytes((2, 9, 21, 16)))
-        self.assertEqual(struct.unpack_from('<H', directory, 8)[0], 208)
+        self.assertEqual(directory[:8], b'DMC1' + bytes((2, 10, 21, 16)))
+        self.assertEqual(struct.unpack_from('<H', directory, 8)[0], 224)
         self.assertEqual(directory[10:14], bytes((18, 0, 0, 0)))
         self.assertEqual(list(directory[cue_at:stage_at]), catalog['cues'])
-        self.assertEqual(list(directory[stage_at:stage_at + 18]), [3, 4, 5, 6, 7, 8] + [255] * 12)
+        self.assertEqual(list(directory[stage_at:stage_at + 18]), [3, 4, 5, 6, 7, 8, 9] + [255] * 11)
         self.assertFalse(any(directory[stage_at + 18:]))
         unsigned = bytearray(directory)
         unsigned[14:16] = b'\0\0'
@@ -125,7 +125,7 @@ class DigitalCatalogTests(unittest.TestCase):
             reu[track['offset']:track['end']] = track['blob']
         with patch.object(digital, 'load_catalog', return_value=catalog):
             digital.validate_digital_payload(reu)
-            for offset in (4, 10, 11, 12, 13, 14, stage_at, stage_at + 6, len(directory) - 1):
+            for offset in (4, 10, 11, 12, 13, 14, stage_at, stage_at + 6, stage_at + 7, len(directory) - 1):
                 with self.subTest(offset=offset):
                     reu[digital.DIGITAL_OFFSET + offset] ^= 1
                     with self.assertRaisesRegex(AssertionError, 'directory mismatch'):
