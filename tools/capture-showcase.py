@@ -68,9 +68,43 @@ SCENES = (
     dict(name="title-outro", label="H.A.V.O.C.", stage=None, local=0, seconds=8),
     dict(name="iron-canyon", label="Iron Canyon", stage=2, local=625, seconds=6, gallery=True),
 )
+README_TEASER = (
+    ("title", 4), ("lowlands", 12), ("crystal-cave", 12), ("iron-canyon", 12),
+    ("foundry-belt", 12), ("storm-front", 12), ("orbital-ascent", 10),
+    ("asteroid-belt", 4), ("shattered-moon", 4), ("space-carrier", 4),
+    ("title-outro", 5.2),
+)
+# Scenic aim stays put while enemies cross the view. Avoidance may temporarily
+# override it, without dragging the camera after every newly selected enemy.
+SCENIC_TARGETS = {
+    "lowlands": (0, 0), "crystal-cave": (-15, 0), "iron-canyon": (15, -10),
+    "foundry-belt": (-15, -10), "storm-front": (0, 15),
+    "shattered-moon": (0, -20), "space-carrier": (0, 20),
+}
 BUS_HZ = {"pal": 985248, "ntsc": 1022727}
 PREROLL = 2.0
 POSTROLL = 0.30
+
+
+def selected_scenes(preset=None, names=None):
+    """Return independent scene descriptions, preserving the legacy default."""
+    by_name = {scene["name"]: scene for scene in SCENES}
+    if preset == "readme-teaser":
+        scenes = [dict(by_name[name], seconds=seconds, gallery=False,
+                       smooth_flight=True) for name, seconds in README_TEASER]
+        # Let the opening formations arrive naturally instead of catching up
+        # several authored spawns immediately after seeding the first stage.
+        next(scene for scene in scenes if scene["name"] == "lowlands")["local"] = 0
+    elif preset is None:
+        scenes = [dict(scene) for scene in SCENES]
+    else:
+        raise ValueError(f"Unknown showcase preset: {preset}")
+    if names:
+        missing = set(names) - {scene["name"] for scene in scenes}
+        if missing:
+            raise ValueError(f"Scenes are not in the selected preset: {', '.join(sorted(missing))}")
+        scenes = [scene for scene in scenes if scene["name"] in names]
+    return scenes
 
 
 def json_write(path, value):
@@ -85,7 +119,7 @@ def sha256(path):
     return result.hexdigest()
 
 
-def wav_metrics(path, trim_start, duration):
+def wav_metrics(path, trim_start, duration, allow_silence=False):
     """Validate only the retained mix, streaming bounded PCM chunks."""
     with wave.open(str(path), "rb") as stream:
         channels, rate, width = stream.getnchannels(), stream.getframerate(), stream.getsampwidth()
@@ -113,13 +147,24 @@ def wav_metrics(path, trim_start, duration):
             remaining -= wanted
         for channel in metrics:
             channel["rms"] = math.sqrt(channel.pop("square_sum") / count)
-            if channel["rms"] < 1:
+            channel["silent"] = channel["rms"] < 1
+            if channel["silent"] and not allow_silence:
                 raise RuntimeError("A retained stereo channel is silent")
             if channel["clipping_samples"]:
                 raise RuntimeError("Clipped native stereo mix")
     return dict(path=path.name, sample_rate=rate, channels=channels, sample_width=width,
                 duration_seconds=total/rate, sample_frames=total,
-                retained_channels=metrics, sha256=sha256(path))
+                retained_channels=metrics, silence_allowed=allow_silence,
+                sha256=sha256(path))
+
+
+def validate_sfx_activity(audio, activity, expect_effects):
+    """Silence is natural between effects, but must not hide a broken mix."""
+    gates = sum(value.get("gate_on", 0) for value in activity.values() if isinstance(value, dict))
+    if expect_effects and not gates:
+        raise RuntimeError("Combat take has no retained SID effect gates")
+    if (expect_effects or gates) and all(channel["rms"] < 1 for channel in audio["retained_channels"]):
+        raise RuntimeError("SID effect activity has no audible retained waveform")
 
 
 def pixels(native, background, sprites=None):
@@ -154,7 +199,54 @@ def steering(position, velocity, target):
     return 1 if error > 5 else -1 if error < -5 else 0
 
 
-def showcase_input(state, package, previous=None, target=None):
+class SmoothPilot:
+    """Host-side input memory only; never modifies the native game state."""
+    HOLD_TICKS = 50
+    REPRESS_GAP_TICKS = 27  # Strictly beyond the 500 ms roll gesture window.
+
+    def __init__(self):
+        self.destination = None
+        self.destination_tick = 0
+        self.commands = [0, 0]
+        self.last_press = {-1: None, 1: None}
+        self.input_delay_ticks = 0
+
+    @staticmethod
+    def steer(position, velocity, target, held):
+        error = target - position - velocity * 10
+        # A wider engage threshold and a smaller release threshold prevent
+        # repeated tiny corrections from continually rocking the hull.
+        if held > 0 and error > 2:
+            return 1
+        if held < 0 and error < -2:
+            return -1
+        return 1 if error > 10 else -1 if error < -10 else 0
+
+    @classmethod
+    def horizontal(cls, command, held, presses, tick):
+        if command and command != held:
+            previous = presses[command]
+            if previous is not None and ((tick - previous) & 0xffff) < cls.REPRESS_GAP_TICKS:
+                return 0
+            presses[command] = tick
+        return command
+
+    def choose(self, choices, score, tick):
+        if self.destination is not None:
+            choices = choices + [self.destination]
+        selected = min(choices, key=score)
+        # Keep a safe route through a formation instead of alternating between
+        # equally clear gaps. A new collision risk overrides this immediately.
+        if (self.destination is not None
+                and ((tick - self.destination_tick) & 0xffff) < self.HOLD_TICKS
+                and score(self.destination)[0] <= score(selected)[0]):
+            selected = self.destination
+        if selected != self.destination:
+            self.destination, self.destination_tick = selected, tick
+        return selected
+
+
+def showcase_input(state, package, previous=None, target=None, controller=None):
     """Choose physical joystick input; prediction never changes native state.
 
     The campaign pilot aims well but only avoids scenery. A showcase also needs
@@ -170,7 +262,16 @@ def showcase_input(state, package, previous=None, target=None):
     velocity = [value / 256 for value in flight.get("vel", (0, 0))]
     horizon = 75  # 1.5 seconds of simulation, independent of rendering speed.
     threats = [[] for _ in range(horizon)]
+    imminent_attacks = [[] for _ in range(horizon)]
     elapsed = ((state["ticks"] - previous["ticks"]) & 0xffff) if previous else 0
+    # At frame_complete, GAME still describes the simulation preceding the
+    # rendered frame. Its already-sampled joystick input is consumed by the
+    # next catch-up; newly issued input only affects the following frame.
+    # Forecast that pending interval, and hold future commands for a render
+    # interval instead of pretending the host can steer every 20 ms tick.
+    cadence = max(1, min(15, elapsed if 0 < elapsed <= 25 else 6)) if controller else 1
+    if controller:
+        controller.input_delay_ticks = cadence
     old_actors = previous["actors"] if previous and 0 < elapsed <= 25 else []
     for index, actor in enumerate(state["actors"]):
         kind, pos = actor["kind"], actor["pos"]
@@ -193,6 +294,22 @@ def showcase_input(state, package, previous=None, target=None):
                 vx = (pos["x"] - old["pos"]["x"]) / elapsed
                 vy = (pos["y"] - old["pos"]["y"]) / elapsed
         speed = max(1, actor.get("approach_speed", 8))
+        if controller and kind in (1, 2, 3) and state.get("stage_info", {}).get("enemy_profile") == 0:
+            # Lowland patrols can fire only eight ticks before crossing the
+            # player. Waiting to observe that bullet is too late at native
+            # rendering cadence. Anticipate their authored 65-tick rhythm,
+            # aiming the hypothetical shot at each candidate flight path.
+            for future in range(1, min(horizon, cadence * 3) + 1):
+                age = actor["age"] + future
+                z = pos["z"] - speed * future
+                if (age + 17 * index) % 65 or not 320 < z < 1400:
+                    continue
+                sx, sy = x + vx * future, y + vy * future
+                if kind == 1:
+                    wave = lambda phase, divisor: math.trunc(round(256 * math.sin((phase & 255) * math.pi / 128)) / divisor)
+                    sx = actor["origin_x"] + wave(age * 2, 4)
+                    sy = actor["origin_y"] + wave(age * 4, 8) + y - pos["y"]
+                imminent_attacks[future - 1].append((sx, sy, z))
         for tick in range(horizon):
             if abs(pos["z"] - speed * (tick + 1) - player["z"]) <= depth + speed:
                 threats[tick].append((x + vx * (tick + 1), y + vy * (tick + 1), radius + 18))
@@ -205,22 +322,47 @@ def showcase_input(state, package, previous=None, target=None):
                 threats[tick].append((pos["x"] + shot["dx"] * (tick + 1),
                                       pos["y"] + shot["dy"] * (tick + 1), 24))
 
+    def advance(p, v, commands, tick):
+        for axis, (maximum, edge) in enumerate(((3, 100), (2.75, 65))):
+            speed = commands[axis] * maximum
+            if axis == 0 and tick < state.get("roll_ticks", 0):
+                speed += 2.5 * state.get("roll_direction", 0)
+            v[axis] += (speed - v[axis]) * 3 / 32
+            if p[axis] >= 0:
+                v[axis] = min(v[axis], (edge - p[axis]) / 8)
+            else:
+                v[axis] = max(v[axis], -(edge + p[axis]) / 8)
+            p[axis] += v[axis]
+
     def score(destination):
         p, v = list(position), list(velocity)
+        commands = list(controller.commands) if controller else [0, 0]
+        presses = dict(controller.last_press) if controller else None
+        predicted_shots = []
         risk = 0
         for tick, incoming in enumerate(threats):
-            for axis, (maximum, edge) in enumerate(((3, 100), (2.75, 65))):
-                command = steering(p[axis], v[axis], destination[axis])
-                speed = command * maximum
-                if axis == 0 and tick < state.get("roll_ticks", 0):
-                    speed += 2.5 * state.get("roll_direction", 0)
-                v[axis] += (speed - v[axis]) * 3 / 32
-                if p[axis] >= 0:
-                    v[axis] = min(v[axis], (edge - p[axis]) / 8)
-                else:
-                    v[axis] = max(v[axis], -(edge + p[axis]) / 8)
-                p[axis] += v[axis]
-            for x, y, radius in incoming:
+            if controller:
+                if tick >= cadence and (tick - cadence) % cadence == 0:
+                    commands = [controller.steer(p[i], v[i], destination[i], commands[i]) for i in (0, 1)]
+                    commands[0] = controller.horizontal(commands[0], held_x, presses,
+                                                         (state["ticks"] + tick - cadence) & 0xffff)
+                held_x = commands[0]
+            else:
+                commands = [steering(p[i], v[i], destination[i]) for i in (0, 1)]
+            advance(p, v, commands, tick)
+            for x, y, z in imminent_attacks[tick]:
+                dz = max(32, z - player["z"])
+                dx, dy = [max(-8, min(8, math.trunc((p[i] - origin) * 18 / dz)))
+                          for i, origin in enumerate((x, y))]
+                predicted_shots.append([x, y, z, dx, dy])
+            anticipated = []
+            for shot in predicted_shots:
+                shot[0] += shot[3]
+                shot[1] += shot[4]
+                shot[2] -= 18
+                if abs(shot[2] - player["z"]) <= 28:
+                    anticipated.append((shot[0], shot[1], 24))
+            for x, y, radius in incoming + anticipated:
                 clearance = max(abs(p[0] - x), abs(p[1] - y)) - radius
                 if clearance < 0:
                     risk += (1 - clearance) * (horizon - tick)
@@ -230,8 +372,18 @@ def showcase_input(state, package, previous=None, target=None):
 
     choices = [target, tuple(position)] + [(x, y) for x in (-100, -50, 0, 50, 100)
                                          for y in (-65, -30, 0, 30, 65)]
-    destination = min(choices, key=score) if any(threats) else target
-    dx, dy = [steering(position[i], velocity[i], destination[i]) for i in (0, 1)]
+    if controller:
+        destination = controller.choose(choices, score, state["ticks"])
+        pending_position, pending_velocity = list(position), list(velocity)
+        for tick in range(cadence):
+            advance(pending_position, pending_velocity, controller.commands, tick)
+        dx, dy = [controller.steer(pending_position[i], pending_velocity[i], destination[i], controller.commands[i])
+                  for i in (0, 1)]
+        dx = controller.horizontal(dx, controller.commands[0], controller.last_press, state["ticks"])
+        controller.commands = [dx, dy]
+    else:
+        destination = min(choices, key=score) if any(threats) else target
+        dx, dy = [steering(position[i], velocity[i], destination[i]) for i in (0, 1)]
     # Hold FIRE throughout a take; never synthesize a bomb or repeated-fire SFX.
     return 16 | (8 if dx > 0 else 4 if dx < 0 else 0) | (1 if dy > 0 else 2 if dy < 0 else 0)
 
@@ -248,6 +400,7 @@ class Capture:
         self.process = self.mon = None
         self.last_bits = None
         self.previous_pilot_state = None
+        self.controller = SmoothPilot() if scene.get("smooth_flight") else None
         self.game_address = vice.resident_symbol(syms, "GAME")[1]
         self.game_size = layouts.size("Game")
         self.report = dict(schema=1, name=scene["name"], label=scene["label"], passed=False,
@@ -259,6 +412,11 @@ class Capture:
                            frames=[], screenshot="screenshot.png", setup_patches=[])
         if "pilot_target" in scene:
             self.report["pilot_target"] = scene["pilot_target"]
+        if self.controller:
+            self.report.update(pilot="smooth-scenic", pilot_target=self.pilot_target())
+
+    def pilot_target(self):
+        return self.scene.get("pilot_target", SCENIC_TARGETS.get(self.scene["name"], (0, -10)))
 
     def boot(self):
         package_layout = vice.package_model_layout(self.package, validate_size=True)
@@ -336,7 +494,8 @@ class Capture:
                 or self.scene.get("crossing") or state["mode"] != 1):
             return 0
         bits = showcase_input(state, self.package, self.previous_pilot_state,
-                              target=self.scene.get("pilot_target"))
+                              target=self.pilot_target() if self.controller else self.scene.get("pilot_target"),
+                              controller=self.controller)
         self.previous_pilot_state = state
         return bits
 
@@ -388,6 +547,8 @@ class Capture:
             raise RuntimeError("Capture unexpectedly uses synthetic benchmark input")
         if state["mode"] in (3, 4) or (state["boss_defeated"] and self.scene["name"] != "orbital-ascent"):
             raise RuntimeError("Spoiler-free capture reached a result or boss defeat")
+        if self.controller and state.get("roll_ticks", 0):
+            raise RuntimeError("Smooth showcase unexpectedly triggered a barrel roll")
         effect = self.mon.integer(self.syms["BOMB_EFFECT"], 1)
         if effect:
             self.report["failure_state"] = dict(game=state, joystick=self.last_bits,
@@ -438,6 +599,9 @@ class Capture:
                     native_sha256=hashlib.sha256(native).hexdigest(),
                     sprites=sprite_path.relative_to(self.output).as_posix(),
                     composited_sha256=hashlib.sha256(b"".join(rows)).hexdigest())
+        if self.controller:
+            item.update(pilot_destination=self.controller.destination,
+                        pilot_input_delay_ticks=self.controller.input_delay_ticks)
         self.report["frames"].append(item)
         return elapsed, rows
 
@@ -493,7 +657,8 @@ class Capture:
             self.mon.command('resourceset "Sound" "0"')
             self.mon.run_until(self.syms["frame_complete"], self.failures)
             self.mon.command("log off")
-            self.report["audio"] = wav_metrics(wav, PREROLL, self.report["duration_seconds"])
+            self.report["audio"] = wav_metrics(wav, PREROLL, self.report["duration_seconds"],
+                                               allow_silence=self.report["emulator_audio"].get("sfx_only", False))
             first_cycle = self.report["audio_start_cycle"] + round(PREROLL * self.hz)
             last_cycle = self.report["audio_start_cycle"] + round(endpoint * self.hz)
             events = [event for event in vice.stores(trace_path) if first_cycle <= event["bus_cycles"] < last_cycle]
@@ -501,6 +666,10 @@ class Capture:
             chip_names = ("left_d400", "right_d420", "socket1_d440", "socket2_d460")[:self.package[17]]
             if not vice.package_model_layout(self.package).get("quad_sfx") and any(not activity[name]["gate_on"] for name in chip_names):
                 raise RuntimeError("A SID chip had no active voice gates during retained footage")
+            if self.report["emulator_audio"].get("sfx_only", False):
+                expect_effects = (self.scene["stage"] is not None
+                                  and self.scene["name"] != "crossing" and not self.scene.get("crossing"))
+                validate_sfx_activity(self.report["audio"], activity, expect_effects)
             self.report["sid_activity"] = activity
             if chosen is None:
                 raise RuntimeError("No retained screenshot frame")
@@ -528,6 +697,8 @@ def main():
     parser.add_argument("--package-dir", type=Path, default=ROOT / "dist")
     parser.add_argument("--video", choices=tuple(BUS_HZ), default="pal")
     parser.add_argument("--out-dir", type=Path, default=ROOT / "target/readme-showcase")
+    parser.add_argument("--preset", choices=("readme-teaser",),
+                        help="91.2-second scenic trailer with complete ascent and three short orbital teasers")
     parser.add_argument("--scene", action="append", choices=[scene["name"] for scene in SCENES],
                         help="capture selected scene(s), retaining storyboard order")
     parser.add_argument("--duration", type=float, help="override each selected duration for short probes")
@@ -538,6 +709,10 @@ def main():
     parser.add_argument("--timeout", type=float, default=45)
     vice.add_emulator_audio_argument(parser)
     args = parser.parse_args()
+    try:
+        scenes = selected_scenes(args.preset, args.scene)
+    except ValueError as error:
+        parser.error(str(error))
     if args.duration is not None and (not math.isfinite(args.duration) or not .5 <= args.duration <= 60
                                       or abs(args.duration * 50 - round(args.duration * 50)) > 1e-7):
         parser.error("--duration must be 0.5..60 seconds in multiples of 20 milliseconds")
@@ -569,10 +744,10 @@ def main():
     report = dict(schema=1, passed=False, video=args.video, sid_count=package[17], sid_model="8580", bus_hz=BUS_HZ[args.video],
                   scope="Selected native-emulator scenes at real emulated pacing; simultaneous native SID stereo mix",
                   package=str(args.package_dir), package_sha256=hashes, vice_sha256=sha256(args.vice), scenes=[])
+    if args.preset:
+        report["preset"] = args.preset
     try:
-        for scene in SCENES:
-            if args.scene and scene["name"] not in args.scene:
-                continue
+        for scene in scenes:
             result = Capture(args, scene, package, syms, layout, layouts, failures).run()
             report["emulator_audio"] = result["emulator_audio"]
             report["scenes"].append(dict(name=scene["name"], label=scene["label"], directory=scene["name"],

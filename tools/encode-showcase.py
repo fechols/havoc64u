@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
-"""Encode native capture manifests without speeding up the game or replacing audio.
+"""Encode native capture manifests without speeding up the game.
 
 Requires FFmpeg and FFprobe. Under WSL, Windows .exe paths are supported too.
 Intermediate files and the verification report stay beside the capture manifest.
+An optional continuous source soundtrack mixes with quieter captured effects;
+the source, balance, headroom adjustment and final true peak are recorded.
 """
 import argparse
 import bisect
@@ -11,6 +13,7 @@ import json
 import math
 import os
 from pathlib import Path
+import re
 import shutil
 import struct
 import subprocess
@@ -73,13 +76,99 @@ def run(command, log_path):
         subprocess.run(command, check=True, stdout=log, stderr=subprocess.STDOUT)
 
 
+def effects_normalization_db(source_peak):
+    """Keep the legacy bounded normalization, including legitimately silent takes."""
+    return min(6.0, 20 * math.log10(.70 / (source_peak / 32768))) if source_peak else 0.0
+
+
+def true_peak(path, ffmpeg, log_path):
+    """Measure decoded true peak, allowing for EBU R128's 0.1 dB rounding."""
+    run([ffmpeg, "-hide_banner", "-nostats", "-i", external_path(path, ffmpeg),
+         "-map", "0:a:0", "-af", "ebur128=peak=true", "-f", "null", "-"], log_path)
+    values = re.findall(r"Peak:\s+(-?(?:\d+(?:\.\d+)?|inf))\s+dBFS", log_path.read_text())
+    if not values:
+        raise RuntimeError(f"No true-peak result; see {log_path}")
+    peak = float(values[-1])
+    # JSON has no infinity. Null is the measured digital-silence case.
+    return {"dbtp": peak if math.isfinite(peak) else None,
+            "upper_bound_dbtp": peak + .05 if math.isfinite(peak) else None,
+            "meter": "FFmpeg EBU R128 true peak; +0.05 dB rounding bound"}
+
+
+def mix_audio(listing, music, duration, source_peak, sfx_gain_db, ffmpeg, ffprobe, intermediate):
+    normalization = effects_normalization_db(source_peak)
+    mix_path = intermediate / "audio-mix.wav"
+    report = {"mode": "source soundtrack plus native effects" if music else "native captured audio",
+              "native_normalization_db": normalization,
+              "effects_gain_db": sfx_gain_db if music else 0.0,
+              "music_gain_db": 0.0 if music else None,
+              "time_stretch": False, "duration_seconds": duration}
+    command = [ffmpeg, "-hide_banner", "-loglevel", "warning", "-y",
+               "-f", "concat", "-safe", "0", "-i", external_path(listing, ffmpeg)]
+    if music:
+        music = music.resolve()
+        details = probe(music, ffprobe)
+        streams = [s for s in details["streams"] if s["codec_type"] == "audio"]
+        if not streams:
+            raise ValueError("Soundtrack has no audio stream")
+        music_duration = float(streams[0].get("duration", details["format"]["duration"]))
+        if music_duration + .0201 < duration:
+            raise ValueError(f"Soundtrack is too short: {music_duration:.3f}s for a {duration:.3f}s reel")
+        report["music"] = {"path": str(music), "sha256": hashlib.sha256(music.read_bytes()).hexdigest(),
+                           "source_duration_seconds": music_duration, "start_seconds": 0.0,
+                           "retained_duration_seconds": min(duration, music_duration),
+                           "full_source": abs(music_duration - duration) <= .0201,
+                           "looped": False, "probe": details}
+        command += ["-i", external_path(music, ffmpeg), "-filter_complex",
+                    f"[0:a:0]volume={normalization+sfx_gain_db:.6f}dB[effects];"
+                    "[1:a:0]aresample=44100,aformat=channel_layouts=stereo,apad[music];"
+                    "[effects][music]amix=inputs=2:duration=first:normalize=0[mix]", "-map", "[mix]"]
+    else:
+        command += ["-map", "0:a:0", "-af", f"volume={normalization:.6f}dB"]
+    # Float PCM preserves any overs until one global headroom correction is
+    # chosen. No limiter, compression, ducking or per-scene music restarts.
+    command += ["-vn", "-t", str(duration), "-c:a", "pcm_f32le", "-ar", "44100", "-ac", "2",
+                external_path(mix_path, ffmpeg)]
+    run(command, intermediate / "audio-mix.log")
+    report["unattenuated_true_peak"] = true_peak(mix_path, ffmpeg, intermediate / "audio-mix-peak.log")
+    return mix_path, report
+
+
+def encode_final_audio(listing, mix_path, output, duration, sid_count, mix_report, ffmpeg, intermediate):
+    """Verify the encoded AAC, correcting codec overs with a single static gain."""
+    upper = mix_report["unattenuated_true_peak"]["upper_bound_dbtp"]
+    attenuation = min(0.0, -1.10 - upper) if upper is not None else 0.0
+    for attempt in range(4):
+        command = [ffmpeg, "-hide_banner", "-loglevel", "warning", "-y",
+                   "-f", "concat", "-safe", "0", "-i", external_path(listing, ffmpeg),
+                   "-i", external_path(mix_path, ffmpeg), "-map", "0:v:0", "-map", "1:a:0",
+                   "-c:v", "copy", "-af", f"volume={attenuation:.6f}dB", "-c:a", "aac", "-b:a", "192k",
+                   "-ar", "44100", "-ac", "2", "-t", str(duration), "-movflags", "+faststart",
+                   "-metadata", f"title=H.A.V.O.C. — {sid_count}-SID gameplay showcase",
+                   external_path(output, ffmpeg)]
+        run(command, intermediate / f"mux-{attempt}.log")
+        measured = true_peak(output, ffmpeg, intermediate / f"encoded-peak-{attempt}.log")
+        encoded_upper = measured["upper_bound_dbtp"]
+        if encoded_upper is None or encoded_upper <= -1.0:
+            mix_report.update(global_attenuation_db=attenuation, encoded_true_peak=measured,
+                              true_peak_ceiling_dbtp=-1.0, aac_encode_attempts=attempt + 1)
+            return
+        attenuation += -1.10 - encoded_upper
+    raise RuntimeError("Encoded AAC still exceeds -1 dBTP after headroom correction")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("manifest", type=Path)
     parser.add_argument("--output", type=Path)
     parser.add_argument("--ffmpeg")
     parser.add_argument("--ffprobe")
+    parser.add_argument("--music", type=Path, help="continuous original soundtrack, starting at zero")
+    parser.add_argument("--sfx-gain-db", type=float, default=-12.0,
+                        help="captured effects gain after normalization when --music is used (default: -12)")
     args = parser.parse_args()
+    if not math.isfinite(args.sfx_gain_db) or not -120 <= args.sfx_gain_db <= 0:
+        parser.error("--sfx-gain-db must be finite and between -120 and 0 dB")
     ffmpeg = executable(args.ffmpeg, "ffmpeg")
     ffprobe = executable(args.ffprobe, "ffprobe")
     manifest_path = args.manifest.resolve()
@@ -152,18 +241,28 @@ def main():
     listing = intermediate / "clips.ffconcat"
     listing.write_text("ffconcat version 1.0\n" + "".join(
         "file '" + external_path(path, ffmpeg).replace("'", "'\\''") + "'\n" for path in encoded))
-    base = [ffmpeg, "-hide_banner", "-loglevel", "warning", "-y", "-f", "concat", "-safe", "0",
-            "-i", external_path(listing, ffmpeg)]
-    # One gain for the complete reel keeps the original balance and dynamics,
-    # raises quiet emulator output modestly, and leaves encoding headroom.
-    gain_db = min(6.0, 20 * math.log10(.70 / (source_peak / 32768)))
-    audio_options = ["-af", f"volume={gain_db:.6f}dB", "-c:a", "aac", "-b:a", "192k", "-ar", "44100", "-ac", "2", "-t", str(duration),
-                     "-movflags", "+faststart", "-metadata", f"title=H.A.V.O.C. — {manifest['sid_count']}-SID gameplay showcase"]
-    run(base + ["-c:v", "copy"] + audio_options + [external_path(output, ffmpeg)], intermediate / "mux.log")
+    mix_path, mix_report = mix_audio(listing, args.music, duration, source_peak, args.sfx_gain_db,
+                                    ffmpeg, ffprobe, intermediate)
+    master = output.with_name(output.stem + "-master.mp4") if args.music else output
+    encode_final_audio(listing, mix_path, master, duration, manifest["sid_count"], mix_report, ffmpeg, intermediate)
+    if master != output:
+        shutil.copyfile(master, output)
+        report["master"] = {"path": str(master), "bytes": master.stat().st_size,
+                            "sha256": hashlib.sha256(master.read_bytes()).hexdigest(),
+                            "video_crf": 16, "probe": probe(master, ffprobe)}
     if output.stat().st_size >= 9_800_000:
         bitrate = int(9_400_000 * 8 / duration - 192_000 - 30_000)
-        run(base + ["-c:v", "libx264", "-preset", "slow", "-b:v", str(bitrate), "-maxrate", str(bitrate),
-                    "-bufsize", str(bitrate * 2)] + audio_options + [external_path(output, ffmpeg)], intermediate / "bounded-encode.log")
+        if bitrate <= 0:
+            raise RuntimeError("Reel is too long for the GitHub attachment budget")
+        bounded_source = master
+        if master == output:
+            bounded_source = intermediate / "unbounded.mp4"
+            shutil.copyfile(output, bounded_source)
+        run([ffmpeg, "-hide_banner", "-loglevel", "warning", "-y", "-i", external_path(bounded_source, ffmpeg),
+             "-map", "0:v:0", "-map", "0:a:0", "-c:v", "libx264", "-preset", "slow",
+             "-b:v", str(bitrate), "-maxrate", str(bitrate), "-bufsize", str(bitrate * 2),
+             "-c:a", "copy", "-t", str(duration), "-movflags", "+faststart", external_path(output, ffmpeg)],
+            intermediate / "bounded-encode.log")
     details = probe(output, ffprobe)
     video = next(s for s in details["streams"] if s["codec_type"] == "video")
     audio = next(s for s in details["streams"] if s["codec_type"] == "audio")
@@ -173,7 +272,12 @@ def main():
         raise RuntimeError("Output duration drift exceeds one 20 ms frame")
     if output.stat().st_size >= 9_800_000:
         raise RuntimeError("Video exceeds GitHub attachment budget")
-    report.update(passed=True, duration_seconds=duration, bytes=output.stat().st_size, audio_gain_db=gain_db,
+    final_peak = true_peak(output, ffmpeg, intermediate / "final-peak.log")
+    if final_peak["upper_bound_dbtp"] is not None and final_peak["upper_bound_dbtp"] > -1.0:
+        raise RuntimeError("Final upload audio exceeds -1 dBTP")
+    mix_report["final_true_peak"] = final_peak
+    report.update(passed=True, duration_seconds=duration, bytes=output.stat().st_size,
+                  audio_gain_db=mix_report["native_normalization_db"], audio_mix=mix_report,
                   sha256=hashlib.sha256(output.read_bytes()).hexdigest(), probe=details)
     (intermediate / "report.json").write_text(json.dumps(report, indent=2) + "\n")
     print(f"VERIFIED {output}: {duration:.2f}s, {output.stat().st_size:,} bytes", flush=True)

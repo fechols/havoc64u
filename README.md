@@ -27,25 +27,27 @@ The four-SID effects engine runs in resident assembly at 50 Hz. Each chip acts a
 
 ## See it in action
 
-**Sound on!** This earlier trailer features the original four-SID score and combat effects as the action climbs into orbit. Recorded in a PAL emulator at the game's original speed (72 seconds).
+**Sound on!** Fly from the lowlands into orbit with smoother flight and a glimpse of the late-game Space Carrier. This fresh **91-second teaser** pairs the complete original recording of **Ashen Wastes** with quieter four-SID combat effects. Captured from v0.1.3 in a PAL emulator at the game's original speed.
 
-https://github.com/user-attachments/assets/f2c0d2a9-250d-456e-89e2-7e5f1bc5605a
+[![Watch the H.A.V.O.C. teaser with Ashen Wastes](docs/media/teaser.png)](https://github.com/fechols/havoc64u/releases/download/v0.1.3/havoc-teaser-v0.1.3.mp4)
 
-Screenshots: **original v0.1.0 four-SID build**, captured in a PAL emulator.
+[Watch or download the teaser (MP4)](https://github.com/fechols/havoc64u/releases/download/v0.1.3/havoc-teaser-v0.1.3.mp4).
 
-| Lowland Approach — barrel roll | Crystal Cave — diving |
+Screenshots: **v0.1.3 with the upgraded renderer**, freshly captured in a PAL emulator.
+
+| Lowland Approach | Crystal Cave |
 | --- | --- |
-| ![Ship mid-barrel roll over the green hills of Lowland Approach](docs/media/lowlands.png) | ![Ship pitching nose-down while descending through Crystal Cave](docs/media/crystal-cave.png) |
-| **Iron Canyon — banking left** | **Foundry Belt — banking right** |
-| ![Ship banking left between the ridges of Iron Canyon](docs/media/iron-canyon.png) | ![Ship banking right over the industrial scenery of Foundry Belt](docs/media/foundry.png) |
-| **Storm Front — climbing** | **Carrier Assault — banking right** |
-| ![Ship pitching nose-up while climbing into Storm Front](docs/media/storm-front.png) | ![Ship banking right beside the enemy carrier during Carrier Assault](docs/media/carrier.png) |
-| **Asteroid Belt — banking right** | **Shattered Moon — banking left** |
-| ![Ship banking right among rocks in Asteroid Belt](docs/media/asteroid-belt.png) | ![Ship banking left and climbing beneath the Shattered Moon](docs/media/shattered-moon.png) |
-| **Ship Graveyard — banking left** | **Orbital Shipyard — banking right** |
-| ![Ship banking left and descending among abandoned hulls in Ship Graveyard](docs/media/ship-graveyard.png) | ![Ship banking right and descending in front of Orbital Shipyard's gantries](docs/media/orbital-shipyard.png) |
-| **Space Carrier — climbing turn** | **Jump Gate — banking left** |
-| ![Ship banking right and climbing above the Dreadnought's broad deck](docs/media/space-carrier.png) | ![Ship banking left beside the Gate Guardian's open aperture](docs/media/jump-gate.png) |
+| ![Ship flying over the green hills of Lowland Approach](docs/media/lowlands.png) | ![Ship flying through the colorful Crystal Cave](docs/media/crystal-cave.png) |
+| **Iron Canyon** | **Foundry Belt** |
+| ![Ship flying between the ridges of Iron Canyon](docs/media/iron-canyon.png) | ![Ship flying over the industrial scenery of Foundry Belt](docs/media/foundry.png) |
+| **Storm Front** | **Carrier Assault** |
+| ![Ship flying beneath the storm clouds of Storm Front](docs/media/storm-front.png) | ![Ship approaching the enemy carrier during Carrier Assault](docs/media/carrier.png) |
+| **Asteroid Belt** | **Shattered Moon** |
+| ![Ship flying among rocks in Asteroid Belt](docs/media/asteroid-belt.png) | ![Ship flying beneath the Shattered Moon](docs/media/shattered-moon.png) |
+| **Ship Graveyard** | **Orbital Shipyard** |
+| ![Ship flying among abandoned hulls in Ship Graveyard](docs/media/ship-graveyard.png) | ![Ship flying past Orbital Shipyard's gantries](docs/media/orbital-shipyard.png) |
+| **Space Carrier** | **Jump Gate** |
+| ![Ship flying above the Dreadnought's broad deck](docs/media/space-carrier.png) | ![Ship approaching the Gate Guardian's open aperture](docs/media/jump-gate.png) |
 
 ## Download and launch
 
