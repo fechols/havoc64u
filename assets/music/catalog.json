@@ -1,19 +1,30 @@
 {
   "version": 2,
   "tracks": [
-    { "name": "galactic-dash", "rust_name": "GalacticDash", "profile": "stereo20k3" },
+    { "name": "galactic-dash", "rust_name": "GalacticDash", "profile": "mono16k3" },
     { "name": "hammond-rocker", "rust_name": "HammondRocker", "profile": "stereo20k3" },
-    { "name": "galactic-dash-mono", "rust_name": "GalacticDashMono", "profile": "mono16k3", "fixture": true },
+    { "name": "mission-failed", "rust_name": "MissionFailed", "profile": "mono16k3" },
     { "name": "lowland-approach", "rust_name": "LowlandApproach", "profile": "mono16k3" },
     { "name": "crystal-cave", "rust_name": "CrystalCave", "profile": "mono16k3" },
     { "name": "iron-canyon", "rust_name": "IronCanyon", "profile": "mono16k3" },
     { "name": "canyon-gate", "rust_name": "CanyonGate", "profile": "mono16k3" },
     { "name": "ashen-wastes", "rust_name": "AshenWastes", "profile": "mono16k3" },
     { "name": "foundry-belt", "rust_name": "FoundryBelt", "profile": "mono16k3" },
-    { "name": "fortress-run", "rust_name": "FortressRun", "profile": "mono16k3" }
+    { "name": "fortress-run", "rust_name": "FortressRun", "profile": "mono16k3" },
+    { "name": "storm-front", "rust_name": "StormFront", "profile": "mono16k3" },
+    { "name": "meteor-reach", "rust_name": "MeteorReach", "profile": "mono16k3" },
+    { "name": "carrier-coast", "rust_name": "CarrierCoast", "profile": "mono16k3" },
+    { "name": "carrier-assault", "rust_name": "CarrierAssault", "profile": "mono16k3" },
+    { "name": "asteroid-belt", "rust_name": "AsteroidBelt", "profile": "mono16k3" },
+    { "name": "lunar-awe", "rust_name": "LunarAwe", "profile": "mono16k3" },
+    { "name": "ship-graveyard", "rust_name": "ShipGraveyard", "profile": "mono16k3" },
+    { "name": "citadel-core", "rust_name": "CitadelCore", "profile": "mono16k3" },
+    { "name": "orbital-shipyard", "rust_name": "OrbitalShipyard", "profile": "mono16k3" },
+    { "name": "space-carrier", "rust_name": "SpaceCarrier", "profile": "mono16k3" },
+    { "name": "jump-gate", "rust_name": "JumpGate", "profile": "mono16k3" }
   ],
-  "default_gameplay": "galactic-dash-mono",
-  "cues": { "Title": "hammond-rocker", "Victory": "galactic-dash" },
+  "default_gameplay": "galactic-dash",
+  "cues": { "Title": "hammond-rocker", "Victory": "galactic-dash", "Defeat": "mission-failed" },
   "stages": [
     "lowland-approach",
     "crystal-cave",
@@ -21,7 +32,17 @@
     "canyon-gate",
     "ashen-wastes",
     "foundry-belt",
-    "fortress-run", null, null, null, null, null,
-    null, null, null, null, null, null
+    "fortress-run",
+    "citadel-core",
+    "storm-front",
+    "meteor-reach",
+    "carrier-coast",
+    "carrier-assault",
+    "asteroid-belt",
+    "lunar-awe",
+    "ship-graveyard",
+    "orbital-shipyard",
+    "space-carrier",
+    "jump-gate"
   ]
 }

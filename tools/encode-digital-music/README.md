@@ -12,9 +12,9 @@ FFmpeg and FFprobe on PATH. Normal game builds use checked-in encoded assets.
 | `--profile mono16k3` | DLT4 | Floating-point `(L+R)/2`, resample to 16 kHz | 3 bits/frame | Rounded signed 8-bit mono |
 | No profile option | Legacy DLT3 | Preserve stereo, resample to 24 kHz | 4 bits/channel/frame | Signed 16-bit stereo |
 
-Hammond Rocker and Galactic Dash use `stereo20k3`. The temporary Galactic Dash
-mono asset exercises gameplay playback while new recordings are authored. It is
-a test fixture, not an additional song in the final soundtrack capacity budget.
+Hammond Rocker uses `stereo20k3`. Galactic Dash, Mission Failed, and all eighteen
+stage recordings use `mono16k3`, with the player's 10 ms right-channel delay.
+Galactic Dash has one canonical mono asset; the temporary duplicate is retired.
 
 ## Reproduction
 
@@ -26,9 +26,8 @@ resample in FFmpeg: the encoder owns those operations.
 New-Item -ItemType Directory -Force -Path target/digital-music | Out-Null
 ffmpeg -v error -y -i 'assets/music/source/Galactic Dash.m4a' -map 0:a:0 -vn -sample_fmt s16 -c:a flac -threads 1 target/digital-music/galactic-dash-source.flac
 ffmpeg -v error -y -i 'assets/music/source/Hammond Rocker.m4a' -map 0:a:0 -vn -sample_fmt s16 -c:a flac -threads 1 target/digital-music/hammond-rocker-source.flac
-cargo run --release --manifest-path tools/encode-digital-music/Cargo.toml --target-dir target/digital-music/tool-build -- --profile stereo20k3 target/digital-music/galactic-dash-source.flac assets/music/galactic-dash.dlt target/digital-music/galactic-dash-dlt4.wav
+cargo run --release --manifest-path tools/encode-digital-music/Cargo.toml --target-dir target/digital-music/tool-build -- --profile mono16k3 target/digital-music/galactic-dash-source.flac assets/music/galactic-dash.dlt target/digital-music/galactic-dash-dlt4.wav
 cargo run --release --manifest-path tools/encode-digital-music/Cargo.toml --target-dir target/digital-music/tool-build -- --profile stereo20k3 target/digital-music/hammond-rocker-source.flac assets/music/hammond-rocker.dlt target/digital-music/hammond-rocker-dlt4.wav
-cargo run --release --manifest-path tools/encode-digital-music/Cargo.toml --target-dir target/digital-music/tool-build -- --profile mono16k3 target/digital-music/galactic-dash-source.flac assets/music/galactic-dash-mono.dlt target/digital-music/galactic-dash-mono-dlt4.wav
 ```
 
 Regenerating an asset also requires updating its provenance and regenerating the

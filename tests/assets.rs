@@ -886,18 +886,18 @@ fn enemy_timing_leaves_room_for_repeats_without_moving_hazards() {
             }
         }
         if stage == 0 {
-            // Preserve the opening formation and its reward while tightening
-            // its 1200/1300/1400-unit arrivals by five percent.
+            // Preserve the opening timing and reward. Lateral lanes are
+            // derived from the hull envelopes and audited separately.
             let opening: Vec<_> = combat[..3]
                 .iter()
-                .map(|s| (s.distance, s.kind, s.x, s.y, s.flags))
+                .map(|s| (s.distance, s.kind, s.y, s.flags))
                 .collect();
             assert_eq!(
                 opening,
                 [
-                    (1140, FIGHTER, -80, 35, 0),
-                    (1235, FIGHTER, 0, 35, 1),
-                    (1330, FIGHTER, 80, 35, 0)
+                    (1140, FIGHTER, 35, 0),
+                    (1235, FIGHTER, 35, 1),
+                    (1330, FIGHTER, 35, 0)
                 ]
             );
             assert_eq!(

@@ -56,9 +56,9 @@ fn authored_pitch_profile_layers_transients_bodies_and_subs() {
         [76, 50, 67], // MissileLaunch
         [48, 60, 36], // EnemyHit
         [72, 76, 79], // Pickup
-        [86, 55, 72], // Roll
+        [55, 50, 86], // Roll
         [36, 43, 76], // Bomb
-        [55, 36, 31], // EnemyExplosion
+        [86, 36, 31], // EnemyExplosion
         [36, 60, 31], // Footstep
         [91, 94, 31], // BirdCall
         [43, 50, 60], // Transport
@@ -70,7 +70,7 @@ fn authored_pitch_profile_layers_transients_bodies_and_subs() {
         [60, 66, 86], // PlayerDeath
         [86, 43, 48], // MissileImpact
         [36, 43, 55], // BossArrival
-        [88, 85, 84], // MissileReady
+        [31, 67, 72], // MissileReady (voice 0 silent)
         [71, 71, 86], // LowShield
     ];
     for standard in [VideoStandard::Pal, VideoStandard::Ntsc] {
@@ -84,7 +84,9 @@ fn authored_pitch_profile_layers_transients_bodies_and_subs() {
                 engine.tick(&mut bus);
                 let mut chips = 0;
                 for sid in 0..4 {
-                    if bus.regs[sid][5] == 0 {
+                    // Start writes every voice's waveform (gate low) even when
+                    // its envelope is authored silent.
+                    if bus.regs[sid][4] == 0 {
                         continue;
                     }
                     chips += 1;
@@ -114,6 +116,71 @@ fn authored_pitch_profile_layers_transients_bodies_and_subs() {
         }
     }
 }
+#[test]
+fn enemy_explosion_cracks_then_booms_without_a_second_noise_attack() {
+    for standard in [VideoStandard::Pal, VideoStandard::Ntsc] {
+        for pan in [-100, 0, 100] {
+            let mut engine = EffectsEngine::new(standard);
+            let mut bus = Bus::default();
+            engine.reset(&mut bus);
+            engine.queue(event(Effect::EnemyExplosion, pan));
+            engine.tick(&mut bus);
+            let chips: Vec<_> = (0..4).filter(|&sid| bus.regs[sid][4] == 128).collect();
+            assert_eq!(chips.len(), if pan == 0 { 2 } else { 1 });
+
+            for tick in 0..=30 {
+                if tick != 0 {
+                    engine.tick(&mut bus);
+                }
+                for &sid in &chips {
+                    let registers = &bus.regs[sid];
+                    // The noise first sounds at age 1. Both bass waveforms
+                    // enter at age 5: four 50 Hz ticks (80 ms) later, on
+                    // both stereo channels. Gate stays high through the
+                    // transition so the short noise envelope cannot restart.
+                    let waves = [4, 11, 18].map(|r| registers[r] & 0xfe);
+                    let expected = if tick == 30 {
+                        [0, 0, 0]
+                    } else if tick < 5 {
+                        [128, 0, 0]
+                    } else {
+                        [128, 64, 16]
+                    };
+                    assert_eq!(
+                        waves, expected,
+                        "{standard:?}, pan {pan}, SID {sid}, tick {tick}"
+                    );
+                    let gates = [4, 11, 18].map(|r| registers[r] & 1 != 0);
+                    assert_eq!(
+                        gates, [tick > 0 && tick < 20; 3],
+                        "{standard:?}, pan {pan}, SID {sid}, gate at {tick}"
+                    );
+                    assert_eq!(registers[5], 0x02, "brief noise decay");
+                    assert_eq!(registers[6], 0, "noise has no sustained body");
+
+                    let sub = note_frequency(standard, 31);
+                    let expected_sub = sub + (sub >> 9) * (sid as u16 & 1);
+                    assert_eq!(
+                        u16::from_le_bytes([registers[14], registers[15]]), expected_sub,
+                        "sub holds its pitch through the boom and release"
+                    );
+                    if tick == 5 {
+                        let body = u16::from_le_bytes([registers[7], registers[8]]);
+                        assert!(
+                            body > sub && body < note_frequency(standard, 36),
+                            "the hidden pitch slide must leave an audible bass body at boom onset"
+                        );
+                    }
+                    if tick == 30 {
+                        assert_eq!(registers[23], 0);
+                        assert_eq!(registers[24], 8);
+                    }
+                }
+            }
+        }
+    }
+}
+
 #[test]
 fn reset_initializes_all_four_chips_and_uninitialized_ticks_are_silent() {
     let mut e = EffectsEngine::new(VideoStandard::Pal);
@@ -167,12 +234,14 @@ fn every_effect_plays_layers_sweeps_and_finishes_on_both_standards() {
                     Effect::Fire
                         | Effect::EnemyFire
                         | Effect::MissileLaunch
+                        | Effect::Roll
                         | Effect::Footstep
                         | Effect::BirdCall
                         | Effect::Transport
                         | Effect::TransportAway
                         | Effect::Meteor
                         | Effect::BossArrival
+                        | Effect::MissileReady
                 ),
                 "{effect:?} punch"
             );
@@ -777,7 +846,8 @@ fn programs_reach_their_authored_stages() {
         (Effect::MissileLaunch, [false, true, true]),
         (Effect::EnemyHit, [true, false, false]),
         (Effect::Pickup, [true, true, true]),
-        (Effect::Roll, [false, true, true]),
+        (Effect::Roll, [true, true, false]),
+        (Effect::MissileReady, [true, false, false]),
         (Effect::Bomb, [true, true, true]),
         (Effect::LowShield, [true, true, true]),
         (Effect::BirdCall, [true, true, true]),
@@ -796,7 +866,7 @@ fn programs_reach_their_authored_stages() {
         assert_eq!(changed, moving, "{effect:?} pitch motion");
     }
     // The rise program turns its pulse into a sawtooth at tick 14.
-    for effect in [Effect::Roll, Effect::MissileLaunch] {
+    for effect in [Effect::MissileLaunch] {
         let (mut engine, mut bus) = setup();
         engine.queue(event(effect, -100));
         for tick in 0..=16 {
@@ -808,7 +878,7 @@ fn programs_reach_their_authored_stages() {
     // Retriggers hold every gate low for exactly their authored tick.
     for (effect, retrigger) in [
         (Effect::EnemyFire, 5),
-        (Effect::EnemyExplosion, 5),
+        (Effect::MissileImpact, 5),
         (Effect::Pickup, 6),
         (Effect::LowShield, 8),
         (Effect::Bomb, 8),
@@ -820,17 +890,6 @@ fn programs_reach_their_authored_stages() {
             engine.tick(&mut bus);
             let expected = tick != 0 && tick != retrigger;
             assert_eq!(gates(&bus), [expected; 3], "{effect:?} gate at tick {tick}");
-        }
-    }
-    // The stereo right explosion re-blasts one tick after the left.
-    {
-        let (mut engine, mut bus) = setup();
-        engine.queue(event(Effect::EnemyExplosion, 0));
-        for tick in 0..=7 {
-            engine.tick(&mut bus);
-            let left = bus.regs[0][4] & 1 != 0;
-            let right = bus.regs[1][4] & 1 != 0;
-            assert_eq!((left, right), (tick != 0 && tick != 5, tick != 0 && tick != 6), "tick {tick}");
         }
     }
     // The siren renders an octave lower on alternate four-tick groups.

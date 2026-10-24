@@ -2346,7 +2346,7 @@ def weapon_checks(mon, syms, failures, elf, dwarf_tool, output, result, video, p
     impact = {"name": "homing-missile-tracks-and-hits"}
     result["scenarios"].append(impact)
     await_charge(impact)
-    seed(impact, {"kills": 4, "bomb_kills": 4, "bombs": 0},
+    seed(impact, {"kills": 14, "bomb_kills": 14, "bombs": 0},
          clear=("actors", "shots", "pickups", "explosions"))
     seed_element(impact, "actors", 0, {"kind": 3, "hp": 4, "flags": 0, "age": 0,
                  "origin_x": 100, "origin_y": 20, "pos.x": 100, "pos.y": 20, "pos.z": 1400})
@@ -2361,10 +2361,10 @@ def weapon_checks(mon, syms, failures, elf, dwarf_tool, output, result, video, p
         raise RuntimeError("Homing missile failed to intercept the off-axis turret")
     if frame["game"]["score"] != launched["game"]["score"] + 250 or frame["shots"][slot]["kind"] != 0:
         raise RuntimeError("Missile impact did not consume the missile and award exactly one turret kill")
-    reward = {"kills": 5, "bomb_kills": 0, "bombs": 1}
+    reward = {"kills": 15, "bomb_kills": 0, "bombs": 1}
     if any(frame["game"][name] != expected for name, expected in reward.items()):
-        raise RuntimeError("Fifth enemy kill did not immediately award one bomb and reset reward progress")
-    impact["five_kill_bomb_reward"] = reward
+        raise RuntimeError("Fifteenth enemy kill did not immediately award one bomb and reset reward progress")
+    impact["fifteen_kill_bomb_reward"] = reward
     impact["impact_capture"] = capture(mon, syms, output, "weapons-missile-impact")
     finish(impact)
 

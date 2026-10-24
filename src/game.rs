@@ -16,6 +16,8 @@ pub const TRANSITION_TICKS: u16 = 400;
 pub(crate) const STATIC_SKY: u8 = 2;
 const PLAYER_Z: i16 = 180;
 const SPEED: i16 = 8;
+/// Nearest whole-unit radius to a three-quarter-size hostile projectile.
+const ENEMY_SHOT_RADIUS: i16 = 4;
 /// Actors fly past the camera instead of vanishing: they stay alive and drawn
 /// until the deepest actor mesh (72 units, checked by the asset tests) is
 /// entirely behind the near plane, where the renderer rejects every face.
@@ -401,6 +403,7 @@ pub struct Game {
     spawn_segment: u8,
     shield: u8,
     bombs: u8,
+    // Low nibble: kills toward a bomb; high nibble: pickup opportunities (0..2).
     bomb_kills: u8,
     lives: u8,
     shot_cooldown: u8,
@@ -1276,10 +1279,13 @@ impl Game {
             let mut random =
                 self.encounter_seed ^ self.stage_id.rotate_left(3) ^ token.rotate_left(1);
             random = placement_random(random);
+            // Flying formations include close side passes around the lens.
+            // Ground units retain their mounted positions and original limits.
+            let lateral_limit = if spawn.kind == assets::TURRET { 115 } else { 180 };
             spawn.x = spawn
                 .x
                 .saturating_add(i16::from(random & 31) - 16)
-                .clamp(-115, 115);
+                .clamp(-lateral_limit, lateral_limit);
             random = placement_random(random);
             if spawn.kind != assets::TURRET {
                 spawn.y = spawn
@@ -1870,11 +1876,11 @@ impl Game {
         } else {
             self.score += bank.enemy(a.kind).score as u32;
             self.kills = self.kills.wrapping_add(1);
-            // Keep the five-kill cadence independent of the wrapping total and
+            // Keep the 15-kill cadence independent of the wrapping total and
             // consume the milestone even when the three-bomb inventory is full.
             self.bomb_kills += 1;
-            if self.bomb_kills == 5 {
-                self.bomb_kills = 0;
+            if self.bomb_kills & 15 == 15 {
+                self.bomb_kills &= 0xf0;
                 self.bombs = (self.bombs + 1).min(3);
             }
             if a.flags & 1 != 0 {
@@ -2018,6 +2024,14 @@ impl Game {
     #[inline(never)]
     #[cfg_attr(target_arch = "mos", link_section = ".phase.sim")]
     fn add_pickup(&mut self, pos: Vec3, kind: u8) {
+        // Admit every third bomb from either scripted spawns or enemy drops.
+        if kind == 2 {
+            self.bomb_kills += 16;
+            if self.bomb_kills < 48 {
+                return;
+            }
+            self.bomb_kills &= 15;
+        }
         if let Some(p) = self.pickups.iter_mut().find(|p| p.kind == 0) {
             *p = Pickup { pos, kind };
         }
@@ -2258,7 +2272,7 @@ impl Game {
         for shot in &self.shots {
             if shot.kind != 0 {
                 let radius = if shot.kind == 2 {
-                    5
+                    ENEMY_SHOT_RADIUS
                 } else {
                     3 + shot.damage as i16
                 };
@@ -2400,7 +2414,11 @@ impl Game {
                 diamond(
                     sink,
                     s.pos,
-                    if s.kind == 2 { 5 } else { 3 + s.damage as i16 },
+                    if s.kind == 2 {
+                        ENEMY_SHOT_RADIUS
+                    } else {
+                        3 + s.damage as i16
+                    },
                     if s.kind == 2 {
                         7
                     } else if s.damage > 1 {
@@ -3131,3 +3149,9 @@ mod lod_tests;
 
 #[cfg(all(test, feature = "host-tools"))]
 mod shadow_tests;
+
+#[cfg(all(test, feature = "host-tools"))]
+mod camera_clearance_tests;
+
+#[cfg(all(test, feature = "host-tools"))]
+mod flyby_capture_tests;

@@ -80,6 +80,14 @@ fn every_gameplay_pool_casts_in_detail_priority_without_exhaust_or_explosion_cas
     assert_eq!(casters[17].shape & 15, 4);
     assert!(casters[20..].iter().all(|caster| caster.shape & 15 == 3));
     assert_eq!(
+        casters[20..23]
+            .iter()
+            .map(|caster| (caster.half_x, caster.half_z))
+            .collect::<std::vec::Vec<_>>(),
+        [(5, 5), (4, 4), (5, 5)],
+        "only hostile projectiles use the smaller shadow footprint"
+    );
+    assert_eq!(
         casters[20].center.y,
         10 - scene_camera_y(game.mode, game.player.y, game.ticks)
     );

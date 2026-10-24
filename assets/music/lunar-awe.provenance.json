@@ -1,25 +1,19 @@
 {
-  "attribution": {
-    "composer": "William Echols",
-    "composed_for": "H.A.V.O.C.",
-    "license": "MIT",
-    "copyright": "Copyright (c) 2026 William Echols"
-  },
   "source": {
-    "filename": "Galactic Dash.m4a",
-    "sha256": "e06435bc75978eb7f8c46319501d170010c4212211548b56e1486768e4e6d906",
+    "filename": "Lunar Awe.m4a",
+    "sha256": "caa4adbe49115a43d8fe4f4f6599bdfa18c30a5600be3f8cdfccebff3c90e249",
     "sample_rate": 48000,
     "channels": 2,
-    "duration_seconds": 153.5735,
-    "container_duration_seconds": 153.56,
+    "duration_seconds": 99.2135,
+    "container_duration_seconds": 99.2,
     "codec": "opus",
-    "audio_bit_rate": 133322,
+    "audio_bit_rate": 139514,
     "original_metadata": {
       "major_brand": "isom",
       "minor_version": "512",
       "compatible_brands": "isomiso2mp41",
       "encoder": "Lavf60.16.100",
-      "comment": "made with suno; created=2026-10-24T15:43:32Z; id=d1e23c31-d88b-417e-9587-193d00a89167"
+      "comment": "made with suno; created=2026-10-24T18:07:24Z; id=76610524-6bcb-41c4-8fc1-5c8043df5dba"
     }
   },
   "conversion": {
@@ -29,8 +23,8 @@
     "profile": "mono16k3",
     "output_rate": 16000,
     "channels": 1,
-    "frame_count": 2457176,
-    "sample_count": 2457176,
+    "frame_count": 1587416,
+    "sample_count": 1587416,
     "sample_count_unit": "frames",
     "codebook_entries": 8,
     "codebook_count": 521,
@@ -42,13 +36,13 @@
     "channel_processing": "Average (L+R)/2 in floating point before resampling; retain fractional samples",
     "resampler": "Sequential 512-phase 100 dB Kaiser-windowed sinc; floating-point output retained until normalization",
     "normalization": "One track-wide gain; validate final rounded 8-bit PCM sample and true peaks <= -1 dBTP including loop seam; reduce excess plus 0.1 dB and re-encode, at most five attempts",
-    "normalization_gain_db": 5.354121,
+    "normalization_gain_db": 6.934037,
     "normalization_attempts": 2,
     "true_peak_meter": "FFmpeg EBU R128; loop seam included; upper bounds include 0.0005 linear metadata rounding margin",
     "packing": "Continuous LSB-first three-bit codes; stereo alternates left/right; regular segments aligned to eight mono or four stereo frames; zero final padding",
     "reconstruction": "Independent signed-16 saturating predictors retained across segments; output clamp(floor(sample/256+0.5),-128,127); predictors reset at exact loop length",
     "crc": "CRC-8 polynomial 0x07, initial zero, cumulative per 1024 packed bytes including final short chunk",
-    "flac_sha256": "6fb3bcc0776997993e4f691acfb69df1021f3288b2122accc4f65dcb1302b084",
+    "flac_sha256": "a4f83b83aca8a4d3dc5745de5e8ab9193708e1f7170759579c6ec6b21e641520",
     "encoder_files_sha256": {
       "dlt4.rs": "e3b42b30acd7ea690cf50ef4560c9dc34b0a70d534ba271d24796f86e8719259",
       "encoder.rs": "e4b9df9a7ad4d73523a3c70af2c8259ae373226576cbd7128bc50c59d67a6d31",
@@ -71,13 +65,19 @@
     },
     "note": "Original source hashes identify the imported Second Reality algorithms. The local encoder adds DLT4 profiles, closed-loop retraining, beam search, floating-point mono downmix, rounded output and loop-aware peak validation; conversion.encoder_files_sha256 identifies this implementation."
   },
-  "asset_sha256": "a60789ac05afb6a8ed67a95ae820f894d5f251408f7eb28c196b263d77edde22",
-  "decoded_pcm_sha256": "d5ab8476e274019b8cd159c49dd79aef2502f585e546c57725a816b24a048d3c",
-  "reference_pcm_sha256": "791c45194cdd932e498a363e3bbb559ae3ce64813b90b19394b7e347b9404194",
-  "generated_metadata": "galactic-dash-mono.json",
-  "temporary_gameplay_fixture": true,
+  "asset_sha256": "48b03501088e63a86808991538b7306eb3a684cf3bd274f17b1bc2d5ba590678",
+  "decoded_pcm_sha256": "234ae88d518d6c32884182c038230c28589baf45a044dd469bf0047c5619d732",
+  "reference_pcm_sha256": "193a8b5223fc9d4f3ea29f2a9b5e281c3f021912d2c226a2a796bb5d90194c0a",
+  "generated_metadata": "lunar-awe.json",
+  "temporary_gameplay_fixture": false,
+  "attribution": {
+    "composer": "William Echols",
+    "composed_for": "H.A.V.O.C.",
+    "license": "MIT",
+    "copyright": "Copyright (c) 2026 William Echols"
+  },
   "reproduction_commands": {
-    "intermediate": "ffmpeg -v error -y -i \"assets/music/source/Galactic Dash.m4a\" -map 0:a:0 -vn -sample_fmt s16 -c:a flac -threads 1 target/digital-music/galactic-dash-source.flac",
-    "encode": "cargo run --release --manifest-path tools/encode-digital-music/Cargo.toml --target-dir target/digital-music/tool-build -- --profile mono16k3 target/digital-music/galactic-dash-source.flac assets/music/galactic-dash-mono.dlt target/digital-music/galactic-dash-mono-dlt4.wav"
+    "intermediate": "ffmpeg -v error -y -i \"assets/music/source/Lunar Awe.m4a\" -map 0:a:0 -vn -sample_fmt s16 -c:a flac -threads 1 target/digital-music/lunar-awe-source.flac",
+    "encode": "cargo run --release --manifest-path tools/encode-digital-music/Cargo.toml --target-dir target/digital-music/tool-build -- --profile mono16k3 target/digital-music/lunar-awe-source.flac assets/music/lunar-awe.dlt target/digital-music/lunar-awe-dlt4.wav"
   }
 }

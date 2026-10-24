@@ -2,8 +2,9 @@ H.A.V.O.C. v0.1.2 development build - Heavy Assault Vessel: Orbital Combat
 
 Requires a C64 Ultimate at 64 MHz with 16 MiB of REU memory and a joystick
 connected to port 2. The supplied configuration enables the four built-in SIDs
-and Ultimate Audio for digital music throughout the game, with true stereo
-on the title, attract and victory screens. No extra sound chips are needed.
+and Ultimate Audio for digital music throughout the game. Hammond Rocker uses
+true stereo; the other twenty songs use mono with a 10 ms delay between outputs.
+No extra sound chips are needed.
 
 Launch
 1. Copy havoc.cfg, havoc.reu, and havoc.prg to the Ultimate's storage.
@@ -34,6 +35,7 @@ controller-generated fire pulses can accidentally spend your bombs.
 Hammond Rocker plays continuously on the title and throughout the attract tour.
 The final gold-medal reveal starts Galactic Dash. Release fire, then press it
 to return to the title with Galactic Dash still playing.
+Losing all lives starts Mission Failed, which loops until you start a new run.
 Secret preview: CTRL + C= (Commodore) + DEL toggles the two digital songs on
 the title or in attract mode, even before winning. Hold CTRL and C= and tap
 DEL again to switch back. Each song starts from the beginning; the selection
@@ -52,11 +54,13 @@ Shots and impacts choose a side from their screen position when triggered.
 Only a narrow band around the center uses a stereo pair; existing tails keep
 their original side. Bombs, boss explosions and player death remain stereo.
 Starting a game selects its digital stage music while SID combat effects
-continue. The first seven stages have original tracks: Lowland Approach,
-Crystal Cave, Iron Canyon, Canyon Gate, Ashen Wastes, Foundry Belt, and Fortress Run.
-Later stages currently use a temporary mono Galactic Dash recording.
-Gameplay music uses 16 kHz, 3-bit mono with a 10 ms delay between outputs;
-the title and victory recordings retain true stereo. Track changes fade the
+continue. All eighteen stages have original tracks: Lowland Approach, Crystal
+Cave, Iron Canyon, Canyon Gate, Ashen Wastes, Foundry Belt, Fortress Run, Citadel
+Core, Storm Front, Meteor Reach, Carrier Coast, Carrier Assault, Asteroid Belt,
+Shattered Moon (playing Lunar Awe), Ship Graveyard, Orbital Shipyard, Space
+Carrier, and Jump Gate. Stage tracks continue when their bosses arrive.
+Gameplay, victory, and defeat music use 16 kHz, 3-bit mono with a 10 ms delay
+between outputs; Hammond Rocker retains true stereo. Track changes fade the
 outgoing music for about one second before the next song starts; the songs
 do not overlap.
 
@@ -65,7 +69,10 @@ https://github.com/fechols/havoc64u
 
 Original game, quad-SID effects, models, and tools. See LICENSE for the MIT License.
 
-All nine original digital recordings were composed for H.A.V.O.C. by
-William Echols: Hammond Rocker, Galactic Dash, Lowland Approach, Crystal Cave,
-Iron Canyon, Canyon Gate, Ashen Wastes, Foundry Belt, and Fortress Run. Their source recordings
-and encoded versions use the MIT License in MUSIC-LICENSE.txt.
+All twenty-one original digital recordings were composed for H.A.V.O.C. by
+William Echols: Hammond Rocker, Galactic Dash, Mission Failed, Lowland Approach,
+Crystal Cave, Iron Canyon, Canyon Gate, Ashen Wastes, Foundry Belt, Fortress Run,
+Citadel Core, Storm Front, Meteor Reach, Carrier Coast, Carrier Assault,
+Asteroid Belt, Lunar Awe, Ship Graveyard, Orbital Shipyard, Space Carrier, and
+Jump Gate. Their source recordings and encoded versions use the MIT License
+in MUSIC-LICENSE.txt.

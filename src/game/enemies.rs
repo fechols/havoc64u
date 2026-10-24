@@ -42,6 +42,15 @@ fn firing(a: &Actor, requested: u8) -> u8 {
 fn movement_wave(phase: u8, divisor: u8) -> i16 {
     sin8(phase) / i16::from(divisor)
 }
+
+// One resident copy serves the lowland, carrier and flagship overlays. Fixed
+// relative bounds avoid a dynamic clamp's bounds-order check on the target.
+#[inline(never)]
+fn pursue_lane_x(actor: &mut Actor, target: i16) {
+    let target = (target - actor.origin_x).clamp(-32, 32) + actor.origin_x;
+    actor.pos.x += (target - actor.pos.x).clamp(-2, 2);
+}
+
 macro_rules! wave {
     ($name:ident, $section:literal) => {
         #[inline(always)]
@@ -69,10 +78,10 @@ pub(super) unsafe extern "C" fn enemy_lowlands(
         a.pos.x = lowland_wave((a.age as u8).wrapping_mul(2), 4) + a.origin_x;
         a.pos.y = lowland_wave((a.age as u8).wrapping_mul(4), 8) + a.origin_y;
     } else if a.kind == 2 && a.pos.z > 300 {
-        // Weave the aim point, retaining the diver's bounded steering and
-        // its actual position when it commits to the final approach.
+        // Weave the aim point inside the authored lane, retaining bounded
+        // steering and its actual position when it commits to the approach.
         let offset = lowland_wave((a.age as u8).wrapping_mul(2), 8);
-        a.pos.x += (player.x + offset - a.pos.x).clamp(-2, 2);
+        pursue_lane_x(a, player.x + offset);
         a.pos.y += (player.y - a.pos.y).clamp(-1, 1);
     }
     // Preserve the teaching level's staggered, predictable firing rhythm.
@@ -172,7 +181,7 @@ pub(super) unsafe extern "C" fn enemy_carrier(
         a.pos.z -= 14;
         if a.pos.z > 500 {
             let offset = carrier_wave((a.age as u8).wrapping_mul(4), 16);
-            a.pos.x += (player.x + offset - a.pos.x).clamp(-2, 2);
+            pursue_lane_x(a, player.x + offset);
             a.pos.y += (player.y - a.pos.y).clamp(-2, 2);
         }
         0

@@ -1,0 +1,83 @@
+{
+  "source": {
+    "filename": "Carrier Coast.m4a",
+    "sha256": "9ed7ae884d5b25d448a049245395d259e5599e1e8dc48c6bd30f65033f4f44e4",
+    "sample_rate": 48000,
+    "channels": 2,
+    "duration_seconds": 88.7735,
+    "container_duration_seconds": 88.76,
+    "codec": "opus",
+    "audio_bit_rate": 138847,
+    "original_metadata": {
+      "major_brand": "isom",
+      "minor_version": "512",
+      "compatible_brands": "isomiso2mp41",
+      "encoder": "Lavf60.16.100",
+      "comment": "made with suno; created=2026-10-24T17:25:35Z; id=304adff5-c4aa-4826-b93d-7bf6a47fff17"
+    }
+  },
+  "conversion": {
+    "ffmpeg_version": "ffmpeg version n8.1.1-20260506 Copyright (c) 2000-2026 the FFmpeg developers",
+    "intermediate": "16-bit FLAC at original source rate and channels",
+    "format": "DLT4",
+    "profile": "mono16k3",
+    "output_rate": 16000,
+    "channels": 1,
+    "frame_count": 1420376,
+    "sample_count": 1420376,
+    "sample_count_unit": "frames",
+    "codebook_entries": 8,
+    "codebook_count": 521,
+    "lloyd_iterations": 20,
+    "closed_loop_training_passes": 3,
+    "encoder_beam_width": 32,
+    "bits_per_sample": 3,
+    "output_bits_per_sample": 8,
+    "channel_processing": "Average (L+R)/2 in floating point before resampling; retain fractional samples",
+    "resampler": "Sequential 512-phase 100 dB Kaiser-windowed sinc; floating-point output retained until normalization",
+    "normalization": "One track-wide gain; validate final rounded 8-bit PCM sample and true peaks <= -1 dBTP including loop seam; reduce excess plus 0.1 dB and re-encode, at most five attempts",
+    "normalization_gain_db": 4.408821,
+    "normalization_attempts": 3,
+    "true_peak_meter": "FFmpeg EBU R128; loop seam included; upper bounds include 0.0005 linear metadata rounding margin",
+    "packing": "Continuous LSB-first three-bit codes; stereo alternates left/right; regular segments aligned to eight mono or four stereo frames; zero final padding",
+    "reconstruction": "Independent signed-16 saturating predictors retained across segments; output clamp(floor(sample/256+0.5),-128,127); predictors reset at exact loop length",
+    "crc": "CRC-8 polynomial 0x07, initial zero, cumulative per 1024 packed bytes including final short chunk",
+    "flac_sha256": "11bb363291541949a085c21899a5ec82d765e9c05dc0a44c83dac16e6908990a",
+    "encoder_files_sha256": {
+      "dlt4.rs": "e3b42b30acd7ea690cf50ef4560c9dc34b0a70d534ba271d24796f86e8719259",
+      "encoder.rs": "e4b9df9a7ad4d73523a3c70af2c8259ae373226576cbd7128bc50c59d67a6d31",
+      "format.rs": "8dc6ab278db12afb452448cb63389bdd7db8825db38925fe190583b1271a56b4",
+      "lloyd.rs": "4421d54add65d69ef1063204481caa312ed11377e7d8eb34aca7b7e65a3547d5",
+      "main.rs": "54ff87de723426c0008df506bea51fa06cf348674adf4c6ffb4e946b039d3de4",
+      "normalize.rs": "943300775b7e4826e969ee38a29d3c4dde2f47368060d5b44cfb1e696c316caf",
+      "resample.rs": "9c4d2215feafa4846f244070cd9af035f72570bd89f6395a9ef35da960f3e482"
+    },
+    "encoder_binary_sha256": "778ba2a2ffe8a9bc70168a1bd71c4c24d66340b69d090a4eb89c3dd48caacb26"
+  },
+  "tool_source": {
+    "project": "secondreality-opt",
+    "checkout_head": "5f3360f74067fc9ec04301a1eb195173d63a8a1a",
+    "license": "Unlicense",
+    "files_sha256": {
+      "src/audio/flac_to_adpcm.rs": "8e5ff7664ff2cbf339d5abd4114a3bddb63704f28daf3297bc46c5c7c8206105",
+      "src/audio/lloyd.rs": "4421d54add65d69ef1063204481caa312ed11377e7d8eb34aca7b7e65a3547d5",
+      "target-c64/s64-adpcm-music/src/lib.rs": "b17cc8771c8c2a4fdd433ee5d2cdbdfa14b2b7fc0ba4b96f0e4265f2f5fb561e"
+    },
+    "note": "Original source hashes identify the imported Second Reality algorithms. The local encoder adds DLT4 profiles, closed-loop retraining, beam search, floating-point mono downmix, rounded output and loop-aware peak validation; conversion.encoder_files_sha256 identifies this implementation."
+  },
+  "asset_sha256": "45ba3f5902b4352ca3a4c7434ee7d6c13e514564b8f3349e2d0b0d14845659eb",
+  "decoded_pcm_sha256": "500daca08776b794c40a99888c4cd736f10ce606c87300c6dd1b05fcfad9718c",
+  "reference_pcm_sha256": "636d89f9cbbacc23ef8042d48d9a938ffadb95f48ac2ebfaf3f7f444a41c3fb4",
+  "generated_metadata": "carrier-coast.json",
+  "temporary_gameplay_fixture": false,
+  "attribution": {
+    "composer": "William Echols",
+    "composed_for": "H.A.V.O.C.",
+    "license": "MIT",
+    "copyright": "Copyright (c) 2026 William Echols"
+  },
+  "reproduction_commands": {
+    "intermediate": "ffmpeg -v error -y -i \"assets/music/source/Carrier Coast.m4a\" -map 0:a:0 -vn -sample_fmt s16 -c:a flac -threads 1 target/digital-music/carrier-coast-source.flac",
+    "encode": "cargo run --release --manifest-path tools/encode-digital-music/Cargo.toml --target-dir target/digital-music/tool-build -- --profile mono16k3 target/digital-music/carrier-coast-source.flac assets/music/carrier-coast.dlt target/digital-music/carrier-coast-dlt4.wav"
+  }
+}

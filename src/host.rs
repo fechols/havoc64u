@@ -1623,9 +1623,76 @@ pub fn model_directory() -> [u8; MODEL_DIRECTORY_SIZE] {
     directory
 }
 
+/// Author the complete lateral movement envelope outside the visible near
+/// plane. Use the final quantized meshes, every rendered roll and either LOD
+/// silhouette; collision radii do not describe these hulls.
+fn flying_lane_limits(index: u8) -> [(i16, i16); 2] {
+    let models = model_bank(index);
+    let bank = AssetBank::new(&models).expect("generated models");
+    let profile = stage_info(index).enemy_profile;
+    let mut lanes = [(0, i16::MAX); 2];
+    for kind in [FIGHTER, DIVER] {
+        // The cave proxy uses the unrotated mesh's own silhouette. Other
+        // stages can fall back to a diamond even at close range.
+        let mut half_x = if index == 1 {
+            0
+        } else {
+            enemy_scaled(if kind == FIGHTER { 22 } else { 18 })
+        };
+        let phases = if bank.enemy(kind).render_mode == 1 {
+            128
+        } else {
+            1
+        };
+        for phase in 0..phases {
+            let rotation = havoc::math::RotationMatrix::new(0, 0, (phase * 2) as u8);
+            for vertex in 0..bank.vertex_count(kind) {
+                let point = rotation.apply(bank.vertex_bytes(kind, vertex), 8 - bank.shift(kind));
+                half_x = half_x.max(point.x.abs());
+            }
+        }
+        // Projection has equal horizontal focal length and viewport half-width,
+        // so the visible near-plane rectangle extends to +/-NEAR in world X.
+        let safe_center = half_x + havoc::render::NEAR + 1;
+        let limits = if profile == 1 && kind == FIGHTER {
+            // The skimmer finishes its 220-unit crossing at age 110, while its
+            // center is still beyond z=629 even for a late admission. Keep its
+            // existing crossing and bound the settled opposite-side lane.
+            (17, 220 - safe_center - 16)
+        } else {
+            let travel = match (profile, kind) {
+                (0, FIGHTER) => 64,
+                (2, DIVER) => 0, // The sentry returns before its firing hold.
+                _ => 32,         // Harmonic motion or the pursuer's bounded aim lane.
+            };
+            (safe_center + travel + 16, i16::MAX)
+        };
+        assert!(
+            limits.0 <= 180 && limits.0 <= limits.1,
+            "enemy lane exceeds flight bounds"
+        );
+        lanes[(kind - FIGHTER) as usize] = limits;
+    }
+    lanes
+}
+
+fn flying_lane_x(lanes: &[(i16, i16); 2], kind: u8, x: i16, wave: usize) -> i16 {
+    if !matches!(kind, FIGHTER | DIVER) {
+        return x;
+    }
+    let (min, max) = lanes[(kind - FIGHTER) as usize];
+    let side = if x < 0 || (x == 0 && wave & 1 == 0) {
+        -1
+    } else {
+        1
+    };
+    side * x.abs().clamp(min, max)
+}
+
 pub fn segment_bank(index: u8) -> [u8; SEGMENT_SIZE] {
     let design = &CAMPAIGN[index as usize];
     let info = design.info;
+    let lanes = flying_lane_limits(index);
     let mut b = [0; SEGMENT_SIZE];
     b[..4].copy_from_slice(b"SMS2");
     b[4] = index;
@@ -1646,10 +1713,11 @@ pub fn segment_bank(index: u8) -> [u8; SEGMENT_SIZE] {
         for wave in 0..10u16 {
             let base = 1200 + wave * 2700;
             for lane in 0..3i16 {
+                let kind = if wave % 3 == 2 { DIVER } else { FIGHTER };
                 events.push(Spawn {
                     distance: base + lane as u16 * 100,
-                    kind: if wave % 3 == 2 { DIVER } else { FIGHTER },
-                    x: (lane - 1) * 80,
+                    kind,
+                    x: flying_lane_x(&lanes, kind, (lane - 1) * 80, wave as usize),
                     y: if wave % 2 == 0 { 35 } else { -25 },
                     flags: if wave % 4 == 0 && lane == 1 { 1 } else { 0 },
                 });
@@ -1679,7 +1747,7 @@ pub fn segment_bank(index: u8) -> [u8; SEGMENT_SIZE] {
                 events.push(Spawn {
                     distance: base + lane as u16 * delay,
                     kind,
-                    x,
+                    x: flying_lane_x(&lanes, kind, x, wave),
                     y: height,
                     flags: u8::from(lane as u8 == reward),
                 });
@@ -1786,7 +1854,7 @@ pub fn bake(out: &Path) -> Result<(), Box<dyn std::error::Error>> {
     check_package(&reu)?;
     fs::write(out.join("havoc.reu"), &reu)?;
     fs::write(out.join("havoc.cfg"), include_str!("../config/havoc.cfg"))?;
-    let mut report = format!("H.A.V.O.C. package {PACKAGE_ID:08X}\n16 MiB REU; common {COMMON_OFFSET:06X} (3072 bytes; 2048 resident model bytes); eighteen checked 2048-byte stage model banks at {MODEL_BANKS_OFFSET:06X}; 64-byte model directory at {MODEL_DIRECTORY_OFFSET:06X}; eighteen 2048-byte segments at {SEGMENTS_OFFSET:06X}, each with a checksummed 512-byte runtime prefix (up to 62 encounters)\nEighteen 75-second stages, seventeen 8-second crossings: 24:46 scheduled gameplay plus victory reveal. Five bosses: Gorge Warden, Citadel Heart, Carrier, Dreadnought, Gate Guardian.\nFour enemy movement families with distinct terrestrial and orbital meshes; authored three-dimensional debris fields and an orbital ascent.\nFour SIDs: twelve effects oscillators, four independent filters, 21 effects; DAC-only music.\nDLT4 manifest soundtrack at $100000: 20 kHz stereo title/victory and 16 kHz mono gameplay recordings with a placeholder for unrecorded stages; two mutable 64 KiB PCM slots at $FE0000.\n");
+    let mut report = format!("H.A.V.O.C. package {PACKAGE_ID:08X}\n16 MiB REU; common {COMMON_OFFSET:06X} (3072 bytes; 2048 resident model bytes); eighteen checked 2048-byte stage model banks at {MODEL_BANKS_OFFSET:06X}; 64-byte model directory at {MODEL_DIRECTORY_OFFSET:06X}; eighteen 2048-byte segments at {SEGMENTS_OFFSET:06X}, each with a checksummed 512-byte runtime prefix (up to 62 encounters)\nEighteen 75-second stages, seventeen 8-second crossings: 24:46 scheduled gameplay plus victory reveal. Five bosses: Gorge Warden, Citadel Heart, Carrier, Dreadnought, Gate Guardian.\nFour enemy movement families with distinct terrestrial and orbital meshes; authored three-dimensional debris fields and an orbital ascent.\nFour SIDs: twelve effects oscillators, four independent filters, 21 effects; DAC-only music.\nDLT4 manifest soundtrack at $100000: 21 full-length recordings: 20 kHz stereo Hammond Rocker; 16 kHz mono Galactic Dash, Mission Failed, and all eighteen stage songs, with a 10 ms right-channel delay; two mutable 64 KiB PCM slots at $FE0000.\n");
     for (index, design) in CAMPAIGN.iter().enumerate() {
         report.push_str(&format!(
             "{:02}. {}: theme {}, enemy profile {}, boss {}, music {}\n",

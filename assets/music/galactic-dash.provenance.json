@@ -26,11 +26,11 @@
     "ffmpeg_version": "ffmpeg version n8.1.1-20260506 Copyright (c) 2000-2026 the FFmpeg developers",
     "intermediate": "16-bit FLAC at original source rate and channels",
     "format": "DLT4",
-    "profile": "stereo20k3",
-    "output_rate": 20000,
-    "channels": 2,
-    "frame_count": 3071470,
-    "sample_count": 3071470,
+    "profile": "mono16k3",
+    "output_rate": 16000,
+    "channels": 1,
+    "frame_count": 2457176,
+    "sample_count": 2457176,
     "sample_count_unit": "frames",
     "codebook_entries": 8,
     "codebook_count": 521,
@@ -39,10 +39,10 @@
     "encoder_beam_width": 32,
     "bits_per_sample": 3,
     "output_bits_per_sample": 8,
-    "channel_processing": "Preserve original left/right channels with one shared gain",
+    "channel_processing": "Average (L+R)/2 in floating point before resampling; retain fractional samples",
     "resampler": "Sequential 512-phase 100 dB Kaiser-windowed sinc; floating-point output retained until normalization",
     "normalization": "One track-wide gain; validate final rounded 8-bit PCM sample and true peaks <= -1 dBTP including loop seam; reduce excess plus 0.1 dB and re-encode, at most five attempts",
-    "normalization_gain_db": 4.598301,
+    "normalization_gain_db": 5.354121,
     "normalization_attempts": 2,
     "true_peak_meter": "FFmpeg EBU R128; loop seam included; upper bounds include 0.0005 linear metadata rounding margin",
     "packing": "Continuous LSB-first three-bit codes; stereo alternates left/right; regular segments aligned to eight mono or four stereo frames; zero final padding",
@@ -71,13 +71,13 @@
     },
     "note": "Original source hashes identify the imported Second Reality algorithms. The local encoder adds DLT4 profiles, closed-loop retraining, beam search, floating-point mono downmix, rounded output and loop-aware peak validation; conversion.encoder_files_sha256 identifies this implementation."
   },
-  "asset_sha256": "dcb25d3fdece597bf424100aef034ccd26148fedf18c5bd20724237bab5cdf9f",
-  "decoded_pcm_sha256": "e2acd325fa971bdd08d744d1fa1d95f58d7c6c9d147948ad1f47db90cc0bb7b5",
-  "reference_pcm_sha256": "ee134fc2a92cbbda5dad965ec193b47db7e11bbb1991e6cd8c747044ffede01f",
+  "asset_sha256": "a60789ac05afb6a8ed67a95ae820f894d5f251408f7eb28c196b263d77edde22",
+  "decoded_pcm_sha256": "d5ab8476e274019b8cd159c49dd79aef2502f585e546c57725a816b24a048d3c",
+  "reference_pcm_sha256": "791c45194cdd932e498a363e3bbb559ae3ce64813b90b19394b7e347b9404194",
   "generated_metadata": "galactic-dash.json",
   "temporary_gameplay_fixture": false,
   "reproduction_commands": {
     "intermediate": "ffmpeg -v error -y -i \"assets/music/source/Galactic Dash.m4a\" -map 0:a:0 -vn -sample_fmt s16 -c:a flac -threads 1 target/digital-music/galactic-dash-source.flac",
-    "encode": "cargo run --release --manifest-path tools/encode-digital-music/Cargo.toml --target-dir target/digital-music/tool-build -- --profile stereo20k3 target/digital-music/galactic-dash-source.flac assets/music/galactic-dash.dlt target/digital-music/galactic-dash-dlt4.wav"
+    "encode": "cargo run --release --manifest-path tools/encode-digital-music/Cargo.toml --target-dir target/digital-music/tool-build -- --profile mono16k3 target/digital-music/galactic-dash-source.flac assets/music/galactic-dash.dlt target/digital-music/galactic-dash-dlt4.wav"
   }
 }

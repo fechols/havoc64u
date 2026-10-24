@@ -95,7 +95,7 @@ fn delayed_waves_repeat_each_enemy_once_with_its_properties_and_rewards() {
         game.kill_actor(slot, &bank);
     }
     assert_eq!(game.kills, 6);
-    assert_eq!((game.bombs, game.bomb_kills), (1, 1));
+    assert_eq!((game.bombs, game.bomb_kills), (0, 6));
     let expected_score: u32 = [assets::FIGHTER, assets::DIVER, assets::TURRET]
         .into_iter()
         .map(|kind| u32::from(bank.enemy(kind).score) * 2)
@@ -268,11 +268,11 @@ fn every_layout_seed_keeps_enemies_in_bounds_and_ground_units_mounted() {
     let records = [
         Spawn {
             y: -55,
-            ..spawn(assets::FIGHTER, 800, -115)
+            ..spawn(assets::FIGHTER, 800, -180)
         },
         Spawn {
             y: 90,
-            ..spawn(assets::DIVER, 800, 115)
+            ..spawn(assets::DIVER, 800, 180)
         },
         Spawn {
             y: -90,
@@ -307,7 +307,8 @@ fn every_layout_seed_keeps_enemies_in_bounds_and_ground_units_mounted() {
             }
         );
         for actor in &game.actors[..3] {
-            assert!((-115..=115).contains(&actor.origin_x));
+            let limit = if actor.kind == assets::TURRET { 115 } else { 180 };
+            assert!((-limit..=limit).contains(&actor.origin_x));
             assert!((1736..=1863).contains(&actor.pos.z));
             if actor.kind == assets::TURRET {
                 assert_eq!(actor.origin_y, -90);
@@ -361,7 +362,7 @@ fn extreme_valid_coordinates_clamp_without_wrapping_or_overflowing() {
             .collect();
         assert_eq!(
             positions,
-            [(-115, -55), (115, 90), (-115, 90), (115, -55)],
+            [(-180, -55), (180, 90), (-180, 90), (180, -55)],
             "seed {seed}"
         );
     }

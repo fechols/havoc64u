@@ -48,12 +48,19 @@ fn shipped_tracks_have_exact_profile_bounds_and_all_stream_checksums() {
     assert!(CATALOG_END <= RING_OFFSET);
     assert_eq!(MUSIC_CAPACITY, 15_597_568);
     assert_eq!(RING_OFFSET + RING_BYTES, REU_SIZE);
+    assert_eq!(Track::ALL.len(), 21);
+    assert_eq!(DIRECTORY_BYTES, 400);
+    assert_eq!((SAMPLE_RATE, CHANNELS, CODEBOOK_BYTES), (16_000, 1, 24));
+    assert_eq!(
+        CODEBOOK_COUNT,
+        Track::GalacticDash.descriptor().metadata.codebook_count
+    );
     assert_eq!(
         Track::ALL[..3],
         [
             Track::GalacticDash,
             Track::HammondRocker,
-            Track::GalacticDashMono
+            Track::MissionFailed
         ]
     );
     assert_eq!(
@@ -66,7 +73,23 @@ fn shipped_tracks_have_exact_profile_bounds_and_all_stream_checksums() {
     );
     assert_eq!(
         track_for_cue(havoc::audio::MusicState::Lowlands),
-        Track::GalacticDashMono
+        Track::GalacticDash
+    );
+    assert_eq!(
+        track_for_cue(havoc::audio::MusicState::Defeat),
+        Track::MissionFailed
+    );
+    assert_eq!(
+        track_for_cue(havoc::audio::MusicState::Ascent),
+        Track::GalacticDash
+    );
+    assert_eq!(
+        TRACKS
+            .iter()
+            .filter(|(track, _)| track.descriptor().metadata.channels == 2)
+            .map(|(track, _)| *track)
+            .collect::<Vec<_>>(),
+        vec![Track::HammondRocker]
     );
     for id in 0..=255 {
         assert_eq!(
@@ -80,22 +103,44 @@ fn shipped_tracks_have_exact_profile_bounds_and_all_stream_checksums() {
 fn recorded_stages_override_shared_cues_and_special_scenes_keep_their_music() {
     use havoc::audio::MusicState;
     let stages = [
-        (MusicState::Lowlands, Track::LowlandApproach),
-        (MusicState::CrystalCurrent, Track::CrystalCave),
-        (MusicState::Canyon, Track::IronCanyon),
-        (MusicState::Canyon, Track::CanyonGate),
-        (MusicState::AshesAndSteel, Track::AshenWastes),
-        (MusicState::AshesAndSteel, Track::FoundryBelt),
-        (MusicState::Fortress, Track::FortressRun),
+        (0, MusicState::Lowlands, Track::LowlandApproach),
+        (1, MusicState::CrystalCurrent, Track::CrystalCave),
+        (2, MusicState::Canyon, Track::IronCanyon),
+        (3, MusicState::Canyon, Track::CanyonGate),
+        (4, MusicState::AshesAndSteel, Track::AshenWastes),
+        (5, MusicState::AshesAndSteel, Track::FoundryBelt),
+        (6, MusicState::Fortress, Track::FortressRun),
+        (7, MusicState::Fortress, Track::CitadelCore),
+        (8, MusicState::TempestDrive, Track::StormFront),
+        (9, MusicState::TempestDrive, Track::MeteorReach),
+        (10, MusicState::Carrier, Track::CarrierCoast),
+        (11, MusicState::Carrier, Track::CarrierAssault),
+        (12, MusicState::AsteroidBelt, Track::AsteroidBelt),
+        (13, MusicState::ShatteredMoon, Track::LunarAwe),
+        (14, MusicState::ShipGraveyard, Track::ShipGraveyard),
+        (15, MusicState::OrbitalShipyard, Track::OrbitalShipyard),
+        (16, MusicState::SpaceCarrier, Track::SpaceCarrier),
+        (17, MusicState::JumpGate, Track::JumpGate),
     ];
-    for (stage, (cue, track)) in stages.into_iter().enumerate() {
-        assert_eq!(track_for_scene(cue, stage as u8), track);
+    for (stage, cue, track) in stages {
+        assert_eq!(track_for_scene(cue, stage), track);
         assert_eq!(track.descriptor().metadata.channels, 1);
     }
     assert_eq!(
         track_for_scene(MusicState::GorgeWarden, 3),
         Track::CanyonGate
     );
+    assert_eq!(
+        track_for_scene(MusicState::CarrierOverdrive, 11),
+        Track::CarrierAssault
+    );
+    for (stage, cue, track) in [
+        (7, MusicState::CitadelHeart, Track::CitadelCore),
+        (16, MusicState::CarrierOverdrive, Track::SpaceCarrier),
+        (17, MusicState::GateGuardian, Track::JumpGate),
+    ] {
+        assert_eq!(track_for_scene(cue, stage), track);
+    }
     for stage in 0..=255 {
         for cue in [
             MusicState::Title,
@@ -106,7 +151,7 @@ fn recorded_stages_override_shared_cues_and_special_scenes_keep_their_music() {
             assert_eq!(track_for_scene(cue, stage), track_for_cue(cue));
         }
     }
-    for stage in 7..=255 {
+    for stage in 18..=255 {
         for cue in 0..havoc::audio::CUE_COUNT as u8 {
             let cue = MusicState::from_cue(cue).unwrap();
             assert_eq!(track_for_scene(cue, stage), track_for_cue(cue));
@@ -134,19 +179,19 @@ fn malformed_or_different_track_headers_are_rejected_before_dma() {
     }
     assert_eq!(
         parse_header(ASSET, Track::HammondRocker),
-        Err(DigitalError::Bounds)
+        Err(DigitalError::Profile)
     );
     assert_eq!(
         parse_header(HAMMOND, Track::GalacticDash),
-        Err(DigitalError::Bounds)
+        Err(DigitalError::Profile)
     );
     assert_eq!(
         validate_asset(ASSET, Track::HammondRocker),
-        Err(DigitalError::Bounds)
+        Err(DigitalError::Profile)
     );
     assert_eq!(
         validate_asset(HAMMOND, Track::GalacticDash),
-        Err(DigitalError::Bounds)
+        Err(DigitalError::Profile)
     );
 }
 
@@ -242,12 +287,8 @@ fn directory_padding_and_packed_catalog_are_bound_to_compiled_descriptors() {
     assert_eq!(directory[10] as usize, STAGE_COUNT);
     assert_eq!(&directory[11..14], &[0; 3]);
     assert_eq!(
-        &directory[stage_offset..stage_offset + 7],
-        &[3, 4, 5, 6, 7, 8, 9]
-    );
-    assert_eq!(
-        &directory[stage_offset + 7..stage_offset + STAGE_COUNT],
-        &[255; 11]
+        &directory[stage_offset..stage_offset + STAGE_COUNT],
+        &[3, 4, 5, 6, 7, 8, 9, 17, 10, 11, 12, 13, 14, 15, 16, 18, 19, 20]
     );
     assert!(directory[stage_offset + STAGE_COUNT..]
         .iter()

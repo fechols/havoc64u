@@ -1,7 +1,8 @@
 H.A.V.O.C. - Ultimate audio and combat frame-rate comparison
 
-The new build is in D:\havoc. The previous v15 build is retained separately
-in D:\havoc-audio-baseline. Keep each folder's PRG, REU and CFG together.
+For this comparison, copy the matching new PRG, REU and CFG from dist into
+D:\havoc. Keep the previous v15 build separately in D:\havoc-audio-baseline.
+Keep each folder's PRG, REU and CFG together.
 
 Use the same display, video standard, joystick and audio output for both runs.
 Import havoc.cfg and check that CPU Speed is 64. The supplied configurations
@@ -21,14 +22,25 @@ For each build:
 
 Listen for punch and clarity: a deep, snappy "pew" cannon that no longer
 blurs under sustained fire, hull impacts as a heavy thud and crunch (not a
-ricochet), deep ship explosions that hit at full chip volume for four
-frames, re-blast once and sink into a low rumble, and a bomb that hits at
-full chip volume for three frames before settling. The barrel roll should be
-a rising whoosh with a spinning tone, not a wobble.
+ricochet), ship explosions with a sharp crack followed 80 ms later by a
+deep boom and fading rumble, and a bomb that hits at full chip volume for
+three frames before settling. The barrel roll should be
+a Doppler pass: a tone sinking as a whoosh swells and closes behind it, with
+no rising "jump" sweep. The homing-missile-ready cue should be a low two-tone
+lock-on, not a bright bell.
 Check that the brief full-volume punches on hits, explosions and the bomb
 sit well against the music and do not overwhelm it; the sustained level is
 unchanged. Filter sweeps and effect durations still use 50 Hz timing. Check
 left/right placement.
+
+The complete soundtrack has twenty-one full-length songs. Check the dedicated
+Citadel Core, Orbital Shipyard, Space Carrier, and Jump Gate recordings, and
+confirm each stage song continues when its boss arrives. Losing all lives
+should start Mission Failed; a fresh fire press should restore stage music.
+Victory selects the sole mono Galactic Dash encoding. Listen for its 10 ms
+right-channel delay, loop seam, and transitions to and from the stereo Hammond
+Rocker title song. Mission Failed should loop while Game Over remains on screen;
+returning to the title after victory should keep Galactic Dash playing.
 
 The F readout averages frames over roughly one second; it cannot identify
 every individual frame stall. Emulator SFX benchmarks and native DAC models

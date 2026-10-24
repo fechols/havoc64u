@@ -152,8 +152,7 @@ pub(super) static PROGRAMS: [Program; PROGRAM_COUNT] = [
         retrigger: 0,
         accent: ACCENT_NONE,
     },
-    // 3 explosion (left): noise and thump fall, the sub holds; a second
-    // blast at tick five.
+    // 3 missile impact: falling noise, body and sub; a second blast at tick five.
     Program {
         slide: [-4, -3, -6],
         pwm_rate: 0,
@@ -163,14 +162,15 @@ pub(super) static PROGRAMS: [Program; PROGRAM_COUNT] = [
         retrigger: 5,
         accent: ACCENT_NONE,
     },
-    // 4 explosion (right): decorrelated slides and a later second blast.
+    // 4 enemy explosion: the crack starts at age one; reveal the falling
+    // pulse and steady sub at age five, 80 ms later, without another crack.
     Program {
-        slide: [-3, -4, -7],
+        slide: [-4, -5, 0],
         pwm_rate: 0,
         pwm_depth: 0,
-        change: 255,
-        late_waves: [0, 0, 0],
-        retrigger: 6,
+        change: 5,
+        late_waves: [0, PULSE, TRI],
+        retrigger: 0,
         accent: ACCENT_NONE,
     },
     // 5 cinematic: slow descent with pulse motion and a second detonation.
@@ -343,23 +343,24 @@ pub(super) static PATCHES: [Patch; 21] = [
         late_resonance: late(0, 1),
         programs: programs(8, 8),
     },
-    // Roll: a band-pass whoosh sweeps up and back down through the noise
-    // while a G3 pulse spins up with pulse motion and a ring-modulated C5
-    // shimmers above it. Fits the 25-tick barrel roll.
+    // Roll: a Doppler pass. A G3 pulse with pulse-width motion and a D3
+    // sawtooth a fourth below sink together while a band-passed noise whoosh
+    // swells and closes behind them; no pitch rise and no punch. Fits the
+    // 25-tick barrel roll.
     Patch {
-        notes: [20, 6, 13],
-        waves: [NOISE, PULSE, TRI | RING],
-        ad: [ad(4, 8), ad(2, 4), ad(6, 6)],
-        sr: [sr(10, 6), sr(12, 5), sr(8, 6)],
+        notes: [6, 5, 20],
+        waves: [PULSE, SAW, NOISE],
+        ad: [ad(3, 6), ad(4, 6), ad(4, 8)],
+        sr: [sr(11, 6), sr(8, 6), sr(10, 6)],
         pulse: [8, 8, 8],
-        cutoff: [20, 180, 30],
-        attack: 10,
+        cutoff: [30, 170, 12],
+        attack: 9,
         release: 20,
         duration: 26,
-        filter: BP | 1,
-        resonance: res(8, 2),
-        late_resonance: late(0, 1),
-        programs: programs(6, 6),
+        filter: BP | 4,
+        resonance: res(9, 2),
+        late_resonance: late(0, 0),
+        programs: programs(11, 11),
     },
     // Bomb: C2 pulse and G2 sawtooth sink under a bright noise rumble; the
     // low-pass opens fully then closes slowly; three punch ticks and a second
@@ -379,24 +380,24 @@ pub(super) static PATCHES: [Patch; 21] = [
         late_resonance: late(0, 3),
         programs: programs(5, 5),
     },
-    // EnemyExplosion: a G3-rate noise burst darkens into a rumble as its rate
-    // falls, a dry C2 pulse thump drops an octave, a G1 sub holds under it;
-    // the low-pass closes from fully open to about 850 Hz. Four punch ticks
-    // and a re-blast on both sides.
+    // EnemyExplosion: a brief D6-rate noise crack, then a dry falling C2
+    // pulse and steady G1 sub enter 80 ms later. The bass envelopes run
+    // behind silent waveforms until the boom; the low-pass closes from
+    // fully open as they enter. Four punch ticks, no noise retrigger.
     Patch {
-        notes: [6, 1, 0],
-        waves: [NOISE, PULSE, TRI],
-        ad: [ad(0, 8), ad(0, 6), ad(0, 8)],
-        sr: [sr(8, 7), sr(2, 5), sr(5, 6)],
+        notes: [20, 1, 0],
+        waves: [NOISE, 0, 0],
+        ad: [ad(0, 2), ad(0, 8), ad(0, 8)],
+        sr: [sr(0, 0), sr(2, 5), sr(5, 6)],
         pulse: [8, 8, 8],
-        cutoff: [255, 220, 18],
-        attack: 4,
+        cutoff: [255, 255, 18],
+        attack: 5,
         release: 20,
         duration: 30,
         filter: LP | 5,
         resonance: res(11, 3),
         late_resonance: late(0, 4),
-        programs: programs(3, 4),
+        programs: programs(4, 4),
     },
     // Footstep: a quarter-width C2 thud with a G1 triangle under it and a
     // short noise scuff, all low-passed.
@@ -586,22 +587,25 @@ pub(super) static PATCHES: [Patch; 21] = [
         late_resonance: late(0, 0),
         programs: programs(10, 10),
     },
-    // MissileReady: an E6 triangle bell with a ring-modulated C#6 partial and
-    // a thin C6 pulse; the chime re-attacks and climbs.
+    // MissileReady: a low two-tone lock-on. A G4 triangle plucks and fades
+    // as a C5 square swells in a fourth above it through a low-pass that
+    // opens gently and settles; no ring modulation, no punch, nothing above
+    // the fifth octave. Voice 0 (the cannon program's dropping voice) is
+    // silent.
     Patch {
-        notes: [21, 19, 18],
-        waves: [TRI, TRI | RING, PULSE],
-        ad: [ad(0, 8), ad(0, 8), ad(0, 7)],
-        sr: [sr(0, 4), sr(0, 4), sr(0, 4)],
-        pulse: [8, 8, 4],
-        cutoff: [180, 220, 200],
-        attack: 2,
+        notes: [0, 11, 13],
+        waves: [TRI, TRI, PULSE],
+        ad: [ad(0, 0), ad(0, 5), ad(7, 6)],
+        sr: [sr(0, 0), sr(0, 4), sr(7, 4)],
+        pulse: [8, 8, 8],
+        cutoff: [20, 44, 36],
+        attack: 8,
         release: 10,
-        duration: 14,
-        filter: LP,
-        resonance: res(0, 2),
-        late_resonance: late(0, 1),
-        programs: programs(8, 8),
+        duration: 15,
+        filter: LP | 4,
+        resonance: res(2, 2),
+        late_resonance: late(0, 0),
+        programs: programs(0, 0),
     },
     // LowShield: a B4 pulse siren toggling octaves, re-attacked at tick
     // eight, with a high-passed sawtooth and a noise tick behind it.

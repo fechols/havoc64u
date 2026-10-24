@@ -10,7 +10,7 @@ Fly an original 3D rail shooter for the **64 MHz C64 Ultimate**. Skim green hill
 
 - **3D worlds** — Dive through colorful landscapes and orbital scenery.
 - **Quad-SID effects** — Deep energy-cannon fire, heavy hull impacts, and resonant filter sweeps. Each effect uses one SID or a stereo pair; four chips let sounds overlap. Music plays entirely through the DACs.
-- **Stereo rock music** — Rock out to Hammond Rocker through the title and attract tour. Earn the final gold medal to hear Galactic Dash on the victory, title and attract screens.
+- **Rock soundtrack** — Rock out to Hammond Rocker through the title and attract tour, hear a different song in every stage, and earn the final gold medal for Galactic Dash. Mission Failed closes an unsuccessful run.
 - **18 varied stages** — Journey from green hills to orbital battlefields.
 - **Five bosses** — Break their defenses and strike their exposed cores.
 - **Aircraft-like handling** — Bank, climb, and dive with weight and momentum.
@@ -20,7 +20,7 @@ Fly an original 3D rail shooter for the **64 MHz C64 Ultimate**. Skim green hill
 - **Checkpoints and pause** — Retain your score after losing a life; take breaks.
 - **Punchy impacts** — Feel hits and bombs through screen shake and flashes.
 
-The development build includes nine original digital recordings composed for H.A.V.O.C. by William Echols. The first seven stages have their own songs: Lowland Approach, Crystal Cave, Iron Canyon, Canyon Gate, Ashen Wastes, Foundry Belt, and Fortress Run. Gameplay music uses 16 kHz, 3-bit mono compression with a 10 ms delay between outputs; later stages currently use a temporary mono Galactic Dash fixture. Title and victory songs retain true stereo, and SID combat effects remain active. See the [current implementation status](docs/digital-music-handoff.md#current-development-status-dlt4). The v0.1.2 download below retains its released soundtrack and playback behavior.
+The development build includes twenty-one original digital recordings composed for H.A.V.O.C. by William Echols. All eighteen stages have their own songs; Shattered Moon plays Lunar Awe. Mission Failed plays after losing all lives, and Galactic Dash celebrates victory. Stage music, Mission Failed, and Galactic Dash use 16 kHz, 3-bit mono compression with a 10 ms delay between outputs. Hammond Rocker retains true stereo, and SID combat effects remain active. Every song keeps its full length, with one encoding per recording. See the [current implementation status](docs/digital-music-handoff.md#current-development-status-dlt4). The v0.1.2 download below retains its released soundtrack and playback behavior.
 
 The development revision runs the four-SID effects engine in resident assembly at 50 Hz. Each chip acts as one instrument with three hardware voices shaping its attack, body, and tail. Each effect uses at most one SID per channel; a stereo bomb leaves one left and one right chip available for ship explosions, and repeating it restarts its existing pair. Shots and impacts follow their screen position with a narrow center band and gentle headphone separation. Pitch and pulse-width movement, staged waveforms, sync, ring modulation and filter sweeps remain. Track changes fade the outgoing digital music for about one second before the next song starts, without a crossfade. Current validation and the sustained-combat CPU measurements are tracked in the [audio implementation notes](docs/hardware.md#quad-sid-effects).
 
@@ -84,7 +84,7 @@ Your ship flies forward automatically. You steer around enemies, incoming shots,
 Watch the weapon meter: **HOMING MISSILE** means your next shot tracks a random target ahead, switching targets when needed. Charge longer for stronger straight shots.
 
 - **Roll through shots, dodge scenery.** Keep steering and firing during a roll, but avoid solid obstacles.
-- **Clear a path.** Shoot small orbital fragments; bomb large rocks and wreckage. Every five enemy kills restore one bomb, up to three.
+- **Clear a path.** Shoot small orbital fragments; bomb large rocks and wreckage. Every 15 enemy kills restore one bomb, up to three.
 - **Collect supplies.** Green shields restore 60 points, up to 100; purple rectangles add one bomb, up to three.
 - **Break the boss's defenses.** Destroy both side units, then the core, to advance. Each boss defeat restores full shields and three bombs.
 - **Make each life count.** Normal mode starts with three lives. The development build also offers Story mode with 99 lives: press **S** at the title to select it, then press fire. The choice remains selected until you toggle it again or restart the program. Losing a life restarts the current stage with your score intact; losing all lives ends the run. A fresh fire press retries with the selected starting lives.
@@ -102,6 +102,6 @@ See the [setup and troubleshooting guide](docs/hardware.md) for help getting sta
 
 The game, its original tools, models, SID score, and screenshots are released under the [MIT License](LICENSE).
 
-All nine original digital recordings were composed for H.A.V.O.C. by **William Echols**: Hammond Rocker, Galactic Dash, Lowland Approach, Crystal Cave, Iron Canyon, Canyon Gate, Ashen Wastes, Foundry Belt, and Fortress Run. Their source recordings and encoded versions are covered by the [music MIT License](assets/music/LICENSE), included in player archives as `MUSIC-LICENSE.txt`.
+All twenty-one original digital recordings were composed for H.A.V.O.C. by **William Echols**: Hammond Rocker, Galactic Dash, Mission Failed, Lowland Approach, Crystal Cave, Iron Canyon, Canyon Gate, Ashen Wastes, Foundry Belt, Fortress Run, Citadel Core, Storm Front, Meteor Reach, Carrier Coast, Carrier Assault, Asteroid Belt, Lunar Awe, Ship Graveyard, Orbital Shipyard, Space Carrier, and Jump Gate. Their source recordings and encoded versions are covered by the [music MIT License](assets/music/LICENSE), included in player archives as `MUSIC-LICENSE.txt`.
 
 The digital encoder also includes public-domain code under its accompanying [Unlicense](tools/encode-digital-music/UNLICENSE).

@@ -5,7 +5,7 @@ pub enum Track {
     #[default]
     GalacticDash = 0,
     HammondRocker = 1,
-    GalacticDashMono = 2,
+    MissionFailed = 2,
     LowlandApproach = 3,
     CrystalCave = 4,
     IronCanyon = 5,
@@ -13,14 +13,25 @@ pub enum Track {
     AshenWastes = 7,
     FoundryBelt = 8,
     FortressRun = 9,
+    StormFront = 10,
+    MeteorReach = 11,
+    CarrierCoast = 12,
+    CarrierAssault = 13,
+    AsteroidBelt = 14,
+    LunarAwe = 15,
+    ShipGraveyard = 16,
+    CitadelCore = 17,
+    OrbitalShipyard = 18,
+    SpaceCarrier = 19,
+    JumpGate = 20,
 }
 impl Track {
-    pub const ALL: [Self; 10] = [Self::GalacticDash, Self::HammondRocker, Self::GalacticDashMono, Self::LowlandApproach, Self::CrystalCave, Self::IronCanyon, Self::CanyonGate, Self::AshenWastes, Self::FoundryBelt, Self::FortressRun];
+    pub const ALL: [Self; 21] = [Self::GalacticDash, Self::HammondRocker, Self::MissionFailed, Self::LowlandApproach, Self::CrystalCave, Self::IronCanyon, Self::CanyonGate, Self::AshenWastes, Self::FoundryBelt, Self::FortressRun, Self::StormFront, Self::MeteorReach, Self::CarrierCoast, Self::CarrierAssault, Self::AsteroidBelt, Self::LunarAwe, Self::ShipGraveyard, Self::CitadelCore, Self::OrbitalShipyard, Self::SpaceCarrier, Self::JumpGate];
     pub const fn from_id(id: u8) -> Option<Self> {
         match id {
             0 => Some(Self::GalacticDash),
             1 => Some(Self::HammondRocker),
-            2 => Some(Self::GalacticDashMono),
+            2 => Some(Self::MissionFailed),
             3 => Some(Self::LowlandApproach),
             4 => Some(Self::CrystalCave),
             5 => Some(Self::IronCanyon),
@@ -28,67 +39,46 @@ impl Track {
             7 => Some(Self::AshenWastes),
             8 => Some(Self::FoundryBelt),
             9 => Some(Self::FortressRun),
+            10 => Some(Self::StormFront),
+            11 => Some(Self::MeteorReach),
+            12 => Some(Self::CarrierCoast),
+            13 => Some(Self::CarrierAssault),
+            14 => Some(Self::AsteroidBelt),
+            15 => Some(Self::LunarAwe),
+            16 => Some(Self::ShipGraveyard),
+            17 => Some(Self::CitadelCore),
+            18 => Some(Self::OrbitalShipyard),
+            19 => Some(Self::SpaceCarrier),
+            20 => Some(Self::JumpGate),
             _ => None,
         }
     }
     #[inline(always)]
     pub fn descriptor(self) -> &'static Descriptor { descriptor(self) }
 }
-pub const GALACTIC_OFFSET: u32 = 0x1000e0;
-pub const HAMMOND_OFFSET: u32 = 0x3391f0;
-pub const SAMPLE_COUNT: u32 = 3071470;
-pub const SAMPLES_PER_SEGMENT: u32 = 5892;
-pub const STREAM_BYTES: u32 = 2303603;
-pub const STREAM_OFFSET: u32 = 25040;
-pub const CRC_OFFSET: u32 = 2328643;
-pub const CRC_COUNT: usize = 2250;
-pub const ASSET_BYTES: u32 = 2330893;
-pub const HEADER_CHECKSUM: u16 = 19031;
-pub const CODEBOOK_CHECKSUM: u16 = 14526;
-pub const CRC_TABLE_CHECKSUM: u16 = 55536;
-pub const ASSET_CHECKSUM: u16 = 21466;
-pub const CATALOG_END: u32 = 0xad2132;
-pub const DIRECTORY_BYTES: usize = 224;
-pub const DIRECTORY_CHECKSUM: u16 = 57792;
-const TRACK_DESCRIPTORS: [Descriptor; 10] = [
+pub const GALACTIC_OFFSET: u32 = 0x100190;
+pub const HAMMOND_OFFSET: u32 = 0x1e4570;
+// Compatibility constants describe the canonical Galactic Dash asset.
+pub const SAMPLE_RATE: u32 = 16000;
+pub const CHANNELS: u8 = 1;
+pub const CODEBOOK_COUNT: u16 = 521;
+pub const SAMPLE_COUNT: u32 = 2457176;
+pub const SAMPLES_PER_SEGMENT: u32 = 4712;
+pub const STREAM_BYTES: u32 = 921441;
+pub const STREAM_OFFSET: u32 = 12536;
+pub const CRC_OFFSET: u32 = 933977;
+pub const CRC_COUNT: usize = 900;
+pub const ASSET_BYTES: u32 = 934877;
+pub const HEADER_CHECKSUM: u16 = 1641;
+pub const CODEBOOK_CHECKSUM: u16 = 54093;
+pub const CRC_TABLE_CHECKSUM: u16 = 54989;
+pub const ASSET_CHECKSUM: u16 = 53664;
+pub const CATALOG_END: u32 = 0xef7f24;
+pub const DIRECTORY_BYTES: usize = 400;
+pub const DIRECTORY_CHECKSUM: u16 = 16682;
+const TRACK_DESCRIPTORS: [Descriptor; 21] = [
     Descriptor {
-        asset_offset: 0x1000e0,
-        asset_bytes: 2330893,
-        header_checksum: 19031,
-        codebook_checksum: 14526,
-        crc_table_checksum: 55536,
-        asset_checksum: 21466,
-        metadata: Metadata {
-            total_samples: 3071470,
-            stream_bytes: 2303603,
-            samples_per_segment: 5892,
-            stream_offset: 25040,
-            crc_offset: 2328643,
-            codebook_count: 521,
-            sample_rate: 20000,
-            channels: 2,
-        },
-    },
-    Descriptor {
-        asset_offset: 0x3391f0,
-        asset_bytes: 3177119,
-        header_checksum: 15879,
-        codebook_checksum: 13225,
-        crc_table_checksum: 44320,
-        asset_checksum: 3956,
-        metadata: Metadata {
-            total_samples: 4198670,
-            stream_bytes: 3149003,
-            samples_per_segment: 8056,
-            stream_offset: 25040,
-            crc_offset: 3174043,
-            codebook_count: 521,
-            sample_rate: 20000,
-            channels: 2,
-        },
-    },
-    Descriptor {
-        asset_offset: 0x640c90,
+        asset_offset: 0x100190,
         asset_bytes: 934877,
         header_checksum: 1641,
         codebook_checksum: 54093,
@@ -106,7 +96,43 @@ const TRACK_DESCRIPTORS: [Descriptor; 10] = [
         },
     },
     Descriptor {
-        asset_offset: 0x725070,
+        asset_offset: 0x1e4570,
+        asset_bytes: 3177119,
+        header_checksum: 15879,
+        codebook_checksum: 13225,
+        crc_table_checksum: 44320,
+        asset_checksum: 3956,
+        metadata: Metadata {
+            total_samples: 4198670,
+            stream_bytes: 3149003,
+            samples_per_segment: 8056,
+            stream_offset: 25040,
+            crc_offset: 3174043,
+            codebook_count: 521,
+            sample_rate: 20000,
+            channels: 2,
+        },
+    },
+    Descriptor {
+        asset_offset: 0x4ec010,
+        asset_bytes: 549541,
+        header_checksum: 24842,
+        codebook_checksum: 15406,
+        crc_table_checksum: 29304,
+        asset_checksum: 18399,
+        metadata: Metadata {
+            total_samples: 1430616,
+            stream_bytes: 536481,
+            samples_per_segment: 2744,
+            stream_offset: 12536,
+            crc_offset: 549017,
+            codebook_count: 521,
+            sample_rate: 16000,
+            channels: 1,
+        },
+    },
+    Descriptor {
+        asset_offset: 0x5722c0,
         asset_bytes: 545457,
         header_checksum: 40031,
         codebook_checksum: 55711,
@@ -124,7 +150,7 @@ const TRACK_DESCRIPTORS: [Descriptor; 10] = [
         },
     },
     Descriptor {
-        asset_offset: 0x7aa330,
+        asset_offset: 0x5f7580,
         asset_bytes: 550743,
         header_checksum: 39755,
         codebook_checksum: 21082,
@@ -142,7 +168,7 @@ const TRACK_DESCRIPTORS: [Descriptor; 10] = [
         },
     },
     Descriptor {
-        asset_offset: 0x830a90,
+        asset_offset: 0x67dce0,
         asset_bytes: 553145,
         header_checksum: 4301,
         codebook_checksum: 23674,
@@ -160,7 +186,7 @@ const TRACK_DESCRIPTORS: [Descriptor; 10] = [
         },
     },
     Descriptor {
-        asset_offset: 0x8b7b50,
+        asset_offset: 0x704da0,
         asset_bytes: 545698,
         header_checksum: 42962,
         codebook_checksum: 2705,
@@ -178,7 +204,7 @@ const TRACK_DESCRIPTORS: [Descriptor; 10] = [
         },
     },
     Descriptor {
-        asset_offset: 0x93cf00,
+        asset_offset: 0x78a150,
         asset_bytes: 560352,
         header_checksum: 27477,
         codebook_checksum: 62854,
@@ -196,7 +222,7 @@ const TRACK_DESCRIPTORS: [Descriptor; 10] = [
         },
     },
     Descriptor {
-        asset_offset: 0x9c5be0,
+        asset_offset: 0x812e30,
         asset_bytes: 553145,
         header_checksum: 4301,
         codebook_checksum: 37421,
@@ -214,7 +240,7 @@ const TRACK_DESCRIPTORS: [Descriptor; 10] = [
         },
     },
     Descriptor {
-        asset_offset: 0xa4cca0,
+        asset_offset: 0x899ef0,
         asset_bytes: 545938,
         header_checksum: 45894,
         codebook_checksum: 58830,
@@ -231,11 +257,209 @@ const TRACK_DESCRIPTORS: [Descriptor; 10] = [
             channels: 1,
         },
     },
+    Descriptor {
+        asset_offset: 0x91f390,
+        asset_bytes: 547860,
+        header_checksum: 4321,
+        codebook_checksum: 6130,
+        crc_table_checksum: 56805,
+        asset_checksum: 37374,
+        metadata: Metadata {
+            total_samples: 1426136,
+            stream_bytes: 534801,
+            samples_per_segment: 2736,
+            stream_offset: 12536,
+            crc_offset: 547337,
+            codebook_count: 521,
+            sample_rate: 16000,
+            channels: 1,
+        },
+    },
+    Descriptor {
+        asset_offset: 0x9a4fb0,
+        asset_bytes: 550502,
+        header_checksum: 36823,
+        codebook_checksum: 14378,
+        crc_table_checksum: 21370,
+        asset_checksum: 738,
+        metadata: Metadata {
+            total_samples: 1433176,
+            stream_bytes: 537441,
+            samples_per_segment: 2744,
+            stream_offset: 12536,
+            crc_offset: 549977,
+            codebook_count: 521,
+            sample_rate: 16000,
+            channels: 1,
+        },
+    },
+    Descriptor {
+        asset_offset: 0xa2b620,
+        asset_bytes: 545698,
+        header_checksum: 42962,
+        codebook_checksum: 49460,
+        crc_table_checksum: 23654,
+        asset_checksum: 50437,
+        metadata: Metadata {
+            total_samples: 1420376,
+            stream_bytes: 532641,
+            samples_per_segment: 2720,
+            stream_offset: 12536,
+            crc_offset: 545177,
+            codebook_count: 521,
+            sample_rate: 16000,
+            channels: 1,
+        },
+    },
+    Descriptor {
+        asset_offset: 0xab09d0,
+        asset_bytes: 552905,
+        header_checksum: 1114,
+        codebook_checksum: 19196,
+        crc_table_checksum: 31206,
+        asset_checksum: 11155,
+        metadata: Metadata {
+            total_samples: 1439576,
+            stream_bytes: 539841,
+            samples_per_segment: 2760,
+            stream_offset: 12536,
+            crc_offset: 552377,
+            codebook_count: 521,
+            sample_rate: 16000,
+            channels: 1,
+        },
+    },
+    Descriptor {
+        asset_offset: 0xb379a0,
+        asset_bytes: 561793,
+        header_checksum: 45066,
+        codebook_checksum: 14887,
+        crc_table_checksum: 9076,
+        asset_checksum: 21702,
+        metadata: Metadata {
+            total_samples: 1463256,
+            stream_bytes: 548721,
+            samples_per_segment: 2808,
+            stream_offset: 12536,
+            crc_offset: 561257,
+            codebook_count: 521,
+            sample_rate: 16000,
+            channels: 1,
+        },
+    },
+    Descriptor {
+        asset_offset: 0xbc0c30,
+        asset_bytes: 608399,
+        header_checksum: 31111,
+        codebook_checksum: 12251,
+        crc_table_checksum: 43545,
+        asset_checksum: 44635,
+        metadata: Metadata {
+            total_samples: 1587416,
+            stream_bytes: 595281,
+            samples_per_segment: 3040,
+            stream_offset: 12536,
+            crc_offset: 607817,
+            codebook_count: 521,
+            sample_rate: 16000,
+            channels: 1,
+        },
+    },
+    Descriptor {
+        asset_offset: 0xc554c0,
+        asset_bytes: 561073,
+        header_checksum: 36271,
+        codebook_checksum: 47028,
+        crc_table_checksum: 38604,
+        asset_checksum: 54628,
+        metadata: Metadata {
+            total_samples: 1461336,
+            stream_bytes: 548001,
+            samples_per_segment: 2800,
+            stream_offset: 12536,
+            crc_offset: 560537,
+            codebook_count: 521,
+            sample_rate: 16000,
+            channels: 1,
+        },
+    },
+    Descriptor {
+        asset_offset: 0xcde480,
+        asset_bytes: 552664,
+        header_checksum: 63718,
+        codebook_checksum: 47611,
+        crc_table_checksum: 21784,
+        asset_checksum: 3892,
+        metadata: Metadata {
+            total_samples: 1438936,
+            stream_bytes: 539601,
+            samples_per_segment: 2760,
+            stream_offset: 12536,
+            crc_offset: 552137,
+            codebook_count: 521,
+            sample_rate: 16000,
+            channels: 1,
+        },
+    },
+    Descriptor {
+        asset_offset: 0xd65360,
+        asset_bytes: 550502,
+        header_checksum: 36823,
+        codebook_checksum: 14311,
+        crc_table_checksum: 17223,
+        asset_checksum: 52592,
+        metadata: Metadata {
+            total_samples: 1433176,
+            stream_bytes: 537441,
+            samples_per_segment: 2744,
+            stream_offset: 12536,
+            crc_offset: 549977,
+            codebook_count: 521,
+            sample_rate: 16000,
+            channels: 1,
+        },
+    },
+    Descriptor {
+        asset_offset: 0xdeb9d0,
+        asset_bytes: 550743,
+        header_checksum: 39755,
+        codebook_checksum: 3484,
+        crc_table_checksum: 14405,
+        asset_checksum: 16833,
+        metadata: Metadata {
+            total_samples: 1433816,
+            stream_bytes: 537681,
+            samples_per_segment: 2752,
+            stream_offset: 12536,
+            crc_offset: 550217,
+            codebook_count: 521,
+            sample_rate: 16000,
+            channels: 1,
+        },
+    },
+    Descriptor {
+        asset_offset: 0xe72130,
+        asset_bytes: 548340,
+        header_checksum: 10440,
+        codebook_checksum: 48403,
+        crc_table_checksum: 60395,
+        asset_checksum: 2986,
+        metadata: Metadata {
+            total_samples: 1427416,
+            stream_bytes: 535281,
+            samples_per_segment: 2736,
+            stream_offset: 12536,
+            crc_offset: 547817,
+            codebook_count: 521,
+            sample_rate: 16000,
+            channels: 1,
+        },
+    },
 ];
 #[cfg_attr(target_arch = "mos", link_section = ".phase.audio.data")]
-static TRACK_DATA: [Descriptor; 10] = TRACK_DESCRIPTORS;
+static TRACK_DATA: [Descriptor; 21] = TRACK_DESCRIPTORS;
 #[cfg_attr(target_arch = "mos", link_section = ".phase.boot.data")]
-static BOOT_DATA: [Descriptor; 10] = TRACK_DESCRIPTORS;
+static BOOT_DATA: [Descriptor; 21] = TRACK_DESCRIPTORS;
 #[inline(always)]
 pub fn descriptor_startup(track: Track) -> &'static Descriptor { &BOOT_DATA[track as usize] }
 #[inline(always)]
@@ -243,12 +467,12 @@ pub fn descriptor(track: Track) -> &'static Descriptor {
     &TRACK_DATA[track as usize]
 }
 #[cfg_attr(target_arch = "mos", link_section = ".phase.audio.data")]
-static CUE_TRACKS: [Track; 21] = [Track::HammondRocker, Track::GalacticDashMono, Track::GalacticDashMono, Track::GalacticDashMono, Track::GalacticDashMono, Track::GalacticDash, Track::GalacticDashMono, Track::GalacticDashMono, Track::GalacticDashMono, Track::GalacticDashMono, Track::GalacticDashMono, Track::GalacticDashMono, Track::GalacticDashMono, Track::GalacticDashMono, Track::GalacticDashMono, Track::GalacticDashMono, Track::GalacticDashMono, Track::GalacticDashMono, Track::GalacticDashMono, Track::GalacticDashMono, Track::GalacticDashMono];
+static CUE_TRACKS: [Track; 21] = [Track::HammondRocker, Track::GalacticDash, Track::GalacticDash, Track::GalacticDash, Track::GalacticDash, Track::GalacticDash, Track::MissionFailed, Track::GalacticDash, Track::GalacticDash, Track::GalacticDash, Track::GalacticDash, Track::GalacticDash, Track::GalacticDash, Track::GalacticDash, Track::GalacticDash, Track::GalacticDash, Track::GalacticDash, Track::GalacticDash, Track::GalacticDash, Track::GalacticDash, Track::GalacticDash];
 #[inline(always)]
 pub fn track_for_cue(cue: crate::audio::MusicState) -> Track { CUE_TRACKS[cue as usize] }
 pub const STAGE_COUNT: usize = 18;
 #[cfg_attr(target_arch = "mos", link_section = ".phase.audio.data")]
-static STAGE_TRACKS: [u8; STAGE_COUNT] = [3, 4, 5, 6, 7, 8, 9, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255];
+static STAGE_TRACKS: [u8; STAGE_COUNT] = [3, 4, 5, 6, 7, 8, 9, 17, 10, 11, 12, 13, 14, 15, 16, 18, 19, 20];
 #[inline(always)]
 pub fn track_for_scene(cue: crate::audio::MusicState, stage: u8) -> Track {
     use crate::audio::MusicState;
@@ -260,14 +484,14 @@ pub fn track_for_scene(cue: crate::audio::MusicState, stage: u8) -> Track {
     track_for_cue(cue)
 }
 #[cfg_attr(target_arch = "mos", link_section = ".phase.audio.data")]
-static DIRECTORY: [u8; DIRECTORY_BYTES] = [68, 77, 67, 49, 2, 10, 21, 16, 224, 0, 18, 0, 0, 0, 78, 36, 0, 2, 32, 78, 224, 0, 16, 0, 13, 145, 35, 0, 218, 83, 87, 74, 0, 2, 32, 78, 240, 145, 51, 0, 159, 122, 48, 0, 116, 15, 7, 62, 1, 1, 128, 62, 144, 12, 100, 0, 221, 67, 14, 0, 160, 209, 105, 6, 0, 1, 128, 62, 112, 80, 114, 0, 177, 82, 8, 0, 190, 161, 95, 156, 0, 1, 128, 62, 48, 163, 122, 0, 87, 103, 8, 0, 189, 117, 75, 155, 0, 1, 128, 62, 144, 10, 131, 0, 185, 112, 8, 0, 39, 211, 205, 16, 0, 1, 128, 62, 80, 123, 139, 0, 162, 83, 8, 0, 154, 132, 210, 167, 0, 1, 128, 62, 0, 207, 147, 0, 224, 140, 8, 0, 183, 237, 85, 107, 0, 1, 128, 62, 224, 91, 156, 0, 185, 112, 8, 0, 83, 181, 205, 16, 0, 1, 128, 62, 160, 204, 164, 0, 146, 84, 8, 0, 232, 157, 70, 179, 1, 2, 2, 2, 2, 0, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 3, 4, 5, 6, 7, 8, 9, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+static DIRECTORY: [u8; DIRECTORY_BYTES] = [68, 77, 67, 49, 2, 21, 21, 16, 144, 1, 18, 0, 0, 0, 242, 68, 0, 1, 128, 62, 144, 1, 16, 0, 221, 67, 14, 0, 160, 209, 105, 6, 0, 2, 32, 78, 112, 69, 30, 0, 159, 122, 48, 0, 116, 15, 7, 62, 0, 1, 128, 62, 16, 192, 78, 0, 165, 98, 8, 0, 223, 71, 10, 97, 0, 1, 128, 62, 192, 34, 87, 0, 177, 82, 8, 0, 190, 161, 95, 156, 0, 1, 128, 62, 128, 117, 95, 0, 87, 103, 8, 0, 189, 117, 75, 155, 0, 1, 128, 62, 224, 220, 103, 0, 185, 112, 8, 0, 39, 211, 205, 16, 0, 1, 128, 62, 160, 77, 112, 0, 162, 83, 8, 0, 154, 132, 210, 167, 0, 1, 128, 62, 80, 161, 120, 0, 224, 140, 8, 0, 183, 237, 85, 107, 0, 1, 128, 62, 48, 46, 129, 0, 185, 112, 8, 0, 83, 181, 205, 16, 0, 1, 128, 62, 240, 158, 137, 0, 146, 84, 8, 0, 232, 157, 70, 179, 0, 1, 128, 62, 144, 243, 145, 0, 20, 92, 8, 0, 254, 145, 225, 16, 0, 1, 128, 62, 176, 79, 154, 0, 102, 102, 8, 0, 226, 2, 215, 143, 0, 1, 128, 62, 32, 182, 162, 0, 162, 83, 8, 0, 5, 197, 210, 167, 0, 1, 128, 62, 208, 9, 171, 0, 201, 111, 8, 0, 147, 43, 90, 4, 0, 1, 128, 62, 160, 121, 179, 0, 129, 146, 8, 0, 198, 84, 10, 176, 0, 1, 128, 62, 48, 12, 188, 0, 143, 72, 9, 0, 91, 174, 135, 121, 0, 1, 128, 62, 192, 84, 197, 0, 177, 143, 8, 0, 100, 213, 175, 141, 0, 1, 128, 62, 128, 228, 205, 0, 216, 110, 8, 0, 52, 15, 230, 248, 0, 1, 128, 62, 96, 83, 214, 0, 102, 102, 8, 0, 112, 205, 215, 143, 0, 1, 128, 62, 208, 185, 222, 0, 87, 103, 8, 0, 193, 65, 75, 155, 0, 1, 128, 62, 48, 33, 231, 0, 244, 93, 8, 0, 170, 11, 200, 40, 1, 0, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3, 4, 5, 6, 7, 8, 9, 17, 10, 11, 12, 13, 14, 15, 16, 18, 19, 20, 0, 0, 0, 0, 0, 0, 0, 0, 0];
 #[inline(always)]
 pub fn catalog_directory() -> &'static [u8; DIRECTORY_BYTES] { &DIRECTORY }
 #[cfg(feature = "host-tools")]
-pub const TRACK_ASSETS: [(Track, &[u8]); 10] = [
+pub const TRACK_ASSETS: [(Track, &[u8]); 21] = [
     (Track::GalacticDash, include_bytes!("../assets/music/galactic-dash.dlt")),
     (Track::HammondRocker, include_bytes!("../assets/music/hammond-rocker.dlt")),
-    (Track::GalacticDashMono, include_bytes!("../assets/music/galactic-dash-mono.dlt")),
+    (Track::MissionFailed, include_bytes!("../assets/music/mission-failed.dlt")),
     (Track::LowlandApproach, include_bytes!("../assets/music/lowland-approach.dlt")),
     (Track::CrystalCave, include_bytes!("../assets/music/crystal-cave.dlt")),
     (Track::IronCanyon, include_bytes!("../assets/music/iron-canyon.dlt")),
@@ -275,6 +499,17 @@ pub const TRACK_ASSETS: [(Track, &[u8]); 10] = [
     (Track::AshenWastes, include_bytes!("../assets/music/ashen-wastes.dlt")),
     (Track::FoundryBelt, include_bytes!("../assets/music/foundry-belt.dlt")),
     (Track::FortressRun, include_bytes!("../assets/music/fortress-run.dlt")),
+    (Track::StormFront, include_bytes!("../assets/music/storm-front.dlt")),
+    (Track::MeteorReach, include_bytes!("../assets/music/meteor-reach.dlt")),
+    (Track::CarrierCoast, include_bytes!("../assets/music/carrier-coast.dlt")),
+    (Track::CarrierAssault, include_bytes!("../assets/music/carrier-assault.dlt")),
+    (Track::AsteroidBelt, include_bytes!("../assets/music/asteroid-belt.dlt")),
+    (Track::LunarAwe, include_bytes!("../assets/music/lunar-awe.dlt")),
+    (Track::ShipGraveyard, include_bytes!("../assets/music/ship-graveyard.dlt")),
+    (Track::CitadelCore, include_bytes!("../assets/music/citadel-core.dlt")),
+    (Track::OrbitalShipyard, include_bytes!("../assets/music/orbital-shipyard.dlt")),
+    (Track::SpaceCarrier, include_bytes!("../assets/music/space-carrier.dlt")),
+    (Track::JumpGate, include_bytes!("../assets/music/jump-gate.dlt")),
 ];
 const _: () = assert!(CATALOG_END <= RING_OFFSET);
 const _: () = assert!(STAGE_COUNT == crate::assets::SEGMENT_COUNT as usize);

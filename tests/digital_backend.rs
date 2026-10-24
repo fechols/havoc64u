@@ -563,8 +563,8 @@ fn initial_fill_is_bounded_muted_and_starts_once_when_full() {
         HARDWARE = Some(Hardware::new());
         let mut calibration = backend::Calibration::new();
         for (track, quota, visits, tail) in [
-            (asset::Track::GalacticDash, 5000usize, 7, 8),
-            (asset::Track::GalacticDashMono, 4000usize, 9, 32),
+            (asset::Track::HammondRocker, 5000usize, 7, 8),
+            (asset::Track::GalacticDash, 4000usize, 9, 32),
         ] {
             let mut state = backend::State::new();
             init(&mut state, &mut calibration, true, track).unwrap();
@@ -621,23 +621,23 @@ fn replacing_initial_track_restarts_priming_and_stopping_cancels_it() {
             &mut state,
             &mut calibration,
             true,
-            asset::Track::GalacticDash,
+            asset::Track::HammondRocker,
         )
         .unwrap();
         service(&mut state).unwrap();
         service(&mut state).unwrap();
-        request(&mut state, asset::Track::GalacticDashMono);
-        assert_eq!(state.track, asset::Track::GalacticDashMono);
+        request(&mut state, asset::Track::GalacticDash);
+        assert_eq!(state.track, asset::Track::GalacticDash);
         assert_eq!(
             prime(&mut state),
             9,
             "replacement needs a complete fresh ring"
         );
         assert_eq!(hardware().voices[0].starts.len(), 1);
-        hardware().assert_profile(asset::Track::GalacticDashMono, 0);
+        hardware().assert_profile(asset::Track::GalacticDash, 0);
         backend::stop(&mut state);
         let before = hardware().pcm_writes.len();
-        request(&mut state, asset::Track::GalacticDash);
+        request(&mut state, asset::Track::HammondRocker);
         for _ in 0..10 {
             service(&mut state).unwrap();
         }
@@ -649,7 +649,7 @@ fn replacing_initial_track_restarts_priming_and_stopping_cancels_it() {
             &mut state,
             &mut calibration,
             true,
-            asset::Track::GalacticDash,
+            asset::Track::HammondRocker,
         )
         .unwrap();
         service(&mut state).unwrap();
@@ -677,11 +677,11 @@ fn mixed_rate_handoffs_share_the_quarter_second_budget() {
             &mut state,
             &mut calibration,
             true,
-            asset::Track::GalacticDash,
+            asset::Track::HammondRocker,
         )
         .unwrap();
         prime(&mut state);
-        for track in [asset::Track::GalacticDashMono, asset::Track::HammondRocker] {
+        for track in [asset::Track::GalacticDash, asset::Track::HammondRocker] {
             let mut mixed_visits = 0;
             let mut full_visits = 0;
             let mut pending_frames = 0;
@@ -782,8 +782,8 @@ fn pending_requests_cancel_replace_and_handoff_without_recalibration() {
         let mut calibration = backend::Calibration::new();
         let mut state = backend::State::new();
         let stereo = asset::Track::HammondRocker;
-        let alternate = asset::Track::GalacticDash;
-        let mono = asset::Track::GalacticDashMono;
+        let alternate = asset::Track::LowlandApproach;
+        let mono = asset::Track::GalacticDash;
         init(&mut state, &mut calibration, true, stereo).unwrap();
         prime(&mut state);
         let calibrations = hardware().calibration_starts;
@@ -806,8 +806,8 @@ fn pending_requests_cancel_replace_and_handoff_without_recalibration() {
         request(&mut state, alternate);
         handoff(&mut state, alternate);
         hardware().assert_profile(alternate, 1);
-        // Put stereo in slot A again so slot B's future mono prefix contains
-        // former PCM (and explicitly poison it to avoid accidental silence).
+        // Put stereo in slot A again, then poison slot B's delay prefix to
+        // verify that preparing another mono track clears the reused slot.
         request(&mut state, stereo);
         handoff(&mut state, stereo);
         hardware().assert_profile(stereo, 0);
@@ -871,7 +871,7 @@ fn ready_track_waits_for_a_one_second_paired_fade_on_both_clocks_and_timer_wrap(
             hardware().bus_hz = hz;
             let mut state = backend::State::new();
             let active = asset::Track::HammondRocker;
-            let next = asset::Track::GalacticDashMono;
+            let next = asset::Track::GalacticDash;
             init(&mut state, &mut backend::Calibration::new(), pal, active).unwrap();
             // The one-second fade straddles the hardware counter's wrap.
             hardware().ticks = (1u64 << 32) - hz / 2;
@@ -948,8 +948,8 @@ fn pending_replacement_preserves_fade_and_active_request_cancels_even_after_sile
         HARDWARE = Some(Hardware::new());
         let mut state = backend::State::new();
         let active = asset::Track::HammondRocker;
-        let first = asset::Track::GalacticDashMono;
-        let second = asset::Track::GalacticDash;
+        let first = asset::Track::GalacticDash;
+        let second = asset::Track::LowlandApproach;
         init(&mut state, &mut backend::Calibration::new(), true, active).unwrap();
         prime(&mut state);
         request(&mut state, first);
@@ -1015,7 +1015,7 @@ fn mapping_crc_and_deadline_faults_mute_and_stop_the_sampler() {
     let _serial = SERIAL.lock().unwrap();
     unsafe {
         HARDWARE = Some(Hardware::new());
-        let track = asset::Track::GalacticDash;
+        let track = asset::Track::HammondRocker;
         let descriptor = track.descriptor();
         let stream = (descriptor.asset_offset + descriptor.metadata.stream_offset) as usize;
         let mut state = backend::State::new();
@@ -1046,7 +1046,7 @@ fn mapping_crc_and_deadline_faults_mute_and_stop_the_sampler() {
             assert_eq!(service(&mut state), Err(backend::Fault::StreamCrc));
             hardware().assert_stopped();
             let before = hardware().pcm_writes.len();
-            request(&mut state, asset::Track::HammondRocker);
+            request(&mut state, asset::Track::GalacticDash);
             for _ in 0..10 {
                 let _ = service(&mut state);
             }
@@ -1098,7 +1098,7 @@ fn refill_finishes_when_clock_queries_also_advance_playback() {
             &mut state,
             &mut backend::Calibration::new(),
             true,
-            asset::Track::GalacticDash,
+            asset::Track::HammondRocker,
         )
         .unwrap();
         prime(&mut state);
@@ -1124,7 +1124,7 @@ fn refill_work_limit_returns_with_safe_lead_and_real_underrun_still_faults() {
             &mut state,
             &mut backend::Calibration::new(),
             true,
-            asset::Track::GalacticDash,
+            asset::Track::HammondRocker,
         )
         .unwrap();
         prime(&mut state);
@@ -1161,7 +1161,7 @@ fn corrupted_pending_stream_stops_both_voices_before_handoff() {
         HARDWARE = Some(Hardware::new());
         let mut state = backend::State::new();
         let active = asset::Track::HammondRocker;
-        let pending = asset::Track::GalacticDashMono;
+        let pending = asset::Track::GalacticDash;
         init(&mut state, &mut backend::Calibration::new(), true, active).unwrap();
         prime(&mut state);
         let d = pending.descriptor();

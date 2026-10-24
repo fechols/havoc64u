@@ -189,7 +189,10 @@ def rust_catalog(catalog):
         entry = next(e for e in tracks if e["rust_name"] == variant)
         lines.append(f'pub const {name}_OFFSET: u32 = 0x{entry["offset"]:06x};')
     metadata = next(e for e in tracks if e["rust_name"] == "GalacticDash")["metadata"]
-    for name, key, typ in (("SAMPLE_COUNT", "sample_count", "u32"), ("SAMPLES_PER_SEGMENT", "samples_per_segment", "u32"),
+    lines.append("// Compatibility constants describe the canonical Galactic Dash asset.")
+    for name, key, typ in (("SAMPLE_RATE", "sample_rate", "u32"), ("CHANNELS", "channels", "u8"),
+                           ("CODEBOOK_COUNT", "codebook_count", "u16"),
+                           ("SAMPLE_COUNT", "sample_count", "u32"), ("SAMPLES_PER_SEGMENT", "samples_per_segment", "u32"),
                            ("STREAM_BYTES", "stream_bytes", "u32"), ("STREAM_OFFSET", "stream_offset", "u32"),
                            ("CRC_OFFSET", "crc_offset", "u32"), ("CRC_COUNT", "crc_count", "usize"),
                            ("ASSET_BYTES", "asset_bytes", "u32"), ("HEADER_CHECKSUM", "header_checksum", "u16"),

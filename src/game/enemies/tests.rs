@@ -223,13 +223,48 @@ fn pursuing_enemies_weave_at_distinct_rates_without_losing_their_speed_caps() {
 }
 
 #[test]
+fn pursuing_enemies_stay_in_authored_lanes_for_every_player_extreme() {
+    for level in [0, 3] {
+        for origin in [-149, -80, 80, 149] {
+            let mut a = actor(2, origin, 25, 20_000);
+            for age in 1..=512 {
+                let player = Vec3 {
+                    x: if age / 37 % 2 == 0 { 100 } else { -100 },
+                    y: if age / 29 % 2 == 0 { -65 } else { 65 },
+                    z: 180,
+                };
+                let before = a.pos;
+                a.age = age;
+                step(level, &mut a, &player, 0);
+                assert!((origin - 32..=origin + 32).contains(&a.pos.x));
+                assert!((a.pos.x - before.x).abs() <= 2);
+                assert!((a.pos.y - before.y).abs() <= if level == 0 { 1 } else { 2 });
+            }
+            // Holding across the arena reaches the lane's inward edge without
+            // pulling the enemy toward the camera's central passage.
+            let player = Vec3 {
+                x: -origin.signum() * 100,
+                y: 0,
+                z: 180,
+            };
+            for age in 513..=576 {
+                a.age = age;
+                step(level, &mut a, &player, 0);
+            }
+            assert_eq!(a.pos.x, origin - origin.signum() * 32);
+            assert_eq!((a.origin_x, a.origin_y), (origin, 25));
+        }
+    }
+}
+
+#[test]
 fn pursuit_uses_late_age_but_commits_at_the_existing_depth_boundaries() {
     for (level, speed, boundary, last_tracking_age, crest_age) in
         [(0, 12, 300, 124, 32), (3, 14, 500, 92, 16)]
     {
         // A late-age enemy follows the current phase immediately, rather than
         // restarting the weave or replacing its position with the spawn origin.
-        let mut late = actor(2, -80, 0, 900);
+        let mut late = actor(2, 0, 0, 900);
         late.pos.x = 0;
         late.age = crest_age;
         step(level, &mut late, &PLAYER, 0);

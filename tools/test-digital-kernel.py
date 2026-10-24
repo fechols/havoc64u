@@ -821,31 +821,64 @@ def exercise(elf, symbols, image, standard, budget):
                                  (2, 3, "canyon-gate"),
                                  (8, 4, "ashen-wastes"),
                                  (8, 5, "foundry-belt"),
-                                 (3, 6, "fortress-run")):
+                                 (3, 6, "fortress-run"),
+                                 (3, 7, "citadel-core"),
+                                 (9, 8, "storm-front"),
+                                 (9, 9, "meteor-reach"),
+                                 (4, 10, "carrier-coast"),
+                                 (4, 11, "carrier-assault"),
+                                 (13, 12, "asteroid-belt"),
+                                 (14, 13, "lunar-awe"),
+                                 (15, 14, "ship-graveyard"),
+                                 (16, 15, "orbital-shipyard"),
+                                 (17, 16, "space-carrier"),
+                                 (18, 17, "jump-gate")):
         select(cue, stage, expected)
-        if stage == 3:
+        boss_cue = {3: 10, 7: 11, 11: 12, 16: 12, 17: 20}.get(stage)
+        if boss_cue is not None:
             starts = cpu.starts.copy()
-            cpu.put("havoc_c64::REQUESTED_CUE", 10)  # Gorge Warden appears.
+            # All five boss cues must preserve their stage recording.
+            cpu.put("havoc_c64::REQUESTED_CUE", boss_cue)
             play(3)
             require(cpu.active_name() == expected and cpu.starts == starts,
-                    "Canyon Gate restarted at boss entrance")
-    select(3, 7, "galactic-dash-mono")  # Unrecorded Citadel Core.
+                    f"{expected} restarted at boss entrance")
+    # Victory replaces the final boss track and remains independent of stage.
+    select(5, 17, "galactic-dash")
     starts = cpu.starts.copy()
+    for stage in (0, 7):
+        cpu.put("havoc_c64::REQUESTED_STAGE", stage)
+        play(1)
+        require(cpu.starts == starts and cpu.active_name() == "galactic-dash",
+                "victory cue was overridden by stale gameplay stage")
+    cpu.put("havoc_c64::REQUESTED_CUE", 3)
     for stage in (18, 255):
         cpu.put("havoc_c64::REQUESTED_STAGE", stage)
         play(1)
-        require(cpu.starts == starts and cpu.active_name() == "galactic-dash-mono",
+        require(cpu.starts == starts and cpu.active_name() == "galactic-dash",
                 "invalid stage did not retain cue fallback")
-    # Recorded stage indices cannot override menu, result or ascent cues.
-    for cue in (6, 19):
-        cpu.put("havoc_c64::REQUESTED_CUE", cue)
-        cpu.put("havoc_c64::REQUESTED_STAGE", 0)
+    # Defeat has its own song; restarting returns to the first stage recording.
+    select(6, 0, "mission-failed")
+    starts = cpu.starts.copy()
+    for stage in (7, 17, 255):
+        cpu.put("havoc_c64::REQUESTED_STAGE", stage)
         play(1)
-        require(cpu.starts == starts and cpu.active_name() == "galactic-dash-mono",
-                "protected cue was overridden by stale gameplay stage")
-    select(5, 0, "galactic-dash")
+        require(cpu.starts == starts and cpu.active_name() == "mission-failed",
+                "defeat cue was overridden by stale gameplay stage")
+    select(1, 0, "lowland-approach")
+    select(19, 7, "galactic-dash")
+    starts = cpu.starts.copy()
+    for stage in (0, 17):
+        cpu.put("havoc_c64::REQUESTED_STAGE", stage)
+        play(1)
+        require(cpu.starts == starts and cpu.active_name() == "galactic-dash",
+                "ascent cue was overridden by stale gameplay stage")
     select(0, 5, "hammond-rocker")
-    select(3, 7, "galactic-dash-mono", cadence=0.02)  # Primed early; must wait for fade.
+    starts = cpu.starts.copy()
+    cpu.put("havoc_c64::REQUESTED_STAGE", 17)
+    play(1)
+    require(cpu.starts == starts and cpu.active_name() == "hammond-rocker",
+            "title cue was overridden by stale gameplay stage")
+    select(3, 7, "citadel-core", cadence=0.02)  # Primed early; must wait for fade.
     require(cpu.prefix_clears >= 3, "mono prefixes not re-cleared across preparations")
     cpu.delay(1.25)
     service()

@@ -2839,6 +2839,7 @@ fn pickups_cap_and_bombs_clear_hostile_shots() {
 #[test]
 fn bomb_presentation_survives_rewarded_inventory_full_audio_and_catch_up() {
     let mut g = running();
+    g.bomb_kills = 10;
     for actor in &mut g.actors[..5] {
         *actor = Actor {
             kind: assets::FIGHTER,
@@ -2942,19 +2943,19 @@ fn player_damage_requests_a_hit_impulse_that_bombs_outrank_and_resets_replace() 
     assert_eq!(g.take_presentation_event(), PresentationEvent::None);
 }
 #[test]
-fn every_fifth_projectile_kill_adds_a_bomb_up_to_three_without_banking_overflow() {
+fn every_fifteenth_projectile_kill_adds_a_bomb_up_to_three_without_banking_overflow() {
     let mut g = running();
     g.bombs = 0;
-    for kill in 1..=25 {
-        if kill == 21 {
-            // The reward at 20 was consumed at the cap, not deferred.
+    for kill in 1..=75 {
+        if kill == 61 {
+            // The reward at 60 was consumed at the cap, not deferred.
             g.bombs = 2;
         }
         g.actors[0] = Actor {
             pos: Vec3 { x: 0, y: 0, z: 210 },
             kind: assets::FIGHTER,
             hp: 1,
-            flags: u8::from(kill == 5),
+            flags: u8::from(kill <= 25 && kill % 5 == 0),
             ..Actor::EMPTY
         };
         g.shots[0] = Shot {
@@ -2967,17 +2968,20 @@ fn every_fifth_projectile_kill_adds_a_bomb_up_to_three_without_banking_overflow(
         assert_eq!(g.actors[0].kind, 0);
         assert_eq!(g.shots[0].kind, 0);
         assert_eq!(g.kills, kill);
-        let expected = if (21..25).contains(&kill) {
+        let expected = if (61..75).contains(&kill) {
             2
         } else {
-            (kill / 5).min(3) as u8
+            (kill / 15).min(3) as u8
         };
         assert_eq!(g.hud().bombs, expected, "kill {kill}");
         if kill == 8 {
             assert_eq!(g.pickups.iter().filter(|p| p.kind == 1).count(), 1);
         }
-        if kill == 5 {
-            assert_eq!(g.pickups.iter().filter(|p| p.kind == 2).count(), 1);
+        if kill <= 25 && kill % 5 == 0 {
+            assert_eq!(
+                g.pickups.iter().filter(|p| p.kind == 2).count(),
+                usize::from(kill >= 15)
+            );
         }
         // A spent projectile cannot award the same kill twice.
         g.update_shots(&test_bank(g.segment_index()));
@@ -3000,6 +3004,7 @@ fn shields_drop_every_eighth_enemy_kill_with_existing_priority_and_pool_rules() 
     }
     // A marked bomb drop takes precedence on the same eighth-kill milestone.
     game.kills = 31;
+    game.bomb_kills = (game.bomb_kills & 15) | 32;
     game.pickups.fill(Pickup::EMPTY);
     game.actors[0] = enemy(assets::FIGHTER, 0, 0, 900);
     game.actors[0].flags = 1;
@@ -3032,9 +3037,10 @@ fn shields_drop_every_eighth_enemy_kill_with_existing_priority_and_pool_rules() 
 }
 
 #[test]
-fn bomb_multi_kills_award_each_crossed_five_kill_milestone() {
+fn bomb_multi_kills_award_a_crossed_fifteen_kill_milestone() {
     let mut g = running();
     g.bombs = 1;
+    g.bomb_kills = 14;
     for actor in &mut g.actors[..10] {
         *actor = Actor {
             kind: assets::FIGHTER,
@@ -3054,14 +3060,14 @@ fn bomb_multi_kills_award_each_crossed_five_kill_milestone() {
     };
     g.bomb(&test_bank(g.segment_index()));
     assert_eq!(g.kills, 10);
-    assert_eq!(g.bombs, 2, "spend one bomb and immediately earn two");
+    assert_eq!(g.bombs, 1, "spend one bomb and immediately earn one");
     assert_eq!(g.actors[10].hp, 255);
     assert_eq!(g.actors[11].hp, 1, "damage alone is not a kill");
 }
 #[test]
 fn bomb_reward_progress_survives_respawn_and_kill_total_wrap_but_resets_with_run() {
     let mut g = running();
-    for _ in 0..4 {
+    for _ in 0..14 {
         g.actors[0] = Actor {
             kind: assets::FIGHTER,
             hp: 1,
@@ -3082,23 +3088,23 @@ fn bomb_reward_progress_survives_respawn_and_kill_total_wrap_but_resets_with_run
     g.kill_actor(0, &test_bank(g.segment_index()));
     assert_eq!(
         g.bombs, 2,
-        "the fifth kill still completes the pre-death progress"
+        "the fifteenth kill still completes the pre-death progress"
     );
 
     g.kills = u16::MAX - 1;
     g.bombs = 0;
-    for kill in 1..=5 {
+    for kill in 1..=15 {
         g.actors[0] = Actor {
             kind: assets::FIGHTER,
             hp: 1,
             ..Actor::EMPTY
         };
         g.kill_actor(0, &test_bank(g.segment_index()));
-        assert_eq!(g.bombs, u8::from(kill == 5));
+        assert_eq!(g.bombs, u8::from(kill == 15));
     }
-    assert_eq!(g.kills, 3);
+    assert_eq!(g.kills, 13);
 
-    for _ in 0..4 {
+    for _ in 0..14 {
         g.actors[0] = Actor {
             kind: assets::FIGHTER,
             hp: 1,
@@ -3109,14 +3115,14 @@ fn bomb_reward_progress_survives_respawn_and_kill_total_wrap_but_resets_with_run
     g.reset_run();
     assert_eq!((g.kills, g.bombs, g.bomb_kills), (0, 3, 0));
     g.bombs = 0;
-    for kill in 1..=5 {
+    for kill in 1..=15 {
         g.actors[0] = Actor {
             kind: assets::FIGHTER,
             hp: 1,
             ..Actor::EMPTY
         };
         g.kill_actor(0, &test_bank(g.segment_index()));
-        assert_eq!(g.bombs, u8::from(kill == 5));
+        assert_eq!(g.bombs, u8::from(kill == 15));
     }
 }
 #[test]
@@ -4470,8 +4476,9 @@ fn full_eighteen_stage_campaign_is_winnable_with_regular_joystick_input() {
                     nearest = actor.pos.z;
                 }
             }
-            // Follow collectable shields when no attack run is active.
-            if nearest == 2400 {
+            // Recover shields before resuming a flank attack. Wide formations
+            // can keep an attack target present while a reward passes behind us.
+            if nearest == 2400 || g.shield < 100 {
                 for pickup in &g.pickups {
                     if pickup.kind == 1 && pickup.pos.z > 200 {
                         target = pickup.pos;
@@ -4568,7 +4575,7 @@ fn level_rosters_have_distinct_movement_and_attack_tactics() {
         }
     }
     assert_ne!(poses[0][0][0].x, -90, "patrol weaves");
-    assert!(poses[0][1][1].x > poses[0][1][0].x, "diver pursues");
+    assert_eq!(poses[0][1][0].x, -58, "diver pursues to its lane edge");
     assert_eq!(poses[0][2][2].x, -90, "ground gun holds its lane");
     assert!(poses[1][0][1].x > 0, "skimmer crosses the canyon");
     assert!(
@@ -4587,10 +4594,13 @@ fn level_rosters_have_distinct_movement_and_attack_tactics() {
         poses[3][0].iter().all(|p| (-122..=-58).contains(&p.x)),
         "guard holds the flank"
     );
-    assert!(
-        poses[3][1][1].x > poses[3][1][0].x,
-        "rammer tracks the player"
-    );
+    assert_eq!(poses[3][1][0].x, -58, "rammer tracks to its lane edge");
+    for profile in [0, 3] {
+        assert!(
+            poses[profile][1].iter().all(|p| (-122..=-58).contains(&p.x)),
+            "pursuit remains inside the authored side lane"
+        );
+    }
     assert_eq!(
         poses[3][1][2].x, poses[3][1][3].x,
         "rammer commits near the player"

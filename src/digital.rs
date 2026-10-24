@@ -7,12 +7,9 @@ pub const RING_OFFSET: u32 = 0xfe0000;
 pub const RING_BYTES: u32 = 0x20000;
 pub const MUSIC_CAPACITY: u32 = RING_OFFSET - MUSIC_OFFSET;
 pub const HEADER_SIZE: usize = 32;
-pub const SAMPLE_RATE: u32 = 20_000;
 pub const BITS_PER_SAMPLE: u8 = 3;
-pub const CHANNELS: u8 = 2;
 pub const CODEBOOK_ENTRIES: usize = 8;
 pub const CODEBOOK_BYTES: usize = CODEBOOK_ENTRIES * 3 * CHANNELS as usize;
-pub const CODEBOOK_COUNT: u16 = 521;
 pub const CRC_CHUNK_BYTES: usize = 1024;
 /// Compatibility alias for the Galactic Dash asset, not the directory base.
 pub const ASSET_OFFSET: u32 = GALACTIC_OFFSET;

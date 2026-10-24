@@ -2,34 +2,41 @@
 
 `catalog.json` is the version 2 authoring source for the DLT4 soundtrack, its
 order, semantic music cues, and stage overrides. Append new tracks to preserve
-numeric track IDs. Galactic Dash, Hammond Rocker, and the mono Galactic Dash
-placeholder remain at IDs 0, 1, and 2.
+numeric track IDs. Galactic Dash and Hammond Rocker remain at IDs 0 and 1.
+Mission Failed uses retired fixture slot 2; existing stage recordings retain
+IDs 3 through 16. Citadel Core, Orbital Shipyard, Space Carrier, and Jump Gate
+occupy IDs 17 through 20 in that order.
 
-William Echols composed the nine supplied recordings for H.A.V.O.C.; they and
+William Echols composed the twenty-one supplied recordings for H.A.V.O.C.; they and
 their encoded versions are released under the [MIT License](LICENSE).
 
 Each track names its `.dlt` and adjacent `.json` metadata, a Rust identifier,
 and either `stereo20k3` (20 kHz, two channels, three bits per channel) or
 `mono16k3` (16 kHz, one channel, three bits per sample). `default_gameplay`
 supplies every cue not explicitly listed under `cues`; cue names match
-`MusicState` in `src/audio.rs`. The mono Galactic Dash duplicate is marked
-`fixture` and remains the fallback for stages without their own recordings.
-It is included in the actual packed catalog's size check.
+`MusicState` in `src/audio.rs`. Galactic Dash is stored once, as mono, and is
+the default cue fallback, including ascent. Title selects Hammond Rocker,
+Victory selects Galactic Dash, and Defeat selects Mission Failed. No catalog
+entry is a temporary fixture.
 
 The `stages` array has exactly 18 entries in campaign order. Its first seven
 entries select Lowland Approach, Crystal Cave, Iron Canyon, Canyon Gate,
-Ashen Wastes, Foundry Belt, and Fortress Run. The remaining eleven entries are
-`null`, which uses the cue mapping. Each stage recording plays throughout its
-stage; Canyon Gate keeps playing when its boss starts. Title and attract music,
-victory, defeat, and the ascent cue always use their cue mapping, regardless of
-stage.
+Ashen Wastes, Foundry Belt, and Fortress Run. Stage indices 8 through 14 select
+Storm Front, Meteor Reach, Carrier Coast, Carrier Assault, Asteroid Belt,
+Lunar Awe (for Shattered Moon), and Ship Graveyard. Indices 7 and 15 through 17
+(Citadel Core, Orbital Shipyard, Space Carrier, and Jump Gate) have their own
+recordings too. Each stage recording plays throughout its stage and its boss.
+Title and attract music, victory, defeat, and the ascent cue use their cue mapping,
+regardless of stage.
 This preserves the existing semantic cue assignments, including the cues shared
 by Iron Canyon/Canyon Gate, Ashen Wastes/Foundry Belt, and Fortress Run/Citadel
-Core. Fortress Run is appended as track ID 9; Citadel Core retains the fallback.
+Core. Fortress Run remains track ID 9. All eighteen stage entries name a
+recording; invalid stage indices use the cue mapping.
 
-The two menu/reward recordings use true stereo. All seven stage recordings and
-the placeholder use mono decoding with the right output delayed by 160 samples
-(10 ms at 16 kHz).
+Hammond Rocker uses true stereo. Galactic Dash, Mission Failed, and all eighteen
+stage recordings use mono decoding with the right output delayed by 160 samples
+(10 ms at 16 kHz). Songs retain their full lengths and loop until the selected
+track changes.
 
 After encoding or changing the manifest, run:
 
@@ -54,15 +61,16 @@ count, sample rate, absolute REU address, byte length, whole-asset Fletcher,
 and header Fletcher. The entry index is its track ID. One byte per cue follows
 the entries, then one byte per stage. Stage ID 255 means cue fallback; every
 other ID must name a catalog track. Zero padding aligns the directory to 16
-bytes. The ten-track directory occupies 224 bytes. Assets follow
+bytes. The twenty-one-track directory occupies 400 bytes. Assets follow
 in manifest order at 16-byte alignment. All remaining bytes before `$FE0000`
 must be zero. `$FE0000–$FFFFFF` is mutable playback memory and is excluded from
 immutable soundtrack validation.
 
 The complete directory, encoded assets, checksums and alignment must fit
-15,597,568 bytes. A separate future estimate for 21 final tracks uses both
-stereo songs plus 27 additional minutes of mono music, excluding the temporary
-mono duplicate once all recordings are available. Its capacity test includes
-codebooks, CRC rounding, stage mappings and worst-case alignment. The actual
-catalog, including the retained placeholder, must pass the packer's size check.
-Storage fit does not establish listening quality.
+15,597,568 bytes. The twenty-one stored assets occupy 14,647,076 bytes, including
+the directory and alignment, leaving 950,492 bytes free (about 928 KiB). The
+eighteen stage recordings total 27:04.963; all twenty-one unique recordings
+total 34:37.8835. The twenty mono recordings total 31:07.950. The capacity check
+uses actual encoded extents, including codebooks, CRC checkpoints, stage
+mappings and alignment; it does not rely on a duration projection or omit a
+stored duplicate. Storage fit does not establish listening quality.

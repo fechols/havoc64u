@@ -110,11 +110,12 @@ class DigitalCatalogTests(unittest.TestCase):
         directory = catalog['directory']
         cue_at = 16 + 16 * len(catalog['tracks'])
         stage_at = cue_at + len(digital.CUES)
-        self.assertEqual(directory[:8], b'DMC1' + bytes((2, 10, 21, 16)))
-        self.assertEqual(struct.unpack_from('<H', directory, 8)[0], 224)
+        self.assertEqual(directory[:8], b'DMC1' + bytes((2, 21, 21, 16)))
+        self.assertEqual(struct.unpack_from('<H', directory, 8)[0], 400)
         self.assertEqual(directory[10:14], bytes((18, 0, 0, 0)))
         self.assertEqual(list(directory[cue_at:stage_at]), catalog['cues'])
-        self.assertEqual(list(directory[stage_at:stage_at + 18]), [3, 4, 5, 6, 7, 8, 9] + [255] * 11)
+        self.assertEqual(list(directory[stage_at:stage_at + 18]),
+                         [3, 4, 5, 6, 7, 8, 9, 17, 10, 11, 12, 13, 14, 15, 16, 18, 19, 20])
         self.assertFalse(any(directory[stage_at + 18:]))
         unsigned = bytearray(directory)
         unsigned[14:16] = b'\0\0'
@@ -132,21 +133,32 @@ class DigitalCatalogTests(unittest.TestCase):
                         digital.validate_digital_payload(reu)
                     reu[digital.DIGITAL_OFFSET + offset] ^= 1
 
-    def test_projection_includes_books_crc_directory_and_alignment(self):
-        # Eventual complete soundtrack, excluding the temporary mono duplicate:
-        # twenty-one tracks, two actual stereo songs plus 27 mono minutes.
-        stereo = [json.loads((digital.ROOT / f'assets/music/{name}.json').read_text())
-                  for name in ('galactic-dash', 'hammond-rocker')]
-        directory = (16 + 21 * 16 + len(digital.CUES) + digital.STAGE_COUNT + 15) & ~15
-        mono_frames = 27 * 60 * 16000
-        # Nineteen separate bitstreams can each have a partial final byte.
-        mono_payload = (mono_frames * 3 + 7) // 8 + 18
-        # Conservative per-track CRC ceiling and twenty inter-asset gaps.
-        complete = (sum(m['asset_bytes'] for m in stereo) + mono_payload
-                    + 19 * (32 + 521 * 8 * 3)
-                    + (mono_payload + 1023) // 1024 + 18 + directory + 20 * 15)
+    def test_complete_soundtrack_has_one_encoding_per_song_and_fits(self):
+        catalog = digital.load_catalog()
+        tracks = catalog['tracks']
+        self.assertEqual(len(tracks), 21)
+        self.assertFalse(any(track.get('fixture') for track in tracks))
+        self.assertEqual([track['name'] for track in tracks[:3]],
+                         ['galactic-dash', 'hammond-rocker', 'mission-failed'])
+        self.assertEqual([track['name'] for track in tracks
+                          if track['metadata']['channels'] == 2], ['hammond-rocker'])
+        self.assertNotIn('galactic-dash-mono', [track['name'] for track in tracks])
+        self.assertEqual(catalog['cues'][digital.CUES.index('Victory')], 0)
+        self.assertEqual(catalog['cues'][digital.CUES.index('Defeat')], 2)
+        self.assertEqual(catalog['cues'][digital.CUES.index('Ascent')], 0)
+        self.assertEqual(len(set(catalog['stages'])), digital.STAGE_COUNT)
+        self.assertTrue(all(0 <= stage < len(tracks) for stage in catalog['stages']))
+        # Independently size every actual stream, book table, CRC and alignment gap.
+        complete = 400
+        for track in tracks:
+            metadata = track['metadata']
+            payload = (metadata['sample_count'] * metadata['channels'] * 3 + 7) // 8
+            size = (32 + metadata['codebook_count'] * 8 * 3 * metadata['channels']
+                    + payload + (payload + 1023) // 1024)
+            self.assertEqual(size, len(track['blob']))
+            complete = (complete + 15) // 16 * 16 + size
+        self.assertEqual(complete, catalog['used_bytes'])
         self.assertLessEqual(complete, digital.MUSIC_CAPACITY)
-        self.assertGreater(digital.MUSIC_CAPACITY - complete, 120000)
 
 
 if __name__ == '__main__':
