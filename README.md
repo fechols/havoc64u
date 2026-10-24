@@ -18,11 +18,12 @@ Fly an original 3D rail shooter for the **64 MHz C64 Ultimate**. Skim green hill
 - **Defensive barrel rolls** — Deflect enemy shots while keeping your guns firing.
 - **Magnetic pickups** — Pull in nearby supplies to keep fighting.
 - **Checkpoints and pause** — Retain your score after losing a life; take breaks.
+- **Normal and Story modes** — Start with three lives, or choose 99 lives to explore the full campaign.
 - **Punchy impacts** — Feel hits and bombs through screen shake and flashes.
 
-The development build includes twenty-one original digital recordings composed for H.A.V.O.C. by William Echols. All eighteen stages have their own songs; Shattered Moon plays Lunar Awe. Mission Failed plays after losing all lives, and Galactic Dash celebrates victory. Stage music, Mission Failed, and Galactic Dash use 16 kHz, 3-bit mono compression with a 10 ms delay between outputs. Hammond Rocker retains true stereo, and SID combat effects remain active. Every song keeps its full length, with one encoding per recording. See the [current implementation status](docs/digital-music-handoff.md#current-development-status-dlt4). The v0.1.2 download below retains its released soundtrack and playback behavior.
+Version 0.1.3 includes twenty-one original digital recordings composed for H.A.V.O.C. by William Echols. All eighteen stages have their own songs; Shattered Moon plays Lunar Awe. Mission Failed plays after losing all lives, and Galactic Dash celebrates victory. Stage music, Mission Failed, and Galactic Dash use 16 kHz, 3-bit mono compression with a 10 ms delay between outputs. Hammond Rocker retains true stereo, and SID combat effects remain active. Every song keeps its full length, with one encoding per recording. See the [soundtrack implementation notes](docs/digital-music-handoff.md#current-development-status-dlt4).
 
-The development revision runs the four-SID effects engine in resident assembly at 50 Hz. Each chip acts as one instrument with three hardware voices shaping its attack, body, and tail. Each effect uses at most one SID per channel; a stereo bomb leaves one left and one right chip available for ship explosions, and repeating it restarts its existing pair. Shots and impacts follow their screen position with a narrow center band and gentle headphone separation. Pitch and pulse-width movement, staged waveforms, sync, ring modulation and filter sweeps remain. Track changes fade the outgoing digital music for about one second before the next song starts, without a crossfade. Current validation and the sustained-combat CPU measurements are tracked in the [audio implementation notes](docs/hardware.md#quad-sid-effects).
+The four-SID effects engine runs in resident assembly at 50 Hz. Each chip acts as one instrument with three hardware voices shaping its attack, body, and tail. Each effect uses at most one SID per channel; a stereo bomb leaves one left and one right chip available for ship explosions, and repeating it restarts its existing pair. Shots and impacts follow their screen position with a narrow center band and gentle headphone separation. Pitch and pulse-width movement, staged waveforms, sync, ring modulation and filter sweeps shape the sound. Track changes fade the outgoing digital music for about one second before the next song starts, without a crossfade. Validation and the sustained-combat CPU measurements are tracked in the [audio implementation notes](docs/hardware.md#quad-sid-effects).
 
 ## See it in action
 
@@ -48,7 +49,7 @@ Screenshots: **original v0.1.0 four-SID build**, captured in a PAL emulator.
 
 ## Download and launch
 
-**[Download H.A.V.O.C. v0.1.2](https://github.com/fechols/havoc64u/releases/download/v0.1.2/havoc-v0.1.2.zip)** — the complete eighteen-stage campaign, full four-SID score, and new stereo rock music for the title and victory screens. It uses the C64 Ultimate's built-in audio; no extra chips or hardware installation needed.
+**[Download H.A.V.O.C. v0.1.3](https://github.com/fechols/havoc64u/releases/download/v0.1.3/havoc-v0.1.3.zip)** — the complete eighteen-stage campaign with twenty-one digital songs, four-SID combat effects, and optional 99-life Story mode. It uses the C64 Ultimate's built-in audio; no extra chips or hardware installation needed.
 
 You need a **C64 Ultimate running at 64 MHz**, **16 MiB of REU memory**, and a joystick connected to **port 2**. The supplied configuration enables Ultimate Audio and sets the speed, memory, and SID routing. A stock C64 cannot run the game.
 
@@ -59,7 +60,7 @@ You need a **C64 Ultimate running at 64 MHz**, **16 MiB of REU memory**, and a j
 
 Keep all three files from the **same package and version** together. If startup reports a mismatch or invalid REU data, reload the matching REU at zero before running the PRG again.
 
-Upgrading from v0.1.1 or an earlier download? Replace all three runtime files and re-import `havoc.cfg` to enable the 16 MiB REU and stereo music. Earlier configurations do not include the new audio setup.
+When upgrading from any earlier version, including v0.1.2, replace all three runtime files and re-import `havoc.cfg` to apply the current 16 MiB REU and audio settings. Load the new `havoc.reu` at address zero before running the new `havoc.prg`.
 
 **Turn your joystick's hardware autofire off.** The game supplies its own autofire; controller-generated fire pulses can accidentally spend your bombs.
 
@@ -77,7 +78,7 @@ Your ship flies forward automatically. You steer around enemies, incoming shots,
 | Double-tap fire within half a second | Spend one bomb, as well as firing normally |
 | Double-tap left or right within half a second | Barrel roll and dodge in that direction |
 | Fire at the title or after a run | Start a new game |
-| S at the title (development build) | Toggle Normal / Story mode, then press fire to launch |
+| S at the title | Toggle Normal / Story mode, then press fire to launch |
 | Space bar | Pause and resume the flight |
 | F | Toggle the frame-rate readout in the top-left HUD corner |
 
@@ -87,16 +88,16 @@ Watch the weapon meter: **HOMING MISSILE** means your next shot tracks a random 
 - **Clear a path.** Shoot small orbital fragments; bomb large rocks and wreckage. Every 15 enemy kills restore one bomb, up to three.
 - **Collect supplies.** Green shields restore 60 points, up to 100; purple rectangles add one bomb, up to three.
 - **Break the boss's defenses.** Destroy both side units, then the core, to advance. Each boss defeat restores full shields and three bombs.
-- **Make each life count.** Normal mode starts with three lives. The development build also offers Story mode with 99 lives: press **S** at the title to select it, then press fire. The choice remains selected until you toggle it again or restart the program. Losing a life restarts the current stage with your score intact; losing all lives ends the run. A fresh fire press retries with the selected starting lives.
+- **Make each life count.** Normal mode starts with three lives. Story mode starts with 99 lives: press **S** at the title to select it, then press fire. The choice remains selected until you toggle it again or restart the program. Losing a life restarts the current stage with your score intact; losing all lives ends the run. A fresh fire press retries with the selected starting lives.
 - **Catch your breath.** Scenic crossings are safe, but bombs still consume inventory. Leaving a cleared boss stage restores one life, up to the selected mode's starting lives.
 
 Wait fifteen seconds at the title for a scenery tour. The digital track continues across every attract map and the return to the title. Move or press fire to return, then release and press fire to start. Release held fire before restarting after a run, too. Completing the campaign starts Galactic Dash with the gold-medal reveal; a fresh fire press returns to the title with that track still playing.
 
-Secret music preview: press **CTRL + C= (Commodore) + DEL** at the title or during attract mode to switch between the two digital songs, even before winning. Hold the modifiers and tap DEL again to switch back. Each switch starts the chosen song from the beginning; the selection stays until you switch again, complete the campaign, or reload.
+Secret music preview: press **CTRL + C= (Commodore) + DEL** at the title or during attract mode to switch between Hammond Rocker and Galactic Dash, even before winning. Hold the modifiers and tap DEL again to switch back. Each switch starts the chosen song from the beginning; the selection stays until you switch again, complete the campaign, or reload.
 
 ## Help
 
-See the [setup and troubleshooting guide](docs/hardware.md) for help getting started, or the [release notes](https://github.com/fechols/havoc64u/releases/tag/v0.1.2) for what's new. Found a problem? [Report it](https://github.com/fechols/havoc64u/issues) with your hardware, video standard, and what happened.
+See the [setup and troubleshooting guide](docs/hardware.md) for help getting started, or the [release notes](https://github.com/fechols/havoc64u/releases/tag/v0.1.3) for what's new. Found a problem? [Report it](https://github.com/fechols/havoc64u/issues) with your hardware, video standard, and what happened.
 
 ## License
 
