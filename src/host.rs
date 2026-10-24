@@ -2,7 +2,7 @@
 use havoc::{assets::*, audio, digital};
 use std::{boxed::Box, format, fs, path::Path, println, vec, vec::Vec};
 
-/// Reproducible compressed source; the large MP3 is not required to build.
+/// Reproducible compressed source; the original recordings are not required to build.
 pub use digital::TRACK_ASSETS as DIGITAL_TRACKS;
 
 /// All campaign choices are authored here and baked into independently checked

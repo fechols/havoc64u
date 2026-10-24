@@ -1,68 +1,83 @@
 {
-    "attribution": {
-        "composer": "William Echols",
-        "composed_for": "H.A.V.O.C.",
-        "license": "MIT",
-        "copyright": "Copyright (c) 2026 William Echols"
+  "attribution": {
+    "composer": "William Echols",
+    "composed_for": "H.A.V.O.C.",
+    "license": "MIT",
+    "copyright": "Copyright (c) 2026 William Echols"
+  },
+  "source": {
+    "filename": "Hammond Rocker.m4a",
+    "sha256": "d935beaa0caebfe0aa3e7852b34d4baba320e037a5c4f2679b2b94e3b076e884",
+    "sample_rate": 48000,
+    "channels": 2,
+    "duration_seconds": 209.9335,
+    "container_duration_seconds": 209.92,
+    "codec": "opus",
+    "audio_bit_rate": 134315,
+    "original_metadata": {
+      "major_brand": "isom",
+      "minor_version": "512",
+      "compatible_brands": "isomiso2mp41",
+      "encoder": "Lavf60.16.100",
+      "comment": "made with suno; created=2026-10-24T15:43:26Z; id=a0abe826-fc9c-4d8c-b36c-9740a5d7425f"
+    }
+  },
+  "conversion": {
+    "ffmpeg_version": "ffmpeg version n8.1.1-20260506 Copyright (c) 2000-2026 the FFmpeg developers",
+    "intermediate": "16-bit FLAC at original source rate and channels",
+    "format": "DLT4",
+    "profile": "stereo20k3",
+    "output_rate": 20000,
+    "channels": 2,
+    "frame_count": 4198670,
+    "sample_count": 4198670,
+    "sample_count_unit": "frames",
+    "codebook_entries": 8,
+    "codebook_count": 521,
+    "lloyd_iterations": 20,
+    "closed_loop_training_passes": 3,
+    "encoder_beam_width": 32,
+    "bits_per_sample": 3,
+    "output_bits_per_sample": 8,
+    "channel_processing": "Preserve original left/right channels with one shared gain",
+    "resampler": "Sequential 512-phase 100 dB Kaiser-windowed sinc; floating-point output retained until normalization",
+    "normalization": "One track-wide gain; validate final rounded 8-bit PCM sample and true peaks <= -1 dBTP including loop seam; reduce excess plus 0.1 dB and re-encode, at most five attempts",
+    "normalization_gain_db": 2.985452,
+    "normalization_attempts": 1,
+    "true_peak_meter": "FFmpeg EBU R128; loop seam included; upper bounds include 0.0005 linear metadata rounding margin",
+    "packing": "Continuous LSB-first three-bit codes; stereo alternates left/right; regular segments aligned to eight mono or four stereo frames; zero final padding",
+    "reconstruction": "Independent signed-16 saturating predictors retained across segments; output clamp(floor(sample/256+0.5),-128,127); predictors reset at exact loop length",
+    "crc": "CRC-8 polynomial 0x07, initial zero, cumulative per 1024 packed bytes including final short chunk",
+    "flac_sha256": "f2cf64182d29487778b91aa6126973be8209819cd871da2f8edac067fd85d26a",
+    "encoder_files_sha256": {
+      "dlt4.rs": "e3b42b30acd7ea690cf50ef4560c9dc34b0a70d534ba271d24796f86e8719259",
+      "encoder.rs": "e4b9df9a7ad4d73523a3c70af2c8259ae373226576cbd7128bc50c59d67a6d31",
+      "format.rs": "8dc6ab278db12afb452448cb63389bdd7db8825db38925fe190583b1271a56b4",
+      "lloyd.rs": "4421d54add65d69ef1063204481caa312ed11377e7d8eb34aca7b7e65a3547d5",
+      "main.rs": "54ff87de723426c0008df506bea51fa06cf348674adf4c6ffb4e946b039d3de4",
+      "normalize.rs": "943300775b7e4826e969ee38a29d3c4dde2f47368060d5b44cfb1e696c316caf",
+      "resample.rs": "9c4d2215feafa4846f244070cd9af035f72570bd89f6395a9ef35da960f3e482"
     },
-    "source":  {
-                   "filename":  "Hammond Rocker.mp3",
-                   "sha256":  "6df67797f001d101814aa0b7b003a5a8a630f04826819236b690dc5551caf6f6",
-                   "sample_rate":  48000,
-                   "channels":  2,
-                   "duration_seconds":  209.92
-               },
-    "conversion":  {
-                       "ffmpeg_version":  "n8.1.1-20260506",
-                       "intermediate":  "16-bit FLAC at original source rate and channels",
-                       "format":  "DLT4",
-                       "profile":  "stereo20k3",
-                       "output_rate":  20000,
-                       "channels":  2,
-                       "frame_count":  4198400,
-                       "sample_count":  4198400,
-                       "sample_count_unit":  "frames",
-                       "codebook_entries":  8,
-                       "codebook_count":  521,
-                       "lloyd_iterations":  20,
-                       "closed_loop_training_passes":  3,
-                       "encoder_beam_width":  32,
-                       "bits_per_sample":  3,
-                       "output_bits_per_sample":  8,
-                       "channel_processing":  "Preserve original left/right channels with one shared gain",
-                       "resampler":  "Sequential 512-phase 100 dB Kaiser-windowed sinc; floating-point output retained until normalization",
-                       "normalization":  "One track-wide gain; validate final rounded 8-bit PCM sample and true peaks \u003c= -1 dBTP including loop seam; reduce excess plus 0.1 dB and re-encode, at most five attempts",
-                       "normalization_gain_db":  3.227273,
-                       "normalization_attempts":  1,
-                       "true_peak_meter":  "FFmpeg EBU R128; loop seam included; upper bounds include 0.0005 linear metadata rounding margin",
-                       "packing":  "Continuous LSB-first three-bit codes; stereo alternates left/right; regular segments aligned to eight mono or four stereo frames; zero final padding",
-                       "reconstruction":  "Independent signed-16 saturating predictors retained across segments; output clamp(floor(sample/256+0.5),-128,127); predictors reset at exact loop length",
-                       "crc":  "CRC-8 polynomial 0x07, initial zero, cumulative per 1024 packed bytes including final short chunk",
-                       "flac_sha256":  "378bc7b87a4a125288cef078a835181f07fedfc87e2d999ccfb5c614d65c564e",
-                       "encoder_files_sha256":  {
-                                                    "encoder.rs":  "e4b9df9a7ad4d73523a3c70af2c8259ae373226576cbd7128bc50c59d67a6d31",
-                                                    "format.rs":  "8dc6ab278db12afb452448cb63389bdd7db8825db38925fe190583b1271a56b4",
-                                                    "lloyd.rs":  "4421d54add65d69ef1063204481caa312ed11377e7d8eb34aca7b7e65a3547d5",
-                                                    "main.rs":  "54ff87de723426c0008df506bea51fa06cf348674adf4c6ffb4e946b039d3de4",
-                                                    "normalize.rs":  "943300775b7e4826e969ee38a29d3c4dde2f47368060d5b44cfb1e696c316caf",
-                                                    "resample.rs":  "9c4d2215feafa4846f244070cd9af035f72570bd89f6395a9ef35da960f3e482",
-                                                    "dlt4.rs":  "e3b42b30acd7ea690cf50ef4560c9dc34b0a70d534ba271d24796f86e8719259"
-                                                }
-                   },
-    "tool_source":  {
-                        "project":  "secondreality-opt",
-                        "checkout_head":  "5f3360f74067fc9ec04301a1eb195173d63a8a1a",
-                        "license":  "Unlicense",
-                        "files_sha256":  {
-                                             "src/audio/flac_to_adpcm.rs":  "8e5ff7664ff2cbf339d5abd4114a3bddb63704f28daf3297bc46c5c7c8206105",
-                                             "src/audio/lloyd.rs":  "4421d54add65d69ef1063204481caa312ed11377e7d8eb34aca7b7e65a3547d5",
-                                             "target-c64/s64-adpcm-music/src/lib.rs":  "b17cc8771c8c2a4fdd433ee5d2cdbdfa14b2b7fc0ba4b96f0e4265f2f5fb561e"
-                                         },
-                        "note":  "Original source hashes identify the imported Second Reality algorithms. The local encoder adds DLT4 profiles, closed-loop retraining, beam search, floating-point mono downmix, rounded output and loop-aware peak validation; conversion.encoder_files_sha256 identifies this implementation."
-                    },
-    "asset_sha256":  "97797b987034ae383580ca3fb56d26174dda0a25fa616dfadfe98a863b7b5fc6",
-    "decoded_pcm_sha256":  "dfa4d3299a0f06229c1c8628ebc2f67822f903a8efd2cd84267d37acc26067a3",
-    "reference_pcm_sha256":  "528d1846728fd346adeeaccd6ae16d3c677b1e91f52b2fa977c9c84be2030dae",
-    "generated_metadata":  "hammond-rocker.json",
-    "temporary_gameplay_fixture":  false
+    "encoder_binary_sha256": "778ba2a2ffe8a9bc70168a1bd71c4c24d66340b69d090a4eb89c3dd48caacb26"
+  },
+  "tool_source": {
+    "project": "secondreality-opt",
+    "checkout_head": "5f3360f74067fc9ec04301a1eb195173d63a8a1a",
+    "license": "Unlicense",
+    "files_sha256": {
+      "src/audio/flac_to_adpcm.rs": "8e5ff7664ff2cbf339d5abd4114a3bddb63704f28daf3297bc46c5c7c8206105",
+      "src/audio/lloyd.rs": "4421d54add65d69ef1063204481caa312ed11377e7d8eb34aca7b7e65a3547d5",
+      "target-c64/s64-adpcm-music/src/lib.rs": "b17cc8771c8c2a4fdd433ee5d2cdbdfa14b2b7fc0ba4b96f0e4265f2f5fb561e"
+    },
+    "note": "Original source hashes identify the imported Second Reality algorithms. The local encoder adds DLT4 profiles, closed-loop retraining, beam search, floating-point mono downmix, rounded output and loop-aware peak validation; conversion.encoder_files_sha256 identifies this implementation."
+  },
+  "asset_sha256": "ff4f9d035cd28f8960e06be273898414f8d7f3819ae1e46e3a51041dc6a89a30",
+  "decoded_pcm_sha256": "e491ab6cfb31aad652820ead6024d660e64c86356f0afdadc635d756a63ae6a7",
+  "reference_pcm_sha256": "6bf10721f4f348c5fec4720987cb429aa4fe2c27d4605bb1225aa725f89b684f",
+  "generated_metadata": "hammond-rocker.json",
+  "temporary_gameplay_fixture": false,
+  "reproduction_commands": {
+    "intermediate": "ffmpeg -v error -y -i \"assets/music/source/Hammond Rocker.m4a\" -map 0:a:0 -vn -sample_fmt s16 -c:a flac -threads 1 target/digital-music/hammond-rocker-source.flac",
+    "encode": "cargo run --release --manifest-path tools/encode-digital-music/Cargo.toml --target-dir target/digital-music/tool-build -- --profile stereo20k3 target/digital-music/hammond-rocker-source.flac assets/music/hammond-rocker.dlt target/digital-music/hammond-rocker-dlt4.wav"
+  }
 }

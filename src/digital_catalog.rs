@@ -35,78 +35,78 @@ impl Track {
     pub fn descriptor(self) -> &'static Descriptor { descriptor(self) }
 }
 pub const GALACTIC_OFFSET: u32 = 0x1000e0;
-pub const HAMMOND_OFFSET: u32 = 0x339130;
-pub const SAMPLE_COUNT: u32 = 3071200;
+pub const HAMMOND_OFFSET: u32 = 0x3391f0;
+pub const SAMPLE_COUNT: u32 = 3071470;
 pub const SAMPLES_PER_SEGMENT: u32 = 5892;
-pub const STREAM_BYTES: u32 = 2303400;
+pub const STREAM_BYTES: u32 = 2303603;
 pub const STREAM_OFFSET: u32 = 25040;
-pub const CRC_OFFSET: u32 = 2328440;
+pub const CRC_OFFSET: u32 = 2328643;
 pub const CRC_COUNT: usize = 2250;
-pub const ASSET_BYTES: u32 = 2330690;
-pub const HEADER_CHECKSUM: u16 = 63100;
-pub const CODEBOOK_CHECKSUM: u16 = 12372;
-pub const CRC_TABLE_CHECKSUM: u16 = 28508;
-pub const ASSET_CHECKSUM: u16 = 4792;
-pub const CATALOG_END: u32 = 0xad1f62;
+pub const ASSET_BYTES: u32 = 2330893;
+pub const HEADER_CHECKSUM: u16 = 19031;
+pub const CODEBOOK_CHECKSUM: u16 = 14526;
+pub const CRC_TABLE_CHECKSUM: u16 = 55536;
+pub const ASSET_CHECKSUM: u16 = 21466;
+pub const CATALOG_END: u32 = 0xad2132;
 pub const DIRECTORY_BYTES: usize = 224;
-pub const DIRECTORY_CHECKSUM: u16 = 11751;
+pub const DIRECTORY_CHECKSUM: u16 = 57792;
 const TRACK_DESCRIPTORS: [Descriptor; 10] = [
     Descriptor {
         asset_offset: 0x1000e0,
-        asset_bytes: 2330690,
-        header_checksum: 63100,
-        codebook_checksum: 12372,
-        crc_table_checksum: 28508,
-        asset_checksum: 4792,
+        asset_bytes: 2330893,
+        header_checksum: 19031,
+        codebook_checksum: 14526,
+        crc_table_checksum: 55536,
+        asset_checksum: 21466,
         metadata: Metadata {
-            total_samples: 3071200,
-            stream_bytes: 2303400,
+            total_samples: 3071470,
+            stream_bytes: 2303603,
             samples_per_segment: 5892,
             stream_offset: 25040,
-            crc_offset: 2328440,
+            crc_offset: 2328643,
             codebook_count: 521,
             sample_rate: 20000,
             channels: 2,
         },
     },
     Descriptor {
-        asset_offset: 0x339130,
-        asset_bytes: 3176915,
-        header_checksum: 59692,
-        codebook_checksum: 40008,
-        crc_table_checksum: 24354,
-        asset_checksum: 28138,
+        asset_offset: 0x3391f0,
+        asset_bytes: 3177119,
+        header_checksum: 15879,
+        codebook_checksum: 13225,
+        crc_table_checksum: 44320,
+        asset_checksum: 3956,
         metadata: Metadata {
-            total_samples: 4198400,
-            stream_bytes: 3148800,
+            total_samples: 4198670,
+            stream_bytes: 3149003,
             samples_per_segment: 8056,
             stream_offset: 25040,
-            crc_offset: 3173840,
+            crc_offset: 3174043,
             codebook_count: 521,
             sample_rate: 20000,
             channels: 2,
         },
     },
     Descriptor {
-        asset_offset: 0x640b10,
-        asset_bytes: 934796,
-        header_checksum: 22591,
-        codebook_checksum: 4435,
-        crc_table_checksum: 9642,
-        asset_checksum: 44470,
+        asset_offset: 0x640c90,
+        asset_bytes: 934877,
+        header_checksum: 1641,
+        codebook_checksum: 54093,
+        crc_table_checksum: 54989,
+        asset_checksum: 53664,
         metadata: Metadata {
-            total_samples: 2456960,
-            stream_bytes: 921360,
+            total_samples: 2457176,
+            stream_bytes: 921441,
             samples_per_segment: 4712,
             stream_offset: 12536,
-            crc_offset: 933896,
+            crc_offset: 933977,
             codebook_count: 521,
             sample_rate: 16000,
             channels: 1,
         },
     },
     Descriptor {
-        asset_offset: 0x724ea0,
+        asset_offset: 0x725070,
         asset_bytes: 545457,
         header_checksum: 40031,
         codebook_checksum: 55711,
@@ -124,7 +124,7 @@ const TRACK_DESCRIPTORS: [Descriptor; 10] = [
         },
     },
     Descriptor {
-        asset_offset: 0x7aa160,
+        asset_offset: 0x7aa330,
         asset_bytes: 550743,
         header_checksum: 39755,
         codebook_checksum: 21082,
@@ -142,7 +142,7 @@ const TRACK_DESCRIPTORS: [Descriptor; 10] = [
         },
     },
     Descriptor {
-        asset_offset: 0x8308c0,
+        asset_offset: 0x830a90,
         asset_bytes: 553145,
         header_checksum: 4301,
         codebook_checksum: 23674,
@@ -160,7 +160,7 @@ const TRACK_DESCRIPTORS: [Descriptor; 10] = [
         },
     },
     Descriptor {
-        asset_offset: 0x8b7980,
+        asset_offset: 0x8b7b50,
         asset_bytes: 545698,
         header_checksum: 42962,
         codebook_checksum: 2705,
@@ -178,7 +178,7 @@ const TRACK_DESCRIPTORS: [Descriptor; 10] = [
         },
     },
     Descriptor {
-        asset_offset: 0x93cd30,
+        asset_offset: 0x93cf00,
         asset_bytes: 560352,
         header_checksum: 27477,
         codebook_checksum: 62854,
@@ -196,7 +196,7 @@ const TRACK_DESCRIPTORS: [Descriptor; 10] = [
         },
     },
     Descriptor {
-        asset_offset: 0x9c5a10,
+        asset_offset: 0x9c5be0,
         asset_bytes: 553145,
         header_checksum: 4301,
         codebook_checksum: 37421,
@@ -214,7 +214,7 @@ const TRACK_DESCRIPTORS: [Descriptor; 10] = [
         },
     },
     Descriptor {
-        asset_offset: 0xa4cad0,
+        asset_offset: 0xa4cca0,
         asset_bytes: 545938,
         header_checksum: 45894,
         codebook_checksum: 58830,
@@ -260,7 +260,7 @@ pub fn track_for_scene(cue: crate::audio::MusicState, stage: u8) -> Track {
     track_for_cue(cue)
 }
 #[cfg_attr(target_arch = "mos", link_section = ".phase.audio.data")]
-static DIRECTORY: [u8; DIRECTORY_BYTES] = [68, 77, 67, 49, 2, 10, 21, 16, 224, 0, 18, 0, 0, 0, 147, 192, 0, 2, 32, 78, 224, 0, 16, 0, 66, 144, 35, 0, 184, 18, 124, 246, 0, 2, 32, 78, 48, 145, 51, 0, 211, 121, 48, 0, 234, 109, 44, 233, 1, 1, 128, 62, 16, 11, 100, 0, 140, 67, 14, 0, 182, 173, 63, 88, 0, 1, 128, 62, 160, 78, 114, 0, 177, 82, 8, 0, 190, 161, 95, 156, 0, 1, 128, 62, 96, 161, 122, 0, 87, 103, 8, 0, 189, 117, 75, 155, 0, 1, 128, 62, 192, 8, 131, 0, 185, 112, 8, 0, 39, 211, 205, 16, 0, 1, 128, 62, 128, 121, 139, 0, 162, 83, 8, 0, 154, 132, 210, 167, 0, 1, 128, 62, 48, 205, 147, 0, 224, 140, 8, 0, 183, 237, 85, 107, 0, 1, 128, 62, 16, 90, 156, 0, 185, 112, 8, 0, 83, 181, 205, 16, 0, 1, 128, 62, 208, 202, 164, 0, 146, 84, 8, 0, 232, 157, 70, 179, 1, 2, 2, 2, 2, 0, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 3, 4, 5, 6, 7, 8, 9, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+static DIRECTORY: [u8; DIRECTORY_BYTES] = [68, 77, 67, 49, 2, 10, 21, 16, 224, 0, 18, 0, 0, 0, 78, 36, 0, 2, 32, 78, 224, 0, 16, 0, 13, 145, 35, 0, 218, 83, 87, 74, 0, 2, 32, 78, 240, 145, 51, 0, 159, 122, 48, 0, 116, 15, 7, 62, 1, 1, 128, 62, 144, 12, 100, 0, 221, 67, 14, 0, 160, 209, 105, 6, 0, 1, 128, 62, 112, 80, 114, 0, 177, 82, 8, 0, 190, 161, 95, 156, 0, 1, 128, 62, 48, 163, 122, 0, 87, 103, 8, 0, 189, 117, 75, 155, 0, 1, 128, 62, 144, 10, 131, 0, 185, 112, 8, 0, 39, 211, 205, 16, 0, 1, 128, 62, 80, 123, 139, 0, 162, 83, 8, 0, 154, 132, 210, 167, 0, 1, 128, 62, 0, 207, 147, 0, 224, 140, 8, 0, 183, 237, 85, 107, 0, 1, 128, 62, 224, 91, 156, 0, 185, 112, 8, 0, 83, 181, 205, 16, 0, 1, 128, 62, 160, 204, 164, 0, 146, 84, 8, 0, 232, 157, 70, 179, 1, 2, 2, 2, 2, 0, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 3, 4, 5, 6, 7, 8, 9, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 0, 0, 0, 0, 0, 0, 0, 0, 0];
 #[inline(always)]
 pub fn catalog_directory() -> &'static [u8; DIRECTORY_BYTES] { &DIRECTORY }
 #[cfg(feature = "host-tools")]

@@ -1,68 +1,83 @@
 {
-    "attribution": {
-        "composer": "William Echols",
-        "composed_for": "H.A.V.O.C.",
-        "license": "MIT",
-        "copyright": "Copyright (c) 2026 William Echols"
+  "attribution": {
+    "composer": "William Echols",
+    "composed_for": "H.A.V.O.C.",
+    "license": "MIT",
+    "copyright": "Copyright (c) 2026 William Echols"
+  },
+  "source": {
+    "filename": "Galactic Dash.m4a",
+    "sha256": "e06435bc75978eb7f8c46319501d170010c4212211548b56e1486768e4e6d906",
+    "sample_rate": 48000,
+    "channels": 2,
+    "duration_seconds": 153.5735,
+    "container_duration_seconds": 153.56,
+    "codec": "opus",
+    "audio_bit_rate": 133322,
+    "original_metadata": {
+      "major_brand": "isom",
+      "minor_version": "512",
+      "compatible_brands": "isomiso2mp41",
+      "encoder": "Lavf60.16.100",
+      "comment": "made with suno; created=2026-10-24T15:43:32Z; id=d1e23c31-d88b-417e-9587-193d00a89167"
+    }
+  },
+  "conversion": {
+    "ffmpeg_version": "ffmpeg version n8.1.1-20260506 Copyright (c) 2000-2026 the FFmpeg developers",
+    "intermediate": "16-bit FLAC at original source rate and channels",
+    "format": "DLT4",
+    "profile": "stereo20k3",
+    "output_rate": 20000,
+    "channels": 2,
+    "frame_count": 3071470,
+    "sample_count": 3071470,
+    "sample_count_unit": "frames",
+    "codebook_entries": 8,
+    "codebook_count": 521,
+    "lloyd_iterations": 20,
+    "closed_loop_training_passes": 3,
+    "encoder_beam_width": 32,
+    "bits_per_sample": 3,
+    "output_bits_per_sample": 8,
+    "channel_processing": "Preserve original left/right channels with one shared gain",
+    "resampler": "Sequential 512-phase 100 dB Kaiser-windowed sinc; floating-point output retained until normalization",
+    "normalization": "One track-wide gain; validate final rounded 8-bit PCM sample and true peaks <= -1 dBTP including loop seam; reduce excess plus 0.1 dB and re-encode, at most five attempts",
+    "normalization_gain_db": 4.598301,
+    "normalization_attempts": 2,
+    "true_peak_meter": "FFmpeg EBU R128; loop seam included; upper bounds include 0.0005 linear metadata rounding margin",
+    "packing": "Continuous LSB-first three-bit codes; stereo alternates left/right; regular segments aligned to eight mono or four stereo frames; zero final padding",
+    "reconstruction": "Independent signed-16 saturating predictors retained across segments; output clamp(floor(sample/256+0.5),-128,127); predictors reset at exact loop length",
+    "crc": "CRC-8 polynomial 0x07, initial zero, cumulative per 1024 packed bytes including final short chunk",
+    "flac_sha256": "6fb3bcc0776997993e4f691acfb69df1021f3288b2122accc4f65dcb1302b084",
+    "encoder_files_sha256": {
+      "dlt4.rs": "e3b42b30acd7ea690cf50ef4560c9dc34b0a70d534ba271d24796f86e8719259",
+      "encoder.rs": "e4b9df9a7ad4d73523a3c70af2c8259ae373226576cbd7128bc50c59d67a6d31",
+      "format.rs": "8dc6ab278db12afb452448cb63389bdd7db8825db38925fe190583b1271a56b4",
+      "lloyd.rs": "4421d54add65d69ef1063204481caa312ed11377e7d8eb34aca7b7e65a3547d5",
+      "main.rs": "54ff87de723426c0008df506bea51fa06cf348674adf4c6ffb4e946b039d3de4",
+      "normalize.rs": "943300775b7e4826e969ee38a29d3c4dde2f47368060d5b44cfb1e696c316caf",
+      "resample.rs": "9c4d2215feafa4846f244070cd9af035f72570bd89f6395a9ef35da960f3e482"
     },
-    "source":  {
-                   "filename":  "Galactic Dash.mp3",
-                   "sha256":  "ea1964c7d517e87b966cf5898f6db8e9ab2347e9a7b00dc532b8dddf2fe5fc7f",
-                   "sample_rate":  48000,
-                   "channels":  2,
-                   "duration_seconds":  153.56
-               },
-    "conversion":  {
-                       "ffmpeg_version":  "n8.1.1-20260506",
-                       "intermediate":  "16-bit FLAC at original source rate and channels",
-                       "format":  "DLT4",
-                       "profile":  "stereo20k3",
-                       "output_rate":  20000,
-                       "channels":  2,
-                       "frame_count":  3071200,
-                       "sample_count":  3071200,
-                       "sample_count_unit":  "frames",
-                       "codebook_entries":  8,
-                       "codebook_count":  521,
-                       "lloyd_iterations":  20,
-                       "closed_loop_training_passes":  3,
-                       "encoder_beam_width":  32,
-                       "bits_per_sample":  3,
-                       "output_bits_per_sample":  8,
-                       "channel_processing":  "Preserve original left/right channels with one shared gain",
-                       "resampler":  "Sequential 512-phase 100 dB Kaiser-windowed sinc; floating-point output retained until normalization",
-                       "normalization":  "One track-wide gain; validate final rounded 8-bit PCM sample and true peaks \u003c= -1 dBTP including loop seam; reduce excess plus 0.1 dB and re-encode, at most five attempts",
-                       "normalization_gain_db":  4.654657,
-                       "normalization_attempts":  1,
-                       "true_peak_meter":  "FFmpeg EBU R128; loop seam included; upper bounds include 0.0005 linear metadata rounding margin",
-                       "packing":  "Continuous LSB-first three-bit codes; stereo alternates left/right; regular segments aligned to eight mono or four stereo frames; zero final padding",
-                       "reconstruction":  "Independent signed-16 saturating predictors retained across segments; output clamp(floor(sample/256+0.5),-128,127); predictors reset at exact loop length",
-                       "crc":  "CRC-8 polynomial 0x07, initial zero, cumulative per 1024 packed bytes including final short chunk",
-                       "flac_sha256":  "fe005fc18dc31c8e770167090dc91e1fecb994bb747f762af9b53ef61241898e",
-                       "encoder_files_sha256":  {
-                                                    "encoder.rs":  "e4b9df9a7ad4d73523a3c70af2c8259ae373226576cbd7128bc50c59d67a6d31",
-                                                    "format.rs":  "8dc6ab278db12afb452448cb63389bdd7db8825db38925fe190583b1271a56b4",
-                                                    "lloyd.rs":  "4421d54add65d69ef1063204481caa312ed11377e7d8eb34aca7b7e65a3547d5",
-                                                    "main.rs":  "54ff87de723426c0008df506bea51fa06cf348674adf4c6ffb4e946b039d3de4",
-                                                    "normalize.rs":  "943300775b7e4826e969ee38a29d3c4dde2f47368060d5b44cfb1e696c316caf",
-                                                    "resample.rs":  "9c4d2215feafa4846f244070cd9af035f72570bd89f6395a9ef35da960f3e482",
-                                                    "dlt4.rs":  "e3b42b30acd7ea690cf50ef4560c9dc34b0a70d534ba271d24796f86e8719259"
-                                                }
-                   },
-    "tool_source":  {
-                        "project":  "secondreality-opt",
-                        "checkout_head":  "5f3360f74067fc9ec04301a1eb195173d63a8a1a",
-                        "license":  "Unlicense",
-                        "files_sha256":  {
-                                             "src/audio/flac_to_adpcm.rs":  "8e5ff7664ff2cbf339d5abd4114a3bddb63704f28daf3297bc46c5c7c8206105",
-                                             "src/audio/lloyd.rs":  "4421d54add65d69ef1063204481caa312ed11377e7d8eb34aca7b7e65a3547d5",
-                                             "target-c64/s64-adpcm-music/src/lib.rs":  "b17cc8771c8c2a4fdd433ee5d2cdbdfa14b2b7fc0ba4b96f0e4265f2f5fb561e"
-                                         },
-                        "note":  "Original source hashes identify the imported Second Reality algorithms. The local encoder adds DLT4 profiles, closed-loop retraining, beam search, floating-point mono downmix, rounded output and loop-aware peak validation; conversion.encoder_files_sha256 identifies this implementation."
-                    },
-    "asset_sha256":  "514b36d98e31ae254b8ae13fbe7c0197b315587b66b9204d85e236442635a218",
-    "decoded_pcm_sha256":  "2ca9592f810461abf51c1eea51d114dd3fe5355fe246a896c819e22ce47483c0",
-    "reference_pcm_sha256":  "8dda46fc1f6c278aaf423482bc51af4830d9c5011eba7cd1e12b7e61badb2a28",
-    "generated_metadata":  "galactic-dash.json",
-    "temporary_gameplay_fixture":  false
+    "encoder_binary_sha256": "778ba2a2ffe8a9bc70168a1bd71c4c24d66340b69d090a4eb89c3dd48caacb26"
+  },
+  "tool_source": {
+    "project": "secondreality-opt",
+    "checkout_head": "5f3360f74067fc9ec04301a1eb195173d63a8a1a",
+    "license": "Unlicense",
+    "files_sha256": {
+      "src/audio/flac_to_adpcm.rs": "8e5ff7664ff2cbf339d5abd4114a3bddb63704f28daf3297bc46c5c7c8206105",
+      "src/audio/lloyd.rs": "4421d54add65d69ef1063204481caa312ed11377e7d8eb34aca7b7e65a3547d5",
+      "target-c64/s64-adpcm-music/src/lib.rs": "b17cc8771c8c2a4fdd433ee5d2cdbdfa14b2b7fc0ba4b96f0e4265f2f5fb561e"
+    },
+    "note": "Original source hashes identify the imported Second Reality algorithms. The local encoder adds DLT4 profiles, closed-loop retraining, beam search, floating-point mono downmix, rounded output and loop-aware peak validation; conversion.encoder_files_sha256 identifies this implementation."
+  },
+  "asset_sha256": "dcb25d3fdece597bf424100aef034ccd26148fedf18c5bd20724237bab5cdf9f",
+  "decoded_pcm_sha256": "e2acd325fa971bdd08d744d1fa1d95f58d7c6c9d147948ad1f47db90cc0bb7b5",
+  "reference_pcm_sha256": "ee134fc2a92cbbda5dad965ec193b47db7e11bbb1991e6cd8c747044ffede01f",
+  "generated_metadata": "galactic-dash.json",
+  "temporary_gameplay_fixture": false,
+  "reproduction_commands": {
+    "intermediate": "ffmpeg -v error -y -i \"assets/music/source/Galactic Dash.m4a\" -map 0:a:0 -vn -sample_fmt s16 -c:a flac -threads 1 target/digital-music/galactic-dash-source.flac",
+    "encode": "cargo run --release --manifest-path tools/encode-digital-music/Cargo.toml --target-dir target/digital-music/tool-build -- --profile stereo20k3 target/digital-music/galactic-dash-source.flac assets/music/galactic-dash.dlt target/digital-music/galactic-dash-dlt4.wav"
+  }
 }

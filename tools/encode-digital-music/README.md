@@ -18,14 +18,14 @@ a test fixture, not an additional song in the final soundtrack capacity budget.
 
 ## Reproduction
 
-Preserve the original MP3s under `assets/music/source/`; convert them to signed
+Preserve the original M4As under `assets/music/source/`; convert them to signed
 16-bit FLAC at their original sample rate and channel count. Do not downmix or
 resample in FFmpeg: the encoder owns those operations.
 
 ```powershell
 New-Item -ItemType Directory -Force -Path target/digital-music | Out-Null
-ffmpeg -i 'assets/music/source/Galactic Dash.mp3' -vn -sample_fmt s16 -c:a flac target/digital-music/galactic-dash-source.flac
-ffmpeg -i 'assets/music/source/Hammond Rocker.mp3' -vn -sample_fmt s16 -c:a flac target/digital-music/hammond-rocker-source.flac
+ffmpeg -v error -y -i 'assets/music/source/Galactic Dash.m4a' -map 0:a:0 -vn -sample_fmt s16 -c:a flac -threads 1 target/digital-music/galactic-dash-source.flac
+ffmpeg -v error -y -i 'assets/music/source/Hammond Rocker.m4a' -map 0:a:0 -vn -sample_fmt s16 -c:a flac -threads 1 target/digital-music/hammond-rocker-source.flac
 cargo run --release --manifest-path tools/encode-digital-music/Cargo.toml --target-dir target/digital-music/tool-build -- --profile stereo20k3 target/digital-music/galactic-dash-source.flac assets/music/galactic-dash.dlt target/digital-music/galactic-dash-dlt4.wav
 cargo run --release --manifest-path tools/encode-digital-music/Cargo.toml --target-dir target/digital-music/tool-build -- --profile stereo20k3 target/digital-music/hammond-rocker-source.flac assets/music/hammond-rocker.dlt target/digital-music/hammond-rocker-dlt4.wav
 cargo run --release --manifest-path tools/encode-digital-music/Cargo.toml --target-dir target/digital-music/tool-build -- --profile mono16k3 target/digital-music/galactic-dash-source.flac assets/music/galactic-dash-mono.dlt target/digital-music/galactic-dash-mono-dlt4.wav

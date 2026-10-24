@@ -166,11 +166,22 @@ fn corrupt_codebook_stream_crc_and_extent_are_rejected() {
             descriptor.asset_bytes as usize - 1,
         ] {
             let mut bytes = asset.to_vec();
-            bytes[index] ^= 0x80;
+            // The low bit is used even in a partially filled final stream byte.
+            bytes[index] ^= 0x01;
             assert_eq!(
                 validate_asset(&bytes, track),
                 Err(DigitalError::Checksum),
                 "{track:?} byte {index}"
+            );
+        }
+        let used_bits = (metadata.total_samples * metadata.channels as u32 * 3) % 8;
+        if used_bits != 0 {
+            let mut bytes = asset.to_vec();
+            bytes[metadata.crc_offset as usize - 1] |= 0x80;
+            assert_eq!(
+                validate_asset(&bytes, track),
+                Err(DigitalError::Bounds),
+                "{track:?} nonzero stream padding"
             );
         }
         assert_eq!(
