@@ -261,10 +261,10 @@ def audit(path):
             'incorrect HUD sprite allocation')
     require(tuple(symbols[name].address if name in symbols else None for name in
                   ('__segment0_start', '__segment0_end', '__segment1_start', '__segment1_end'))
-            == (0x2E00, 0x3000, 0x9700, 0x9900),
+            == (0x0600, 0x0800, 0x9700, 0x9900),
             'incorrect mission buffer allocation')
-    require(symbols['__resident_end'].address <= symbols['__segment0_start'].address,
-            'resident code overlaps mission buffer at $2E00')
+    require(symbols['__resident_end'].address <= 0x3000,
+            'resident code overlaps the overlay window at $3000')
     require('__cell_hud_seen' in symbols and symbols['__cell_hud_seen'].address == 0x9328,
             'HUD-seen flag must reuse cell scratch at $9328')
     if span_enabled:
@@ -370,9 +370,14 @@ def audit(path):
         require(phases[name].address + phases[name].size <= 0x7200,
                 f"{name} exceeds the execution window")
     partial_phases = []
+    audio_phase = phases['.phase.audio']
+    require(symbols['__phase_audio_runtime_end'].address == audio_phase.address + audio_phase.size,
+            'AUDIO runtime must include the full image after startup validation moves to BOOT')
+    boot_functions = {function.name for function in elf.functions[phases['.phase.boot'].index]}
+    require({'havoc_c64::initialize_music_boot', 'havoc::digital::parse_header'} <= boot_functions,
+            'digital startup validation must remain in BOOT')
     for name, boundary_name, caller_name, tail_name in (
         ("geometry", "__phase_geometry_base_end", "havoc::game::Game::render_foreground", "havoc::game::Game::render_combat"),
-        ("audio", "__phase_audio_runtime_end", "havoc_c64::service_audio", "havoc_c64::validate_music_bank"),
         ("shadow", "__phase_shadow_finalize_end", "havoc_c64::prepare_shadows", "havoc_c64::setup_shadows"),
     ):
         phase = phases[f".phase.{name}"]
@@ -405,12 +410,56 @@ def audit(path):
     graph = defaultdict(set)
     errors = []
     partial_tail_calls = Counter()
-    kernel_references = 0
     enemy_calls = 0
     scenery_calls = 0
     alternate_calls = Counter()
     earth_tail_destinations = []
     relocations = list(elf.relocations())
+    benchmark = next((section for section in elf.sections if section.name == '.benchmark_resident'), None)
+    benchmark_audio_calls = Counter()
+    if benchmark is not None and benchmark.size:
+        require(benchmark.address == 0xff20 and benchmark.size <= 218,
+                'benchmark helpers must stay below CPU vectors')
+        boot_index = phases['.phase.boot'].index
+        initialize = next((function for function in elf.functions[boot_index]
+                           if function.name == 'havoc_c64::initialize_benchmark_helpers'), None)
+        require(initialize is not None, 'benchmark helpers need a BOOT copy')
+        sequence = {}
+        for source, address, kind, symbol, addend in relocations:
+            caller = elf.function_at(source.index, address) if source.executable else None
+            if source.index != boot_index or caller is None or caller.name != 'havoc_c64::boot_init':
+                continue
+            target = elf.function_at(boot_index, symbol.address + addend)
+            if kind == 3 and target and elf.contents(source)[address - source.address - 1] == 0x20:
+                sequence[target.name] = address
+        require(sequence.get('havoc_c64::initialize_benchmark_helpers', 65536)
+                < sequence.get('havoc_c64::initialize_irq', 0),
+                'benchmark helper copy must precede IRQ stack initialization')
+        # The benchmark alone moves its audio publisher to spare resident RAM.
+        # Its two SIM callees are safe only while its sole caller is simulate.
+        text_index = next(section.index for section in elf.sections if section.name == '.text')
+        publisher = next((function for function in elf.functions[text_index]
+                          if function.name == 'havoc_c64::send_audio'), None)
+        require(publisher is not None, 'benchmark audio publisher must be resident')
+        incoming = 0
+        for source, address, kind, symbol, addend in relocations:
+            if not source.flags & 2:
+                continue
+            destination = symbol.address + addend
+            if symbol.section != publisher.section or not (
+                    publisher.address <= destination < publisher.end):
+                continue
+            caller = elf.function_at(source.index, address) if source.executable else None
+            if caller == publisher:
+                continue
+            instruction = address - source.address - 1
+            require(source.name == '.phase.sim' and caller is not None
+                    and caller.name == 'havoc_c64::simulate' and kind == 3
+                    and destination == publisher.address and 0 <= instruction < source.size
+                    and elf.contents(source)[instruction] == 0x20,
+                    'benchmark audio publisher may only be called directly from SIM simulate')
+            incoming += 1
+        require(incoming == 1, 'benchmark audio publisher needs one SIM caller')
     loader_refs = []
     loader_calls = defaultdict(list)
     pixels_loader_refs = []
@@ -625,22 +674,6 @@ def audit(path):
                     (source.name in PIXELS_SECTIONS or
                      source.name == '.text' and caller.name.startswith('span_')),
                     f'span compositor reference outside PIXELS: {caller.name if caller else source.name}')
-        if source.name.startswith(".music.kernel.") or target.name.startswith(".music.kernel."):
-            # Per-song kernels execute from the resident slot inside the IRQ:
-            # they may reference only themselves or resident code and data,
-            # never an overlay or another kernel image. Nothing references a
-            # kernel section directly; the IRQ enters through the absolute
-            # music_kernel_tick alias once the foreground has copied an image.
-            origin = caller.name if caller else f"{source.name}:${address:04X}"
-            if source.name != target.name and (target.name.startswith(".music.kernel.")
-                                               or target.name in phases or target.name == STARTUP_SECTION
-                                               or source.name in phases or not source.executable):
-                errors.append(f"music kernel boundary violated: {origin} -> {target.name}:${destination:04X}")
-            else:
-                kernel_references += 1
-            if caller and callee:
-                graph[caller].add(callee)
-            continue
         earth_tail = source.name in (".phase.scenery.wildlife", ".phase.scenery.transport",
                                      ".phase.scenery.meteors")
         if (target.index == scenery_phase.index and destination >= terrain_end
@@ -651,8 +684,7 @@ def audit(path):
             if (source.index == phase.index and target.index == phase.index
                     and address < boundary <= destination):
                 # Reviewed guards: foreground calls combat only outside
-                # Transition; AUDIO calls validation only before MUSIC_VALIDATED.
-                # main chooses full/prefix loads from those same stable states.
+                # Transition. Main chooses full/prefix loads from stable state.
                 instruction = address - source.address - 1
                 direct = (kind == 3 and 0 <= instruction < source.size
                           and elf.contents(source)[instruction] in (0x20, 0x4C))
@@ -722,6 +754,13 @@ def audit(path):
         # address that happens to fall inside a whitelisted entry function.
         instruction = address - source.address - 1
         is_jsr = kind == 3 and 0 <= instruction < source.size and elf.contents(source)[instruction] == 0x20
+        if (benchmark is not None and benchmark.size and source.name == '.text'
+                and caller and caller.name == 'havoc_c64::send_audio'
+                and target.name == '.phase.sim' and callee and destination == callee.address
+                and callee.name in ('havoc::game::Game::music_state', 'havoc::game::Game::pop_audio')
+                and is_jsr):
+            benchmark_audio_calls[callee.name] += 1
+            continue
         if source.name == ".text" and caller and caller.name == "main" and destination == expected.address and callee == expected and is_jsr:
             entry_references[target.name] += 1
             entry_addresses[target.name].append(address)
@@ -737,6 +776,17 @@ def audit(path):
     for name in [".text", *ENTRIES, STARTUP_SECTION, SIM_AUX_SECTION, *SCENERY_HELPERS, PIXELS_AUX_SECTION, RENDER_AUX_SECTION]:
         require(sources[name] > 0, f"no retained relocations for {name}; link with --emit-relocs")
     require(not errors, "unsafe overlay references:\n  " + "\n  ".join(errors))
+    if benchmark is not None and benchmark.size:
+        expected_audio_calls = Counter()
+        for name in ('havoc::game::Game::music_state', 'havoc::game::Game::pop_audio'):
+            function = next((function for functions in elf.functions.values()
+                             for function in functions if function.name == name), None)
+            require(function is not None and elf.sections[function.section].name in ('.text', '.phase.sim'),
+                    'benchmark audio callee must be resident or in the common SIM prefix')
+            if elf.sections[function.section].name == '.phase.sim':
+                expected_audio_calls[name] = 1
+        require(benchmark_audio_calls == expected_audio_calls,
+                'benchmark audio publisher must call only its exact SIM entries')
     require(enemy_calls == 1, f"expected exactly one opaque SIM encounter call, got {enemy_calls}")
     require(scenery_calls == 1, f"expected exactly one opaque SCENERY decoration call, got {scenery_calls}")
     require(sorted(earth_tail_destinations) == [4, 5],
@@ -782,8 +832,6 @@ def audit(path):
     print(f"IRQ relocation graph: {len(reached)} functions, all resident")
     if span_enabled:
         print('Span compositor: resident pure core; PIXELS-only callers and flush; absent from IRQ graph')
-    kernel_sections = [section for section in elf.sections if section.name.startswith(".music.kernel.") and section.size]
-    print(f"Music kernels: {len(kernel_sections)} slot images; {kernel_references} references, all to resident code or data")
     print("Startup: ROMs disabled before BSS; only BSS clear, data copy, main are called")
     print("Startup checks: one main call before BOOT; no phase or IRQ references into retired workspace")
 

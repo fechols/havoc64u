@@ -24,44 +24,20 @@ CODE_IMAGES = (
     ('scenery-helpers', 'scenery_helpers', 33),
 )
 
-# Per-song music kernels in cue order; Lost Wing (cue 6) plays without one.
-KERNEL_CUES = (
-    'title', 'lowlands', 'canyon', 'fortress', 'carrier', 'victory', None,
-    'crystal_current', 'ashes_and_steel', 'tempest_drive', 'gorge_warden',
-    'citadel_heart', 'carrier_overdrive', 'asteroid_belt', 'shattered_moon',
-    'ship_graveyard', 'orbital_shipyard', 'space_carrier', 'jump_gate',
-    'ascent', 'gate_guardian',
-)
-KERNEL_DIRECTORY_SIZE = 256
-KERNEL_HEADER_SIZE = 16
-
-
-def kernel_reservation(symbols):
-    """The SMK1 directory plus one slot-sized image per cue."""
-    base = symbols['__reu_music_kernels']
-    slot = symbols['__music_kernel_size']
-    assert 0 < slot <= 0x400, 'music kernel slot must be a bounded DMA'
-    return base, base + KERNEL_DIRECTORY_SIZE + len(KERNEL_CUES) * slot, slot
-
-
 def checked_layout(symbols):
     """Check full reservations, including padding, before writing any payload."""
     size = symbols['__reu_size']
     slot_size = symbols['__reu_code_slot_size']
     assert size == 0x1000000 and slot_size == 0x4200, 'unsupported REU layout'
     assert symbols['__reu_digital_music'] == 0x100000, 'incorrect digital music address'
-    assert symbols['__reu_digital_victory'] == 0x500000, 'incorrect digital victory address'
+    assert symbols['__reu_digital_victory'] == symbols['__reu_digital_music'], 'incorrect digital victory alias'
     assert symbols['__reu_digital_ring'] == 0xfe0000, 'incorrect digital ring address'
     assert symbols['__reu_digital_ring_size'] == 0x20000, 'incorrect digital ring size'
     offsets = {name: symbols[f'__reu_{symbol}'] for name, symbol, _ in CODE_IMAGES}
-    kernels_start, kernels_end, _ = kernel_reservation(symbols)
     allocations = [(0, 0x180, 'directories'), (0x1000, 0x1c00, 'common assets'),
                    (0x2000, 0xb000, 'encounters'),
                    (symbols['__reu_models'], symbols['__reu_models'] + 0x9000, 'models'),
-                   (kernels_start, kernels_end, 'music kernels'),
-                   (symbols['__reu_music'], symbols['__reu_music'] + 0x40000, 'music'),
-                   (symbols['__reu_digital_music'], symbols['__reu_digital_victory'], 'digital title music'),
-                   (symbols['__reu_digital_victory'], symbols['__reu_digital_ring'], 'digital victory music'),
+                   (symbols['__reu_digital_music'], symbols['__reu_digital_ring'], 'digital soundtrack'),
                    (symbols['__reu_digital_ring'], size, 'mutable PCM ring')]
     for name, offset in offsets.items():
         assert offset + slot_size <= 0x100000, f'{name}: code allocation exceeds REU code region'
@@ -86,47 +62,6 @@ def checksum(data):
     return a | b << 8
 
 
-def pack_music_kernels(elf, sdk, symbols, reu):
-    """Write the SMK1 directory and every linked per-cue kernel image.
-
-    Without the music-kernels feature no kernel section exists and the
-    directory records twenty-one empty entries; the shipping AUDIO overlay then
-    never reads it. With the feature, every image must fit the resident slot and
-    carries the checksum the loader re-verifies at each cue change.
-    """
-    base, end, slot = kernel_reservation(symbols)
-    directory = bytearray(KERNEL_DIRECTORY_SIZE)
-    directory[:4] = b'SMK1'
-    directory[4] = len(KERNEL_CUES)
-    directory[6:8] = slot.to_bytes(2, 'little')
-    # The header checksum treats its own two bytes as zero, like page checksums.
-    directory[14:16] = checksum(directory[:14] + b'\0\0').to_bytes(2, 'little')
-    reu[base:end] = bytes(end - base)
-    linked = 0
-    for cue, name in enumerate(KERNEL_CUES):
-        if name is None:
-            continue
-        output = elf.parent / f'kernel-{name}.bin'
-        output.unlink(missing_ok=True)
-        result = subprocess.run([str(sdk/'llvm-objcopy'), '--dump-section', f'.music.kernel.{name}={output}', str(elf)],
-                                capture_output=True)
-        if result.returncode != 0 or not output.exists():
-            continue
-        code = output.read_bytes()
-        if not code:
-            continue
-        assert len(code) <= slot, f'{name}: kernel image exceeds the {slot}-byte slot'
-        at = base + KERNEL_DIRECTORY_SIZE + cue * slot
-        reu[at:at + len(code)] = code
-        entry = KERNEL_HEADER_SIZE + cue * 4
-        directory[entry:entry + 2] = len(code).to_bytes(2, 'little')
-        directory[entry + 2:entry + 4] = checksum(code).to_bytes(2, 'little')
-        linked += 1
-        print(f'kernel {name:18} REU ${at:06X} -> slot ${symbols["__music_kernel_start"]:04X}: {len(code):4} of {slot} bytes')
-    directory[-2:] = checksum(directory[:-2]).to_bytes(2, 'little')
-    reu[base:base + KERNEL_DIRECTORY_SIZE] = directory
-    print(f'music kernels: {linked} images, {slot}-byte slot, directory at ${base:06X}')
-
 def main():
     elf, prg, reu_path = map(pathlib.Path, sys.argv[1:4])
     sdk = pathlib.Path(os.environ.get('LLVM_MOS', str(pathlib.Path.home()/'.local/llvm-mos')))/'bin'
@@ -141,16 +76,15 @@ def main():
     reu = bytearray(reu_path.read_bytes())
     offsets, allocations = checked_layout(symbols)
     assert len(reu) == symbols['__reu_size'], 'REU image must contain exactly 16 MiB'
-    assert int.from_bytes(reu[4:8], 'little') == 0x534d0c00, 'expected v12 package'
+    assert int.from_bytes(reu[4:8], 'little') == 0x534d1000, 'expected v16 package'
     digital = validate_digital_payload(reu)
     for name, metadata in digital.items():
-        print(f'digital {name}: {metadata["asset_bytes"]:,} bytes, {metadata["sample_rate"]} Hz stereo; shared 128 KiB mutable PCM ring')
+        print(f'digital {name}: {metadata["asset_bytes"]:,} bytes, {metadata["sample_rate"]} Hz, {metadata["channels"]} channels; two 64 KiB mutable PCM slots')
     table_at = 2 + symbols['__code_reu_pages'] - 0x801
     expected_pages = bytearray(34)
     for name, _, logical_id in CODE_IMAGES:
         expected_pages[logical_id] = offsets[name] >> 12
     assert image[table_at:table_at + 34] == expected_pages, 'REU code address table disagrees with linker'
-    assert reu[symbols['__reu_music']:symbols['__reu_music'] + 4] == b'SMU3', 'music address disagrees with baker'
     directory = bytearray(128)
     directory[:4] = b'OVL7'
     packaged = set()
@@ -237,10 +171,11 @@ def main():
     put(26, checksum(span(0x7800, 0x8000)))
     put(28, checksum(span(0x9900, 0xa000)))
     put(30, checksum(span(symbols['__startup_checks_start'], symbols['__startup_checks_end'])))
-    directory[32] = 4 if symbols['__music_page_end'] > symbols['__music_page_start'] else 2
+    directory[32] = 4
+    put(120, 768)
+    put(122, checksum(span(0x7200, 0x7500)))
     put(126, checksum(directory[:126]))
     reu[0x100:0x180] = directory
-    pack_music_kernels(elf, sdk, symbols, reu)
     reu_path.write_bytes(reu)
     reserved = sum(end - start for start, end, _ in allocations)
     print(f'REU reservations: {reserved:,} bytes; {len(reu) - reserved:,} bytes unreserved')

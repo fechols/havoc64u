@@ -12,6 +12,7 @@ fn main() {
         "asm/spans.S",
         "asm/front_spans.S",
         "asm/division.S",
+        "asm/digital.S",
         "asm/sort.S",
         "asm/preparation.S",
         "asm/game_math.S",
@@ -24,6 +25,7 @@ fn main() {
         "asm/missile.S",
         "asm/shots.S",
         "asm/flight.S",
+        "asm/sfx.S",
     ] {
         println!("cargo:rerun-if-changed={source}");
     }
@@ -53,6 +55,7 @@ fn main() {
         "spans",
         "front_spans",
         "division",
+        "digital",
         "sort",
         "preparation",
         "game_math",
@@ -66,6 +69,7 @@ fn main() {
         "missile",
         "shots",
         "flight",
+        "sfx",
     ] {
         if source == "spans" && (!span_buffer || span_front)
             || source == "front_spans" && !span_front

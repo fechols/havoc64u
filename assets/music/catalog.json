@@ -1,0 +1,26 @@
+{
+  "version": 2,
+  "tracks": [
+    { "name": "galactic-dash", "rust_name": "GalacticDash", "profile": "stereo20k3" },
+    { "name": "hammond-rocker", "rust_name": "HammondRocker", "profile": "stereo20k3" },
+    { "name": "galactic-dash-mono", "rust_name": "GalacticDashMono", "profile": "mono16k3", "fixture": true },
+    { "name": "lowland-approach", "rust_name": "LowlandApproach", "profile": "mono16k3" },
+    { "name": "crystal-cave", "rust_name": "CrystalCave", "profile": "mono16k3" },
+    { "name": "iron-canyon", "rust_name": "IronCanyon", "profile": "mono16k3" },
+    { "name": "canyon-gate", "rust_name": "CanyonGate", "profile": "mono16k3" },
+    { "name": "ashen-wastes", "rust_name": "AshenWastes", "profile": "mono16k3" },
+    { "name": "foundry-belt", "rust_name": "FoundryBelt", "profile": "mono16k3" }
+  ],
+  "default_gameplay": "galactic-dash-mono",
+  "cues": { "Title": "hammond-rocker", "Victory": "galactic-dash" },
+  "stages": [
+    "lowland-approach",
+    "crystal-cave",
+    "iron-canyon",
+    "canyon-gate",
+    "ashen-wastes",
+    "foundry-belt",
+    null, null, null, null, null, null,
+    null, null, null, null, null, null
+  ]
+}

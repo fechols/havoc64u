@@ -21,7 +21,7 @@ fn header() -> [u8; PACKAGE_HEADER_SIZE] {
     put32(&mut bytes, 8, COMMON_OFFSET);
     put32(&mut bytes, 12, SEGMENTS_OFFSET);
     bytes[16] = SEGMENT_COUNT;
-    bytes[17] = havoc::music::SID_COUNT as u8;
+    bytes[17] = havoc::audio::SID_COUNT as u8;
     seal_header(&mut bytes);
     bytes
 }
@@ -32,8 +32,9 @@ fn package() -> Vec<u8> {
     let directory = baked_assets::model_directory();
     bytes[MODEL_DIRECTORY_OFFSET as usize..MODEL_DIRECTORY_OFFSET as usize + MODEL_DIRECTORY_SIZE]
         .copy_from_slice(&directory);
-    let music = havoc::soundtrack::score_bank();
-    bytes[MUSIC_OFFSET as usize..MUSIC_OFFSET as usize + music.len()].copy_from_slice(&music);
+    let directory = havoc::digital::catalog_directory();
+    let start = DIGITAL_MUSIC_OFFSET as usize;
+    bytes[start..start + directory.len()].copy_from_slice(directory);
     for (track, asset) in baked_assets::DIGITAL_TRACKS {
         let start = track.descriptor().asset_offset as usize;
         bytes[start..start + asset.len()].copy_from_slice(asset);
@@ -140,7 +141,7 @@ fn malformed_segment_metadata_and_encounter_order_are_rejected() {
         (6, 16),
         (7, 201),
         (8, 4),
-        (9, havoc::music::CUE_COUNT as u8),
+        (9, havoc::audio::CUE_COUNT as u8),
         (10, 5),
         (11, 6),
         (12, 16),
@@ -234,7 +235,7 @@ fn digital_payload_is_checked_but_runtime_pcm_ring_is_mutable() {
 }
 
 #[test]
-fn a_valid_checksum_does_not_make_invalid_music_a_supported_package() {
+fn a_valid_checksum_does_not_make_nonzero_reserved_padding_a_supported_package() {
     let mut bytes = package();
     bytes[COMMON_OFFSET as usize + 2048] = b'X';
     let sum = checksum(&bytes[COMMON_OFFSET as usize..COMMON_OFFSET as usize + COMMON_SIZE]);
@@ -242,7 +243,7 @@ fn a_valid_checksum_does_not_make_invalid_music_a_supported_package() {
     seal_header(&mut bytes);
     assert!(
         baked_assets::check_package(&bytes).is_err(),
-        "host validation must reject a score the target cannot play"
+        "host validation must reject nonzero retired score padding"
     );
 }
 
@@ -251,9 +252,6 @@ fn model_only_cache_preserves_meshes_without_exposing_missing_audio() {
     let bytes = baked_assets::common_bank();
     let full = AssetBank::new(&bytes).unwrap();
     let cache = AssetBank::new(&bytes[..MODEL_SIZE]).unwrap();
-    assert_eq!(full.audio().len(), 512);
-    assert!(cache.audio().is_empty());
-    assert!(havoc::music::cue_info(cache.audio(), 0).is_err());
     for mesh in 0..full.mesh_count() {
         assert_eq!(full.vertex_count(mesh), cache.vertex_count(mesh));
         assert_eq!(full.face_count(mesh), cache.face_count(mesh));
@@ -343,7 +341,6 @@ fn trusted_views_match_prior_validation_of_the_same_immutable_bytes() {
     // SAFETY: the full bank was validated above; this is its unchanged model prefix.
     let model_cache = unsafe { AssetBank::from_validated(&models[..MODEL_SIZE]) };
     assert_eq!(model_cache.vertex_count(PLAYER), 8);
-    assert!(model_cache.audio().is_empty());
     let bytes = baked_assets::segment_bank(1);
     let validated = Segment::new(&bytes).unwrap();
     // SAFETY: the full segment was validated above; this is its unchanged cache prefix.
@@ -851,6 +848,85 @@ fn every_level_model_is_authenticated_and_paired_with_its_identity() {
 }
 
 #[test]
+fn enemy_timing_leaves_room_for_repeats_without_moving_hazards() {
+    let counts = [
+        35, 28, 30, 12, 28, 31, 30, 12, 33, 33, 33, 14, 23, 23, 23, 23, 17, 17,
+    ];
+    let space_hazards: [&[u16]; 6] = [
+        &[2400, 5200, 8200, 11200, 14300, 17400, 20500, 23600, 26700],
+        &[2700, 5600, 8600, 11600, 14700, 17800, 20800, 23900, 27000],
+        &[2500, 5500, 8500, 11500, 14500, 17500, 20600, 23700, 26800],
+        &[2600, 5600, 8600, 11600, 14600, 17600, 20600, 23600, 26600],
+        &[2400, 5200, 8000, 10800, 13600, 16400],
+        &[2700, 5500, 8300, 11100, 13900, 16700],
+    ];
+    let mut enemies = 0;
+    let mut hazards = 0;
+    for stage in 0..SEGMENT_COUNT {
+        let bytes = baked_assets::segment_bank(stage);
+        let segment = Segment::new(&bytes).unwrap();
+        let records: Vec<_> = (0..segment.spawn_count())
+            .map(|i| segment.spawn(i))
+            .collect();
+        let combat: Vec<_> = records
+            .iter()
+            .filter(|s| matches!(s.kind, FIGHTER | DIVER | TURRET))
+            .collect();
+        assert_eq!(combat.len(), counts[stage as usize], "stage {stage}");
+        for spawn in &combat {
+            assert!(
+                u32::from(spawn.distance) + 1350 < SEGMENT_DISTANCE,
+                "stage {stage} repeat crosses its boundary"
+            );
+            if stage >= 16 {
+                assert!(
+                    spawn.distance + 1350 < 20_000,
+                    "stage {stage} repeat reaches the final boss entrance"
+                );
+            }
+        }
+        if stage == 0 {
+            // Preserve the opening formation and its reward while tightening
+            // its 1200/1300/1400-unit arrivals by five percent.
+            let opening: Vec<_> = combat[..3]
+                .iter()
+                .map(|s| (s.distance, s.kind, s.x, s.y, s.flags))
+                .collect();
+            assert_eq!(
+                opening,
+                [
+                    (1140, FIGHTER, -80, 35, 0),
+                    (1235, FIGHTER, 0, 35, 1),
+                    (1330, FIGHTER, 80, 35, 0)
+                ]
+            );
+            assert_eq!(
+                combat.iter().find(|s| s.kind == TURRET).unwrap().distance,
+                4845
+            );
+        }
+        let actual: Vec<_> = records
+            .iter()
+            .filter(|s| matches!(s.kind, ROCK | BUILDING))
+            .map(|s| s.distance)
+            .collect();
+        let expected = if stage >= 12 {
+            space_hazards[stage as usize - 12].to_vec()
+        } else if segment.stage_info().boss_kind == 0 {
+            (0..6)
+                .map(|i| 2200 + i * 4300 + u16::from(stage) * 40)
+                .collect()
+        } else {
+            Vec::new()
+        };
+        assert_eq!(actual, expected, "stage {stage} hazard timing changed");
+        enemies += combat.len();
+        hazards += actual.len();
+    }
+    assert_eq!((enemies, hazards), (445, 102));
+}
+
+#[test]
 fn authored_rosters_cover_their_local_types_and_keep_boss_turrets_out_of_actor_slots() {
     let mut scripts = Vec::new();
     for level in 0..SEGMENT_COUNT {
@@ -922,9 +998,7 @@ fn eighteen_stage_profiles_cover_terrestrial_and_orbital_campaign_with_contiguou
         0xb9000
     );
     assert_eq!(REU_SIZE, 16 * 1024 * 1024);
-    assert_eq!(MUSIC_OFFSET, 0x0c0000);
-    assert_eq!(MUSIC_OFFSET + MUSIC_CAPACITY, DIGITAL_MUSIC_OFFSET);
-    assert_eq!(DIGITAL_MUSIC_OFFSET, havoc::digital::ASSET_OFFSET);
+    assert_eq!(DIGITAL_MUSIC_OFFSET, havoc::digital::MUSIC_OFFSET);
     assert_eq!(DIGITAL_VICTORY_OFFSET, havoc::digital::HAMMOND_OFFSET);
     assert_eq!(DIGITAL_RING_OFFSET, havoc::digital::RING_OFFSET);
     assert_eq!(DIGITAL_RING_OFFSET + DIGITAL_RING_SIZE, REU_SIZE);

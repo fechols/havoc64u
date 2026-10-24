@@ -6,17 +6,128 @@ use crate::audio::{AudioEvent, Effect};
 pub static METEOR_STARTS: [u16; 8] = [100, 140, 170, 200, 230, 260, 290, 300];
 pub const METEOR_DURATION: u16 = 80;
 const CUE_WINDOW: u16 = 12;
+const ROUTE_FIXED: u8 = 15;
+const ROUTE_CENTER_FIRST: u8 = 16;
+const ROUTE_LEFT: u8 = 128;
 
 #[derive(Clone, Copy)]
 struct Cue {
     at: u16,
-    event: AudioEvent,
+    effect: Effect,
+    // Low nibble: crossing age, or 15 for a fixed route. The other bits
+    // identify which side plays and whether the center precedes the crossing.
+    route: u8,
 }
 
 const fn cue(at: u16, effect: Effect, pan: i8) -> Cue {
     Cue {
         at,
-        event: AudioEvent { effect, pan },
+        effect,
+        route: ROUTE_FIXED
+            | if pan == 0 { ROUTE_CENTER_FIRST } else { 0 }
+            | if pan < 0 { ROUTE_LEFT } else { 0 },
+    }
+}
+
+// Source motion is linear throughout each cue's twelve-tick acceptance window.
+// Resolve its exact screen-side crossings at compile time, including depth
+// changes, rather than loading projection arithmetic with every scenery frame.
+const fn moving_cue(at: u16, effect: Effect, x: i32, z: i32, dx: i32, dz: i32) -> Cue {
+    let mut initial_pan = 0;
+    let mut previous_pan = 0;
+    let mut side = 0;
+    let mut crossing = ROUTE_FIXED;
+    let mut age = 0;
+    while age <= CUE_WINDOW {
+        let current_x = x + dx * age as i32;
+        let current_z = z + dz * age as i32;
+        assert!(current_z > 0);
+        let pan = if current_x.abs() * 20 <= current_z {
+            0
+        } else if current_x < 0 {
+            -100
+        } else {
+            100
+        };
+        if age == 0 {
+            initial_pan = pan;
+        } else if pan != previous_pan {
+            // Authored windows cross only one edge of the narrow center band.
+            // Fail compilation if future motion needs a second crossing.
+            assert!(crossing == ROUTE_FIXED);
+            assert!(pan == 0 || previous_pan == 0);
+            crossing = age as u8;
+        }
+        if pan != 0 {
+            side = pan;
+        }
+        previous_pan = pan;
+        age += 1;
+    }
+    Cue {
+        at,
+        effect,
+        route: crossing
+            | if initial_pan == 0 { ROUTE_CENTER_FIRST } else { 0 }
+            | if side < 0 { ROUTE_LEFT } else { 0 },
+    }
+}
+
+const fn footstep(at: u16) -> Cue {
+    moving_cue(
+        at,
+        Effect::Footstep,
+        -3200 + at as i32 * 16,
+        3000 - at as i32 * 8,
+        16,
+        -8,
+    )
+}
+const fn bird(at: u16, index: i32) -> Cue {
+    moving_cue(
+        at,
+        Effect::BirdCall,
+        -4700 + at as i32 * 24 + index * 180,
+        2800 + index * 160,
+        24,
+        0,
+    )
+}
+const fn transport(at: u16, effect: Effect) -> Cue {
+    moving_cue(at, effect, 4800 - at as i32 * 24, 2000, -24, 0)
+}
+const fn meteor(index: usize) -> Cue {
+    let origin = if index & 1 == 0 {
+        -600 + index as i32 / 2 * 200
+    } else {
+        2200 - index as i32 / 2 * 240
+    };
+    moving_cue(
+        METEOR_STARTS[index] + 8,
+        Effect::Meteor,
+        origin - 8 * 12,
+        2600,
+        -12,
+        0,
+    )
+}
+
+impl Cue {
+    #[inline(always)]
+    fn event(self, elapsed: u16) -> AudioEvent {
+        let age = (elapsed - self.at) as u8;
+        AudioEvent {
+            effect: self.effect,
+            pan: if (age < self.route & ROUTE_FIXED)
+                == (self.route & ROUTE_CENTER_FIRST != 0)
+            {
+                0
+            } else if self.route & ROUTE_LEFT != 0 {
+                -100
+            } else {
+                100
+            },
+        }
     }
 }
 
@@ -24,32 +135,34 @@ const fn cue(at: u16, effect: Effect, pan: i8) -> Cue {
 // on the same lane without a queue or a second clock in the interrupt.
 #[cfg_attr(target_arch = "mos", link_section = ".phase.scenery.data")]
 static CUES: [Cue; 34] = [
-    cue(117, Effect::BirdCall, -100),
-    cue(130, Effect::Footstep, -100),
-    cue(156, Effect::Footstep, -100),
-    cue(173, Effect::BirdCall, -100),
-    cue(182, Effect::Footstep, -100),
-    cue(208, Effect::Footstep, 100),
-    cue(229, Effect::BirdCall, 100),
-    cue(234, Effect::Footstep, 100),
-    cue(260, Effect::Footstep, 100),
-    cue(95, Effect::Transport, 100),
-    cue(125, Effect::Transport, 100),
-    cue(155, Effect::Transport, 100),
-    cue(185, Effect::Transport, 100),
-    cue(200, Effect::TransportAway, -100),
-    cue(215, Effect::TransportAway, -100),
-    cue(245, Effect::TransportAway, -100),
-    cue(275, Effect::TransportAway, -100),
-    cue(305, Effect::TransportAway, -100),
-    cue(METEOR_STARTS[0] + 8, Effect::Meteor, -100),
-    cue(METEOR_STARTS[1] + 8, Effect::Meteor, 100),
-    cue(METEOR_STARTS[2] + 8, Effect::Meteor, -100),
-    cue(METEOR_STARTS[3] + 8, Effect::Meteor, 100),
-    cue(METEOR_STARTS[4] + 8, Effect::Meteor, -100),
-    cue(METEOR_STARTS[5] + 8, Effect::Meteor, 100),
-    cue(METEOR_STARTS[6] + 8, Effect::Meteor, -100),
-    cue(METEOR_STARTS[7] + 8, Effect::Meteor, 100),
+    bird(117, 0),
+    footstep(130),
+    footstep(156),
+    bird(173, 1),
+    footstep(182),
+    footstep(208),
+    bird(229, 2),
+    footstep(234),
+    footstep(260),
+    transport(95, Effect::Transport),
+    transport(125, Effect::Transport),
+    transport(155, Effect::Transport),
+    transport(185, Effect::Transport),
+    transport(200, Effect::TransportAway),
+    transport(215, Effect::TransportAway),
+    transport(245, Effect::TransportAway),
+    transport(275, Effect::TransportAway),
+    transport(305, Effect::TransportAway),
+    meteor(0),
+    meteor(1),
+    meteor(2),
+    meteor(3),
+    meteor(4),
+    meteor(5),
+    meteor(6),
+    meteor(7),
+    // Ascent/orbital swells have no visible moving transport source.
+    // Retain their authored ambience instead of inventing a position.
     cue(36, Effect::Transport, -100),
     cue(88, Effect::Transport, 100),
     cue(154, Effect::TransportAway, -100),
@@ -114,8 +227,15 @@ impl TransitionAudio {
         };
         for index in start..end {
             let cue = CUES[index];
-            if cue.at > after && cue.at <= elapsed && elapsed - cue.at <= CUE_WINDOW {
-                output.events[usize::from(cue.event.pan > 0)] = Some(cue.event);
+            // A future onset wraps to a large age, outside the short window.
+            if cue.at > after && elapsed.wrapping_sub(cue.at) <= CUE_WINDOW {
+                let event = cue.event(elapsed);
+                // A center cue occupies both lanes. The newest overlapping
+                // cue wins, just as two successive cues on one side do.
+                if event.pan == 0 || matches!(output.events[0], Some(AudioEvent { pan: 0, .. })) {
+                    output.events = [None; 2];
+                }
+                output.events[usize::from(event.pan > 0)] = Some(event);
             }
         }
         output
@@ -125,6 +245,7 @@ impl TransitionAudio {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::vec::Vec;
 
     #[test]
     fn repeated_backward_and_expired_frames_do_not_replay_sounds() {
@@ -198,7 +319,16 @@ mod tests {
                     .iter()
                     .position(|&start| tick == start + 8)
                     .unwrap();
-                assert_eq!(event.pan, if index & 1 == 0 { -100 } else { 100 });
+                assert_eq!(
+                    event.pan,
+                    if index == 6 {
+                        0
+                    } else if index & 1 == 0 {
+                        -100
+                    } else {
+                        100
+                    }
+                );
                 assert!(tick + 24 < 400);
                 count += 1;
             }
@@ -230,6 +360,129 @@ mod tests {
             assert_eq!(lanes, [2, 2]);
             assert!(clock.update(None).cancel);
             assert_eq!(clock.update(Some((scene, 399))).events, [None; 2]);
+        }
+    }
+
+    #[test]
+    fn transport_repeated_cues_follow_its_right_center_left_crossing() {
+        let mut clock = TransitionAudio::new();
+        for (tick, effect, pan) in [
+            (185, Effect::Transport, 100),
+            (200, Effect::TransportAway, 0),
+            (215, Effect::TransportAway, -100),
+        ] {
+            let output = clock.update(Some((1, tick)));
+            let events: Vec<_> = output.events.into_iter().flatten().collect();
+            assert_eq!(events, [AudioEvent { effect, pan }]);
+            assert_eq!(clock.update(Some((1, tick))).events, [None; 2]);
+        }
+    }
+
+    #[test]
+    fn delayed_cues_sample_the_visible_position_when_they_actually_start() {
+        // The transport passes through the entire center band during this
+        // twelve-tick acceptance window. Do not reuse its nominal-onset side.
+        for (tick, pan) in [(200, 0), (204, 0), (205, -100), (212, -100)] {
+            let mut clock = TransitionAudio::new();
+            let events: Vec<_> = clock
+                .update(Some((1, tick)))
+                .events
+                .into_iter()
+                .flatten()
+                .collect();
+            assert_eq!(
+                events,
+                [AudioEvent {
+                    effect: Effect::TransportAway,
+                    pan
+                }]
+            );
+        }
+        // Meteor six initially lies in the center band. By a delayed frame it
+        // has moved left, so meteor seven can occupy the right lane too.
+        let mut clock = TransitionAudio::new();
+        assert_eq!(
+            clock.update(Some((2, 298))).events,
+            [
+                Some(AudioEvent {
+                    effect: Effect::Meteor,
+                    pan: 0
+                }),
+                None
+            ]
+        );
+        let mut delayed = TransitionAudio::new();
+        assert_eq!(
+            delayed.update(Some((2, 310))).events,
+            [
+                Some(AudioEvent {
+                    effect: Effect::Meteor,
+                    pan: -100
+                }),
+                Some(AudioEvent {
+                    effect: Effect::Meteor,
+                    pan: 100
+                }),
+            ]
+        );
+    }
+
+    #[test]
+    fn newest_directional_cue_replaces_an_older_center_cue() {
+        // Bird one has just entered the center band while the creature still
+        // stands left. Its newer footstep displaces the old two-lane bird cue.
+        assert_eq!(CUES[3].event(184).pan, 0);
+        let mut clock = TransitionAudio::new();
+        assert_eq!(
+            clock.update(Some((0, 184))).events,
+            [
+                Some(AudioEvent {
+                    effect: Effect::Footstep,
+                    pan: -100
+                }),
+                None
+            ]
+        );
+    }
+
+    #[test]
+    fn compact_crossing_times_match_every_source_through_its_late_window() {
+        assert_eq!(core::mem::size_of::<Cue>(), 4);
+        for (index, cue) in CUES[..26].iter().enumerate() {
+            for late in 0..=CUE_WINDOW {
+                let elapsed = cue.at + late;
+                let tick = elapsed as i16;
+                // Independent transcription of the rendered trajectories,
+                // evaluated at runtime rather than using the stored thresholds.
+                let (x, z) = if index < 9 {
+                    if cue.effect == Effect::Footstep {
+                        (-3200 + tick * 16, 3000 - tick * 8)
+                    } else {
+                        let bird = match index {
+                            0 => 0,
+                            3 => 1,
+                            6 => 2,
+                            _ => unreachable!(),
+                        };
+                        (-4700 + tick * 24 + bird * 180, 2800 + bird * 160)
+                    }
+                } else if index < 18 {
+                    (4800 - tick * 24, 2000)
+                } else {
+                    let meteor = index - 18;
+                    let origin = if meteor & 1 == 0 {
+                        -600 + meteor as i16 / 2 * 200
+                    } else {
+                        2200 - meteor as i16 / 2 * 240
+                    };
+                    (origin - (elapsed - METEOR_STARTS[meteor]) as i16 * 12, 2600)
+                };
+                assert_eq!(
+                    cue.event(elapsed).pan,
+                    crate::audio::spatial_pan(x, z),
+                    "cue {index}, late {late}, position ({x},{z})"
+                );
+            }
         }
     }
 }

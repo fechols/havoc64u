@@ -1,9 +1,9 @@
-H.A.V.O.C. v0.1.2 - Heavy Assault Vessel: Orbital Combat
+H.A.V.O.C. v0.1.2 development build - Heavy Assault Vessel: Orbital Combat
 
 Requires a C64 Ultimate at 64 MHz with 16 MiB of REU memory and a joystick
 connected to port 2. The supplied configuration enables the four built-in SIDs
-and Ultimate Audio for stereo rock music on the title, attract and victory
-screens. No extra sound chips are needed.
+and Ultimate Audio for digital music throughout the game, with true stereo
+on the title, attract and victory screens. No extra sound chips are needed.
 
 Launch
 1. Copy havoc.cfg, havoc.reu, and havoc.prg to the Ultimate's storage.
@@ -13,6 +13,9 @@ Launch
 
 Keep these three files from this package together. Import the configuration
 again after using the Ultimate's SID player, which can change sound routing.
+Re-import the current havoc.cfg to raise both digital music outputs to +6 dB;
+the SID effects mixer gains remain at 0 dB. SID panning remains at Left 1 /
+Right 1 for gentle headphone separation.
 If startup reports a mismatch or invalid REU data, reload this package's REU
 at zero before running its PRG again.
 
@@ -29,12 +32,34 @@ Secret preview: CTRL + C= (Commodore) + DEL toggles the two digital songs on
 the title or in attract mode, even before winning. Hold CTRL and C= and tap
 DEL again to switch back. Each song starts from the beginning; the selection
 stays until you switch again, complete the campaign, or reload the game.
-Starting a game switches to the four-SID score and gameplay effects.
+All four SIDs are dedicated to layered effects with resonant filter sweeps.
+Each effect uses one SID or a stereo pair, leaving chips free for overlapping
+sounds. Player lasers and the tonal body of hull impacts are one octave higher
+than the previous development build; impacts retain their soft, heavy attack.
+Most other cues have a smaller pitch lift, while bombs and the largest
+explosions keep their deep foundation. Effects still update at 50 Hz.
+Barrel rolls have a stronger thruster sweep. Laser contact with
+indestructible objects also makes a sound. Bombs use one stereo pair, leaving
+another left and right chip for ship explosions and other effects; repeating
+a bomb restarts its existing pair.
+Shots and impacts choose a side from their screen position when triggered.
+Only a narrow band around the center uses a stereo pair; existing tails keep
+their original side. Bombs, boss explosions and player death remain stereo.
+Starting a game selects its digital stage music while SID combat effects
+continue. The first six stages have original tracks: Lowland Approach,
+Crystal Cave, Iron Canyon, Canyon Gate, Ashen Wastes, and Foundry Belt.
+Later stages currently use a temporary mono Galactic Dash recording.
+Gameplay music uses 16 kHz, 3-bit mono with a 10 ms delay between outputs;
+the title and victory recordings retain true stereo. Track changes fade the
+outgoing music for about one second before the next song starts; the songs
+do not overlap.
 
 Controls and troubleshooting:
 https://github.com/fechols/havoc64u
 
-Original game, music, models, and tools. See LICENSE for the MIT License.
+Original game, quad-SID effects, models, and tools. See LICENSE for the MIT License.
 
-The digital title and victory music tracks, Hammond Rocker and Galactic Dash,
-were provided by William Echols under the MIT License.
+All eight original digital recordings were composed for H.A.V.O.C. by
+William Echols: Hammond Rocker, Galactic Dash, Lowland Approach, Crystal Cave,
+Iron Canyon, Canyon Gate, Ashen Wastes, and Foundry Belt. Their source recordings
+and encoded versions use the MIT License in MUSIC-LICENSE.txt.

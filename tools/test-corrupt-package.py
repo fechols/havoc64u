@@ -54,9 +54,8 @@ def main():
     space = package_format["space"]
     if (not package_format["campaign"]
             or image[0x100:0x104] != (b"OVL7" if space else b"OVL6")):
-        parser.error("input must be a matched v5/OVL6 or v6-v8/OVL7 campaign package")
-    score_offset = package_format["music_offset"]
-    header_size, cue_count = (256, 21) if space else (128, 13)
+        parser.error("input must be a matched OVL6/OVL7 campaign package")
+    cue_count = 21 if space else 13
     overlay_offsets = package_format["overlay_offsets"]
     summary = {"passed": False, "scope": "Private corrupt REU copies in calibrated VICE; not physical hardware acceptance",
                "package": str(package), "original_sha256": before, "cases": []}
@@ -129,29 +128,11 @@ def main():
     }
     for field, (offset, _value) in metadata.items():
         cases.append((f"metadata-{field}", 0x2800 + offset, "INVALID MISSION SEGMENT"))
-    music = image[score_offset:score_offset + header_size]
-    if music[:4] != (b"SMU3" if space else b"SMU2") or music[6] != cue_count:
-        parser.error("input must contain every matching campaign cue")
-    page_size = int.from_bytes(music[12:14], "little")
-    for cue in range(cue_count):
-        entry = 16 + cue * 8
-        start = int.from_bytes(music[entry:entry + 4], "little")
-        pages = music[entry + 4]
-        last_event = score_offset + start + (pages - 1) * page_size + 12 + music[5] * 5
-        cases.append((f"music-cue-{cue}", last_event, "INVALID MUSIC PAGE"))
-    cases.extend((("music-bank-bound", score_offset + 8, "INVALID MUSIC DIRECTORY"),
-                  ("music-offset-overflow", score_offset + 16 + (cue_count - 1)*8, "INVALID MUSIC DIRECTORY")))
-    # Per-song music kernels: the directory, an entry, and the first and last
-    # images are all authenticated by the AUDIO validator before music starts.
-    kernels_at = 0xb9000
-    if image[kernels_at:kernels_at + 4] == b"SMK1" and any(image[kernels_at + 16:kernels_at + 16 + cue_count * 4]):
-        slot = int.from_bytes(image[kernels_at + 6:kernels_at + 8], "little")
-        cases += [
-            ("music-kernel-signature", kernels_at + 2, "INVALID MUSIC KERNEL"),
-            ("music-kernel-entry", kernels_at + 16, "INVALID MUSIC KERNEL"),
-            ("music-kernel-first-image", kernels_at + 0x100 + 16, "INVALID MUSIC KERNEL"),
-            ("music-kernel-last-image", kernels_at + 0x100 + (cue_count - 1) * slot + 40, "INVALID MUSIC KERNEL"),
-        ]
+    cases += [("sfx-bank-size", 0x178, "PRG AND REU DO NOT MATCH"),
+              ("sfx-bank-checksum", 0x17a, "PRG AND REU DO NOT MATCH"),
+              ("sfx-reserved", 0x17c, "PRG AND REU DO NOT MATCH"),
+              ("sfx-prg-first", 2 + 0x7200 - 0x801, "PRG AND REU DO NOT MATCH"),
+              ("sfx-prg-padding", 2 + 0x74ff - 0x801, "PRG AND REU DO NOT MATCH")]
     if args.case:
         unknown = set(args.case) - {name for name, _, _ in cases}
         if unknown:
@@ -164,7 +145,12 @@ def main():
         for extension in ("prg", "elf", "cfg"):
             (private_package/f"havoc.{extension}").write_bytes(original[extension])
         damaged = bytearray(original["reu"])
-        damaged[offset] ^= 1
+        if name.startswith("sfx-prg-"):
+            damaged_prg = bytearray(original["prg"])
+            damaged_prg[offset] ^= 1
+            (private_package/"havoc.prg").write_bytes(damaged_prg)
+        else:
+            damaged[offset] ^= 1
         if name.endswith("-directory-size"):
             size = int.from_bytes(original["reu"][offset:offset+2], "little")
             damaged[offset:offset+2] = (size - 1).to_bytes(2, "little")
@@ -191,18 +177,8 @@ def main():
             # Valid hashes isolate the structural checks on each metadata byte.
             damaged[22:24] = checksum(damaged[0x2800:0x2a00]).to_bytes(2, "little")
             damaged[62:64] = checksum(damaged[:62]).to_bytes(2, "little")
-        if name in ("music-bank-bound", "music-offset-overflow"):
-            capacity = 0x40000 if space else 0x20000
-            damaged[offset:offset + 4] = (capacity + 1 if name == "music-bank-bound" else 0xffffffff).to_bytes(4, "little")
-            # The score directory is mirrored in the common bank. Keep every
-            # enclosing checksum valid so only the capacity/32-bit bounds fail.
-            score_header = damaged[score_offset:score_offset + header_size]
-            score_header[14:16] = b"\0\0"
-            score_header[14:16] = checksum(score_header).to_bytes(2, "little")
-            damaged[score_offset:score_offset + header_size] = score_header
-            damaged[0x1800:0x1800 + header_size] = score_header
-            damaged[18:20] = checksum(damaged[0x1000:0x1c00]).to_bytes(2, "little")
-            damaged[62:64] = checksum(damaged[:62]).to_bytes(2, "little")
+        if name.startswith("sfx-"):
+            damaged[0x17e:0x180] = checksum(damaged[0x100:0x17e]).to_bytes(2, "little")
         damaged_hash = hashlib.sha256(damaged).hexdigest()
         (private_package/"havoc.reu").write_bytes(damaged)
         sys.argv = ["vice-smoke.py", "--video", "pal", "--frames", "1", "--timeout", str(args.timeout),

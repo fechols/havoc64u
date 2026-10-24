@@ -11,7 +11,8 @@ INCLUDE imag-regs.ld
 MEMORY {
     /* $F0-$FD is the cell writer's zero page (target-c64/asm/cells.S). */
     zp (rw) : ORIGIN = 0x0022, LENGTH = 0x00CE
-    low (rw) : ORIGIN = 0x0200, LENGTH = 0x0600
+    /* $0600-$07FF is the first mission buffer; resident code may reach $2FFF. */
+    low (rw) : ORIGIN = 0x0200, LENGTH = 0x0400
     ram (rwx) : ORIGIN = 0x0801, LENGTH = 0x27FF
     phase (rwx) : ORIGIN = 0x3000, LENGTH = 0x4200
     startup_checks (rx) : ORIGIN = 0x8E00, LENGTH = 0x0500
@@ -20,17 +21,17 @@ MEMORY {
     constants (r) : ORIGIN = 0x7800, LENGTH = 0x0800
     tables (r) : ORIGIN = 0x9900, LENGTH = 0x0700
     /* Empty regions materialize zero-filled holes in the contiguous PRG. */
-    image_gap (r) : ORIGIN = 0x3000, LENGTH = 0x4800
+    image_gap (r) : ORIGIN = 0x3000, LENGTH = 0x4200
+    sfx_patches (r) : ORIGIN = 0x7200, LENGTH = 0x0300
+    image_sfx_gap (r) : ORIGIN = 0x7500, LENGTH = 0x0300
     image_midgap (r) : ORIGIN = 0x8000, LENGTH = 0x0E00
     image_postgap (r) : ORIGIN = 0x9300, LENGTH = 0x0600
     renderer (rw) : ORIGIN = 0xCFFA, LENGTH = 0x1006
     game (rw) : ORIGIN = 0xC800, LENGTH = 0x0280
     audio (rw) : ORIGIN = 0xCE00, LENGTH = 0x01B0
-    music_page (rw) : ORIGIN = 0x0720, LENGTH = 0x00E0
-    /* Resident slot for the playing cue's modulation kernel, in the half of
-     * the former IRQ software stack that measurement showed to be unused.
-     * Empty unless the music-kernels feature links the per-cue images. */
-    music_kernel (rwx) : ORIGIN = 0x7200, LENGTH = 0x0300
+    /* The effects state sits in the page below the DAC state. */
+    sfx_state (rw) : ORIGIN = 0xCD00, LENGTH = 0x0100
+    benchmark_ram (rx) : ORIGIN = 0xFF20, LENGTH = 0x00DA
 }
 
 INPUT(basic-header.o)
@@ -41,18 +42,14 @@ REGION_ALIAS("c_writeable", low)
  * 4 KiB-aligned slots. No slot crosses a 64 KiB bank. Bank 4 remains PIXELS-only
  * so its split-transfer audit can distinguish prefix/helper DMA by bank. */
 __reu_size = 0x1000000;
-/* Legacy reservation names identify Galactic Dash and Hammond Rocker;
- * the runtime selects their title/victory roles independently. */
+/* The DMC1 manifest directory and its contiguous DLT4 assets share this region. */
 __reu_digital_music = 0x100000;
-__reu_digital_victory = 0x500000;
+/* Legacy symbol now aliases the manifest region; assets have generated offsets. */
+__reu_digital_victory = __reu_digital_music;
 __reu_digital_ring = 0xFE0000;
 __reu_digital_ring_size = 0x20000;
 __reu_code_slot_size = 0x4200;
 __reu_models = 0x0B0000;
-__reu_music = 0x0C0000;
-/* SMK1 kernel directory plus one slot-sized image per cue, between the model
- * banks and the score bank (must match assets::MUSIC_KERNELS_OFFSET). */
-__reu_music_kernels = 0x0B9000;
 __reu_boot = 0x010000;
 __reu_sim_lowlands = 0x020000;
 __reu_geometry = 0x030000;
@@ -192,9 +189,8 @@ SECTIONS {
     } >phase
     .phase.audio 0x3000 : AT(__reu_audio) {
         __phase_audio_start = .;
-        *(.phase.audio .phase.audio.data .phase.audio.crc_table)
-        /* After the full bank scan, refills use the immutable resident cue
-         * directory and no longer need the startup validator or parser. */
+        *(.phase.audio .phase.audio.data .phase.audio.crc_table .phase.audio.kernel)
+        /* Startup validation may be in BOOT, leaving the whole image live. */
         __phase_audio_runtime_end = .;
         *(.phase.audio.startup .phase.audio.startup.*)
         __phase_audio_end = .;
@@ -257,94 +253,6 @@ SECTIONS {
         *(.phase.sim_aux .phase.sim_aux.*)
         __phase_sim_aux_end = .;
     } >sim_aux
-    /* Per-song music kernels: every cue's image links at the same resident
-     * slot and loads from its own REU offset behind the SMK1 directory. The
-     * foreground AUDIO overlay copies the playing cue's image into the slot and
-     * the IRQ calls music_kernel_tick each tick. Sections are empty unless the
-     * music-kernels feature compiles the per-cue entry shims. */
-    music_kernel_tick = ORIGIN(music_kernel);
-    __music_kernel_start = ORIGIN(music_kernel);
-    __music_kernel_size = LENGTH(music_kernel);
-    .music.kernel.title music_kernel_tick : AT(__reu_music_kernels + 0x100 + 0 * LENGTH(music_kernel)) {
-        KEEP(*(.music.kernel.title.entry))
-        *(.music.kernel.title .music.kernel.title.*)
-    } >music_kernel
-    .music.kernel.lowlands music_kernel_tick : AT(__reu_music_kernels + 0x100 + 1 * LENGTH(music_kernel)) {
-        KEEP(*(.music.kernel.lowlands.entry))
-        *(.music.kernel.lowlands .music.kernel.lowlands.*)
-    } >music_kernel
-    .music.kernel.canyon music_kernel_tick : AT(__reu_music_kernels + 0x100 + 2 * LENGTH(music_kernel)) {
-        KEEP(*(.music.kernel.canyon.entry))
-        *(.music.kernel.canyon .music.kernel.canyon.*)
-    } >music_kernel
-    .music.kernel.fortress music_kernel_tick : AT(__reu_music_kernels + 0x100 + 3 * LENGTH(music_kernel)) {
-        KEEP(*(.music.kernel.fortress.entry))
-        *(.music.kernel.fortress .music.kernel.fortress.*)
-    } >music_kernel
-    .music.kernel.carrier music_kernel_tick : AT(__reu_music_kernels + 0x100 + 4 * LENGTH(music_kernel)) {
-        KEEP(*(.music.kernel.carrier.entry))
-        *(.music.kernel.carrier .music.kernel.carrier.*)
-    } >music_kernel
-    .music.kernel.victory music_kernel_tick : AT(__reu_music_kernels + 0x100 + 5 * LENGTH(music_kernel)) {
-        KEEP(*(.music.kernel.victory.entry))
-        *(.music.kernel.victory .music.kernel.victory.*)
-    } >music_kernel
-    .music.kernel.crystal_current music_kernel_tick : AT(__reu_music_kernels + 0x100 + 7 * LENGTH(music_kernel)) {
-        KEEP(*(.music.kernel.crystal_current.entry))
-        *(.music.kernel.crystal_current .music.kernel.crystal_current.*)
-    } >music_kernel
-    .music.kernel.ashes_and_steel music_kernel_tick : AT(__reu_music_kernels + 0x100 + 8 * LENGTH(music_kernel)) {
-        KEEP(*(.music.kernel.ashes_and_steel.entry))
-        *(.music.kernel.ashes_and_steel .music.kernel.ashes_and_steel.*)
-    } >music_kernel
-    .music.kernel.tempest_drive music_kernel_tick : AT(__reu_music_kernels + 0x100 + 9 * LENGTH(music_kernel)) {
-        KEEP(*(.music.kernel.tempest_drive.entry))
-        *(.music.kernel.tempest_drive .music.kernel.tempest_drive.*)
-    } >music_kernel
-    .music.kernel.gorge_warden music_kernel_tick : AT(__reu_music_kernels + 0x100 + 10 * LENGTH(music_kernel)) {
-        KEEP(*(.music.kernel.gorge_warden.entry))
-        *(.music.kernel.gorge_warden .music.kernel.gorge_warden.*)
-    } >music_kernel
-    .music.kernel.citadel_heart music_kernel_tick : AT(__reu_music_kernels + 0x100 + 11 * LENGTH(music_kernel)) {
-        KEEP(*(.music.kernel.citadel_heart.entry))
-        *(.music.kernel.citadel_heart .music.kernel.citadel_heart.*)
-    } >music_kernel
-    .music.kernel.carrier_overdrive music_kernel_tick : AT(__reu_music_kernels + 0x100 + 12 * LENGTH(music_kernel)) {
-        KEEP(*(.music.kernel.carrier_overdrive.entry))
-        *(.music.kernel.carrier_overdrive .music.kernel.carrier_overdrive.*)
-    } >music_kernel
-    .music.kernel.asteroid_belt music_kernel_tick : AT(__reu_music_kernels + 0x100 + 13 * LENGTH(music_kernel)) {
-        KEEP(*(.music.kernel.asteroid_belt.entry))
-        *(.music.kernel.asteroid_belt .music.kernel.asteroid_belt.*)
-    } >music_kernel
-    .music.kernel.shattered_moon music_kernel_tick : AT(__reu_music_kernels + 0x100 + 14 * LENGTH(music_kernel)) {
-        KEEP(*(.music.kernel.shattered_moon.entry))
-        *(.music.kernel.shattered_moon .music.kernel.shattered_moon.*)
-    } >music_kernel
-    .music.kernel.ship_graveyard music_kernel_tick : AT(__reu_music_kernels + 0x100 + 15 * LENGTH(music_kernel)) {
-        KEEP(*(.music.kernel.ship_graveyard.entry))
-        *(.music.kernel.ship_graveyard .music.kernel.ship_graveyard.*)
-    } >music_kernel
-    .music.kernel.orbital_shipyard music_kernel_tick : AT(__reu_music_kernels + 0x100 + 16 * LENGTH(music_kernel)) {
-        KEEP(*(.music.kernel.orbital_shipyard.entry))
-        *(.music.kernel.orbital_shipyard .music.kernel.orbital_shipyard.*)
-    } >music_kernel
-    .music.kernel.space_carrier music_kernel_tick : AT(__reu_music_kernels + 0x100 + 17 * LENGTH(music_kernel)) {
-        KEEP(*(.music.kernel.space_carrier.entry))
-        *(.music.kernel.space_carrier .music.kernel.space_carrier.*)
-    } >music_kernel
-    .music.kernel.jump_gate music_kernel_tick : AT(__reu_music_kernels + 0x100 + 18 * LENGTH(music_kernel)) {
-        KEEP(*(.music.kernel.jump_gate.entry))
-        *(.music.kernel.jump_gate .music.kernel.jump_gate.*)
-    } >music_kernel
-    .music.kernel.ascent music_kernel_tick : AT(__reu_music_kernels + 0x100 + 19 * LENGTH(music_kernel)) {
-        KEEP(*(.music.kernel.ascent.entry))
-        *(.music.kernel.ascent .music.kernel.ascent.*)
-    } >music_kernel
-    .music.kernel.gate_guardian music_kernel_tick : AT(__reu_music_kernels + 0x100 + 20 * LENGTH(music_kernel)) {
-        KEEP(*(.music.kernel.gate_guardian.entry))
-        *(.music.kernel.gate_guardian .music.kernel.gate_guardian.*)
-    } >music_kernel
     /* Called exactly once from main, before BOOT loads common assets over
      * this range. Never reachable from an interrupt or a later overlay. */
     .startup_checks : {
@@ -431,10 +339,22 @@ SECTIONS {
         *(.tables .tables.*)
         *(.rodata.*PROJECT_X* .rodata.*PROJECT_Y* .rodata.*COLOR_DISTANCE* .rodata.*SIN*)
     } >tables
+    .sfx_patches : {
+        __sfx_patches_start = .;
+        KEEP(*(.sfx_patches .sfx_patches.*))
+        __sfx_patches_end = .;
+    } >sfx_patches
     .rodata : { INCLUDE rodata-sections.ld } >constants
-    /* Benchmark-only checkpoints use free, loaded/checksummed constant RAM.
-     * Keep executable code separate so the audit still owns data jump tables. */
-    .benchmark_resident : { *(.benchmark_resident .benchmark_resident.*) } >constants
+    .sfx_helpers : { *(.sfx_helpers .sfx_helpers.*) } >constants
+    /* Benchmark-only resident helpers load in the unused PRG stack gap. BOOT
+     * copies them before initializing the IRQ stack at the source address. */
+    .benchmark_resident 0xFF20 : AT(0x7500) {
+        __benchmark_start = .;
+        *(.benchmark_resident .benchmark_resident.*)
+        __benchmark_end = .;
+    } >benchmark_ram
+    __benchmark_load = LOADADDR(.benchmark_resident);
+    __benchmark_size = SIZEOF(.benchmark_resident);
     INCLUDE data.ld
     INCLUDE bss.ld
     INCLUDE noinit.ld
@@ -454,35 +374,30 @@ SECTIONS {
         KEEP(*(.audio_state .audio_state.*))
         __audio_state_end = .;
     } >audio
-    .music_page (NOLOAD) : {
-        __music_page_start = .;
-        KEEP(*(.music_page .music_page.*))
-        __music_page_end = .;
-    } >music_page
+    .sfx_state (NOLOAD) : {
+        __sfx_state_start = .;
+        KEEP(*(.sfx_state .sfx_state.*))
+        __sfx_state_end = .;
+    } >sfx_state
 }
 
-/* Independent software stacks; both grow toward lower addresses. The IRQ
- * stack's measured high-water mark is three bytes (native VICE loops of five
- * cues, tools/music-previews.py) and kernels use static frames, so 256 bytes
- * keep a wide margin and free $7200-$74FF for the music kernel slot. */
+/* Independent software stacks grow downward. The bounded effects engine uses
+ * resident static frames; keep the full 256-byte IRQ stack and the immutable
+ * synthesis bank at $7200-$74FF in separate lifetimes/allocations. */
 __stack = 0xC800;
 __stack_bottom = 0xC400;
 __irq_stack = 0x7600;
 __irq_stack_bottom = 0x7500;
-/* LLVM-MOS can give arithmetic helpers static local frames, even when called
- * from both main and an assembly IRQ. Preserve these across every IRQ. */
-__irq_static_backup = 0xCA80;
-__irq_static_backup_tail = 0xBF40;
-__irq_static_save_start = ADDR(.noinit);
-__irq_static_save_size = SIZEOF(.noinit);
-__irq_static_first_size = MIN(SIZEOF(.noinit), 0x380);
-__irq_static_tail_size = MAX(SIZEOF(.noinit), 0x380) - 0x380;
-__irq_static_tail_start = ADDR(.noinit) + __irq_static_first_size;
+/* LLVM-MOS gives non-reentrant functions static local frames in .noinit.
+ * Nothing reachable from irq_body may own one (tools/check-irq-frames.py
+ * audits the linked closure), so the interrupt needs no frame backup and
+ * $BF40-$BFFF plus $CA80-$CCFF are free. */
 __resident_end = MAX(LOADADDR(.data) + SIZEOF(.data), ADDR(.text) + SIZEOF(.text));
-/* The first mission buffer uses the loaded hole after resident code. The
- * second stays above the cell workspace; neither is used by an interrupt. */
-__segment0_start = 0x2E00;
-__segment0_end = 0x3000;
+/* The first mission buffer uses the retired default screen page below the
+ * PRG. The second stays above the cell workspace; neither is used by an
+ * interrupt. Resident code may therefore fill $0801-$2FFF. */
+__segment0_start = 0x0600;
+__segment0_end = 0x0800;
 __segment1_start = 0x9700;
 __segment1_end = 0x9900;
 /* Eight 64-byte images are permanently owned by the VIC after BOOT's common
@@ -578,7 +493,7 @@ __quarter_squares_end = 0xC400;
 
 /* The byte address table and bounded loader rely on these physical slots. */
 ASSERT(__reu_size == 0x1000000 && __reu_code_slot_size == 0x4200, "incorrect 16 MiB REU allocation")
-ASSERT(__reu_digital_music == 0x100000 && __reu_digital_victory == 0x500000 && __reu_digital_ring == 0xFE0000 &&
+ASSERT(__reu_digital_music == 0x100000 && __reu_digital_victory == __reu_digital_music && __reu_digital_ring == 0xFE0000 &&
        __reu_digital_ring_size == 0x20000 && __reu_digital_ring + __reu_digital_ring_size == __reu_size,
        "incorrect digital music or sampler ring allocation")
 ASSERT(__code_reu_pages_end - __code_reu_pages == 34, "incorrect logical REU page table size")
@@ -633,30 +548,27 @@ ASSERT(0xB000 <= __reu_boot &&
        __reu_sim_fortress + __reu_code_slot_size <= __reu_shadow &&
        __reu_shadow + __reu_code_slot_size <= __reu_sim_carrier &&
        __reu_sim_carrier + __reu_code_slot_size <= __reu_models &&
-       __reu_models + 0x9000 <= __reu_music && __reu_music + 0x40000 == __reu_digital_music,
+       __reu_models + 0x9000 <= __reu_digital_music,
        "REU code, asset and music reservations overlap or exceed the image")
 ASSERT(__reu_pixels == 0x40000 && __reu_audio >= 0x50000, "REU bank 4 must remain PIXELS-only")
 
 ASSERT(__rc31 == 0x21, "IRQ save range must match compiler imaginary registers")
-ASSERT(__resident_end <= __segment0_start, "resident code overlaps mission buffer at $2E00")
-ASSERT(__segment0_start == 0x2E00 && __segment0_end == __phase_run && __segment0_end - __segment0_start == 512, "incorrect first mission buffer allocation")
+ASSERT(__resident_end <= __phase_run, "resident code overlaps the overlay window at $3000")
+ASSERT(__segment0_start == 0x0600 && __segment0_end == 0x0800 && __segment0_end - __segment0_start == 512, "incorrect first mission buffer allocation")
+ASSERT(ADDR(.noinit) + SIZEOF(.noinit) <= __segment0_start, "low globals overlap the first mission buffer at $0600")
 ASSERT(__segment1_start == 0x9700 && __segment1_end == ORIGIN(tables) && __segment1_end - __segment1_start == 512, "incorrect second mission buffer allocation")
 ASSERT(__hud_sprites_start == 0x8C00 && __hud_sprites_end == 0x8E00 && __hud_sprites_end - __hud_sprites_start == 8 * 64, "incorrect HUD sprite allocation")
 ASSERT((__hud_sprites_start & 63) == 0 && __hud_sprites_end <= 0x9000, "HUD sprites must be aligned in VIC-visible RAM")
 ASSERT(__hud_sprites_end == __pixel_band_start && ORIGIN(startup_checks) == __pixel_band_start && ORIGIN(sim_aux) == __pixel_band_start, "shared workspace overlaps HUD sprites")
 ASSERT(__pixel_band_start == 0x8E00 && __pixel_band_end == 0x9300, "incorrect shared pixel-band workspace")
 ASSERT(__cell_hud_seen == 0x9328, "HUD-seen flag must reuse cell scratch at $9328")
-ASSERT(ADDR(.noinit) + SIZEOF(.noinit) <= 0x0720, "low globals overlap audio score page")
-ASSERT(SIZEOF(.music_page) == 0x00E0, "four-SID score page must occupy $0720-$07FF")
+ASSERT(ADDR(.sfx_state) == 0xCD00 && SIZEOF(.sfx_state) <= 0x0100, "SID effects state must occupy $CD00-$CDFF")
 ASSERT(SIZEOF(.renderer) <= 0x1006, "renderer exceeds header plus hidden-I/O triangle storage")
-ASSERT(SIZEOF(.game_state) <= 0x0280, "game state overlaps IRQ static-frame backup")
-ASSERT(SIZEOF(.noinit) <= 0x0440, "IRQ static-frame backup exceeds 1088 bytes")
+ASSERT(SIZEOF(.game_state) <= 0x0280, "game state exceeds $C800-$CA7F")
 ASSERT(SIZEOF(.unexpected_static_stack) == 0, "compiler static locals outside .noinit are not IRQ-safe")
 ASSERT(SIZEOF(.audio_state) <= 0x01B0, "audio state exceeds $CE00-$CFAF")
-ASSERT(__music_kernel_start >= 0x7200 && __music_kernel_start >= __phase_pixels_aux_end && __music_kernel_start + __music_kernel_size <= __irq_stack_bottom, "music kernel slot must sit between the overlay window and the IRQ stack")
-ASSERT(__reu_models + 0x9000 <= __reu_music_kernels && __reu_music_kernels + 0x100 + 21 * __music_kernel_size <= __reu_music, "music kernel images must fit between the model banks and the score bank")
 ASSERT(SIZEOF(.rodata) <= 0x0800, "resident constants exceed $7800-$7FFF")
-ASSERT(SIZEOF(.rodata) + SIZEOF(.benchmark_resident) <= 0x0800, "benchmark checkpoints exceed constant RAM")
+ASSERT(SIZEOF(.rodata) + SIZEOF(.sfx_helpers) <= 0x0800, "resident constants and SFX helpers exceed constant RAM")
 ASSERT(SIZEOF(.tables) <= 0x0700, "resident tables exceed $9900-$9FFF")
 ASSERT(SIZEOF(.phase.boot) <= 0x4200, "BOOT overlay exceeds $3000-$71FF")
 ASSERT(__phase_sim_size <= 0x4200, "composed SIM overlay exceeds $3000-$71FF")
@@ -679,7 +591,7 @@ ASSERT(__phase_pixels_aux_size > 0 && __phase_pixels_aux_size <= 0x02E0, "PIXELS
 ASSERT(__phase_pixels_aux_end <= __irq_stack_bottom, "PIXELS helpers overlap IRQ stack")
 ASSERT(__phase_pixels_size <= 0x4200, "composed PIXELS image exceeds phase slot")
 ASSERT(SIZEOF(.phase.audio) <= 0x4200, "AUDIO overlay exceeds $3000-$71FF")
-ASSERT(__phase_audio_runtime_size > 0 && __phase_audio_runtime_size < __phase_audio_size, "AUDIO needs a runtime prefix before startup validation")
+ASSERT(__phase_audio_runtime_size > 0 && __phase_audio_runtime_size <= __phase_audio_size, "AUDIO runtime extent must fit its image")
 ASSERT(__phase_scenery_size <= 0x4200, "composed SCENERY overlay exceeds $3000-$71FF")
 ASSERT(__phase_scenery_base_size > 0 && __phase_scenery_base_size < __phase_scenery_size, "SCENERY needs a common prefix and a wildlife tail")
 ASSERT(__phase_scenery_terrain_size > 0 && __phase_scenery_terrain_size < __phase_scenery_base_size, "SCENERY needs a terrestrial prefix before space helpers")
@@ -707,6 +619,8 @@ OUTPUT_FORMAT {
     SHORT(ORIGIN(ram))
     FULL(ram)
     FULL(image_gap)
+    FULL(sfx_patches)
+    FULL(image_sfx_gap)
     FULL(constants)
     FULL(image_midgap)
     FULL(startup_checks)
@@ -714,3 +628,9 @@ OUTPUT_FORMAT {
     FULL(tables)
 }
 ASSERT(__phase_scenery_extra_end <= __shadow_frame_start && __shadow_frame_end <= __raster_heads_end, "SCENERY helper or shadow scratch overlaps live frame");
+
+ASSERT(SIZEOF(.sfx_patches) > 0 && SIZEOF(.sfx_patches) <= 0x300, "SFX patches exceed permanent bank")
+ASSERT(__sfx_patches_end <= __irq_stack_bottom, "SFX patches overlap IRQ stack")
+
+ASSERT(SIZEOF(.benchmark_resident) <= 0xDA, "benchmark helpers overlap CPU vectors")
+ASSERT(LOADADDR(.benchmark_resident) == 0x7500 && LOADADDR(.benchmark_resident) + SIZEOF(.benchmark_resident) <= 0x7600, "benchmark helper source exceeds retired boot stack gap")

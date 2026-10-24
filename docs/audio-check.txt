@@ -1,0 +1,37 @@
+H.A.V.O.C. - Ultimate audio and combat frame-rate comparison
+
+The new build is in D:\havoc. The previous v15 build is retained separately
+in D:\havoc-audio-baseline. Keep each folder's PRG, REU and CFG together.
+
+Use the same display, video standard, joystick and audio output for both runs.
+Import havoc.cfg and check that CPU Speed is 64. The supplied configurations
+are identical: four UltiSIDs, Left 1 / Right 1 panning, and the same mixer gains.
+Leave the joystick's hardware autofire disabled.
+
+For each build:
+1. Reset, load that folder's havoc.reu at REU address zero, and run its havoc.prg.
+2. Start a fresh game and press F to show the frame-rate readout. Let the stage
+   music change finish before measuring combat.
+3. Play the same combat section for at least 30 seconds, holding fire. Follow
+   the same route and use bombs at the same points: double-tap fire within
+   half a second. Include a section with many hits and overlapping explosions.
+4. Note the normal FPS range and the lowest readings during sustained combat
+   and bomb explosions. Record deaths, stage changes and music transitions
+   separately. Repeat three times per build, alternating old/new order.
+
+Listen for punch and clarity: a deep, snappy "pew" cannon that no longer
+blurs under sustained fire, hull impacts as a heavy thud and crunch (not a
+ricochet), deep ship explosions that hit at full chip volume for four
+frames, re-blast once and sink into a low rumble, and a bomb that hits at
+full chip volume for three frames before settling. The barrel roll should be
+a rising whoosh with a spinning tone, not a wobble.
+Check that the brief full-volume punches on hits, explosions and the bomb
+sit well against the music and do not overwhelm it; the sustained level is
+unchanged. Filter sweeps and effect durations still use 50 Hz timing. Check
+left/right placement.
+
+The F readout averages frames over roughly one second; it cannot identify
+every individual frame stall. Emulator SFX benchmarks and native DAC models
+are separate measurements. This check includes real rendering, DAC music,
+SID effects and the physical Ultimate together; it is the final check for
+the sustained-combat slowdown reported on the machine.

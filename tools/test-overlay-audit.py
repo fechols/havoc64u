@@ -48,9 +48,9 @@ def main():
                             and entry[4].section < len(elf.sections)
                             and (callee := elf.function_at(entry[4].section, entry[4].address
                                  + struct.unpack_from("<i", elf.data, entry[0] + 8)[0]))
-                            and callee.name == "havoc_c64::validate_music_bank")
+                            and callee.section == entry[1].index)
     audio_parser = next(symbol.name for symbol in elf.symbols
-                        if checker["readable_name"](symbol.name) == "havoc::music::cue_info")
+                        if checker["readable_name"](symbol.name) == "havoc::digital::parse_header")
     lowlands = next(entry for entry in entries if entry[1].name == ".phase.enemy.lowlands" and entry[3] == 3)
     wildlife = next(entry for entry in entries if entry[1].name == ".phase.scenery.wildlife" and entry[3] == 3)
     terrain_end = next(symbol.address for symbol in elf.symbols if symbol.name == "__phase_scenery_terrain_end")
@@ -147,9 +147,9 @@ def main():
         ("scenic-calls-encounter", lambda data: replace_target(data, wildlife, "encounter_lowlands"), "unsafe overlay references"),
         ("terrain-calls-unloaded-space-helper", lambda data: replace_target(data, terrain_call, space_helper), "terrestrial SCENERY prefix references unloaded space helpers"),
         ("earth-tail-calls-unloaded-space-helper", lambda data: replace_target(data, wildlife, space_helper), "terrestrial SCENERY prefix references unloaded space helpers"),
-        ("audio-runtime-calls-startup-parser", lambda data: replace_target(data, audio_validation, audio_parser), "prefix references unloaded tail"),
-        ("audio-validation-interior-entry", lambda data: nonzero_addend(data, audio_validation), "prefix references unloaded tail"),
-        ("audio-validation-address-load", lambda data: scenic_load(data, audio_validation), "prefix references unloaded tail"),
+        ("audio-runtime-calls-startup-parser", lambda data: replace_target(data, audio_validation, audio_parser), "unsafe overlay references"),
+        ("audio-validation-interior-entry", lambda data: (replace_target(data, audio_validation, audio_parser), nonzero_addend(data, audio_validation)), "unsafe overlay references"),
+        ("audio-validation-address-load", lambda data: (replace_target(data, audio_validation, audio_parser), scenic_load(data, audio_validation)), "unsafe overlay references"),
         ("geometry-calls-terminal", lambda data: replace_target(data, geometry, "terminal_step"), "opaque terminal_step ABI"),
         ("sim-calls-victory", lambda data: replace_target(data, opaque, "victory_geometry"), "opaque victory_geometry ABI"),
         ("direct-terminal-tail", lambda data: replace_target(data, terminal, "game_terminal"), "unsafe overlay references"),
@@ -195,11 +195,11 @@ def main():
     for name, value, expected in (
         ('__hud_sprites_start', 0x8bff, 'incorrect HUD sprite allocation'),
         ('__hud_sprites_end', 0x8e01, 'incorrect HUD sprite allocation'),
-        ('__segment0_start', 0x2dff, 'incorrect mission buffer allocation'),
-        ('__segment0_end', 0x3001, 'incorrect mission buffer allocation'),
+        ('__segment0_start', 0x5ff, 'incorrect mission buffer allocation'),
+        ('__segment0_end', 0x801, 'incorrect mission buffer allocation'),
         ('__segment1_start', 0x96ff, 'incorrect mission buffer allocation'),
         ('__segment1_end', 0x9901, 'incorrect mission buffer allocation'),
-        ('__resident_end', 0x2e01, 'resident code overlaps mission buffer at $2E00'),
+        ('__resident_end', 0x3001, 'resident code overlaps the overlay window at $3000'),
     ):
         cases.append((f'ownership-{name}',
                       lambda data, name=name, value=value: symbol_address(data, name, value),

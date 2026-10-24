@@ -528,7 +528,7 @@ fn assert_white_geometry(normal: &[Triangle], flashed: &[Triangle]) {
 
 #[test]
 fn enemy_meshes_and_proxies_only_change_the_damaged_targets_colors() {
-    for stage in [0, 2, 5, 8, 12] {
+    for stage in [0, 1, 2, 5, 8, 12] {
         let bank = test_bank(stage);
         for kind in (1..=bank.enemy_count()).chain([assets::ROCK]) {
             for (z, limit) in [(700, 200), (1800, 200), (700, 4)] {

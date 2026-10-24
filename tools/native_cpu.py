@@ -1,16 +1,6 @@
 #!/usr/bin/env python3
-"""Replay the linked per-song music kernels on a 6502 model against host fixtures.
-
-`cargo run --release --features music-kernels -- kernel-fixtures` records, for
-every cue with a kernel, engine images taken at legitimately reached transport
-positions, the image after one more kernel call on the host, and the SID
-registers that call writes. This script executes the production 6502 code of
-each kernel image from the unstripped ELF (together with the resident helpers
-it calls) on those same engine bytes and requires identical engine bytes and
-SID writes. It also rejects stores outside the engine, SID, zero-page, stack
-and compiler static-frame regions, and reports the kernel's cycle cost. Only
-Python's standard library is required; run under the Linux/WSL toolchain after
-`scripts/build-target.sh` (any ELF linked with --emit-relocs and kept unstripped).
+"""Shared NMOS 6502 interpreter and ELF loader for linked-native regression tests.
+No emulator audio or physical hardware timing is implied.
 """
 import argparse
 import json
@@ -19,15 +9,7 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-SLOT_SYMBOL = "music_kernel_tick"
-KERNELS = {
-    0: "title", 1: "lowlands", 2: "canyon", 3: "fortress", 4: "carrier", 5: "victory",
-    7: "crystal_current", 8: "ashes_and_steel", 9: "tempest_drive", 10: "gorge_warden",
-    11: "citadel_heart", 12: "carrier_overdrive", 13: "asteroid_belt", 14: "shattered_moon",
-    15: "ship_graveyard", 16: "orbital_shipyard", 17: "space_carrier", 18: "jump_gate",
-    19: "ascent", 20: "gate_guardian",
-}
-RESIDENT_SECTIONS = (".text", ".rodata", ".tables", ".data")
+RESIDENT_SECTIONS = (".text", ".rodata", ".tables", ".data", ".sfx_patches", ".sfx_helpers")
 C, Z, I, D, B, U, V, N = (1 << n for n in range(8))
 SENTINEL = 0xFFFF
 
@@ -330,105 +312,7 @@ def load_elf(path):
     for symbol in elf.symbols:
         symbols.setdefault(readable(symbol.name), symbol)
         symbols.setdefault(symbol.name, symbol)
+        if "::" not in readable(symbol.name):
+            symbols.setdefault("havoc_c64::" + readable(symbol.name), symbol)
     return elf, symbols
 
-
-def main():
-    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--elf", type=Path, default=ROOT / "dist/havoc.elf")
-    parser.add_argument("--fixtures", type=Path)
-    parser.add_argument("--budget", type=int, default=200_000, help="instruction limit per kernel call")
-    parser.add_argument("--report", type=Path)
-    args = parser.parse_args()
-    elf, symbols = load_elf(args.elf)
-    sections = {section.name: section for section in elf.sections}
-    if (symbols["__music_page_start"].address, symbols["__music_page_end"].address) != (0x720, 0x800):
-        raise SystemExit("four-SID score page must occupy $0720-$07FF")
-    sid_count = 4
-    fixtures_path = args.fixtures or ROOT / f"target/kernel-fixtures/kernel-fixtures-{sid_count}sid.json"
-    fixtures = json.loads(fixtures_path.read_text())
-    if fixtures["sid_count"] != sid_count:
-        raise SystemExit(f"fixtures are for {fixtures['sid_count']} SIDs but the ELF has {sid_count}")
-    engine = symbols["havoc_c64::AUDIO"]
-    slot = symbols[SLOT_SYMBOL].address
-    slot_size = symbols["__music_kernel_size"].address
-    if fixtures["engine_size"] not in (engine.size, engine.size + 1):
-        raise SystemExit(f"host engine image is {fixtures['engine_size']} bytes; the target engine is {engine.size}")
-    base = bytearray(65536)
-    for name in RESIDENT_SECTIONS:
-        section = sections.get(name)
-        if section is not None and section.kind == 1:
-            base[section.address:section.address + section.size] = elf.contents(section)
-    noinit = sections[".noinit"]
-    irq_stack = (symbols["__irq_stack_bottom"].address, symbols["__irq_stack"].address)
-    writable = [(0, 0x100), (0x100, 0x200), (noinit.address, noinit.address + noinit.size),
-                irq_stack, (0xD400, 0xD400 + 32 * sid_count), (engine.address, engine.address + engine.size)]
-    report = {"elf": str(args.elf), "sid_count": sid_count, "slot": slot, "slot_size": slot_size, "kernels": {}}
-    failures = []
-    total = 0
-    for case in fixtures["cases"]:
-        cue = case["cue"]
-        name = KERNELS[cue]
-        section = sections.get(f".music.kernel.{name}")
-        if section is None or section.size == 0:
-            failures.append(f"{name}: no kernel image linked")
-            continue
-        if section.size > slot_size:
-            failures.append(f"{name}: image of {section.size} bytes exceeds the {slot_size}-byte slot")
-            continue
-        memory = bytearray(base)
-        memory[slot:slot + section.size] = elf.contents(section)
-        before = bytes.fromhex(case["before"])[:engine.size]
-        memory[engine.address:engine.address + engine.size] = before
-        memory[0x02] = irq_stack[1] & 0xFF
-        memory[0x03] = irq_stack[1] >> 8
-        cpu = Cpu(memory, writable)
-        cpu.push(SENTINEL >> 8)
-        cpu.push((SENTINEL - 1) & 0xFF)
-        cpu.pc = slot
-        try:
-            steps = 0
-            while cpu.pc != SENTINEL:
-                cpu.step()
-                steps += 1
-                if steps > args.budget:
-                    raise KernelError("instruction budget exhausted")
-            after = bytes(memory[engine.address:engine.address + engine.size])
-            expected = bytes.fromhex(case["after"])[:engine.size]
-            sid = bytes(memory[0xD400:0xD400 + 32 * sid_count])
-            expected_sid = bytes.fromhex(case["sid"])
-            if after != expected:
-                diffs = [i for i in range(engine.size) if after[i] != expected[i]][:8]
-                detail = ", ".join(f"[{i}] ${after[i]:02X} vs ${expected[i]:02X}" for i in diffs)
-                raise KernelError(f"engine bytes differ (target vs host): {detail}")
-            if sid != expected_sid:
-                offset = next(i for i in range(len(sid)) if sid[i] != expected_sid[i])
-                raise KernelError(f"SID ${0xD400 + offset:04X} is ${sid[offset]:02X}, host has ${expected_sid[offset]:02X}")
-            if cpu.s != 0xFD:
-                raise KernelError(f"hardware stack imbalance: S=${cpu.s:02X}")
-        except KernelError as error:
-            failures.append(f"{name} tick {case['tick']}: {error}")
-            continue
-        entry = report["kernels"].setdefault(name, {"cases": 0, "bytes": section.size, "max_cycles": 0, "total_cycles": 0})
-        entry["cases"] += 1
-        entry["max_cycles"] = max(entry["max_cycles"], cpu.cycles)
-        entry["total_cycles"] += cpu.cycles
-        total += 1
-    for name, entry in sorted(report["kernels"].items()):
-        entry["mean_cycles"] = round(entry["total_cycles"] / entry["cases"], 1)
-        print(f"{name:18} {entry['bytes']:4} bytes  {entry['cases']:4} cases  max {entry['max_cycles']:5} cycles  "
-              f"({entry['max_cycles'] / 64:.0f} us at 64 MHz)")
-    report["cases"] = total
-    report["failures"] = failures
-    report["passed"] = not failures and total > 0
-    if args.report:
-        args.report.parent.mkdir(parents=True, exist_ok=True)
-        args.report.write_text(json.dumps(report, indent=2) + "\n")
-    if failures:
-        print("\n".join(failures[:40]), file=sys.stderr)
-        raise SystemExit(f"music kernel replay failed: {len(failures)} of {len(fixtures['cases'])} cases")
-    print(f"music kernel replay: {total} cases, {len(report['kernels'])} kernels identical to the host")
-
-
-if __name__ == "__main__":
-    main()

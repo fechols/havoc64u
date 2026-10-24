@@ -9,8 +9,8 @@ Fly an original 3D rail shooter for the **64 MHz C64 Ultimate**. Skim green hill
 ## Features
 
 - **3D worlds** — Dive through colorful landscapes and orbital scenery.
-- **Quad-SID music** — Enjoy the complete original score through four built-in UltiSIDs.
-- **Stereo rock music** — Rock out to Hammond Rocker through the title and attract tour, with SID music taking over when you launch. Earn the final gold medal to hear Galactic Dash on the victory, title and attract screens.
+- **Quad-SID effects** — Deep energy-cannon fire, heavy hull impacts, and resonant filter sweeps. Each effect uses one SID or a stereo pair; four chips let sounds overlap. Music plays entirely through the DACs.
+- **Stereo rock music** — Rock out to Hammond Rocker through the title and attract tour. Earn the final gold medal to hear Galactic Dash on the victory, title and attract screens.
 - **18 varied stages** — Journey from green hills to orbital battlefields.
 - **Five bosses** — Break their defenses and strike their exposed cores.
 - **Aircraft-like handling** — Bank, climb, and dive with weight and momentum.
@@ -19,6 +19,10 @@ Fly an original 3D rail shooter for the **64 MHz C64 Ultimate**. Skim green hill
 - **Magnetic pickups** — Pull in nearby supplies to keep fighting.
 - **Checkpoints and pause** — Retain your score after losing a life; take breaks.
 - **Punchy impacts** — Feel hits and bombs through screen shake and flashes.
+
+The development build includes eight original digital recordings composed for H.A.V.O.C. by William Echols. The first six stages have their own songs: Lowland Approach, Crystal Cave, Iron Canyon, Canyon Gate, Ashen Wastes, and Foundry Belt. Gameplay music uses 16 kHz, 3-bit mono compression with a 10 ms delay between outputs; later stages currently use a temporary mono Galactic Dash fixture. Title and victory songs retain true stereo, and SID combat effects remain active. See the [current implementation status](docs/digital-music-handoff.md#current-development-status-dlt4). The v0.1.2 download below retains its released soundtrack and playback behavior.
+
+The v16 development revision raises the cannon and impact bodies one octave, with smaller pitch lifts for other ordinary cues while preserving deep bombs and large explosions. The effects player remains at 50 Hz. Each effect uses at most one SID per channel; a stereo bomb leaves one left and one right chip available for ship explosions, and repeating it restarts its existing pair. Shots and impacts follow their screen position with a narrow center band and gentle headphone separation. Pitch and pulse-width movement, staged waveforms, sync, ring modulation and filter sweeps remain. Track changes fade the outgoing digital music for about one second before the next song starts, without a crossfade. Current validation and the sustained-combat CPU measurements are tracked in the [audio implementation notes](docs/hardware.md#quad-sid-effects).
 
 ## See it in action
 
@@ -95,6 +99,8 @@ See the [setup and troubleshooting guide](docs/hardware.md) for help getting sta
 
 ## License
 
-The game, tools, models, music, and screenshots are released under the [MIT License](LICENSE).
+The game, its original tools, models, SID score, and screenshots are released under the [MIT License](LICENSE).
 
-The digital title and victory music tracks, **Hammond Rocker** and **Galactic Dash**, were provided by **William Echols** under the MIT License.
+All eight original digital recordings were composed for H.A.V.O.C. by **William Echols**: Hammond Rocker, Galactic Dash, Lowland Approach, Crystal Cave, Iron Canyon, Canyon Gate, Ashen Wastes, and Foundry Belt. Their source recordings and encoded versions are covered by the [music MIT License](assets/music/LICENSE), included in player archives as `MUSIC-LICENSE.txt`.
+
+The digital encoder also includes public-domain code under its accompanying [Unlicense](tools/encode-digital-music/UNLICENSE).

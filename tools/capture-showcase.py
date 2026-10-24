@@ -430,7 +430,7 @@ class Capture:
                     seconds=elapsed, stage=state["stage_id"], mode=state["mode"],
                     stage_ticks=state.get("stage_ticks"), rail_ticks=state["rail_ticks"],
                     frame_serial=counters["frame_serial"],
-                    music_cue=counters["music_cue"], music_page=counters["music_page"],
+                    music_cue=counters["music_cue"],
                     player=state["player"], flight=state.get("flight"),
                     roll_ticks=state.get("roll_ticks"), joystick=self.last_bits,
                     shield=state["shield"], lives=state["lives"], score=state["score"],
@@ -499,7 +499,7 @@ class Capture:
             events = [event for event in vice.stores(trace_path) if first_cycle <= event["bus_cycles"] < last_cycle]
             activity = vice.sid_summary(trace_path.name, events, self.package[17])
             chip_names = ("left_d400", "right_d420", "socket1_d440", "socket2_d460")[:self.package[17]]
-            if any(not activity[name]["gate_on"] for name in chip_names):
+            if not vice.package_model_layout(self.package).get("quad_sfx") and any(not activity[name]["gate_on"] for name in chip_names):
                 raise RuntimeError("A SID chip had no active voice gates during retained footage")
             self.report["sid_activity"] = activity
             if chosen is None:

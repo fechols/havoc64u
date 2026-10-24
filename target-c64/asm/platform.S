@@ -68,7 +68,7 @@ __havoc_copy_data:
     jmp __havoc_copy_bytes
 
 ; Copy rc6/7 bytes from rc2/3 to rc4/5 without touching any compiler static
-; frame. The page loop keeps the interrupt scratch backup cheap at 64 MHz.
+; frame (the startup data copy runs before BSS and the stacks are ready).
 .section .text.__havoc_copy_bytes,"ax",@progbits
 __havoc_copy_bytes:
     ldy #0
@@ -113,63 +113,15 @@ irq_entry:
     inx
     cpx #32
     bne .Lirq_save
-    lda #<__irq_static_save_start
-    sta __rc2
-    lda #>__irq_static_save_start
-    sta __rc3
-    lda #<__irq_static_backup
-    sta __rc4
-    lda #>__irq_static_backup
-    sta __rc5
-    lda #<__irq_static_first_size
-    sta __rc6
-    lda #>__irq_static_first_size
-    sta __rc7
-    jsr __havoc_copy_bytes
-    lda #<__irq_static_tail_start
-    sta __rc2
-    lda #>__irq_static_tail_start
-    sta __rc3
-    lda #<__irq_static_backup_tail
-    sta __rc4
-    lda #>__irq_static_backup_tail
-    sta __rc5
-    lda #<__irq_static_tail_size
-    sta __rc6
-    lda #>__irq_static_tail_size
-    sta __rc7
-    jsr __havoc_copy_bytes
+    ; Interrupt Rust code runs on its own software stack. No function
+    ; reachable from irq_body owns a compiler static frame (the effects
+    ; engine is assembly), so the foreground's static locals need no backup;
+    ; tools/check-irq-frames.py rejects a build that reintroduces one.
     lda #<__irq_stack
     sta __rc0
     lda #>__irq_stack
     sta __rc1
     jsr irq_body
-    lda #<__irq_static_backup
-    sta __rc2
-    lda #>__irq_static_backup
-    sta __rc3
-    lda #<__irq_static_save_start
-    sta __rc4
-    lda #>__irq_static_save_start
-    sta __rc5
-    lda #<__irq_static_first_size
-    sta __rc6
-    lda #>__irq_static_first_size
-    sta __rc7
-    jsr __havoc_copy_bytes
-    lda #<__irq_static_backup_tail
-    sta __rc2
-    lda #>__irq_static_backup_tail
-    sta __rc3
-    lda #<__irq_static_tail_start
-    sta __rc4
-    lda #>__irq_static_tail_start
-    sta __rc5
-    lda #<__irq_static_tail_size
-    sta __rc6
-    lda #>__irq_static_tail_size
-    sta __rc7
-    jsr __havoc_copy_bytes
     ldx #31
 .Lirq_restore:
     pla

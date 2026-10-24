@@ -109,6 +109,9 @@ fn large_orbital_rocks_still_absorb_lasers_and_missiles_without_damage() {
                 (assets::ROCK, 255)
             );
             assert_eq!((game.shots[0].kind, game.score, game.kills), (0, 0, 0));
+            assert_eq!(game.pop_audio().unwrap().effect,
+                       if shot_kind == 3 { Effect::MissileImpact } else { Effect::EnemyHit });
+            assert!(game.pop_audio().is_none());
         }
     }
 }
@@ -643,10 +646,8 @@ fn scenic_bridges_add_exactly_eight_seconds_and_keep_the_outgoing_checkpoint() {
             game.actors.iter().filter(|actor| actor.kind != 0).count(),
             1
         );
-        assert_eq!(
-            game.actors[0].pos.z,
-            1784 - test_bank(outgoing + 1).enemy(1).speed as i16
-        );
+        let expected_z = 1784 - test_bank(outgoing + 1).enemy(1).speed as i16;
+        assert!((expected_z - 64..=expected_z + 63).contains(&game.actors[0].pos.z));
         game.tick(&incoming, &test_bank(game.segment_index()));
         assert_eq!(
             game.actors.iter().filter(|actor| actor.kind != 0).count(),
@@ -1826,11 +1827,11 @@ fn attract_silences_all_effects_and_gameplay_restores_them() {
         Effect::Fire,
         Effect::EnemyFire,
         Effect::MissileLaunch,
-        Effect::Hit,
+        Effect::EnemyHit,
         Effect::Pickup,
         Effect::Roll,
         Effect::Bomb,
-        Effect::Death,
+        Effect::EnemyExplosion,
     ];
     for effect in effects {
         g.sound(effect, 64);
@@ -2045,6 +2046,8 @@ fn compact_reset_matches_every_constructor_field_without_comparing_padding() {
     game.audio_head = 7;
     game.audio_len = 8;
     game.spawn_cursor = 12;
+    game.repeat_spawn_cursor = 7;
+    game.encounter_seed = 93;
     game.spawn_segment = 3;
     game.shield = 17;
     game.bombs = 1;
@@ -2488,7 +2491,7 @@ fn sidestep_avoids_old_lane_scenery_but_can_hit_the_new_lane() {
     }
     let lane = probe.player.x;
     assert!(lane > 35, "the sidestep clears a rock's radius: {lane}");
-    for (rolling, obstacle_x, expected_shield) in [(false, 0, 70), (true, 0, 100), (true, lane, 70)]
+    for (rolling, obstacle_x, expected_shield) in [(false, 0, 85), (true, 0, 100), (true, lane, 85)]
     {
         let mut g = running();
         g.actors[0] = Actor {
@@ -2529,7 +2532,7 @@ fn roll_deflects_projectiles_but_not_scenery() {
         ..Actor::EMPTY
     };
     g.update_actors(&test_bank(g.segment_index()));
-    assert_eq!(g.shield, 70);
+    assert_eq!(g.shield, 85);
 }
 #[test]
 fn respawn_uses_section_checkpoint_and_retains_score() {
@@ -2762,8 +2765,9 @@ fn bomb_presentation_survives_rewarded_inventory_full_audio_and_catch_up() {
             ..Actor::EMPTY
         };
     }
-    for _ in 0..AUDIO_CAPACITY {
-        g.sound(Effect::Fire, 0);
+    for effect in [Effect::Fire, Effect::EnemyFire, Effect::EnemyHit, Effect::BossHit,
+        Effect::Footstep, Effect::BirdCall, Effect::Transport, Effect::TransportAway] {
+        g.sound(effect, 0);
     }
     g.controls.bomb_pending = true;
     let bytes = empty_segment(0);
@@ -3267,12 +3271,14 @@ fn partial_charge_scales_damage_and_full_charge_deals_four() {
 fn missile_launch_is_retained_when_the_game_audio_queue_is_full() {
     let mut g = running();
     while g.pop_audio().is_some() {}
-    for _ in 0..AUDIO_CAPACITY {
-        g.sound(Effect::EnemyFire, 0);
+    for effect in [Effect::EnemyFire, Effect::Fire, Effect::Meteor, Effect::EnemyExplosion,
+        Effect::Footstep, Effect::BirdCall, Effect::Transport, Effect::TransportAway] {
+        g.sound(effect, 0);
     }
+    assert_eq!(g.audio_len, 8);
     g.fire_player(255);
     for _ in 0..AUDIO_CAPACITY - 1 {
-        assert_eq!(g.pop_audio().unwrap().effect, Effect::EnemyFire);
+        assert!(g.pop_audio().unwrap().effect.priority() < Effect::MissileLaunch.priority());
     }
     assert_eq!(
         g.pop_audio(),
@@ -3746,7 +3752,7 @@ fn scaled_ram_boxes_include_depth_while_obstacles_keep_their_original_depth() {
             g.update_actors(&test_bank(0));
             assert_eq!(
                 g.shield,
-                if hit { 70 } else { 100 },
+                if hit { 85 } else { 100 },
                 "kind {kind}, x {x}, depth {dz}"
             );
         }
@@ -3983,7 +3989,7 @@ fn all_boss_turret_shots_keep_inclusive_bounds_and_ignore_destroyed_sides() {
                     assert_eq!(game.shots[0].kind, if hit { 0 } else { 1 });
                     assert_eq!(
                         game.pop_audio().map(|event| (event.effect, event.pan)),
-                        hit.then_some((Effect::Hit, (x * side).clamp(-127, 127) as i8))
+                        hit.then_some((if hp <= 4 {Effect::EnemyExplosion} else {Effect::BossHit}, (side * 100) as i8))
                     );
                     assert!(game.pop_audio().is_none());
                 }
@@ -4039,7 +4045,7 @@ fn all_boss_cores_absorb_shielded_shots_at_the_same_inclusive_bounds() {
                 assert_eq!(game.shots[0].kind, if hit { 0 } else { 1 });
                 assert_eq!(
                     game.pop_audio().map(|event| (event.effect, event.pan)),
-                    hit.then_some((Effect::Hit, x as i8))
+                    hit.then_some((Effect::BossHit, (x.signum() * 100) as i8))
                 );
                 assert!(game.pop_audio().is_none());
             }
@@ -4075,7 +4081,7 @@ fn all_boss_shots_keep_actor_priority_and_single_core_death_feedback() {
                 (40, 40, 120)
             );
             assert_eq!(game.shots[0].kind, 0);
-            assert_eq!(game.pop_audio().unwrap().effect, Effect::Hit);
+            assert_eq!(game.pop_audio().unwrap().effect, Effect::EnemyHit);
             assert!(game.pop_audio().is_none());
         }
         let mut game = running();
@@ -4097,6 +4103,7 @@ fn all_boss_shots_keep_actor_priority_and_single_core_death_feedback() {
         game.shots[0] = shot;
         game.update_shots(&bank);
         assert_eq!((game.boss_core, game.score, game.shots[0].kind), (4, 0, 0));
+        assert_eq!(game.pop_audio().unwrap().effect, Effect::EnemyHit);
         assert!(game.pop_audio().is_none());
         game.actors[0] = Actor::EMPTY;
         game.shots[0] = shot;
@@ -4106,8 +4113,7 @@ fn all_boss_shots_keep_actor_priority_and_single_core_death_feedback() {
             (0, 5000, 0)
         );
         assert!(game.boss_defeated);
-        assert_eq!(game.pop_audio().unwrap().effect, Effect::Hit);
-        assert_eq!(game.pop_audio().unwrap().effect, Effect::Death);
+        assert_eq!(game.pop_audio().unwrap().effect, Effect::BossExplosion);
         assert!(game.pop_audio().is_none());
         game.shots[0] = shot;
         game.update_shots(&bank);
@@ -4992,3 +4998,191 @@ fn saturated_bridge_weapons_preserve_foreground_and_match_staged_rendering() {
     }
 }
 include!("terrain_visibility_tests.rs");
+
+#[test]
+fn missile_ready_is_once_per_recharge_and_pause_consumes_crossings_silently() {
+    let mut g=running(); g.controls=Controls::NEW;
+    for ms in [0,1000,1999,2000,2200,3000] {g.sample_input(InputSample{bits:0,pressed:0,ms});}
+    assert_eq!(g.pop_audio().unwrap().effect,Effect::MissileReady);
+    assert!(g.pop_audio().is_none());
+    g.sample_input(InputSample{bits:FIRE,pressed:FIRE,ms:3100});
+    g.sample_input(InputSample{bits:0,pressed:0,ms:3200});
+    g.sample_input(InputSample{bits:0,pressed:0,ms:5200});
+    assert_eq!(g.pop_audio().unwrap().effect,Effect::MissileReady);
+    g.controls=Controls::NEW;
+    g.sample_paused_input(0,2000);
+    g.sample_input(InputSample{bits:0,pressed:0,ms:2100});
+    assert!(g.pop_audio().is_none());
+}
+#[test]
+fn low_shield_is_an_edge_rearms_with_healing_and_never_masks_death() {
+    let mut g=running();g.shield=30;
+    g.damage_player(5);assert_eq!(g.pop_audio().unwrap().effect,Effect::LowShield);
+    g.invulnerability=0;g.damage_player(1);assert_eq!(g.pop_audio().unwrap().effect,Effect::PlayerHit);
+    g.shield=50;g.invulnerability=0;g.damage_player(30);
+    assert_eq!(g.pop_audio().unwrap().effect,Effect::LowShield);
+    g.invulnerability=0;g.damage_player(100);
+    assert_eq!(g.pop_audio().unwrap().effect,Effect::PlayerDeath);assert!(g.pop_audio().is_none());
+}
+#[test]
+fn bomb_event_survives_every_enemy_kill_in_its_burst() {
+    let mut g=running();let bank=test_bank(0);
+    for i in 0..ACTORS {g.actors[i]=enemy(assets::FIGHTER,0,0,500);g.actors[i].hp=1;}
+    g.bomb(&bank);
+    let mut events=std::vec::Vec::new();while let Some(event)=g.pop_audio(){events.push(event.effect);}
+    assert!(events.contains(&Effect::Bomb));assert!(events.contains(&Effect::EnemyExplosion));
+    assert!(!events.contains(&Effect::PlayerDeath));
+}
+
+#[test]
+fn laser_and_missile_contacts_emit_one_principal_impact_or_destruction_cue() {
+    let bank = test_bank(0);
+    for shot_kind in [1, 3] {
+        for (hp, kind, expected_hp) in [(1, assets::FIGHTER, 0),
+                                        (6, assets::FIGHTER, 2),
+                                        (40, assets::FIGHTER, 36),
+                                        (255, assets::ROCK, 255)] {
+            let mut g = running();
+            g.actors[0] = enemy(kind, -80, if kind == assets::ROCK { -20 } else { 0 }, 520);
+            g.actors[0].hp = hp;
+            g.shots[0] = Shot { pos: Vec3 { x: -80, y: 0, z: 480 },
+                               kind: shot_kind, damage: 4, ..Shot::EMPTY };
+            g.update_shots(&bank);
+            assert_eq!(g.actors[0].hp, expected_hp, "kind {shot_kind}, hp {hp}");
+            assert_eq!(g.shots[0].kind, 0);
+            let event = g.pop_audio().expect("contact must emit feedback");
+            assert_eq!(event.effect, if hp == 1 { Effect::EnemyExplosion }
+                       else if shot_kind == 3 { Effect::MissileImpact } else { Effect::EnemyHit });
+            assert_eq!(event.pan, -100);
+            assert!(g.pop_audio().is_none(), "contact must not double its feedback");
+        }
+    }
+}
+
+#[test]
+fn player_damage_emits_one_cue_and_protected_contacts_remain_silent() {
+    for (shield, damage, expected) in [(100, 10, Effect::PlayerHit),
+                                       (30, 5, Effect::LowShield),
+                                       (25, 1, Effect::PlayerHit),
+                                       (30, 30, Effect::PlayerDeath)] {
+        let mut g = running();
+        g.shield = shield;
+        g.invulnerability = 0;
+        g.damage_player(damage);
+        assert_eq!(g.pop_audio().unwrap().effect, expected);
+        assert!(g.pop_audio().is_none());
+        // The same contact while invulnerable must not create another sound.
+        g.damage_player(1);
+        assert!(g.pop_audio().is_none());
+    }
+    let mut g = running();
+    g.mode = Mode::Attract;
+    g.damage_player(10);
+    assert!(g.pop_audio().is_none());
+}
+
+#[test]
+fn crowded_game_queue_preserves_player_damage_and_bomb_feedback() {
+    let mut g = running();
+    for (effect, x) in [(Effect::Fire, -100), (Effect::Fire, 100),
+                         (Effect::EnemyFire, -100), (Effect::EnemyFire, 100),
+                         (Effect::Footstep, 0), (Effect::BirdCall, 0),
+                         (Effect::Transport, 0), (Effect::Meteor, 0)] {
+        g.sound(effect, x);
+    }
+    g.bomb(&test_bank(0));
+    g.invulnerability = 0;
+    g.damage_player(5);
+    let mut effects = Vec::new();
+    while let Some(event) = g.pop_audio() { effects.push(event.effect); }
+    assert!(effects.contains(&Effect::Bomb));
+    assert!(effects.contains(&Effect::PlayerHit));
+}
+
+#[test]
+fn weapon_onsets_follow_the_ship_with_a_narrow_screen_center() {
+    let mut g = running();
+    for charge in [0, 255] {
+        for (x, pan) in [(-80, -100), (-10, -100), (-9, 0), (0, 0),
+                         (9, 0), (10, 100), (80, 100)] {
+            g.player.x = x;
+            g.fire_player(charge);
+            assert_eq!(g.pop_audio(), Some(AudioEvent {
+                effect: if charge == 255 { Effect::MissileLaunch } else { Effect::Fire },
+                pan,
+            }));
+            assert!(g.pop_audio().is_none());
+        }
+    }
+    // A queued onset keeps its position when the ship crosses the screen.
+    g.player.x = -80;
+    g.fire_player(0);
+    g.player.x = 80;
+    g.fire_player(0);
+    assert_eq!(g.pop_audio().unwrap().pan, -100);
+    assert_eq!(g.pop_audio().unwrap().pan, 100);
+}
+
+#[test]
+fn enemy_fire_and_impacts_use_depth_as_well_as_world_x() {
+    let bank = test_bank(0);
+    // X=20 is exactly four screen pixels from center at Z=400.
+    for (x, z, pan) in [(-21, 400, -100), (-20, 400, 0), (20, 400, 0),
+                        (21, 400, 100), (20, 380, 100), (-20, 380, -100)] {
+        let mut g = running();
+        g.enemy_shot(Vec3 { x, y: 0, z });
+        assert_eq!(g.pop_audio(), Some(AudioEvent { effect: Effect::EnemyFire, pan }));
+        g.shots = [Shot::EMPTY; SHOTS];
+        g.actors[0] = enemy(assets::FIGHTER, x, 0, z);
+        g.actors[0].hp = 6;
+        g.shots[0] = Shot {
+            pos: Vec3 { x, y: 0, z: z - 40 },
+            kind: 1,
+            damage: 4,
+            ..Shot::EMPTY
+        };
+        g.update_shots(&bank);
+        assert_eq!(g.pop_audio(), Some(AudioEvent { effect: Effect::EnemyHit, pan }));
+        assert!(g.pop_audio().is_none());
+    }
+}
+
+#[test]
+fn player_roll_damage_and_pickup_follow_their_source() {
+    for side in [-1, 1] {
+        let pan = (side * 100) as i8;
+        let mut g = running();
+        g.player.x = side * 80;
+        g.controls.roll_pending = side as i8;
+        g.update_player_controls(&test_bank(0));
+        assert_eq!(g.pop_audio(), Some(AudioEvent { effect: Effect::Roll, pan }));
+        g.damage_player(10);
+        assert_eq!(g.pop_audio(), Some(AudioEvent { effect: Effect::PlayerHit, pan }));
+        g.invulnerability = 0;
+        g.shield = 30;
+        g.damage_player(5);
+        assert_eq!(g.pop_audio(), Some(AudioEvent { effect: Effect::LowShield, pan }));
+        g.pickups[0] = Pickup {
+            pos: Vec3 { x: g.player.x, y: g.player.y, z: PLAYER_Z + SPEED },
+            kind: 1,
+        };
+        g.update_pickups();
+        assert_eq!(g.pop_audio(), Some(AudioEvent { effect: Effect::Pickup, pan }));
+        assert!(g.pop_audio().is_none());
+    }
+}
+
+#[test]
+fn bomb_destruction_keeps_each_screen_side_while_bomb_stays_global() {
+    let mut g = running();
+    g.player.x = 80;
+    for (i, x) in [-80, 80].into_iter().enumerate() {
+        g.actors[i] = enemy(assets::FIGHTER, x, 0, 500);
+        g.actors[i].hp = 1;
+    }
+    g.bomb(&test_bank(0));
+    assert_eq!(g.pop_audio(), Some(AudioEvent { effect: Effect::Bomb, pan: 0 }));
+    assert_eq!(g.pop_audio(), Some(AudioEvent { effect: Effect::EnemyExplosion, pan: -100 }));
+    assert_eq!(g.pop_audio(), Some(AudioEvent { effect: Effect::EnemyExplosion, pan: 100 }));
+    assert!(g.pop_audio().is_none());
+}

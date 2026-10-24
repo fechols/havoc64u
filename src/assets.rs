@@ -1,7 +1,7 @@
 //! Bounded, little-endian asset views shared by the host baker and 6510 runtime.
 use crate::Vec3;
 pub const COMMON_SIZE: usize = 3072;
-/// Models remain resident after the score has been copied into the audio engine.
+/// The model prefix remains resident throughout gameplay.
 pub const MODEL_SIZE: usize = 2048;
 pub const SEGMENT_SIZE: usize = 2048;
 /// Only this prefix of a packaged segment is needed during gameplay.
@@ -10,23 +10,17 @@ pub const MAX_SEGMENT_SPAWNS: u8 = 62;
 pub const SEGMENT_COUNT: u8 = 18;
 pub const SEGMENT_DISTANCE: u32 = 30_000;
 pub const REU_SIZE: u32 = crate::digital::REU_SIZE;
-/// Legacy reservation name: Galactic Dash follows the unchanged first MiB.
-/// Playback roles are selected by the backend, independently of asset order.
-pub const DIGITAL_MUSIC_OFFSET: u32 = crate::digital::ASSET_OFFSET;
-/// Legacy reservation name for Hammond Rocker, now the initial title track.
+/// DMC1 directory and contiguous DLT4 soundtrack follow the unchanged first MiB.
+pub const DIGITAL_MUSIC_OFFSET: u32 = crate::digital::MUSIC_OFFSET;
+/// Compatibility asset address; individual tracks no longer own fixed slots.
 pub const DIGITAL_VICTORY_OFFSET: u32 = crate::digital::HAMMOND_OFFSET;
-/// Mutable stereo PCM ring, written by the foreground decoder during playback.
+/// Two mutable 64 KiB PCM slots, written by the foreground decoder.
 pub const DIGITAL_RING_OFFSET: u32 = crate::digital::RING_OFFSET;
 pub const DIGITAL_RING_SIZE: u32 = crate::digital::RING_BYTES;
-pub const DIGITAL_MUSIC_CAPACITY: u32 = DIGITAL_VICTORY_OFFSET - DIGITAL_MUSIC_OFFSET;
+pub const DIGITAL_MUSIC_CAPACITY: u32 = crate::digital::MUSIC_CAPACITY;
 pub const DIGITAL_VICTORY_CAPACITY: u32 = DIGITAL_RING_OFFSET - DIGITAL_VICTORY_OFFSET;
 pub const COMMON_OFFSET: u32 = 0x1000;
 pub const SEGMENTS_OFFSET: u32 = 0x2000;
-pub const MUSIC_OFFSET: u32 = 0x0c0000;
-pub const MUSIC_CAPACITY: u32 = crate::music::BANK_CAPACITY;
-/// Per-song music kernel images (`SMK1`) sit between the model banks and the
-/// score bank; the packer writes them from the linked ELF with the code images.
-pub const MUSIC_KERNELS_OFFSET: u32 = 0x0b9000;
 pub const PACKAGE_HEADER_SIZE: usize = 64;
 pub const PACKAGE_CHECKSUM_OFFSET: usize = PACKAGE_HEADER_SIZE - 2;
 pub const SEGMENT_CHECKSUM_OFFSET: usize = 20;
@@ -47,7 +41,7 @@ pub const SHADOW_SPEC_SIZE: usize = 12;
 // Version 8 packed code and music into the unchanged first MiB.
 // Version 7 stores mesh vertices as i8 with a per-mesh shift (SMA4 banks);
 // version 6 extended the checked campaign through orbital combat and the gate.
-pub const PACKAGE_ID: u32 = 0x534D0C00;
+pub const PACKAGE_ID: u32 = 0x534D1000;
 pub const PLAYER: u8 = 0;
 pub const FIGHTER: u8 = 1;
 pub const DIVER: u8 = 2;
@@ -84,6 +78,7 @@ pub enum AssetError {
 pub fn u16_at(data: &[u8], at: usize) -> u16 {
     u16::from_le_bytes([data[at], data[at + 1]])
 }
+#[cfg_attr(target_arch = "mos", link_section = ".phase.boot")]
 pub fn u32_at(data: &[u8], at: usize) -> u32 {
     u32::from_le_bytes([data[at], data[at + 1], data[at + 2], data[at + 3]])
 }
@@ -118,7 +113,7 @@ pub fn validate_header(data: &[u8]) -> Result<(), AssetError> {
     if u32_at(data, 8) != COMMON_OFFSET
         || u32_at(data, 12) != SEGMENTS_OFFSET
         || data[16] != SEGMENT_COUNT
-        || data[17] != crate::music::SID_COUNT as u8
+        || data[17] != crate::audio::SID_COUNT as u8
         || data[SEGMENT_CHECKSUM_OFFSET + SEGMENT_COUNT as usize * 2..PACKAGE_CHECKSUM_OFFSET]
             .iter()
             .any(|&byte| byte != 0)
@@ -466,14 +461,7 @@ impl<'a> AssetBank<'a> {
             )
         }
     }
-    /// A model-only cache has no score; return an empty slice instead of panicking.
-    pub fn audio(&self) -> &[u8] {
-        if self.data.len() == COMMON_SIZE {
-            &self.data[MODEL_SIZE..MODEL_SIZE + 512]
-        } else {
-            &[]
-        }
-    }
+
 }
 
 #[derive(Clone, Copy, Default, Debug)]
@@ -586,7 +574,7 @@ impl<'a> Segment<'a> {
             || data[7] > MAX_SEGMENT_SPAWNS
             || data[7] as usize > (data.len() - 16) / 8
             || data[8] > 3
-            || data[9] >= crate::music::CUE_COUNT as u8
+            || data[9] >= crate::audio::CUE_COUNT as u8
             || data[10] > 4
             || data[11] > 5
             || data[12] > 15
@@ -654,6 +642,20 @@ impl<'a> Segment<'a> {
     #[cfg_attr(target_arch = "mos", link_section = ".phase.sim")]
     pub fn spawn_count(&self) -> u8 {
         self.data[7]
+    }
+    /// Peek a checked record without decoding coordinates in the scheduler.
+    #[inline(never)]
+    #[cfg_attr(target_arch = "mos", link_section = ".phase.sim")]
+    pub(crate) fn spawn_distance(&self, i: u8, delay: u16) -> u16 {
+        if i >= self.spawn_count() {
+            return u16::MAX;
+        }
+        let p = 16 + i as usize * 8;
+        // Segment validation proves every indexed record is complete.
+        unsafe {
+            u16::from_le_bytes([*self.data.get_unchecked(p), *self.data.get_unchecked(p + 1)])
+                + delay
+        }
     }
     #[inline(never)]
     #[cfg_attr(target_arch = "mos", link_section = ".phase.sim")]

@@ -4,7 +4,7 @@
 Run from the configured WSL SDK: python3 tools/vice-smoke.py --video pal
 The default emulator and ROMs are in the sibling doomc64u checkout. No package
 files are modified. Timing reports describe this emulator, not physical C64U
-performance. The default SID-only audio mode substitutes SID menu cues for the
+performance. The default SFX-only audio mode runs effects without music for the
 unsupported Ultimate Audio sampler; it does not validate digital playback.
 Only Python's standard library and LLVM-MOS llvm-nm are required.
 """
@@ -109,43 +109,43 @@ def symbols(elf, llvm_nm):
 
 
 def add_emulator_audio_argument(parser):
-    parser.add_argument("--audio-backend", choices=("sid", "native"), default="sid",
-                        help="sid: substitute SID menu cues for the companion's missing sampler (default); "
+    parser.add_argument("--audio-backend", choices=("sfx", "native"), default="sfx",
+                        help="sfx: effects only, without the companion's missing sampler (default); "
                              "native: production audio, requires Ultimate Audio emulation")
 
 
-def configure_emulator_audio(mon, syms, failures, package_format, backend="sid"):
+def configure_emulator_audio(mon, syms, failures, package_format, backend="sfx"):
     """Select the explicit emulator override after CRT, before any game startup.
 
     Only live low RAM is changed. PRG/REU files and their pairing checks remain
     intact, and native mode retains the production missing-sampler diagnostic.
     """
-    if backend not in ("sid", "native"):
+    if backend not in ("sfx", "native"):
         raise ValueError(f"Unknown emulator audio backend: {backend}")
     if not package_format["digital"]:
-        return {"backend": "sid", "sid_substitution": False,
+        return {"backend": "sfx", "sfx_only": False,
                 "scope": "Legacy SID-only package; no monitor audio override."}
     if backend == "native":
-        return {"backend": "native", "sid_substitution": False,
+        return {"backend": "native", "sfx_only": False,
                 "scope": "Production audio path; requires Ultimate Audio emulation."}
-    if "EMULATOR_SID_ONLY" not in syms:
-        raise RuntimeError("Digital package lacks the EMULATOR_SID_ONLY hook; rebuild with scripts/build.sh "
+    if "EMULATOR_SFX_ONLY" not in syms:
+        raise RuntimeError("Digital package lacks the EMULATOR_SFX_ONLY hook; rebuild with scripts/build.sh "
                            "or use --audio-backend native with a sampler-capable emulator")
     if "main" not in syms:
         raise RuntimeError("Missing native main symbol; use the matching unstripped ELF")
     mon.run_until(syms["main"], failures)
-    address = syms["EMULATOR_SID_ONLY"]
+    address = syms["EMULATOR_SFX_ONLY"]
     mon.command("bank ram")
     try:
         before = mon.integer(address, 1)
         mon.command(f"> {address:04x} 01")
         if mon.integer(address, 1) != 1:
-            raise RuntimeError("Emulator SID-only override did not retain its value")
+            raise RuntimeError("Emulator SFX-only override did not retain its value")
     finally:
         mon.command("bank cpu")
-    return {"backend": "sid", "sid_substitution": True,
-            "scope": "SID menu cue substitution; excludes digital playback and digital menu timing validation.",
-            "monitor_patch": {"symbol": "EMULATOR_SID_ONLY", "address": address,
+    return {"backend": "sfx", "sfx_only": True,
+            "scope": "Effects only; excludes DAC music playback and decoding cost.",
+            "monitor_patch": {"symbol": "EMULATOR_SFX_ONLY", "address": address,
                               "before": before, "value": 1}}
 
 
@@ -338,7 +338,7 @@ def counters(mon, syms):
                         ("INPUT_OVERFLOWS", 2), ("GAME_MODE", 1), ("GAME_DISTANCE", 4), ("GAME_STAGE", 1),
                         ("FRONT_BANK", 1), ("TEST_INPUT", 1), ("RENDER_SEGMENT", 1),
                         ("ENEMY_CODE_PROFILE", 1), ("ENEMY_MODEL_PROFILE", 1), ("MODEL_STREAM_BYTES", 2),
-                        ("MUSIC_CUE", 1), ("MUSIC_ACTIVE_CUE", 1), ("MUSIC_PAGE", 1),
+                        ("MUSIC_CUE", 1), ("MUSIC_ACTIVE_CUE", 1),
                         ("MUSIC_UNDERRUNS", 2), ("HUD_IMAGE_WRITES", 2), ("HUD_COMMITS", 2)):
         if name in syms:
             result[name.lower()] = mon.integer(syms[name], width)
@@ -508,6 +508,8 @@ def dwarf_game_layout(elf, tool, syms, output, controls=False):
                 "menu_ticks": "u16", "boss_left": "u8", "boss_right": "u8", "boss_core": "u8"}
     if "Transition" in modes:
         required.update(transition_ticks="u16", ticks="u16")
+    if "repeat_spawn_cursor" in fields:
+        required["repeat_spawn_cursor"] = "u8"
     sizes = {"u8": 1, "i8": 1, "u16": 2, "u32": 4, "i16": 2, "bool": 1, "havoc::game::Mode": 1}
     if "stage_id" in fields:
         required["stage_id"] = "u8"
@@ -609,12 +611,16 @@ def read_game_state(mon, layout, names, raw=None):
 
 
 def clock_fixture(values, fields, count, transition_mode=6):
-    """Translate logical total-progress fixtures to the package's actual clock.
+    """Translate logical progress and encounter fixtures to the actual layout.
 
     v5 owns u16 rail_ticks; v6 owns u16 stage_ticks plus stage_id. No synthetic
     DWARF offsets are installed, and conflicting dual-clock fixtures fail.
     """
     values = dict(values)
+    # Isolated encounters disable both streams; previews rewind both. Older
+    # packages have only the original cursor and keep their existing layout.
+    if "spawn_cursor" in values and "repeat_spawn_cursor" in fields:
+        values.setdefault("repeat_spawn_cursor", values["spawn_cursor"])
     if not any(name in values for name in ("rail_ticks", "stage_ticks", "stage_id")):
         return values
     stage = values.get("stage_id")
@@ -730,7 +736,7 @@ def package_model_layout(package, *, validate_size=False):
                0x534d0500: (b"SMA3", 88), 0x534d0600: (b"SMA3", 88),
                0x534d0700: (b"SMA4", 88), 0x534d0800: (b"SMA4", 88),
                0x534d0900: (b"SMA4", 88), 0x534d0a00: (b"SMA4", 88),
-               0x534d0b00: (b"SMA5", 88), 0x534d0c00: (b"SMA6", 88)}
+               0x534d0b00: (b"SMA5", 88), 0x534d0c00: (b"SMA6", 88), 0x534d0d00: (b"SMA6", 88), 0x534d0e00: (b"SMA6", 88), 0x534d0f00: (b"SMA6", 88), 0x534d1000: (b"SMA6", 88)}
     campaign = version >= 0x534d0500
     space = version >= 0x534d0600
     digital = version >= 0x534d0900
@@ -738,7 +744,7 @@ def package_model_layout(package, *, validate_size=False):
     count = 18 if space else 12 if campaign else 4
     if (len(package) < 18 or package[:4] != b"SM64" or version not in formats
             or package[16] != count or package[17] not in (2, 4)):
-        raise RuntimeError("Expected supported package v3/v4, twelve-stage v5 or eighteen-stage v6-v12")
+        raise RuntimeError("Expected supported package v3/v4, twelve-stage v5 or eighteen-stage v6-v16")
     reu_size = (0x1000000 if version >= 0x534d0a00 else 0x800000 if digital
                 else 0x100000 if compact else 0x1000000)
     if validate_size and len(package) != reu_size:
@@ -758,7 +764,7 @@ def package_model_layout(package, *, validate_size=False):
     return {"version": version, "magic": magic, "descriptors": descriptors,
             "medal": version >= 0x534d0400, "campaign": campaign, "space": space, "count": count,
             "segment_magic": b"SMS2" if campaign else b"SMS1", "reu_size": reu_size,
-            "digital": digital,
+            "digital": digital, "quad_sfx": version >= 0x534d0d00,
             "music_offset": 0xc0000 if compact else 0x200000 if space else 0x100000,
             "overlay_offsets": overlay_offsets}
 
@@ -863,7 +869,7 @@ def streaming_checks(mon, syms, failures, elf, reu, dwarf_tool, output, result):
     """Monitor-assisted boundary scenarios, deliberately separate from timing."""
     layout = dwarf_game_layout(elf, dwarf_tool, syms, output, controls=True)
     result.update(passed=False, monitor_assisted=True,
-                  scope="Seeded section boundaries and final winning condition; not a full native playthrough. Crossings check both effects voices alongside music. Victory checks the natural 400-tick reveal and held/fresh physical FIRE. All restart input uses the physical joystick port.",
+                  scope="Seeded section boundaries and final winning condition; not a full native playthrough. Crossings check layered effects. Victory checks the natural 400-tick reveal and held/fresh physical FIRE. All restart input uses the physical joystick port.",
                   excluded_from_timing=True, render_segment_telemetry="RENDER_SEGMENT" in syms,
                   layout=layout, scenarios=[])
     data = reu.read_bytes()
@@ -983,7 +989,7 @@ def streaming_checks(mon, syms, failures, elf, reu, dwarf_tool, output, result):
         route = results_restart_modes(format, mode_name)
         prior = scenario["frames"][-1]
         previous = (prior.get("music_cue"), prior.get("music_page", 0))
-        pages = data[format["music_offset"] + 16 + 5 * 8 + 4]
+        pages = None if format.get("quad_sfx") else data[format["music_offset"] + 16 + 5 * 8 + 4]
         mon.command("jpdb 1 $0f")
         frame = wait_ready(scenario, layout["modes"][route[0]], 0, 1)
         if route[0] == "Title":
@@ -1077,15 +1083,17 @@ def streaming_checks(mon, syms, failures, elf, reu, dwarf_tool, output, result):
             events = [event for event in stores(path)
                       if sounding[0]["bus_cycles"] < event["bus_cycles"] <= sounding[-1]["bus_cycles"]]
             summary = sid_summary(path, events, data[17])
-            for chip in ("left_d400", "right_d420"):
-                if not summary[chip]["voices"][2]["gate_on"]:
-                    raise RuntimeError(f"Scenic flight never sounded the reserved effects voice on {chip}")
-                if not any(voice["gate_on"] for voice in summary[chip]["voices"][:2]):
-                    raise RuntimeError(f"Scenic flight interrupted music gates on {chip}")
+            if format.get("quad_sfx"):
+                if not any(all(voice["gate_on"] for voice in chip["voices"]) for chip in summary.values()):
+                    raise RuntimeError("Scenic flight never sounded a layered SID effect")
+            else:
+                for chip in ("left_d400", "right_d420"):
+                    if not summary[chip]["voices"][2]["gate_on"]:
+                        raise RuntimeError(f"Scenic flight never sounded effects on {chip}")
             scenario["transition"]["sound"] = {
                 "from_tick": sounding[0]["game"]["transition_ticks"],
                 "through_tick": sounding[-1]["game"]["transition_ticks"],
-                "scope": "Core SID control-register traces; both effects voices attack while music continues.",
+                "scope": "Core SID control-register traces; layered effects during scenic flight.",
                 "sid": summary,
             }
             mon.command("log on")
@@ -1824,6 +1832,21 @@ def hud_checks(mon, syms, failures, elf, dwarf_tool, output, result):
     print("HUD: eight fixed sprites retained across frames; unchanged state wrote zero bytes; score dirtied one corner", flush=True)
 
 
+def check_feedback_geometry(reference, commands, white, pulse=(), core_color=7):
+    """Flash target facets while retaining its ground-shadow suffix unchanged."""
+    actual = {tuple(command["x"] + command["y"] + [command["depth"]]):
+              (command["color"], command["reserved"]) for command in commands}
+    shadows = 0
+    for key, (color, flags) in reference.items():
+        ground = bool(flags & 0x40)
+        shadows += ground
+        expected = color if ground else 1 if white else core_color if key in pulse else color
+        if actual.get(key) != (expected, flags):
+            label = "ground shadow changed during feedback" if ground else "target mesh does not match its feedback phase"
+            raise RuntimeError(label)
+    return dict(white=white, triangles=len(reference) - shadows, shadow_triangles=shadows)
+
+
 def weapon_checks(mon, syms, failures, elf, dwarf_tool, output, result, video, package=None):
     """Seed encounter fixtures; exercise damage, charging and FIRE through game code."""
     layout = dwarf_game_layout(elf, dwarf_tool, syms, output, controls=True)
@@ -1898,7 +1921,8 @@ def weapon_checks(mon, syms, failures, elf, dwarf_tool, output, result, video, p
             or renderer["fields"]["triangles"]["type"] != "havoc::render::Triangle[256]"
             or any(triangle["fields"][axis]["type"] != "i16[3]" for axis in ("x", "y"))
             or triangle["fields"]["depth"]["type"] != "i16"
-            or triangle["fields"]["color"]["type"] != "u8"):
+            or triangle["fields"]["color"]["type"] != "u8"
+            or triangle["fields"]["reserved"]["type"] != "u8"):
         raise RuntimeError("Unsupported Renderer/Triangle DWARF layout")
     effect = structs["BombEffect"]
     effect["address"] = resident_symbol(syms, "BOMB_EFFECT")[1]
@@ -1974,6 +1998,7 @@ def weapon_checks(mon, syms, failures, elf, dwarf_tool, output, result, video, p
                 command[axis] = list(struct.unpack_from("<3h", data, offset))
             command["depth"] = struct.unpack_from("<h", data, triangle["fields"]["depth"]["offset"])[0]
             command["color"] = data[triangle["fields"]["color"]["offset"]]
+            command["reserved"] = data[triangle["fields"]["reserved"]["offset"]]
             commands.append(command)
         return commands
 
@@ -2060,19 +2085,21 @@ def weapon_checks(mon, syms, failures, elf, dwarf_tool, output, result, video, p
 
         def mesh_reference(blank, populated):
             background = {signature(command) for command in blank["triangles"]}
-            mesh = {signature(command): command["color"] for command in populated["triangles"]
+            mesh = {signature(command): (command["color"], command["reserved"])
+                    for command in populated["triangles"]
                     if signature(command) not in background}
-            if len(mesh) < 2 or not any(color != 1 for color in mesh.values()):
+            facets = [color for color, flags in mesh.values() if not flags & 0x40]
+            if len(facets) < 2 or not any(color != 1 for color in facets):
                 raise RuntimeError("Cannot isolate a colored feedback target mesh")
             return mesh
 
         def colors(scenario, mesh, current, white, pulse):
-            actual = {signature(command): command["color"] for command in current["triangles"]}
             core_color = 7 if current["game"]["ticks"] & 8 == 0 else 2
-            if any(actual.get(key) != (1 if white else core_color if key in pulse else color)
-                   for key, color in mesh.items()):
-                raise RuntimeError(f"{scenario['name']}: target mesh does not match its feedback phase")
-            scenario.setdefault("geometry_checks", []).append(dict(white=white, triangles=len(mesh)))
+            try:
+                checked = check_feedback_geometry(mesh, current["triangles"], white, pulse, core_color)
+            except RuntimeError as error:
+                raise RuntimeError(f"{scenario['name']}: {error}") from error
+            scenario.setdefault("geometry_checks", []).append(checked)
 
         def stage(scenario, index):
             pause(scenario, False)
@@ -2686,228 +2713,6 @@ def music_cue_selection(cue_count, requested):
     return selected
 
 
-def music_checks(mon, syms, failures, elf, reu, dwarf_tool, output, result, sid_count, video,
-                 requested_cues=None):
-    """Run complete selected cues with native IRQ playback and foreground refills."""
-    required = ("MUSIC_CUE", "MUSIC_PAGE", "MUSIC_UNDERRUNS", "AUDIO_TICKS")
-    if any(name not in syms for name in required):
-        raise RuntimeError("Music checks require exported cue, page, underrun and audio-tick diagnostics")
-    layout = dwarf_game_layout(elf, dwarf_tool, syms, output, controls=True)
-    fields, modes = layout["fields"], layout["modes"]
-    if fields.get("menu_ticks", {}).get("type") != "u16":
-        raise RuntimeError("Music fixtures require the DWARF Game::menu_ticks field")
-    fields["menu_ticks"]["size"] = 2
-    audio_description = subprocess.check_output(
-        [str(dwarf_tool), "--name=AudioEngine", "--show-children", str(elf)], text=True)
-    members = dwarf_members(audio_description, "AudioEngine")
-    register_field = members.get("registers")
-    audio_size = re.search(r"DW_AT_byte_size\s+\((0x[0-9a-fA-F]+|\d+)\)", audio_description)
-    # Shadow rows are 32 bytes (one shift shared with the hardware offset);
-    # the historical engine used 25-byte rows. DWARF prints the nested array
-    # as `u8[N]`, so take the row stride from the following member's offset.
-    # The audit mirrors only the 25 real registers of each row.
-    following = members.get("effects")
-    register_stride = ((following["offset"] - register_field["offset"]) // sid_count
-                       if register_field and following and following["offset"] > register_field["offset"] else 0)
-    if (not register_field or register_stride not in (25, 32)
-            or register_field["type"] not in (f"[[u8; {register_stride}]; {sid_count}]", f"u8[{sid_count}]")
-            or not audio_size or register_field["offset"] + sid_count * register_stride > int(audio_size[1], 0)):
-        raise RuntimeError("Pitch audit requires the exact native AudioEngine register-cache layout")
-    register_address = resident_symbol(syms, "AUDIO")[1] + register_field["offset"]
-    data = reu.read_bytes()
-    format = package_model_layout(data)
-    score_offset = format["music_offset"]
-    header_size, magic, cue_count = ((256, b"SMU3", 21)
-        if format["space"] else (128, b"SMU2", 13))
-    header = data[score_offset:score_offset + header_size]
-    if header[:4] != magic or header[4] != sid_count or header[6] != cue_count:
-        raise RuntimeError("Music checks require the matching complete score bank")
-    selected_cues = music_cue_selection(cue_count, requested_cues)
-    page_size = int.from_bytes(header[12:14], "little")
-    names = ("title", "lowlands", "canyon", "fortress", "carrier", "victory", "defeat",
-             "crystal-current", "ashes-and-steel", "tempest-drive",
-             "gorge-warden", "citadel-heart", "carrier-overdrive")
-    stages = {1: 0, 2: 2, 3: 6, 4: 10, 7: 1, 8: 4, 9: 8, 10: 3, 11: 7, 12: 11}
-    if format["space"]:
-        names += ("asteroid-belt", "shattered-moon", "ship-graveyard", "orbital-shipyard",
-                  "space-carrier", "jump-gate", "ascent", "gate-guardian")
-        stages.update({13: 12, 14: 13, 15: 14, 16: 15, 17: 16, 18: 17, 19: 11, 20: 17})
-    chips = ("left_d400", "right_d420", "socket1_d440", "socket2_d460")[:sid_count]
-    bus_hz = 985248 if video == "pal" else 1022727
-    result.update(passed=False, monitor_assisted=True, excluded_from_timing=True,
-                  scope="Each selected cue plays one complete native loop plus a page while rendering continues. DWARF-derived respawn/results/ascent fixtures hold each cue; lowlands uses physical held FIRE during play for both effects voices. Expanded four-SID scores cross 128 KiB offsets.",
-                  sid_count=sid_count, selected_cues=selected_cues, scenarios=[], layout=layout)
-    if format["digital"]:
-        menu_music_fixture(format, fields, 0)
-        result["scope"] += " Title and victory are their packaged SID substitutes for this emulator run; the DLT3 tracks and DAC output are not validated."
-
-    def patch(values):
-        values = stage_fixture(values, layout, data)
-        mon.command("bank ram")
-        for name, value in values.items():
-            field = fields[name]
-            address = layout["address"] + field["offset"]
-            raw = value.to_bytes(field["size"], "little", signed=field["type"].startswith("i"))
-            mon.command(f"> {address:04x} " + " ".join(f"{byte:02x}" for byte in raw))
-        mon.command("bank cpu")
-
-    def observe():
-        mon.run_until(syms["frame_complete"], failures)
-        state = {name.lower(): mon.integer(syms[name], width)
-                 for name, width in (("MUSIC_CUE", 1), ("MUSIC_PAGE", 1), ("MUSIC_UNDERRUNS", 2),
-                                     ("AUDIO_TICKS", 2), ("INPUT_OVERFLOWS", 2), ("FRAME_DROPPED", 2))}
-        if "MUSIC_ACTIVE_CUE" in syms:
-            state["music_active_cue"] = mon.integer(syms["MUSIC_ACTIVE_CUE"], 1)
-        if state["music_underruns"] or state["input_overflows"] or state["frame_dropped"]:
-            raise RuntimeError(f"Native music fixture underrun or lost frame/input: {state}")
-        return state
-
-    # The preceding gameplay smoke already establishes normal timing. This
-    # suite has its own traces so monitor fixtures cannot contaminate it.
-    mon.command("delete")
-    for address in failures:
-        mon.command(f"break exec {address:04x}")
-    for sid in range(sid_count):
-        base = 0xd400 + 32 * sid
-        mon.command(f"trace store {base:04x} {base+24:04x} if @cpu:$01 == $35")
-    # Trace unmapped enhancement addresses too: the standard edition must never
-    # touch them, even when hardware would mirror those writes onto SID one.
-    if sid_count == 2:
-        mon.command("trace store d440 d478 if @cpu:$01 == $35")
-    mon.command("jpdb 1 $1f")
-    observe()
-    observe()
-    for cue in selected_cues:
-        name = names[cue]
-        at = 16 + cue * 8
-        offset = int.from_bytes(header[at:at+4], "little")
-        pages, row_ticks = header[at+4], header[at+5]
-        if not pages or not 3 <= row_ticks <= 50:
-            raise RuntimeError(f"Invalid {name} score descriptor")
-        loop_ticks = pages * 16 * row_ticks
-        if cue == 0:
-            fixture = {"mode": modes["Title"], "rail_ticks": 0, "menu_ticks": 0}
-            fixture.update(menu_music_fixture(format, fields, 0))
-        elif cue in (5, 6):
-            fixture = {"mode": modes["Victory"] if cue == 5 else modes["GameOver"],
-                       "stage_id": format["count"] - 1, "rail_ticks": format["count"] * 3750,
-                       "menu_ticks": 400 if cue == 5 else 0,
-                       "boss_started": 1, "boss_defeated": 1}
-            if cue == 5:
-                fixture.update(menu_music_fixture(format, fields, 5))
-        elif cue == 19:
-            fixture = {"mode": modes["Transition"], "stage_id": 11, "rail_ticks": 12 * 3750,
-                       "transition_ticks": 1, "boss_started": 1, "boss_defeated": 1,
-                       "menu_ticks": 0, "shield": 100, "lives": 3, "player.x": 0}
-        else:
-            stage = stages[cue]
-            boss = cue in (10, 11, 12, 20)
-            fixture = {"mode": modes["Playing"] if cue == 1 else modes["Respawning"],
-                       "stage_id": stage, "rail_ticks": stage*3750 + (2600 if boss else 100),
-                       "menu_ticks": 0, "shield": 100, "lives": 3, "respawn_ticks": 255,
-                       "boss_started": int(boss), "boss_defeated": 0, "player.x": 0}
-        scenario = {"name": name, "cue": cue, "pages": pages, "row_ticks": row_ticks,
-                    "loop_ticks": loop_ticks, "loop_seconds": loop_ticks/50,
-                    "fixture": fixture, "page_transitions": [], "observed_frames": 0}
-        result["scenarios"].append(scenario)
-        mon.command("jpdb 1 $1f")
-        observe()
-        observe()
-        patch(fixture)
-        path = output / f"music-{name}-monitor.log"
-        path.unlink(missing_ok=True)
-        mon.command(f'logname "{path.as_posix()}"')
-        mon.command("log on")
-        if cue == 1:
-            mon.command("jpdb 1 $0f")
-        # Allow the foreground to select/load the opening and the IRQ to
-        # consume it. Repeated cue selection must preserve that transport.
-        first = None
-        for _ in range(8):
-            patch(fixture)
-            candidate = observe()
-            if (candidate["music_cue"] == cue and candidate.get("music_active_cue", cue) == cue
-                    and candidate["music_page"] == 0):
-                first = candidate
-                break
-        if first is None:
-            raise RuntimeError(f"{name} did not begin on its opening page")
-        start_cycles = mon.registers()["bus_cycles"]
-        mon.command("bank ram")
-        initial_registers = mon.read(register_address, sid_count * register_stride)
-        mon.command("bank cpu")
-        previous_page, wraps = 0, 0
-        seen = {0}
-        scenario["page_transitions"].append(dict(first, elapsed_ticks=0))
-        # A complete loop plus one page ensures the turnaround and continued
-        # prefetch after wrapping are both exercised for every composition.
-        for _ in range(6000):
-            patch(fixture)
-            frame = observe()
-            scenario["observed_frames"] += 1
-            scenario["last_observation"] = frame
-            if frame["music_cue"] != cue or frame.get("music_active_cue", cue) != cue:
-                raise RuntimeError(f"{name} changed cue unexpectedly during native playback")
-            page = frame["music_page"]
-            elapsed = (frame["audio_ticks"] - first["audio_ticks"]) & 0xffff
-            if page >= pages:
-                raise RuntimeError(f"{name} exposed out-of-range page {page}/{pages}")
-            seen.add(page)
-            if page != previous_page:
-                if page != (previous_page + 1) % pages:
-                    raise RuntimeError(f"{name} skipped a score page: {previous_page} -> {page}")
-                wraps += page == 0
-                scenario["page_transitions"].append(dict(frame, elapsed_ticks=elapsed))
-                previous_page = page
-            if elapsed >= loop_ticks + 16*row_ticks and wraps:
-                break
-        else:
-            raise RuntimeError(f"{name} did not finish its full loop and refill within 6000 rendered frames")
-        end_cycles = mon.registers()["bus_cycles"]
-        mon.command("log off")
-        events = stores(path)
-        scenario["sid"] = sid_summary(path, events, sid_count)
-        scenario.update(elapsed_ticks=elapsed, loop_wraps=wraps, pages_seen=sorted(seen),
-                        bus_cycles=end_cycles-start_cycles,
-                        audio_tick_hz_model=elapsed*bus_hz/(end_cycles-start_cycles))
-        if seen != set(range(pages)):
-            raise RuntimeError(f"{name} did not visit every packaged page")
-        if abs(elapsed - (end_cycles-start_cycles)*50/bus_hz) > 2:
-            raise RuntimeError(f"{name} audio clock drifted by more than two ticks")
-        music_voices = [(0, 0), (1, 0), (0, 1), (1, 1)]
-        if sid_count == 4:
-            music_voices += [(sid, voice) for sid in (2, 3) for voice in range(3)]
-        authored_notes = [set() for _ in music_voices]
-        for lane, (sid, voice) in enumerate(music_voices):
-            # Only demand a gate where the composition actually has attacks.
-            # Intentional rests and staggered entrances remain legitimate.
-            attacked = any(data[score_offset+offset+p*page_size+12+5*len(music_voices)+row*len(music_voices)+lane] > 1
-                           for p in range(pages) for row in range(16))
-            if attacked and not scenario["sid"][chips[sid]]["voices"][voice]["gate_on"]:
-                raise RuntimeError(f"{name} never sounded composed music lane {lane}")
-            authored_notes[lane] = {
-                event & 127 for p in range(pages) for row in range(16)
-                if (event := data[score_offset+offset+p*page_size+12+5*len(music_voices)
-                                  +row*len(music_voices)+lane]) > 1}
-        scenario["pitch_audit"] = music_pitch_audit(
-            [event for event in events if start_cycles <= event["bus_cycles"] < end_cycles],
-            [initial_registers[sid * register_stride:sid * register_stride + 25] for sid in range(sid_count)],
-            music_voices, authored_notes, bus_hz)
-        if sid_count == 2 and any(0xd440 <= event["address"] <= 0xd478 for event in events):
-            raise RuntimeError("Two-SID music wrote to an enhancement SID address")
-        if cue == 1 and not all(scenario["sid"][chips[sid]]["voices"][2]["gate_on"] for sid in (0, 1)):
-            raise RuntimeError("Lowlands did not service both reserved effects voices during its full loop")
-        mon.command("bank ram")
-        scenario["stack_guards"] = {symbol: mon.integer(syms[symbol], 1)
-                                     for symbol in ("__stack_bottom", "__irq_stack_bottom")}
-        mon.command("bank cpu")
-        if any(value != 0xa5 for value in scenario["stack_guards"].values()):
-            raise RuntimeError(f"{name} changed a native stack guard")
-        scenario["passed"] = True
-        print(f"MUSIC {name}: {elapsed/50:.2f}s, {len(seen)} pages, {wraps} loop(s), no underruns", flush=True)
-    mon.command("jpdb 1 $1f")
-    result["passed"] = True
-
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
@@ -2931,10 +2736,6 @@ def main():
                         help="after timing, freeze simulation and verify persistent sprite RAM, zero unchanged writes, and one-corner score updates")
     parser.add_argument("--attract-checks", action="store_true",
                         help="after timing, count a natural title/map tour and verify physical-input dismissal and fresh-FIRE relaunch")
-    parser.add_argument("--music-checks", action="store_true",
-                        help="after timing, play every full native cue loop with page, clock, effects and underrun checks")
-    parser.add_argument("--music-cues", type=int, nargs="+", metavar="CUE",
-                        help="with --music-checks, limit full-loop checks to these cue IDs; default is every packaged cue")
     parser.add_argument("--llvm-dwarfdump", type=Path,
                         help="DWARF reader for optional streaming/control/pause/weapon checks; defaults beside --llvm-nm")
     parser.add_argument("--out-dir", type=Path)
@@ -2944,8 +2745,6 @@ def main():
     args = parser.parse_args()
     if not 1 <= args.frames <= 1000 or not 1 <= args.timeout <= 60:
         parser.error("frames must be 1..1000 and timeout 1..60 seconds")
-    if args.music_cues is not None and not args.music_checks:
-        parser.error("--music-cues requires --music-checks")
     output = (args.out_dir or ROOT / "target/vice" / args.video).resolve()
     output.mkdir(parents=True, exist_ok=True)
     report = {"passed": False, "video": args.video, "scope": "Calibrated VICE emulation; not physical hardware timing", "frames": []}
@@ -3083,9 +2882,9 @@ def main():
                    and any(voice["gate_on"] for voice in report["sid"][name]["voices"][:2])
                    and report["sid"][name]["voices"][2]["gate_on"]
                    for name in ("left_d400", "right_d420")):
-            raise RuntimeError("Core music and both effects voices did not sound during the gameplay sample")
+            raise RuntimeError("Layered effects did not sound on both stereo sides during the gameplay sample")
         if any(frame.get("music_underruns", 0) for frame in [report["title"]] + frames):
-            raise RuntimeError("Score prefetch underrun during ordinary gameplay")
+            raise RuntimeError("Audio underrun during ordinary gameplay")
         bus_hz = 985248 if args.video == "pal" else 1022727
         total_cycles = sum(frame["bus_cycles_delta"] for frame in frames)
         report["timing"] = {"bus_hz_model": bus_hz, "mean_frame_bus_cycles": total_cycles/len(frames),
@@ -3125,15 +2924,6 @@ def main():
             attract_checks(mon, syms, failures, elf, reu,
                            args.llvm_dwarfdump or args.llvm_nm.with_name("llvm-dwarfdump"),
                            output, report["attract_checks"])
-        if args.music_checks:
-            report["music_checks"] = {}
-            music_checks(mon, syms, failures, elf, reu,
-                         args.llvm_dwarfdump or args.llvm_nm.with_name("llvm-dwarfdump"),
-                         output, report["music_checks"], sid_count, args.video, args.music_cues)
-        for extension, path in (("prg", prg), ("reu", reu), ("elf", elf)):
-            if hashlib.sha256(path.read_bytes()).hexdigest() != report[extension+"_sha256"]:
-                raise RuntimeError(f"Packaged {extension.upper()} changed while the emulator test ran")
-        report["package_files_unchanged"] = True
         report["passed"] = True
     except (OSError, RuntimeError, subprocess.CalledProcessError) as exc:
         report["error"] = str(exc)

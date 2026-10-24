@@ -353,7 +353,8 @@ fn only_full_charge_uses_the_missile_launch_sound() {
         } else {
             Effect::Fire
         };
-        assert_eq!(effects(&mut game), [expected], "charge {charge}");
+        let expected = if charge == 255 { vec![Effect::MissileReady, expected] } else { vec![expected] };
+        assert_eq!(effects(&mut game), expected, "charge {charge}");
         assert_eq!(game.hud().charge, 0);
     }
 }

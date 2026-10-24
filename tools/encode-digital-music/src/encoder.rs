@@ -58,9 +58,9 @@ pub fn encode_pcm_to_delta_quant(
     if rate == 0 {
         bail!("audio sample rate must be > 0");
     }
-    if bits_per_sample != 2 && bits_per_sample != 4 && bits_per_sample != 8 {
+    if !matches!(bits_per_sample, 2 | 3 | 4 | 8) {
         bail!(
-            "bits_per_sample must be 2, 4, or 8, got {}",
+            "bits_per_sample must be 2, 3, 4, or 8, got {}",
             bits_per_sample
         );
     }
@@ -173,7 +173,9 @@ pub fn encode_pcm_to_delta_quant(
     //   2-bit: s0 = b[1:0], s1 = b[3:2], s2 = b[5:4], s3 = b[7:6]
     //   4-bit: s0 = b[3:0],                           s1 = b[7:4]
     //   8-bit: s0 = b[7:0]
-    let stream: Vec<u8> = if bits_per_sample == 2 {
+    let stream: Vec<u8> = if bits_per_sample == 3 {
+        pack_codes(&indices, 3)
+    } else if bits_per_sample == 2 {
         let mut packed = Vec::with_capacity(indices.len().div_ceil(4));
         let mut i = 0;
         while i < indices.len() {
@@ -242,6 +244,34 @@ pub fn encode_pcm_to_delta_quant(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn generic_decode_honors_two_three_and_eight_bit_widths() {
+        for bits in [2, 3, 8] {
+            let pcm: Vec<_> = (0..39).map(|i| (i * 117 - 2048) as i16).collect();
+            let encoded = encode_pcm_to_delta_quant(&pcm, 16000, 1 << bits, 3, bits).unwrap();
+            let mut accumulator = 0i16;
+            let stride = delta_samples_per_segment(39, encoded.blob.header.num_codebooks, bits);
+            let mut expected = Vec::new();
+            for index in 0..39 {
+                let bit = index * bits as usize;
+                let code = (0..bits as usize).fold(0usize, |code, shift| {
+                    code | (((encoded.blob.stream[(bit + shift) / 8] >> ((bit + shift) % 8)) & 1)
+                        as usize)
+                        << shift
+                });
+                let segment = (index as u32 / stride)
+                    .min(encoded.blob.header.num_codebooks as u32 - 1)
+                    as usize;
+                let at = (segment * (1 << bits) + code) * 3;
+                accumulator = accumulator.saturating_add(decode_delta_entry_i16(
+                    &encoded.blob.codebook_bytes[at..at + 3],
+                ));
+                expected.push(accumulator);
+            }
+            assert_eq!(encoded.blob.decode(), expected);
+        }
+    }
 
     #[test]
     fn stereo_matches_two_independent_encoders_including_odd_tail() {

@@ -15,7 +15,7 @@ from pathlib import Path
 import runpy
 
 ROOT = Path(__file__).resolve().parents[1]
-KERNEL = runpy.run_path(str(ROOT / "tools/test-music-kernel.py"))
+KERNEL = runpy.run_path(str(ROOT / "tools/native_cpu.py"))
 SMOKE = runpy.run_path(str(ROOT / "tools/vice-smoke.py"))
 Cpu, KernelError, load_elf = (KERNEL[name] for name in ("Cpu", "KernelError", "load_elf"))
 IRQ_MASK, UNUSED, SENTINEL = 4, 32, 0xffff

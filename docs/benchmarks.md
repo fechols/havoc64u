@@ -5,9 +5,10 @@ VICE build used by `tools/vice-smoke.py`. These are emulator measurements, not
 claims about physical C64 Ultimate frame rates. The package is read-only during
 measurement; its PRG, REU, and ELF hashes are recorded and checked afterward.
 
-Current package ID `$534D0C00` uses SMA6 model banks, a 16 MiB REU image, four
-built-in UltiSIDs for gameplay and stereo digital title/attract/victory music.
-Code, models and SID scores retain their first-MiB addresses. Recorded measurements
+Current package ID `$534D1000` uses SMA6 model banks, a 16 MiB REU image, four
+built-in UltiSIDs for effects and DAC music throughout the game. Code and models
+retain their first-MiB addresses; the SID soundtrack has been removed. See the
+[current sustained audio benchmarks](hardware.md#quad-sid-effects). Recorded measurements
 below retain their original package layouts and hashes; use the configuration
 and REU capacity matching each package when reproducing a historical run.
 

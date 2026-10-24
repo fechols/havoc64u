@@ -25,35 +25,22 @@ if front_enabled:
     assert 'span_compose' not in symbols and 'fast_span_flush' not in symbols, 'front renderer must not link the deferred compositor'
 overlay_audit = runpy.run_path(str(pathlib.Path(__file__).with_name('check-overlays.py')))
 metadata = overlay_audit['Elf'](elf)
-directories = [symbol for symbol in metadata.symbols
-               if overlay_audit['readable_name'](symbol.name) == 'havoc_c64::MUSIC_DIRECTORY']
-assert len(directories) == 1, 'missing or ambiguous resident music directory'
-music_directory = directories[0]
-assert music_directory.size == 21 * 8, 'music directory must hold all 21 validated descriptors'
-assert metadata.sections[music_directory.section].name == '.bss', 'music directory must not enter IRQ-saved .noinit'
-compiler_frames = next(section for section in metadata.sections if section.name == '.noinit')
-assert music_directory.address + music_directory.size <= compiler_frames.address, 'music directory overlaps compiler static frames'
-assert symbols['__irq_static_save_size'] == compiler_frames.size, 'IRQ save extent disagrees with compiler static frames'
 data=prg.read_bytes()
 assert int.from_bytes(data[:2],'little')==0x0801,'PRG must load at0801'
 assert len(data)-2+0x0801==0xa000,'PRG must initialize through9FFF'
 assert symbols.get('__stack')==0xc800,'incorrect main stack'
 assert symbols.get('__irq_stack')==0x7600,'incorrect IRQ stack'
-assert (symbols['__segment0_start'], symbols['__segment0_end']) == (0x2e00, 0x3000), 'incorrect first mission buffer allocation'
+assert (symbols['__segment0_start'], symbols['__segment0_end']) == (0x600, 0x800), 'incorrect first mission buffer allocation'
 assert (symbols['__segment1_start'], symbols['__segment1_end']) == (0x9700, 0x9900), 'incorrect second mission buffer allocation'
-assert symbols['__resident_end'] <= symbols['__segment0_start'], 'resident code overlaps mission buffer at $2E00'
+assert symbols['__resident_end'] <= 0x3000, 'resident code overlaps the overlay window at $3000'
 assert (symbols['__hud_sprites_start'], symbols['__hud_sprites_end']) == (0x8c00, 0x8e00), 'incorrect HUD sprite allocation'
 assert symbols['__startup_checks_start']==0x8e00, 'startup checks must start after HUD sprites at $8E00'
 assert 0x8e00<symbols['__startup_checks_end']<=0x9300, 'startup checks exceed shared workspace'
 assert symbols['__phase_sim_aux_start']==0x8e00, 'SIM helpers must start after HUD sprites at $8E00'
 assert 0x8e00<symbols['__phase_sim_aux_end']<=0x9300, 'SIM helpers exceed shared workspace'
 assert symbols['__phase_sim_aux_size']==symbols['__phase_sim_aux_end']-symbols['__phase_sim_aux_start']
-assert (symbols['__music_page_start'], symbols['__music_page_end']) == (0x720, 0x800), 'four-SID score page must occupy $0720-$07FF'
-music_page = next((section for section in metadata.sections if section.name == '.music_page'), None)
-assert music_page is not None and (music_page.address, music_page.size) == (0x720, 224), 'four-SID score page section must occupy $0720-$07FF'
-low_end=0x720
+low_end=symbols['__segment0_start']
 assert symbols['__renderer_start']==0xcffa and symbols['__renderer_end']==0xe000
-assert symbols['__irq_static_save_size']<=1088
 assert symbols['__pixel_band_start']==0x8e00 and symbols['__pixel_band_end']==0x9300, 'pixel band must occupy $8E00-$92FF after HUD sprites'
 assert symbols['__projection_cache_start']==0x8e00 and symbols['__projection_cache_end']==0x9080
 assert symbols['__projection_cache_end']<=symbols['__pixel_band_end']
@@ -76,7 +63,7 @@ assert 0 < symbols['__phase_scenery_terrain_size'] < symbols['__phase_scenery_ba
 assert symbols['__phase_scenery_terrain_end'] == 0x3000 + symbols['__phase_scenery_terrain_size']
 assert 0 < symbols['__phase_geometry_base_size'] < symbols['__phase_geometry_size'] <= 0x4200
 assert symbols['__phase_geometry_base_end'] == 0x3000 + symbols['__phase_geometry_base_size']
-assert 0 < symbols['__phase_audio_runtime_size'] < symbols['__phase_audio_size'] <= 0x4200
+assert 0 < symbols['__phase_audio_runtime_size'] <= symbols['__phase_audio_size'] <= 0x4200
 assert symbols['__phase_audio_runtime_end'] == 0x3000 + symbols['__phase_audio_runtime_size']
 assert symbols['encounter_step'] == symbols['__phase_sim_base_end'] == 0x3000 + symbols['__phase_sim_base_size']
 assert 0 < symbols['__phase_sim_base_size'] < symbols['__phase_sim_size'] <= 0x4200
@@ -109,8 +96,9 @@ assert symbols['__phase_pixels_size'] == 0x3f20 + symbols['__phase_pixels_aux_si
 assert symbols['__raster_player_seen']==0x77ab
 assert (symbols['__raster_prepare_scratch_start'],symbols['__raster_prepare_scratch_end'])==(0x77a0,0x77bf)
 assert symbols['__irq_stack']<=symbols['__raster_prepare_scratch_start']<symbols['__raster_prepare_scratch_end']<=0x7800
-ranges={'.basic_header':(0x801,0x2e00),'.text':(0x801,0x2e00),'.data':(0x200,low_end),'.bss':(0x200,low_end),'.noinit':(0x200,low_end),'.music_page':(0x720,0x800),'.startup_checks':(0x8e00,0x9300),'.rodata':(0x7800,0x8000),'.tables':(0x9900,0xa000),'.renderer':(0xcffa,0xe000),'.game_state':(0xc800,0xca80),'.audio_state':(0xce00,0xcfb0),'.zp.data':(0x22,0xf0),'.zp.bss':(0x22,0xf0),'.zp.noinit':(0x22,0xf0)}
-ranges['.benchmark_resident'] = (0x7800, 0x8000)
+ranges={'.basic_header':(0x801,0x3000),'.text':(0x801,0x3000),'.data':(0x200,low_end),'.bss':(0x200,low_end),'.noinit':(0x200,low_end),'.sfx_state':(0xcd00,0xce00),'.sfx_patches':(0x7200,0x7500),'.startup_checks':(0x8e00,0x9300),'.rodata':(0x7800,0x8000),'.tables':(0x9900,0xa000),'.renderer':(0xcffa,0xe000),'.game_state':(0xc800,0xca80),'.audio_state':(0xce00,0xcfb0),'.zp.data':(0x22,0xf0),'.zp.bss':(0x22,0xf0),'.zp.noinit':(0x22,0xf0)}
+ranges['.benchmark_resident'] = (0xff20, 0xfffa)
+ranges['.sfx_helpers'] = (0x7800, 0x8000)
 used=[]
 phase_sizes={}
 kernel_sizes={}
@@ -118,7 +106,6 @@ assert symbols['__raster_heads_end'] <= 0xff20, 'raster heads must leave the CPU
 assert 0 < symbols['__phase_shadow_finalize_size'] < symbols['__phase_shadow_size'], 'SHADOW finalization prefix must be shorter than the full setup image'
 assert symbols['__phase_shadow_finalize_end'] == 0x3000 + symbols['__phase_shadow_finalize_size'], 'SHADOW finalization prefix boundary mismatch'
 assert symbols['__irq_stack_bottom'] == 0x7500 and symbols['__irq_stack'] == 0x7600, 'IRQ stack must be the measured 256-byte reservation'
-assert 0x7200 <= symbols['__music_kernel_start'] and symbols['__music_kernel_start'] + symbols['__music_kernel_size'] <= symbols['__irq_stack_bottom'], 'music kernel slot must sit between the overlay window and the IRQ stack'
 for line in listing.splitlines():
     m=re.search(r'\[\s*\d+\]\s+(\S+)\s+\S+\s+([0-9a-fA-F]+)\s+[0-9a-fA-F]+\s+([0-9a-fA-F]+)\s+\S+\s+(\S+)',line)
     if not m:continue
@@ -151,10 +138,6 @@ for line in listing.splitlines():
         assert name in {'.phase.boot','.phase.sim','.phase.geometry','.phase.pixels','.phase.audio','.phase.scenery','.phase.shadow'},name
         limit=0x3f20 if name in ('.phase.pixels','.phase.geometry','.phase.shadow') else 0x4200
         assert address==0x3000 and size<=limit,name
-    elif name.startswith('.music.kernel.'):
-        assert address == symbols['music_kernel_tick'] == symbols['__music_kernel_start'], f'{name} must link at the kernel slot'
-        assert 0 < size <= symbols['__music_kernel_size'], f'{name} exceeds the kernel slot'
-        kernel_sizes[name[len('.music.kernel.'):]] = size
     else:
         assert name in ranges,f'unclassified allocated section {name}'
         lo,hi=ranges[name];assert lo<=address and address+size<=hi,f'{name} outside allocation'
@@ -193,20 +176,15 @@ reu_layout = (
 )
 assert symbols['__reu_size'] == 0x1000000, 'incorrect 16 MiB REU image size'
 assert symbols['__reu_digital_music'] == 0x100000, 'incorrect digital music address'
-assert symbols['__reu_digital_victory'] == 0x500000, 'incorrect digital victory address'
+assert symbols['__reu_digital_victory'] == symbols['__reu_digital_music'], 'incorrect digital victory alias'
 assert symbols['__reu_digital_ring'] == 0xfe0000, 'incorrect digital ring address'
 assert symbols['__reu_digital_ring_size'] == 0x20000, 'incorrect digital ring size'
 assert symbols['__reu_code_slot_size'] == 0x4200, 'incorrect REU code slot size'
 assert symbols['__reu_models'] == 0xb0000, 'incorrect REU model bank address'
-assert symbols['__reu_music'] == 0xc0000, 'incorrect REU music bank address'
 reu_allocations = [(0, 0x180, 'directories'), (0x1000, 0x1c00, 'common assets'),
                    (0x2000, 0xb000, 'encounters'), (0xb0000, 0xb9000, 'models'),
-                   (symbols['__reu_music_kernels'], symbols['__reu_music_kernels'] + 0x100 + 21 * symbols['__music_kernel_size'], 'music kernels'),
-                   (0xc0000, 0x100000, 'music'),
-                   (0x100000, 0x500000, 'digital title music'),
-                   (0x500000, 0xfe0000, 'digital victory music'),
+                   (0x100000, 0xfe0000, 'digital soundtrack'),
                    (0xfe0000, 0x1000000, 'mutable PCM ring')]
-assert symbols['__reu_music_kernels'] == 0xb9000, 'incorrect REU music kernel address'
 for phase_id, name, expected in reu_layout:
     address = symbols[f'__reu_{name}']
     end = address + symbols['__reu_code_slot_size']
@@ -296,20 +274,26 @@ expected_code_sizes = tuple(symbols[f'__phase_{profile}_size'] for profile in co
 assert code_sizes == expected_code_sizes, f'Code size table disagrees with overlay images: {code_sizes} != {expected_code_sizes}'
 assert phase_sizes['.phase.scenery'] == symbols['__phase_scenery_base_size']
 assert symbols['__phase_scenery_size'] == symbols['__phase_scenery_base_size'] + max(phase_sizes[name] for name in scenery_sections)
-print(f'PRG {len(data):,} bytes; resident headroom {symbols["__segment0_start"]-symbols["__resident_end"]} bytes')
-print('Music: 4 built-in UltiSIDs; external score page 224 bytes')
-if kernel_sizes:
-    largest = max(kernel_sizes, key=kernel_sizes.get)
-    print(f'Music kernels: {len(kernel_sizes)} per-song images in the {symbols["__music_kernel_size"]}-byte slot at ${symbols["__music_kernel_start"]:04X}; largest {largest} {kernel_sizes[largest]} bytes; REU ${symbols["__reu_music_kernels"]:06X}')
-    for name in sorted(kernel_sizes):
-        print(f'  kernel {name:18} {kernel_sizes[name]:4} bytes')
-else:
-    print(f'Music kernels: none linked; {symbols["__music_kernel_size"]}-byte slot at ${symbols["__music_kernel_start"]:04X} reserved')
-print(f'Validated music directory: ${music_directory.address:04X}-${music_directory.address+music_directory.size-1:04X}, {music_directory.size} BSS bytes outside IRQ-saved compiler frames')
-print('Startup checks8E00-92FF: retired before BOOT asset loading and rendering')
-print('VIC bank 2: screen8000 bitmapA000-BF3F, guarded staged band commits; C000-C3FF quarter squares; E000-EF1F raster tails/masks; EF20-FF1F raster heads; FF20-FFF9 free RAM')
-print('Models8400-8BFF; HUD sprites8C00-8DFF; overflow-cell pixel band8E00-92FF; GEOMETRY kernel scratch9300-93FF (PIXELS cell scratch9300-9328); cell codes9400-953F, cover/HUD9540-967F, palettes9680-96F7; segments2E00-2FFF and9700-98FF')
-print('Overlay3000-71FF; music kernel slot7200-74FF; main stackC400-C7FF; IRQ stack7500-75FF')
+print(f'PRG {len(data):,} bytes; resident headroom {0x3000-symbols["__resident_end"]} bytes')
+state = next(section for section in metadata.sections if section.name == '.sfx_state')
+assert state.address == 0xcd00 and 0 < state.size <= 256, 'invalid SFX state section'
+assert symbols['__sfx_state_start'] == state.address and symbols['__sfx_state_end'] == state.address + state.size, 'SFX state bounds disagree'
+effect = next(symbol for symbol in metadata.symbols if symbol.name == 'EFFECTS')
+assert effect.address == state.address and effect.size == state.size and effect.section == state.index, 'SFX state symbol disagrees'
+benchmark = next((section for section in metadata.sections if section.name == '.benchmark_resident'), None)
+if benchmark is not None and benchmark.size:
+    assert benchmark.address == 0xff20 and benchmark.size <= 218, 'benchmark helper bank outside high RAM'
+    assert symbols['__benchmark_load'] == 0x7500 and symbols['__benchmark_size'] == benchmark.size, 'benchmark load image differs'
+    assert data[2+0x7500-0x801:2+0x7500-0x801+benchmark.size] == metadata.contents(benchmark), 'PRG benchmark helpers differ from ELF'
+    assert any('initialize_benchmark_helpers' in symbol.name for symbol in metadata.symbols), 'benchmark helpers require BOOT initialization'
+patches = next(section for section in metadata.sections if section.name == '.sfx_patches')
+assert patches.address == 0x7200 and 0 < patches.size <= 768 and not patches.executable and not patches.flags & 1
+bank = metadata.data[patches.offset:patches.offset+patches.size].ljust(768, b'\0')
+assert data[2+0x7200-0x801:2+0x7500-0x801] == bank, 'PRG SFX patch bank differs from ELF'
+assert not any(section.name == '.music_page' or section.name.startswith('.music.kernel.') for section in metadata.sections)
+print('Four dedicated SIDs: twelve oscillators, four filters; effects stateCD00-CDFF; patches7200-74FF')
+print('Models8400-8BFF; HUD sprites8C00-8DFF; overflow-cell pixel band8E00-92FF; GEOMETRY kernel scratch9300-93FF (PIXELS cell scratch9300-9328); cell codes9400-953F, cover/HUD9540-967F, palettes9680-96F7; segments0600-07FF and9700-98FF')
+print('Overlay3000-71FF; permanent SFX patches7200-74FF; main stackC400-C7FF; IRQ stack7500-75FF')
 print('PIXELS code3000-6F1F helpers6F20-71FF; sorted order7600-76FF; edge headsEF20-FF1F tailsE000-EBFF masksEC00-EF1F; commands stay in emission orderD000-DFFF')
 print(f'PIXELS prefix {symbols["__phase_pixels_prefix_size"]} bytes; helpers {symbols["__phase_pixels_aux_size"]} bytes; checksummed composition {symbols["__phase_pixels_size"]} bytes; runtime omits the raster-data gap')
 print('GEOMETRY/SHADOW code3000-6F1F; shared projection6F20-7132; projection cache8E00-907F and depth sorting8E00-91FF share PIXELS band; sorted order7600-76FF')
@@ -323,7 +307,7 @@ print(f'SIM common prefix {symbols["__phase_sim_base_size"]} bytes; largest simu
 print('SIM runtime transfer sizes by profile0..7: ' + ', '.join(map(str, sim_load_sizes)))
 print('OVL7 startup code sizes by directory order: ' + ', '.join(map(str, code_sizes)))
 reserved = sum(end - start for start, end, _ in reu_allocations)
-print(f'REU 16 MiB: {reserved:,} reserved bytes; {symbols["__reu_size"] - reserved:,} unreserved bytes; SID music $0C0000-$0FFFFF; Galactic Dash $100000-$4FFFFF; Hammond Rocker $500000-$FDFFFF; mutable stereo PCM ring $FE0000-$FFFFFF')
+print(f'REU 16 MiB: {reserved:,} reserved bytes; {symbols["__reu_size"] - reserved:,} unreserved bytes; DMC1 soundtrack $100000-$FDFFFF; two mutable 64 KiB PCM slots $FE0000-$FFFFFF')
 print('REU logical phase slots: ' + ', '.join(f'{phase_id:02X}=${symbols[f"__reu_{name}"]:06X}' for phase_id, name, expected in reu_layout))
 print(f'SIM helper code8E00-92FF: {symbols["__phase_sim_aux_size"]} bytes; reloaded before every SIM profile, shares retired startup/cache/band workspace')
 print(f'Victory GEOMETRY composed image {symbols["__phase_victory_size"]} bytes')

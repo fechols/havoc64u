@@ -48,6 +48,239 @@ fn frame(
     output[10_000] = r.clear_color();
     (output, r.triangle_count, r.dropped)
 }
+
+/// Host snapshots and exact SID writes for the linked 6502 effects player.
+fn sfx_fixtures(out: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    use havoc::audio::{AudioEvent, Effect, EffectsEngine, SidBus, VideoStandard, EFFECT_COUNT};
+    #[derive(Clone)]
+    struct Bus {
+        regs: [u8; 128],
+        writes: Vec<u8>,
+    }
+    impl SidBus for Bus {
+        fn write(&mut self, sid: u8, reg: u8, value: u8) {
+            self.regs[sid as usize * 32 + reg as usize] = value;
+            self.writes.extend_from_slice(&[sid, reg, value]);
+        }
+    }
+    std::fs::create_dir_all(out)?;
+    for standard in [VideoStandard::Pal, VideoStandard::Ntsc] {
+        let mut bytes = b"SFX1".to_vec();
+        bytes.extend_from_slice(&(core::mem::size_of::<EffectsEngine>() as u16).to_le_bytes());
+        bytes.extend_from_slice(&0u32.to_le_bytes());
+        let mut count = 0u32;
+        for id in 0..EFFECT_COUNT as u8 {
+            for pan in [-100, 0, 100] {
+                let mut engine = EffectsEngine::new(standard);
+                let mut bus = Bus {
+                    regs: [0; 128],
+                    writes: Vec::new(),
+                };
+                engine.reset(&mut bus);
+                engine.queue(AudioEvent {
+                    effect: Effect::from_id(id).unwrap(),
+                    pan,
+                });
+                for tick in 0..=105 {
+                    let capture = tick <= 16
+                        || matches!(
+                            tick,
+                            20 | 22
+                                | 24
+                                | 26
+                                | 32
+                                | 35
+                                | 40
+                                | 48
+                                | 50
+                                | 60
+                                | 79
+                                | 80
+                                | 84
+                                | 85
+                                | 99
+                                | 100
+                                | 105
+                        );
+                    if capture {
+                        bytes.extend_from_slice(engine.image());
+                        bytes.extend_from_slice(&bus.regs);
+                    }
+                    bus.writes.clear();
+                    engine.tick(&mut bus);
+                    if capture {
+                        bytes.extend_from_slice(engine.image());
+                        bytes.extend_from_slice(&bus.regs);
+                        bytes.extend_from_slice(&(bus.writes.len() as u16).to_le_bytes());
+                        bytes.extend_from_slice(&bus.writes);
+                        count += 1;
+                    }
+                }
+            }
+        }
+        // Dense combat exercises queue selection, preemption and cancellation.
+        let mut engine = EffectsEngine::new(standard);
+        let mut bus = Bus {
+            regs: [0; 128],
+            writes: Vec::new(),
+        };
+        engine.reset(&mut bus);
+        for tick in 0..180 {
+            if tick % 5 == 0 {
+                engine.queue(AudioEvent {
+                    effect: Effect::Fire,
+                    pan: 0,
+                });
+            }
+            if tick % 7 == 0 {
+                engine.queue(AudioEvent {
+                    effect: Effect::EnemyFire,
+                    pan: -80,
+                });
+            }
+            if tick % 11 == 0 {
+                engine.queue(AudioEvent {
+                    effect: Effect::Meteor,
+                    pan: 80,
+                });
+            }
+            for (at, effect) in [
+                (15, Effect::Bomb),
+                (15, Effect::EnemyHit),
+                (16, Effect::PlayerHit),
+                (18, Effect::BossHit),
+                (30, Effect::LowShield),
+                (70, Effect::BossExplosion),
+                (70, Effect::EnemyHit),
+                (75, Effect::PlayerHit),
+                (80, Effect::PlayerDeath),
+            ] {
+                if tick == at {
+                    engine.queue(AudioEvent { effect, pan: 0 });
+                }
+            }
+            if tick == 12 || tick == 40 {
+                engine.cancel_scene_effects();
+            }
+            bytes.extend_from_slice(engine.image());
+            bytes.extend_from_slice(&bus.regs);
+            bus.writes.clear();
+            engine.tick(&mut bus);
+            bytes.extend_from_slice(engine.image());
+            bytes.extend_from_slice(&bus.regs);
+            bytes.extend_from_slice(&(bus.writes.len() as u16).to_le_bytes());
+            bytes.extend_from_slice(&bus.writes);
+            count += 1;
+        }
+        // A bomb must retain its pair while left/right explosions coexist,
+        // including a repeat bomb and urgent damage during the same tail.
+        engine.reset(&mut bus);
+        for tick in 0..110 {
+            for (at, effect, pan) in [
+                (0, Effect::Bomb, 0),
+                (0, Effect::EnemyExplosion, -100),
+                (0, Effect::EnemyExplosion, 100),
+                (20, Effect::EnemyExplosion, -100),
+                (20, Effect::EnemyExplosion, 100),
+                (25, Effect::Bomb, 0),
+                (30, Effect::PlayerHit, -100),
+                (35, Effect::Roll, 100),
+                (45, Effect::LowShield, 0),
+            ] {
+                if tick == at {
+                    engine.queue(AudioEvent { effect, pan });
+                }
+            }
+            bytes.extend_from_slice(engine.image());
+            bytes.extend_from_slice(&bus.regs);
+            bus.writes.clear();
+            engine.tick(&mut bus);
+            bytes.extend_from_slice(engine.image());
+            bytes.extend_from_slice(&bus.regs);
+            bytes.extend_from_slice(&(bus.writes.len() as u16).to_le_bytes());
+            bytes.extend_from_slice(&bus.writes);
+            count += 1;
+        }
+        let mut groups = vec![format!(
+            "{{\"name\":\"directed\",\"start\":0,\"count\":{count},\"continuous\":false}}"
+        )];
+        // Thirty seconds at the real 50 Hz effects cadence. Every tick is
+        // captured so the native runner can check continuity as well as peaks.
+        for workload in ["sustained-idle", "sustained-busy", "sustained-centered"] {
+            let start = count;
+            engine.reset(&mut bus);
+            for tick in 0..1500 {
+                let side = if (tick / 5) & 1 == 0 { -100 } else { 100 };
+                if workload == "sustained-busy" {
+                    for (period, effect, pan) in [
+                        (5, Effect::Fire, side),
+                        (7, Effect::EnemyFire, -side),
+                        (11, Effect::EnemyHit, side),
+                        (17, Effect::EnemyExplosion, -side),
+                        (29, Effect::BossHit, -side),
+                        (53, Effect::MissileLaunch, side),
+                        (61, Effect::MissileImpact, -side),
+                        (97, Effect::PlayerHit, side),
+                    ] {
+                        if tick % period == 0 {
+                            engine.queue(AudioEvent { effect, pan });
+                        }
+                    }
+                    if tick % 251 == 0 {
+                        engine.queue(AudioEvent { effect: Effect::Bomb, pan: 0 });
+                    }
+                    if tick % 251 <= 1 {
+                        for pan in [-100, 100] {
+                            engine.queue(AudioEvent { effect: Effect::EnemyExplosion, pan });
+                        }
+                    }
+                    if tick % 600 == 500 {
+                        engine.queue(AudioEvent { effect: Effect::BossExplosion, pan: 0 });
+                    }
+                    if tick % 900 == 850 {
+                        engine.queue(AudioEvent { effect: Effect::PlayerDeath, pan: 0 });
+                    }
+                } else if workload == "sustained-centered" {
+                    if tick % 13 == 0 {
+                        for effect in [Effect::Fire, Effect::EnemyFire, Effect::EnemyHit,
+                            Effect::BossHit, Effect::MissileLaunch, Effect::EnemyExplosion,
+                            Effect::Pickup, Effect::PlayerHit] {
+                            engine.queue(AudioEvent { effect, pan: 0 });
+                        }
+                    }
+                    if tick % 251 == 0 || tick % 251 == 20 {
+                        engine.queue(AudioEvent { effect: Effect::Bomb, pan: 0 });
+                    }
+                }
+                bytes.extend_from_slice(engine.image());
+                bytes.extend_from_slice(&bus.regs);
+                bus.writes.clear();
+                engine.tick(&mut bus);
+                bytes.extend_from_slice(engine.image());
+                bytes.extend_from_slice(&bus.regs);
+                bytes.extend_from_slice(&(bus.writes.len() as u16).to_le_bytes());
+                bytes.extend_from_slice(&bus.writes);
+                count += 1;
+            }
+            groups.push(format!(
+                "{{\"name\":\"{workload}\",\"start\":{start},\"count\":1500,\"continuous\":true}}"
+            ));
+        }
+        bytes[6..10].copy_from_slice(&count.to_le_bytes());
+        let name = if standard == VideoStandard::Pal {
+            "pal"
+        } else {
+            "ntsc"
+        };
+        std::fs::write(out.join(format!("{name}.bin")), bytes)?;
+        std::fs::write(out.join(format!("{name}.json")), format!(
+            "{{\"format\":\"sfx-fixture-index-v1\",\"tick_hz\":50,\"groups\":[{}]}}\n",
+            groups.join(",")
+        ))?;
+        println!("{name}: {count} linked-player fixtures");
+    }
+    Ok(())
+}
 fn ppm(frame: &[u8]) -> Vec<u8> {
     let background = frame.get(10_000).copied().unwrap_or(0) & 15;
     let mut out = b"P6\n640 480\n255\n".to_vec();
@@ -308,115 +541,26 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
         Some("sizes") => {
             println!(
-                "Game={} Audio={} NextPage={} SID={} Renderer={} bytes",
+                "Game={} Effects={} SID={} Renderer={} bytes",
                 std::mem::size_of::<Game>(),
-                std::mem::size_of::<havoc::audio::AudioEngine>(),
-                havoc::music::PAGE_SIZE,
-                havoc::music::SID_COUNT,
+                std::mem::size_of::<havoc::audio::EffectsEngine>(),
+                havoc::audio::SID_COUNT,
                 std::mem::size_of::<Renderer>()
             );
             Ok(())
         }
-        Some("kernel-fixtures") => kernel_fixtures(Path::new(
+        Some("sfx-fixtures") => sfx_fixtures(Path::new(
             args.get(2)
                 .map(String::as_str)
-                .unwrap_or("target/kernel-fixtures"),
+                .unwrap_or("target/sfx-fixtures"),
         )),
         _ => {
-            println!("H.A.V.O.C. tools\n  bake [directory]\n  check game.reu\n  snapshot <title|0..17> [distance] [output-prefix]\n  snapshot attract <elapsed-ms> [output-prefix]\n  snapshot transition <0..16> <elapsed-ms:0..8000> [output-prefix]\n  snapshot victory <elapsed-ms> [output-prefix]\n  sizes\n  kernel-fixtures [directory] (requires --features music-kernels)");
+            println!("H.A.V.O.C. tools\n  bake [directory]\n  check game.reu\n  snapshot <title|0..17> [distance] [output-prefix]\n  snapshot attract <elapsed-ms> [output-prefix]\n  snapshot transition <0..16> <elapsed-ms:0..8000> [output-prefix]\n  snapshot victory <elapsed-ms> [output-prefix]\n  sizes\n  sfx-fixtures [directory]");
             Ok(())
         }
     }
 }
 
-/// Record per-song kernel fixtures for `tools/test-music-kernel.py`: engine
-/// images before and after one extra kernel call at legitimately reached
-/// transport positions, plus the SID registers that call writes. The
-/// simulator replays the same call on the linked 6502 image and must match.
-#[cfg(feature = "music-kernels")]
-fn kernel_fixtures(out: &Path) -> Result<(), Box<dyn std::error::Error>> {
-    use havoc::audio::{kernels::has_kernel, AudioEngine, MusicState, SidBus, VideoStandard};
-    use havoc::music::{self, BANK_HEADER_SIZE, PAGE_SIZE, SID_COUNT};
-    struct Recorder([u8; 128]);
-    impl Default for Recorder {
-        fn default() -> Self {
-            Self([0; 128])
-        }
-    }
-    impl SidBus for Recorder {
-        fn write(&mut self, sid: u8, reg: u8, value: u8) {
-            self.0[sid as usize * 32 + reg as usize] = value;
-        }
-    }
-    let hex = |bytes: &[u8]| bytes.iter().map(|b| format!("{b:02x}")).collect::<String>();
-    let bank = havoc::soundtrack::score_bank();
-    let mut cases = Vec::new();
-    for cue in 0..music::CUE_COUNT as u8 {
-        let state = MusicState::from_cue(cue).ok_or("cue")?;
-        if !has_kernel(state) {
-            continue;
-        }
-        let info = music::cue_info(&bank[..BANK_HEADER_SIZE], cue).map_err(|e| format!("{e:?}"))?;
-        let mut engine = AudioEngine::new(VideoStandard::Pal);
-        let mut bus = Recorder::default();
-        engine.reset(&mut bus);
-        engine.set_music(state);
-        engine.accept_kernel(state, true);
-        let mut next_page = [0u8; PAGE_SIZE];
-        let page_ticks = 16 * info.row_ticks as usize;
-        let ticks = (info.pages as usize * page_ticks).min(1500);
-        for tick in 0..ticks {
-            if tick % 10 == 0 {
-                if let Some(request) = engine.page_request() {
-                    let at = info.offset as usize + request.page as usize * PAGE_SIZE;
-                    next_page.copy_from_slice(&bank[at..at + PAGE_SIZE]);
-                    engine
-                        .publish_page(request, &next_page)
-                        .map_err(|e| format!("{e:?}"))?;
-                }
-            }
-            engine.tick(&mut bus, &next_page);
-            // Sample across row phases and bar boundaries, including row zero.
-            if tick % 53 == 7 || tick % page_ticks == 1 || tick % page_ticks == page_ticks - 1 {
-                let before = engine.image().to_vec();
-                let snapshot = engine.snapshot();
-                let mut probe = Recorder::default();
-                if engine.run_kernel_once(&mut probe) {
-                    let after = engine.image().to_vec();
-                    cases.push(format!(
-                        "{{\"cue\":{cue},\"tick\":{tick},\"before\":\"{}\",\"after\":\"{}\",\"sid\":\"{}\"}}",
-                        hex(&before),
-                        hex(&after),
-                        hex(&probe.0[..SID_COUNT * 32])
-                    ));
-                    engine.restore(&snapshot);
-                }
-            }
-        }
-    }
-    fs::create_dir_all(out)?;
-    let path = out.join(format!("kernel-fixtures-{}sid.json", SID_COUNT));
-    fs::write(
-        &path,
-        format!(
-            "{{\"sid_count\":{},\"engine_size\":{},\"cases\":[\n{}\n]}}\n",
-            SID_COUNT,
-            std::mem::size_of::<AudioEngine>(),
-            cases.join(",\n")
-        ),
-    )?;
-    println!(
-        "Wrote {} kernel fixtures to {}",
-        cases.len(),
-        path.display()
-    );
-    Ok(())
-}
-
-#[cfg(not(feature = "music-kernels"))]
-fn kernel_fixtures(_out: &Path) -> Result<(), Box<dyn std::error::Error>> {
-    Err("kernel-fixtures needs `cargo run --features music-kernels`".into())
-}
 fn main() {
     if let Err(error) = run() {
         eprintln!("error: {error}");

@@ -1,18 +1,9 @@
 //! Original assets and portable package tools. Never linked into the C64 game.
-use havoc::{assets::*, digital, music, soundtrack};
+use havoc::{assets::*, audio, digital};
 use std::{boxed::Box, format, fs, path::Path, println, vec, vec::Vec};
 
 /// Reproducible compressed source; the large MP3 is not required to build.
-pub const DIGITAL_TRACKS: [(digital::Track, &[u8]); 2] = [
-    (
-        digital::Track::GalacticDash,
-        include_bytes!("../assets/music/galactic-dash.dlt"),
-    ),
-    (
-        digital::Track::HammondRocker,
-        include_bytes!("../assets/music/hammond-rocker.dlt"),
-    ),
-];
+pub use digital::TRACK_ASSETS as DIGITAL_TRACKS;
 
 /// All campaign choices are authored here and baked into independently checked
 /// model/encounter pages. None of this table enters the resident game image.
@@ -411,9 +402,6 @@ fn put32(b: &mut [u8], p: usize, n: u32) {
 pub fn common_bank() -> [u8; COMMON_SIZE] {
     let mut b = [0; COMMON_SIZE];
     b[..MODEL_SIZE].copy_from_slice(&model_bank(0));
-    let score = soundtrack::score_bank();
-    b[MODEL_SIZE..MODEL_SIZE + music::BANK_HEADER_SIZE]
-        .copy_from_slice(&score[..music::BANK_HEADER_SIZE]);
     AssetBank::new(&b).expect("generated common bank");
     b
 }
@@ -1733,6 +1721,13 @@ pub fn segment_bank(index: u8) -> [u8; SEGMENT_SIZE] {
         events.len() <= MAX_SEGMENT_SPAWNS as usize,
         "encounters exceed the runtime segment cache"
     );
+    // Reserve room for the runtime's delayed second enemy wave, including the
+    // late ground turrets. Scenery and supplies keep their authored timing.
+    for event in &mut events {
+        if matches!(event.kind, FIGHTER | DIVER | TURRET) {
+            event.distance = (u32::from(event.distance) * 19 / 20) as u16;
+        }
+    }
     events.sort_by_key(|e| e.distance);
     b[7] = events.len() as u8;
     for (i, e) in events.iter().enumerate() {
@@ -1756,23 +1751,20 @@ pub fn bake(out: &Path) -> Result<(), Box<dyn std::error::Error>> {
     put32(&mut reu, 8, COMMON_OFFSET);
     put32(&mut reu, 12, SEGMENTS_OFFSET);
     reu[16] = SEGMENT_COUNT;
-    reu[17] = music::SID_COUNT as u8;
+    reu[17] = audio::SID_COUNT as u8;
     reu[MODEL_DIRECTORY_OFFSET as usize..MODEL_DIRECTORY_OFFSET as usize + MODEL_DIRECTORY_SIZE]
         .copy_from_slice(&model_directory());
     put16(&mut reu, 18, checksum(&common));
     reu[COMMON_OFFSET as usize..COMMON_OFFSET as usize + COMMON_SIZE].copy_from_slice(&common);
-    let score = soundtrack::score_bank();
-    reu[MUSIC_OFFSET as usize..MUSIC_OFFSET as usize + score.len()].copy_from_slice(&score);
+    let directory = digital::catalog_directory();
+    let catalog_start = digital::MUSIC_OFFSET as usize;
+    reu[catalog_start..catalog_start + directory.len()].copy_from_slice(directory);
     for (track, bytes) in DIGITAL_TRACKS {
         digital::validate_asset(bytes, track).map_err(|e| format!("digital {track:?}: {e:?}"))?;
-        let start = track.descriptor().asset_offset as usize;
-        let limit = if track == digital::Track::GalacticDash {
-            DIGITAL_VICTORY_OFFSET
-        } else {
-            DIGITAL_RING_OFFSET
-        } as usize;
-        if start + bytes.len() > limit {
-            return Err(format!("digital {track:?} exceeds its REU reservation").into());
+        let descriptor = track.descriptor();
+        let start = descriptor.asset_offset as usize;
+        if start + bytes.len() > DIGITAL_RING_OFFSET as usize {
+            return Err(format!("digital {track:?} exceeds the soundtrack budget").into());
         }
         reu[start..start + bytes.len()].copy_from_slice(bytes);
     }
@@ -1794,7 +1786,7 @@ pub fn bake(out: &Path) -> Result<(), Box<dyn std::error::Error>> {
     check_package(&reu)?;
     fs::write(out.join("havoc.reu"), &reu)?;
     fs::write(out.join("havoc.cfg"), include_str!("../config/havoc.cfg"))?;
-    let mut report = format!("H.A.V.O.C. package {PACKAGE_ID:08X}\n16 MiB REU; common {COMMON_OFFSET:06X} (3072 bytes; 2048 resident model bytes); eighteen checked 2048-byte stage model banks at {MODEL_BANKS_OFFSET:06X}; 64-byte model directory at {MODEL_DIRECTORY_OFFSET:06X}; eighteen 2048-byte segments at {SEGMENTS_OFFSET:06X}, each with a checksummed 512-byte runtime prefix (up to 62 encounters)\nEighteen 75-second stages, seventeen 8-second crossings: 24:46 scheduled gameplay plus victory reveal. Five bosses: Gorge Warden, Citadel Heart, Carrier, Dreadnought, Gate Guardian.\nFour enemy movement families with distinct terrestrial and orbital meshes; authored three-dimensional debris fields and an orbital ascent.\n{} SIDs: {} music voices + 2 effects voices. {} original cues; {} bytes of paged score data at {MUSIC_OFFSET:06X}.\nHammond Rocker title/attract music at $500000 and Galactic Dash victory/title/attract music at $100000: 24 kHz stereo compressed DLT3; shared mutable 128 KiB PCM ring at $FE0000.\n", music::SID_COUNT, music::MUSIC_VOICES, music::CUE_COUNT, score.len());
+    let mut report = format!("H.A.V.O.C. package {PACKAGE_ID:08X}\n16 MiB REU; common {COMMON_OFFSET:06X} (3072 bytes; 2048 resident model bytes); eighteen checked 2048-byte stage model banks at {MODEL_BANKS_OFFSET:06X}; 64-byte model directory at {MODEL_DIRECTORY_OFFSET:06X}; eighteen 2048-byte segments at {SEGMENTS_OFFSET:06X}, each with a checksummed 512-byte runtime prefix (up to 62 encounters)\nEighteen 75-second stages, seventeen 8-second crossings: 24:46 scheduled gameplay plus victory reveal. Five bosses: Gorge Warden, Citadel Heart, Carrier, Dreadnought, Gate Guardian.\nFour enemy movement families with distinct terrestrial and orbital meshes; authored three-dimensional debris fields and an orbital ascent.\nFour SIDs: twelve effects oscillators, four independent filters, 21 effects; DAC-only music.\nDLT4 manifest soundtrack at $100000: 20 kHz stereo title/victory and 16 kHz mono gameplay recordings with a placeholder for unrecorded stages; two mutable 64 KiB PCM slots at $FE0000.\n");
     for (index, design) in CAMPAIGN.iter().enumerate() {
         report.push_str(&format!(
             "{:02}. {}: theme {}, enemy profile {}, boss {}, music {}\n",
@@ -1819,21 +1811,7 @@ pub fn check_package(reu: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
         return Err(format!("REU must contain exactly {REU_SIZE} bytes (16 MiB)").into());
     }
     validate_header(reu).map_err(|e| format!("package header: {e:?}"))?;
-    for (track, _) in DIGITAL_TRACKS {
-        let descriptor = track.descriptor();
-        let start = descriptor.asset_offset as usize;
-        let end = start + descriptor.asset_bytes as usize;
-        let limit = if track == digital::Track::GalacticDash {
-            DIGITAL_VICTORY_OFFSET
-        } else {
-            DIGITAL_RING_OFFSET
-        } as usize;
-        if end > limit {
-            return Err(format!("digital {track:?} overlaps the next reservation").into());
-        }
-        digital::validate_asset(&reu[start..end], track)
-            .map_err(|e| format!("digital {track:?}: {e:?}"))?;
-    }
+    digital::validate_catalog(reu).map_err(|e| format!("digital catalog: {e:?}"))?;
     let common = &reu[COMMON_OFFSET as usize..COMMON_OFFSET as usize + COMMON_SIZE];
     let bank = AssetBank::new(common).map_err(|e| format!("common bank: {e:?}"))?;
     if bank.level() != 0 {
@@ -1853,11 +1831,9 @@ pub fn check_package(reu: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
             return Err("common and lowland model bank differ".into());
         }
     }
-    let music_bank = &reu[MUSIC_OFFSET as usize..MUSIC_OFFSET as usize + MUSIC_CAPACITY as usize];
-    if bank.audio()[..music::BANK_HEADER_SIZE] != music_bank[..music::BANK_HEADER_SIZE] {
-        return Err("music directory does not match common assets".into());
+    if common[MODEL_SIZE..].iter().any(|&b| b != 0) {
+        return Err("nonzero retired score padding".into());
     }
-    validate_soundtrack(music_bank)?;
     if checksum(common) != u16_at(reu, 18) {
         return Err("common checksum".into());
     }
@@ -1880,56 +1856,6 @@ pub fn check_package(reu: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
         {
             return Err("stage theme continuity".into());
         }
-    }
-    Ok(())
-}
-
-pub fn validate_soundtrack(bank: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
-    if bank.len() < music::BANK_HEADER_SIZE {
-        return Err("truncated music directory".into());
-    }
-    if bank[16 + music::CUE_COUNT * 8..music::BANK_HEADER_SIZE]
-        .iter()
-        .any(|&byte| byte != 0)
-    {
-        return Err("music directory reserved bytes".into());
-    }
-    let mut end = music::BANK_HEADER_SIZE;
-    for cue in 0..music::CUE_COUNT as u8 {
-        let info = music::cue_info(bank, cue).map_err(|e| format!("music directory: {e:?}"))?;
-        if info.offset as usize != end {
-            return Err("music page directory is not contiguous".into());
-        }
-        end += info.pages as usize * music::PAGE_SIZE;
-        if end > bank.len() {
-            return Err("truncated music bank".into());
-        }
-        let pages = &bank[info.offset as usize..end];
-        if checksum(pages) != info.checksum {
-            return Err("music cue checksum".into());
-        }
-        for (index, page) in pages.chunks_exact(music::PAGE_SIZE).enumerate() {
-            music::validate_page(page, cue, index as u8)
-                .map_err(|e| format!("music cue {cue} page {index}: {e:?}"))?;
-            if page[6] != ((index + 1) % info.pages as usize) as u8 || page[7] != info.row_ticks {
-                return Err("music page transport mismatch".into());
-            }
-            let previous = &pages
-                [((index + info.pages as usize - 1) % info.pages as usize) * music::PAGE_SIZE..];
-            for voice in 0..music::MUSIC_VOICES {
-                let event = page[music::EVENT_OFFSET + voice];
-                let at = music::INSTRUMENT_OFFSET + voice * 5;
-                if (event == 1 || event & 128 != 0) && page[at..at + 5] != previous[at..at + 5] {
-                    return Err("music changes instrument under a boundary tie".into());
-                }
-                if index == 0 && (event == 1 || event & 128 != 0) {
-                    return Err("music opening needs an attack or rest".into());
-                }
-            }
-        }
-    }
-    if u32_at(bank, 8) as usize != end {
-        return Err("music bank length mismatch".into());
     }
     Ok(())
 }

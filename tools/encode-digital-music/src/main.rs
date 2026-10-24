@@ -1,4 +1,5 @@
 //! Reproducible normalized DLT3 stereo, using Second Reality's quantizer.
+mod dlt4;
 mod encoder;
 mod format;
 mod lloyd;
@@ -18,7 +19,7 @@ fn hash(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
 }
 
-fn read_flac(path: &Path) -> Result<[Vec<f64>; 2]> {
+fn read_source(path: &Path) -> Result<([Vec<i16>; 2], u32)> {
     let probe = Command::new("ffprobe")
         .args([
             "-v",
@@ -72,9 +73,14 @@ fn read_flac(path: &Path) -> Result<[Vec<f64>; 2]> {
         pcm[0].push(left);
         pcm[1].push(right);
     }
+    Ok((pcm, values[0]))
+}
+
+fn read_flac(path: &Path) -> Result<[Vec<f64>; 2]> {
+    let (pcm, rate) = read_source(path)?;
     Ok(pcm
         .each_ref()
-        .map(|channel| resample::resample_pcm(channel, values[0], 24_000)))
+        .map(|channel| resample::resample_pcm(channel, rate, 24_000)))
 }
 
 fn pcm_bytes(samples: &[i16]) -> Vec<u8> {
@@ -93,6 +99,10 @@ fn interleave(pcm: &[Vec<i16>; 2]) -> Vec<i16> {
 }
 
 fn write_wav(path: &Path, samples: &[i16]) -> Result<()> {
+    write_profile_wav(path, samples, 24_000, 2)
+}
+
+fn write_profile_wav(path: &Path, samples: &[i16], rate: u32, channels: u16) -> Result<()> {
     let mut out = fs::File::create(path)?;
     let size = (samples.len() * 2) as u32;
     out.write_all(b"RIFF")?;
@@ -100,10 +110,10 @@ fn write_wav(path: &Path, samples: &[i16]) -> Result<()> {
     out.write_all(b"WAVEfmt ")?;
     out.write_all(&16u32.to_le_bytes())?;
     out.write_all(&1u16.to_le_bytes())?;
-    out.write_all(&2u16.to_le_bytes())?;
-    out.write_all(&24_000u32.to_le_bytes())?;
-    out.write_all(&96_000u32.to_le_bytes())?;
-    out.write_all(&4u16.to_le_bytes())?;
+    out.write_all(&channels.to_le_bytes())?;
+    out.write_all(&rate.to_le_bytes())?;
+    out.write_all(&(rate * channels as u32 * 2).to_le_bytes())?;
+    out.write_all(&(channels * 2).to_le_bytes())?;
     out.write_all(&16u16.to_le_bytes())?;
     out.write_all(b"data")?;
     out.write_all(&size.to_le_bytes())?;
@@ -112,6 +122,12 @@ fn write_wav(path: &Path, samples: &[i16]) -> Result<()> {
 }
 
 fn measure(samples: &[i16]) -> Result<normalize::Meter> {
+    measure_profile(samples, 24_000, 2)
+}
+
+fn measure_profile(samples: &[i16], rate: u32, channels: u16) -> Result<normalize::Meter> {
+    let rate_arg = rate.to_string();
+    let channels_arg = channels.to_string();
     let mut child = Command::new("ffmpeg")
         .args([
             "-hide_banner",
@@ -121,9 +137,9 @@ fn measure(samples: &[i16]) -> Result<normalize::Meter> {
             "-f",
             "s16le",
             "-ar",
-            "24000",
+            &rate_arg,
             "-ac",
-            "2",
+            &channels_arg,
             "-i",
             "pipe:0",
             "-af",
@@ -140,7 +156,7 @@ fn measure(samples: &[i16]) -> Result<normalize::Meter> {
     let mut stdin = child.stdin.take().unwrap();
     let mut bytes = pcm_bytes(samples);
     // Finish the last 100 ms metadata block and include reconstruction to silence.
-    bytes.extend_from_slice(&[0; 2400 * 4]);
+    bytes.resize(bytes.len() + (rate / 10 * channels as u32 * 2) as usize, 0);
     let writer = std::thread::spawn(move || stdin.write_all(&bytes));
     let output = child.wait_with_output()?;
     writer
@@ -152,10 +168,15 @@ fn measure(samples: &[i16]) -> Result<normalize::Meter> {
             String::from_utf8_lossy(&output.stderr)
         );
     }
-    parse_meter(&String::from_utf8(output.stdout)?)
+    parse_profile_meter(&String::from_utf8(output.stdout)?, channels)
 }
 
+#[cfg(test)]
 fn parse_meter(text: &str) -> Result<normalize::Meter> {
+    parse_profile_meter(text, 2)
+}
+
+fn parse_profile_meter(text: &str, channels: u16) -> Result<normalize::Meter> {
     let mut peaks = [None::<f64>; 2];
     let mut loudness = None;
     for line in text.lines() {
@@ -170,11 +191,14 @@ fn parse_meter(text: &str) -> Result<normalize::Meter> {
         }
     }
     let mut true_peak_dbtp = [0.0; 2];
-    for channel in 0..2 {
+    for channel in 0..channels as usize {
         let peak = peaks[channel].context("FFmpeg returned no per-channel true-peak metadata")?;
         // FFmpeg emits three decimal places for these linear amplitudes. Account
         // for half a unit of rounding, so a rounded-down value cannot pass falsely.
         true_peak_dbtp[channel] = normalize::db(if peak == 0.0 { 0.0 } else { peak + 0.0005 });
+    }
+    if channels == 1 {
+        true_peak_dbtp[1] = true_peak_dbtp[0];
     }
     Ok(normalize::Meter {
         true_peak_dbtp,
@@ -202,6 +226,18 @@ fn snr(reference: &[i16], decoded: &[i16]) -> f64 {
 
 fn main() -> Result<()> {
     let arguments: Vec<_> = env::args_os().collect();
+    if arguments.get(1).is_some_and(|arg| arg == "--profile") {
+        if arguments.len() != 6 {
+            bail!("usage: encode-digital-music --profile stereo20k3|mono16k3 input.flac output.dlt preview.wav");
+        }
+        let profile = dlt4::Profile::parse(&arguments[2].to_string_lossy())?;
+        return dlt4::run(
+            profile,
+            Path::new(&arguments[3]),
+            Path::new(&arguments[4]),
+            Path::new(&arguments[5]),
+        );
+    }
     if arguments.len() != 4 {
         bail!("usage: encode-digital-music input.flac output.dlt preview.wav");
     }
@@ -298,5 +334,13 @@ mod tests {
         assert_eq!(meter.integrated_lufs, -14.125);
         assert!(parse_meter("").is_err());
         assert_eq!(json_number(f64::NEG_INFINITY), "null");
+    }
+
+    #[test]
+    fn mono_meter_requires_only_its_one_real_channel() {
+        let text = "lavfi.r128.true_peaks_ch0=0.500\nlavfi.r128.I=-20.0\n";
+        let meter = parse_profile_meter(text, 1).unwrap();
+        assert_eq!(meter.true_peak_dbtp, [normalize::db(0.5005); 2]);
+        assert!(parse_profile_meter(text, 2).is_err());
     }
 }

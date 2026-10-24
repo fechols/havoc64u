@@ -1736,7 +1736,7 @@ mod tests {
     }
 
     #[test]
-    fn meteor_sound_onsets_match_the_visible_head_hemisphere() {
+    fn meteor_sound_onsets_match_the_visible_head_and_center_band() {
         for (index, start) in crate::transition::METEOR_STARTS.into_iter().enumerate() {
             // The sound cue begins eight ticks after each head appears. Find
             // this meteor among all older, still-visible three-face streaks.
@@ -1747,6 +1747,11 @@ mod tests {
                 .count();
             let scene = decoration(2, elapsed, 40);
             let head = scene.0[prior * 3 + 2].0;
+            let x = (head[0].x + head[1].x) / 2;
+            let mut clock = crate::transition::TransitionAudio::new();
+            let cues = clock.update(Some((2, elapsed)));
+            assert!(cues.events.into_iter().flatten().any(|event|
+                event.pan == crate::audio::spatial_pan(x, head[0].z)));
             for point in head {
                 let screen_x = crate::projection::project(point).0;
                 assert!(
@@ -1759,6 +1764,48 @@ mod tests {
                     "meteor {index} head must match its left/right sound channel"
                 );
             }
+        }
+    }
+
+    #[test]
+    fn visible_wildlife_and_transport_cues_follow_the_rendered_source() {
+        use crate::{audio::Effect, transition::TransitionAudio};
+        // Recover source centers from the actual emitted geometry, so changes
+        // to the artwork's motion cannot leave independent sound paths stale.
+        for (profile, tick, effect, bird) in [
+            (0, 117, Effect::BirdCall, 0),
+            (0, 173, Effect::BirdCall, 1),
+            (0, 229, Effect::BirdCall, 2),
+            (0, 130, Effect::Footstep, 0),
+            (0, 208, Effect::Footstep, 0),
+            (1, 185, Effect::Transport, 0),
+            (1, 200, Effect::TransportAway, 0),
+            (1, 212, Effect::TransportAway, 0),
+        ] {
+            let geometry = decoration(profile, tick, 40);
+            let (x, z) = match effect {
+                Effect::BirdCall => {
+                    let body = geometry.0[20 + bird * 2].0[1];
+                    (body.x, body.z)
+                }
+                Effect::Footstep => {
+                    let first = geometry.0[8].0[0];
+                    (first.x - CREATURE_POINTS[0][0] as i16 * 2,
+                     first.z - CREATURE_DEPTHS[0] as i16 * 2)
+                }
+                _ => {
+                    let first = geometry.0[0].0[0];
+                    (first.x - TRANSPORT_POINTS[TRANSPORT_FACES[0][0] as usize][0] as i16 * 8,
+                     first.z)
+                }
+            };
+            let mut clock = TransitionAudio::new();
+            let events: Vec<_> = clock.update(Some((profile, tick)))
+                .events.into_iter().flatten().collect();
+            assert_eq!(events.len(), 1, "profile {profile}, tick {tick}");
+            assert_eq!(events[0].effect, effect);
+            assert_eq!(events[0].pan, crate::audio::spatial_pan(x, z),
+                "profile {profile}, tick {tick}, source ({x},{z})");
         }
     }
 

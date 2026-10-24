@@ -70,7 +70,7 @@ def checks(mon, syms, failures, elf, dwarf_tool, output, result):
     layouts = bench.Layouts(elf, dwarf_tool, output)
     game_address = vice.resident_symbol(syms,'GAME')[1]
     renderer_address = vice.resident_symbol(syms,'RENDERER')[1]
-    audio_address = vice.resident_symbol(syms,'AUDIO')[1]
+    audio_address = vice.resident_symbol(syms,'EFFECTS')[1]
     pause = vice.resident_symbol(syms,'PAUSED')[1]
     fps = vice.resident_symbol(syms,'FPS_SHOWN')[1]
     package = (args.package_dir/'havoc.reu').read_bytes()
@@ -101,7 +101,7 @@ def checks(mon, syms, failures, elf, dwarf_tool, output, result):
 
     mon.command('bank ram')
     initial = bytearray(mon.read(game_address,layouts.size('Game')))
-    initial_audio = mon.read(audio_address,layouts.size('AudioEngine'))
+    initial_audio = mon.read(audio_address,layouts.size('EffectsEngine'))
     for field in ['actors','shots','pickups','explosions','flight','controls']:
         offset,kind = layouts.member('Game',field)
         initial[offset:offset+layouts.size(kind)] = bytes(layouts.size(kind))

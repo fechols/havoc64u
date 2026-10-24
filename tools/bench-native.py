@@ -35,6 +35,21 @@ def semantic_hash(value):
     return digest(json.dumps(value, sort_keys=True, separators=(",", ":")).encode())
 
 
+def checkout_metadata():
+    command = ["git"]
+    pointer = ROOT / ".git"
+    if sys.platform == "linux" and pointer.is_file():
+        text = pointer.read_text().strip()
+        match = re.fullmatch(r"gitdir: ([A-Za-z]):/(.+)", text)
+        if match:
+            command += ["--git-dir=/mnt/" + match[1].lower() + "/" + match[2],
+                        "--work-tree=" + str(ROOT)]
+    return dict(driver_checkout_revision=subprocess.check_output(
+                    command + ["rev-parse", "HEAD"], cwd=ROOT, text=True).strip(),
+                driver_checkout_status=subprocess.check_output(
+                    command + ["status", "--short"], cwd=ROOT, text=True))
+
+
 class Layouts:
     """Resolve named fields, including arrays, without assuming Rust offsets."""
     primitive = {"u8": 1, "i8": 1, "bool": 1, "u16": 2, "i16": 2, "u32": 4, "i32": 4}
@@ -113,6 +128,118 @@ STAGE_LABELS = ("lowlands", "crystal", "canyon", "gorge", "ash", "foundry",
                 "space-carrier", "jump-gate")
 
 
+# The same semantic events are injected at native 50 Hz tick entries in both
+# packages. Debugger stops consume no emulated time; all actual SFX work and IRQ
+# entry/exit remain inside the measured frame. No engine layout is hardcoded.
+SFX_SCENARIOS = (
+    ("quiet", "title", ()),
+    ("firing", "lowlands", tuple((at, 0, 0) for at in range(0, 50, 5))),
+    ("dense-combat", "full-pools", ((0, 6, 0), (2, 3, -96), (4, 14, 0),
+        (6, 13, 96), (8, 7, -96), (10, 2, 0), (12, 17, 96),
+        (14, 0, 0), (16, 20, 0), (18, 3, -96))),
+    ("boss", "boss-gorge-warden", ((0, 18, 0), (2, 13, -96),
+        (4, 2, 0), (6, 15, 0), (8, 14, 0), (10, 13, 96),
+        (12, 16, 0))),
+    ("scenic", "bridge-0-200", ((0, 10, -96), (0, 11, 96),
+        (2, 9, 0), (4, 12, 96), (6, 8, -96), (8, 10, 0))),
+)
+
+
+def sustained_schedule(name, ticks):
+    """A complete, frame-rate-independent 50 Hz request stream."""
+    events = []
+    for tick in range(ticks):
+        if name in ("sfx-firing", "sfx-dense-combat", "sfx-boss") and tick % 5 == 0:
+            events.append((tick, 0, 0))
+        if name == "sfx-dense-combat":
+            if tick % 7 == 0:
+                events.append((tick, 1, -100 if tick // 7 % 2 == 0 else 100))
+            if tick % 11 == 0:
+                events.append((tick, 3, -100 if tick // 11 % 2 == 0 else 100))
+            for at, effect, pan in ((15, 6, 0), (35, 6, 0), (15, 7, -100),
+                                    (16, 7, 100), (36, 7, -100), (37, 7, 100),
+                                    (70, 14, 0), (110, 17, 100), (160, 20, 0)):
+                if tick % 250 == at:
+                    events.append((tick, effect, pan))
+        elif name == "sfx-boss":
+            if tick % 9 == 0:
+                events.append((tick, 13, -100 if tick // 9 % 2 == 0 else 100))
+            for at, effect, pan in ((0, 18, 0), (25, 6, 0), (45, 6, 0),
+                                    (26, 7, -100), (27, 7, 100), (80, 14, 0),
+                                    (160, 15, 0), (165, 7, -100), (166, 7, 100)):
+                if tick % 250 == at:
+                    events.append((tick, effect, pan))
+        elif name == "sfx-scenic":
+            for at, effect, pan in ((0, 10, -100), (0, 11, 100), (25, 9, 0),
+                                    (45, 12, 100), (60, 8, -100), (90, 10, 0),
+                                    (120, 12, -100), (145, 9, 100)):
+                if tick % 200 == at:
+                    events.append((tick, effect, pan))
+        elif name not in ("sfx-quiet", "sfx-firing"):
+            if name not in ("sfx-dense-combat", "sfx-boss"):
+                raise ValueError(f"Unknown sustained workload: {name}")
+    return events
+
+
+def schedule_batches(schedule):
+    batches = {}
+    for tick, effect, pan in schedule:
+        batches.setdefault(tick, []).append([effect, pan])
+    if any(len(batch) > 8 for batch in batches.values()):
+        raise ValueError("Sustained request schedule exceeds the bounded queue")
+    return batches
+
+
+def validate_sustained_schedule(schedule, injections, completed_ticks, expected_ticks):
+    if completed_ticks != expected_ticks:
+        raise RuntimeError(f"Sustained clock stopped at {completed_ticks}, expected {expected_ticks}")
+    expected = [dict(tick=tick, events=batch) for tick, batch in schedule_batches(schedule).items()]
+    actual = [dict(tick=entry["tick"], events=entry["events"]) for entry in injections]
+    if actual != expected:
+        raise RuntimeError("Sustained request schedule was skipped, duplicated, reordered, or truncated")
+
+
+def distribution(values):
+    ordered = sorted(values)
+    if not ordered:
+        raise ValueError("Cannot summarize an empty measurement")
+    return dict(count=len(ordered), median=statistics.median(ordered),
+                p95=ordered[(len(ordered) * 95 + 99) // 100 - 1], max=ordered[-1])
+
+
+def sustained_statistics(frames):
+    result = {"frame_bus_cycles": distribution(frame["bus_cycles_delta"] for frame in frames),
+              "dma_bytes": distribution(frame["dma"]["bytes"] for frame in frames),
+              "wait_bus_cycles": distribution(frame["pixel_bus_cycles_detail"]["wait"] for frame in frames)}
+    for field in ("phase_bus_cycles", "phase_load_bus_cycles", "phase_work_bus_cycles"):
+        result[field] = {name: distribution(frame[field][name] for frame in frames)
+                         for name in frames[0][field]}
+    return result
+
+
+class SustainedBoundary(Exception):
+    """The next IRQ entry is the exact end of the requested tick window."""
+
+
+def selected_fixtures(args, package_format, boss_health=None):
+    available = fixtures(package_format["medal"], package_format["campaign"],
+                         package_format["space"], boss_health)
+    if args.sfx_workloads:
+        by_name = {fixture["name"]: fixture for fixture in available}
+        return [dict(by_name[source], name="sfx-" + name, sfx_schedule=list(schedule))
+                for name, source, schedule in SFX_SCENARIOS
+                if args.fixtures == "all" or "sfx-" + name in args.fixtures.split(",")]
+    return [fixture for fixture in available
+            if args.fixtures == "all" or fixture["name"] in args.fixtures.split(",")]
+
+
+def gameplay_identity(state):
+    # These are sound-delivery state, intentionally changed by the revised hit
+    # policy. Preserve their raw hash separately; compare every gameplay field.
+    return {key: value for key, value in state.items()
+            if key not in ("audio", "audio_head", "audio_len")}
+
+
 def stage_metadata(package, stage):
     start = int.from_bytes(package[12:16], "little") + stage * 2048 + 8
     return dict(zip(STAGE_FIELDS, package[start:start+8]))
@@ -159,7 +286,7 @@ def fixtures(include_victory=True, campaign=False, space=False, boss_health=None
         if name == "full-pools":
             for array, pool_count, fields in (
                 ("actors", 12, {"kind": 3, "hp": 6, "pos.z": 100}),
-                ("shots", 24, {"kind": 2, "damage": 12, "pos.z": 300}),
+                ("shots", 24, {"kind": 2, "damage": 6, "pos.z": 300}),
                 ("pickups", 4, {"kind": 1, "pos.z": 400}),
                 ("explosions", 6, {"ticks": 9, "color": 7, "pos.z": 500}),
             ):
@@ -400,15 +527,44 @@ def hud_commit_profile(text, symbols, cycles_per_line):
                 limit_bus_cycles_exclusive=limit)
 
 
-def native_bytes(mon, syms):
+class BinaryInspection:
+    """Read bulk snapshots without thousands of monitor text reply fragments."""
+    def __init__(self, mon, directory):
+        self.mon, self.directory = mon, directory
+        directory.mkdir(parents=True, exist_ok=True)
+        self.verified = set()
+        self.checks = []
+
+    def read(self, address, length, bank, mask=255):
+        path = self.directory / f"{bank}-{address:04x}-{length}.bin"
+        self.mon.command(f'bsave "{path.as_posix()}" 0 {address:04x} {address+length-1:04x}')
+        raw = path.read_bytes()
+        if len(raw) != length:
+            raise RuntimeError(f"Binary inspection has wrong length at${address:04x}: {len(raw)}/{length}")
+        value = bytes(byte & mask for byte in raw) if mask != 255 else raw
+        key = (bank, address, length, mask)
+        if key not in self.verified:
+            text = self.mon.read(address, length)
+            expected = bytes(byte & mask for byte in text) if mask != 255 else text
+            if value != expected:
+                raise RuntimeError(f"Binary/text inspection differs at{bank}:${address:04x}")
+            self.verified.add(key)
+            self.checks.append(dict(bank=bank, address=address, bytes=length, mask=mask,
+                                    sha256=digest(value), text_matches_binary=True))
+        return value
+
+
+def native_bytes(mon, syms, inspection=None):
     bank = mon.integer(syms["FRONT_BANK"], 1)
     bitmap, screen = (0xe000, 0xc000) if bank == 3 else (0xa000, 0x8000)
     mon.command("bank ram")
-    result = mon.read(bitmap, 8000) + mon.read(screen, 1000)
+    result = (inspection.read(bitmap, 8000, "ram") + inspection.read(screen, 1000, "ram")
+              if inspection else mon.read(bitmap, 8000) + mon.read(screen, 1000))
     # Color RAM is written in place; its upper nibble is undefined. Byte
     # 10,000 is the VIC background ($D021): what code 0 shows.
     mon.command("bank io")
-    result += bytes(value & 15 for value in mon.read(0xd800, 1000))
+    result += (inspection.read(0xd800, 1000, "io", mask=15) if inspection
+               else bytes(value & 15 for value in mon.read(0xd800, 1000)))
     result += bytes([mon.integer(0xd021, 1) & 15])
     mon.command("bank cpu")
     return result
@@ -455,6 +611,10 @@ def main():
     parser.add_argument("--samples", type=int, choices=(1, 3, 9), default=9)
     parser.add_argument("--fixtures", default="all", help="comma-separated fixture names; all by default")
     parser.add_argument("--ticks", default="0,10")
+    parser.add_argument("--sfx-workloads", action="store_true", help="five matched audio workloads with native tick event schedules")
+    parser.add_argument("--sustained-seconds", type=int, default=0,
+                        help="continuous controlled SFX run at each of three CIA phases; minimum30 seconds")
+    parser.add_argument("--max-frame-regression", type=float, default=5.0, help="maximum median frame-time increase in percent")
     parser.add_argument("--palettes", default="cold,retained")
     parser.add_argument("--real-time-ticks", type=int, default=400)
     # Accepted for older command lines: the game no longer caches sky bands.
@@ -464,26 +624,41 @@ def main():
                         help="compare decoded pixels instead of raw bitmap/attribute bytes (cell slot order may differ)")
     vice.add_emulator_audio_argument(parser)
     args = parser.parse_args()
+    if args.sustained_seconds and (args.sustained_seconds < 30 or not args.sfx_workloads):
+        parser.error("--sustained-seconds requires --sfx-workloads and at least30 seconds")
+    if args.sustained_seconds and (args.ticks != "10" or args.palettes != "retained" or args.compare):
+        parser.error("sustained runs require --ticks10 --palettes retained; compare with bench-sfx.py")
     output, package = args.out_dir.resolve(), args.package_dir.resolve()
     output.mkdir(parents=True, exist_ok=True)
     package_image = (package/"havoc.reu").read_bytes()
     package_format = vice.package_model_layout(package_image, validate_size=True)
     if package_format["digital"] and args.audio_backend == "native":
-        parser.error("digital-package benchmark fixtures require --audio-backend sid; "
-                     "their AudioEngine snapshots cannot restore DAC state")
+        parser.error("digital-package benchmark fixtures require --audio-backend sfx; "
+                     "their EffectsEngine snapshots cannot restore DAC state")
     sid_count = package_image[17]
-    chosen = [fixture for fixture in fixtures(package_format["medal"], package_format["campaign"], package_format["space"])
-              if args.fixtures == "all" or fixture["name"] in args.fixtures.split(",")]
+    chosen = selected_fixtures(args, package_format)
     ticks_values = list(map(int, args.ticks.split(",")))
     palettes = args.palettes.split(",")
+    if not 0 <= args.max_frame_regression < 100:
+        parser.error("frame regression limit must be 0..100 percent")
     if not chosen or any(n not in (0, 10) for n in ticks_values) or any(p not in ("cold", "retained") for p in palettes):
         parser.error("invalid fixture, ticks, or palette selection")
-    report = {"passed": False, "protocol": "havoc-fixed-frame-v1", "video": args.video,
-              "scope": "Fixed semantic workload in calibrated VICE; not physical hardware",
+    report = {"passed": False, "protocol": "havoc-sustained-sfx-v1" if args.sustained_seconds else "havoc-fixed-frame-v1", "video": args.video,
+              "scope": "Fixed semantic workload in calibrated VICE; effects only, excludes DAC decoding; not physical hardware",
               "retained_palette_setup": "One warmup frame of the identical fixture fills the single visible VIC bank and color RAM",
               "geometry_hash_policy": "Ordered coordinates, colors and depths; renderer-private sky/orientation/terrain flags (0x66) excluded. Raw geometry and full native pixel hashes are recorded separately.",
               "cases": [], "fixtures": chosen, "campaign": package_format["campaign"],
-              "stage_count": package_format["count"], "sid_count": sid_count}
+              "stage_count": package_format["count"], "sid_count": sid_count,
+              "sfx_workloads": args.sfx_workloads, "max_frame_regression_percent": args.max_frame_regression}
+    if args.sustained_seconds:
+        report["sustained"] = dict(seconds=args.sustained_seconds, ticks=args.sustained_seconds * 50,
+            cia_phases=[0, 1, 2], audio_hz=50,
+            scope="Controlled repeating render/gameplay work with persistent SFX state and50Hz clock; excludes DAC and physical hardware",
+            natural_cues="Game and scene publication work executes; pending native cues are discarded at each IRQ before only the explicit schedule is injected",
+            frame_window="Complete frames before the exact terminal IRQ entry are scored; the unfinished boundary frame and inter-frame gaps are separate",
+            scene_history="Warmed TransitionAudio state persists throughout each run",
+            render_clock="FRAME_SERIAL is restored to32 to keep HUD/title animation work identical; native CLOCK_MS and AUDIO_TICKS continue",
+            inter_frame_gaps="Existing benchmark raster250 alignment remains active and is recorded separately; no live-game FPS claim")
     process = mon = log = None
     try:
         prg, reu, elf = [package / f"havoc.{extension}" for extension in ("prg", "reu", "elf")]
@@ -491,9 +666,8 @@ def main():
         report.update(package=str(package), hashes=hashes, vice_sha256=digest(args.vice.read_bytes()),
                       driver_sha256=digest(Path(__file__).read_bytes()),
                       smoke_tool_sha256=digest((ROOT/"tools/vice-smoke.py").read_bytes()),
-                      fixture_sha256=semantic_hash(chosen), samples=args.samples,
-                      command=sys.argv, driver_checkout_revision=subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip(),
-                      driver_checkout_status=subprocess.check_output(["git", "status", "--short"], cwd=ROOT, text=True))
+                      fixture_sha256=semantic_hash(chosen), samples=3 if args.sustained_seconds else args.samples,
+                      command=sys.argv, **checkout_metadata())
         syms = vice.symbols(elf, args.llvm_nm)
         has_sprite_hud = "HUD_COMMITS" in syms
         report["sprite_hud_setup"] = "matching-fixture-warmup-v1" if has_sprite_hud else "bitmap-only"
@@ -502,10 +676,10 @@ def main():
                 raise RuntimeError(f"Package is not an instrumented benchmark build: missing {name}")
         failures = {address: name for name, address in syms.items() if ("havoc_c64" in name and "4fail" in name) or name == "rust_begin_unwind"}
         layouts = Layouts(elf, args.llvm_nm.with_name("llvm-dwarfdump"), output)
-        for name in ("Game", "Runtime", "AudioEngine", "Renderer", "Triangle"):
+        for name in ("Game", "Runtime", "EffectsEngine", "Renderer", "Triangle"):
             layouts.load(name)
         game_address = vice.resident_symbol(syms, "GAME")[1]
-        audio_address = vice.resident_symbol(syms, "AUDIO")[1]
+        audio_address = vice.resident_symbol(syms, "EFFECTS")[1]
         renderer_address = vice.resident_symbol(syms, "RENDERER")[1]
         audio_tick_address = vice.resident_symbol(syms, "audio_tick")[1]
         bus_hz, period = (985248, 19705) if args.video == "pal" else (1022727, 20455)
@@ -541,57 +715,65 @@ def main():
         mon.command("delete")
         mon.command("sidefx off")
         for address in failures:
-            mon.command(f"break exec {address:04x}")
+            # High-RAM benchmark panic code aliases KERNAL ROM during autostart.
+            condition = " if @cpu:$01 == $35 || @cpu:$01 == $34" if address >= 0xe000 else ""
+            mon.command(f"break exec {address:04x}" + condition)
         report["emulator_audio"] = vice.configure_emulator_audio(
             mon, syms, failures, package_format, args.audio_backend)
         mon.run_until(syms["benchmark_frame_begin"], failures)
         mon.command("bank ram")
         initial_game = mon.read(game_address, layouts.size("Game"))
-        initial_audio = mon.read(audio_address, layouts.size("AudioEngine"))
+        initial_audio = mon.read(audio_address, layouts.size("EffectsEngine"))
         runtime_address = mon.integer(syms["BENCH_RUNTIME"])
         initial_runtime = mon.read(runtime_address, layouts.size("Runtime"))
+        helper_size = syms.get("__benchmark_size", 0)
+        if helper_size:
+            helper_start = syms["__benchmark_start"]
+            helper_load = syms["__benchmark_load"]
+            raw_prg = prg.read_bytes()
+            load_base = int.from_bytes(raw_prg[:2], "little")
+            expected_helpers = raw_prg[2 + helper_load - load_base:2 + helper_load - load_base + helper_size]
+            if mon.read(helper_start, helper_size) != expected_helpers:
+                raise RuntimeError("BOOT did not copy the benchmark helper bank exactly")
+            report["benchmark_helpers"] = dict(source=helper_load, destination=helper_start,
+                size=helper_size, sha256=digest(expected_helpers), verified_before_first_frame=True)
         mon.command("bank cpu")
         report["initial_game"] = layouts.decode("Game", initial_game)
         boss_health = vice.full_boss_health(report["initial_game"])
-        chosen = [fixture for fixture in fixtures(package_format["medal"], package_format["campaign"],
-                  package_format["space"], boss_health)
-                  if args.fixtures == "all" or fixture["name"] in args.fixtures.split(",")]
+        chosen = selected_fixtures(args, package_format, boss_health)
         report.update(full_boss_health=boss_health, fixtures=chosen,
                       fixture_sha256=semantic_hash(chosen))
+        inspection = BinaryInspection(mon, output / "inspection")
+        report["inspection_transport"] = dict(method="VICE bsave; no emulated execution",
+                                             first_range_text_checks=inspection.checks)
 
         def write(address, data):
-            for offset in range(0, len(data), 16):
-                mon.command(f"> {address+offset:04x} " + " ".join(f"{byte:02x}" for byte in data[offset:offset+16]))
+            # VICE's command buffer is256 bytes;64-byte deposits stay below it.
+            for offset in range(0, len(data), 64):
+                mon.command(f"> {address+offset:04x} " + " ".join(f"{byte:02x}" for byte in data[offset:offset+64]))
             if mon.read(address, len(data)) != bytes(data):
                 raise RuntimeError(f"Monitor write failed at ${address:04x}")
 
         def word(address, value, size=2):
             write(address, int(value).to_bytes(size, "little"))
 
-        if report["emulator_audio"]["sid_substitution"]:
-            # Digital builds construct the SID member of the audio union in
+        if report["emulator_audio"]["sfx_only"]:
+            # Digital builds initialize the independent effects engine in
             # AUDIO, after the first SIM pass. Keep the pristine Game/Runtime
             # snapshots above, but let one zero-tick title frame initialize SID.
             word(syms["BENCH_TICKS"], 0, 1)
             mon.run_until(syms["frame_complete"], failures)
             mon.command("bank ram")
-            initial_audio = bytearray(mon.read(audio_address, layouts.size("AudioEngine")))
-            initialized_audio = layouts.decode("AudioEngine", initial_audio)
-            if not initialized_audio["initialized"] or not initialized_audio["enabled"]:
-                raise RuntimeError("Benchmark title warmup did not initialize SID audio")
-            # The external score page and kernel slot change between fixtures.
-            # Seed no live references to either: each fixture must load its own
-            # opening page and kernel before the IRQ consumes them.
-            for field, value in (("underruns", 0), ("row", 0), ("row_ticks", 0),
-                                 ("event_count", 0), ("loaded", 0), ("ready", 0),
-                                 ("waiting", 0), ("kernel", 0xff)):
-                layouts.patch(initial_audio, "AudioEngine", field, value)
+            initial_audio = bytearray(mon.read(audio_address, layouts.size("EffectsEngine")))
+            initialized_audio = layouts.decode("EffectsEngine", initial_audio)
+            if not initialized_audio["enabled"]:
+                raise RuntimeError("Benchmark warmup did not initialize effects")
             mon.command("bank cpu")
             word(syms["BENCH_TICKS"], 255, 1)
             mon.run_until(syms["benchmark_frame_begin"], failures)
-            report["audio_seed"] = "initialized SID title frame; opening page and kernel reloaded per fixture"
+            report["audio_seed"] = "initialized effects-only snapshot; excludes DAC decoding cost"
         else:
-            report["audio_seed"] = "startup AudioEngine snapshot"
+            report["audio_seed"] = "startup EffectsEngine snapshot"
 
         if args.real_time_ticks:
             mon.command("jpdb 1 $0f")
@@ -634,6 +816,8 @@ def main():
                 raise RuntimeError("Baseline report did not pass")
             if any(baseline.get(key) != report[key] for key in ("video", "protocol")):
                 raise RuntimeError("Baseline video/protocol differs")
+            if bool(baseline.get("sfx_workloads", False)) != args.sfx_workloads:
+                raise RuntimeError("Baseline SFX workload mode differs")
             if baseline.get("sid_count", 2) != sid_count:
                 raise RuntimeError("Baseline SID profile differs")
             cross_campaign = (baseline.get("campaign", False) != report["campaign"]
@@ -644,7 +828,7 @@ def main():
                 "required_equality": ["geometry_sha256", "native_pixels_sha256" if args.pixel_identity else "native_sha256"] +
                     ([] if cross_campaign else ["game_sha256"]),
                 "pixel_identity": args.pixel_identity,
-                "game_state_note": "Campaign stage identity fields differ; geometry and complete native pixels remain exact requirements" if cross_campaign else "Identical decoded state required"}
+                "game_state_note": "Campaign stage identity fields differ; geometry and complete native pixels remain exact requirements" if cross_campaign else "Identical gameplay state excluding sound queue, which changes intentionally" if args.sfx_workloads else "Identical decoded state required"}
         baseline_cases = {(case["fixture"], case["ticks"], case["palette"]): case for case in baseline["cases"]} if baseline else {}
         if baseline and args.pixel_identity:
             # Baselines recorded before the decoded-pixel hash existed still
@@ -656,8 +840,14 @@ def main():
                         raise RuntimeError(f"Baseline {name}/{ticks}/{palette} has neither a pixel hash nor a capture")
                     case["samples"][0]["native_pixels_sha256"] = recovered
 
-        def seed(fixture, ticks, cold, phase):
+        active_run = None
+
+        def seed(fixture, ticks, cold, phase, continuous=False, warm_history=False):
             mon.command("bank ram")
+            history = None
+            if continuous or warm_history:
+                offset, kind = layouts.member("Runtime", "transition_audio")
+                history = (offset, mon.read(runtime_address + offset, layouts.size(kind)))
             game = bytearray(initial_game)
             values = dict(fixture["patch"])
             if package_format["campaign"]:
@@ -678,8 +868,11 @@ def main():
                         descriptor = 0xb0000 + fixture["section"]*2048 + package_format["descriptors"] + (kind-1)*8
                         layouts.patch(game, "Game", f"actors[{index}].approach_speed", segment_image[descriptor+6])
             write(game_address, game)
-            write(audio_address, initial_audio)
+            if not continuous:
+                write(audio_address, initial_audio)
             runtime = bytearray(initial_runtime)
+            if history:
+                runtime[history[0]:history[0] + len(history[1])] = history[1]
             sections = [fixture["section"], (fixture["section"] + (2 if fixture["cache_miss"] else 1)) % package_format["count"]]
             for field, value in (("sim_ms", 0), ("current", 0), ("loaded[0]", sections[0]), ("loaded[1]", sections[1])):
                 layouts.patch(runtime, "Runtime", field, value)
@@ -699,9 +892,13 @@ def main():
             for slot, section in enumerate(sections):
                 write(syms.get(f"__segment{slot}_start", 0x9500 + slot * 512), segment_image[0x2000+section*2048:0x2200+section*2048])
             for name, size, value in (("CLOCK_MS", 2, 0), ("INPUT_HEAD", 1, 0), ("INPUT_TAIL", 1, 0), ("LAST_BITS", 1, fixture["input_bits"])):
+                if continuous and name == "CLOCK_MS":
+                    continue
                 word(vice.resident_symbol(syms, name)[1], value, size)
             for name, size, value in (("AUDIO_TICKS", 2, 0), ("INPUT_OVERFLOWS", 2, 0), ("FRAME_SERIAL", 2, 32),
                                       ("TEST_INPUT", 1, fixture["input_bits"]), ("BENCH_TICKS", 1, ticks)):
+                if continuous and name in ("AUDIO_TICKS", "INPUT_OVERFLOWS"):
+                    continue
                 word(syms[name], value, size)
             if cold:
                 write(0x8000, bytes(1000))
@@ -713,6 +910,9 @@ def main():
                     raise RuntimeError("Color RAM clear failed")
                 mon.command("bank ram")
             mon.command("bank cpu")
+            seeded = {"game_sha256": semantic_hash(layouts.decode("Game", bytes(game)))}
+            if continuous:
+                return seeded
             # Force a known first CIA deadline, then restore the ordinary latch.
             # Monitor reads have side effects disabled and consume no CPU time.
             first_period = (period, period*2//3, period//3)[phase]
@@ -724,8 +924,7 @@ def main():
             mon.command("sidefx on")
             mon.read(0xdc0d, 1)
             mon.command("sidefx off")
-            return {"game_sha256": semantic_hash(layouts.decode("Game", bytes(game))),
-                    "first_audio_period_cycles": first_period}
+            return dict(seeded, first_audio_period_cycles=first_period)
 
         def finish_timer_seed():
             # VICE applies CRA force-load on a later CIA cycle. Run the first
@@ -750,25 +949,117 @@ def main():
             order = list(mon.read(syms["__sort_order"], count)) if count else []
             if sorted(order) != list(range(count)):
                 raise RuntimeError(f"Sorted order at __sort_order is not a permutation of {count} commands")
-            return [layouts.decode("Triangle", mon.read(renderer_address+triangles_offset+n*triangle_size, triangle_size)) for n in order]
+            raw = inspection.read(renderer_address+triangles_offset, count*triangle_size, "ram") if count else b""
+            return [layouts.decode("Triangle", raw[n*triangle_size:(n+1)*triangle_size]) for n in order]
 
-        def measured_frame(folder, capture_image):
+        def run_scheduled_until(target, schedule, injections):
+            if not args.sfx_workloads:
+                return mon.run_until(target, failures)
+            response = mon.command(f"break exec {audio_tick_address:04x}")
+            match = re.search(r"BREAK:\s*(\d+)", response)
+            if not match:
+                raise RuntimeError(f"Cannot identify scheduled SFX breakpoint: {response}")
+            checkpoint = int(match[1])
+            try:
+                if mon.registers()["pc"] == target:
+                    mon.command("step")
+                mon.command(f"until {target:04x}")
+                while True:
+                    current = mon.registers()
+                    if current["pc"] in failures:
+                        raise RuntimeError(f"Target entered {failures[current['pc']]}")
+                    if current["pc"] == target:
+                        return current
+                    if current["pc"] == audio_tick_address:
+                        tick = mon.integer(syms["AUDIO_TICKS"], 2)
+                        batch = [[effect, pan] for at, effect, pan in schedule if at == tick]
+                        if batch or active_run is not None:
+                            mon.command("bank ram")
+                            audio = bytearray(mon.read(audio_address, layouts.size("EffectsEngine")))
+                            count_offset, _ = layouts.member("EffectsEngine", "event_count")
+                            count = audio[count_offset]
+                            if active_run is not None:
+                                if tick != active_run["next_tick"]:
+                                    raise RuntimeError(f"Sustained IRQ clock skipped or replayed tick{tick}")
+                                lateness = current["bus_cycles"] - (active_run["first_deadline_bus_cycles"] + tick * period)
+                                if not -2 <= lateness <= bus_hz * 0.002:
+                                    raise RuntimeError(f"Sustained IRQ deadline missed at tick{tick}: {lateness} bus cycles")
+                                active_run["tick_entries"].append(dict(tick=tick,
+                                    bus_cycles=current["bus_cycles"], lateness_cycles=lateness))
+                                if tick:
+                                    state = layouts.decode("EffectsEngine", bytes(audio))
+                                    admitted = sorted({(instance["effect"], instance["mask"])
+                                        for instance in state["instances"]
+                                        if instance["mask"] and instance["age"] == 0})
+                                    active_run["admissions"].append(dict(tick=tick - 1,
+                                        groups=[list(group) for group in admitted]))
+                                    if admitted and tick - 1 not in active_run["batches"]:
+                                        raise RuntimeError("An unscheduled native SFX was admitted")
+                                if tick == active_run["ticks"]:
+                                    active_run["boundary_bus_cycles"] = current["bus_cycles"]
+                                    mon.command("bank cpu")
+                                    raise SustainedBoundary()
+                                active_run["next_tick"] = tick + 1
+                                active_run["suppressed_native_cues"] += count
+                                count = 0
+                                audio[count_offset] = 0
+                            if count + len(batch) > 8:
+                                raise RuntimeError("Scheduled SFX exceed bounded event queue")
+                            if batch:
+                                requested = dict(tick=tick, events=batch)
+                                injections.append(requested)
+                                if active_run is not None:
+                                    active_run["injections"].append(requested)
+                            for effect, pan in batch:
+                                layouts.patch(audio, "EffectsEngine", f"events[{count}].effect", effect)
+                                layouts.patch(audio, "EffectsEngine", f"events[{count}].pan", pan)
+                                count += 1
+                            layouts.patch(audio, "EffectsEngine", "event_count", count)
+                            write(audio_address, audio)
+                            mon.command("bank cpu")
+                        mon.command("step")
+                    mon.command("x")
+            finally:
+                mon.command(f"delete {checkpoint}")
+
+        def measured_frame(folder, capture_image, schedule, first_deadline=None):
             path = folder / "monitor.log"
             path.unlink(missing_ok=True)
             mon.command(f'logname "{path.as_posix()}"')
             mon.command("log on")
             start = vice.counters(mon, syms)
-            first_deadline = finish_timer_seed()
-            mon.run_until(syms["geometry_complete"], failures)
+            if first_deadline is None:
+                first_deadline = finish_timer_seed()
+                if active_run is not None:
+                    active_run["first_deadline_bus_cycles"] = first_deadline
+            injections = []
+            try:
+                run_scheduled_until(syms["geometry_complete"], schedule, injections)
+            except SustainedBoundary:
+                mon.command("log off")
+                end = vice.counters(mon, syms)
+                return dict(partial=True, start_bus_cycles=start["bus_cycles"],
+                            bus_cycles_delta=end["bus_cycles"] - start["bus_cycles"],
+                            audio_ticks=end["audio_ticks"], sfx_injections=injections)
             mon.command("bank ram")
             clear_offset, _ = layouts.member("Renderer", "clear_color")
             clear_color = mon.integer(renderer_address+clear_offset, 1)
             geometry = read_geometry()
             mon.command("bank cpu")
-            mon.run_until(syms["frame_complete"], failures)
+            try:
+                run_scheduled_until(syms["frame_complete"], schedule, injections)
+            except SustainedBoundary:
+                mon.command("log off")
+                end = vice.counters(mon, syms)
+                return dict(partial=True, start_bus_cycles=start["bus_cycles"],
+                            bus_cycles_delta=end["bus_cycles"] - start["bus_cycles"],
+                            audio_ticks=end["audio_ticks"], sfx_injections=injections)
             end = vice.counters(mon, syms)
             mon.command("log off")
             end["bus_cycles_delta"] = end["bus_cycles"] - start["bus_cycles"]
+            end["start_bus_cycles"] = start["bus_cycles"]
+            end["start_audio_ticks"] = start["audio_ticks"]
+            end["sfx_injections"] = injections
             end["first_audio_deadline_cycles"] = first_deadline
             events = vice.stores(path)
             vice.phase_profile(events, syms["PROF_PHASE"], start, [end])
@@ -790,8 +1081,7 @@ def main():
                         or end["hud_image_commits"]["copies"]):
                     raise RuntimeError("Measured frame changed the warmed sprite HUD")
             end["sid"] = vice.sid_summary(path, events, sid_count)
-            if any(not end["sid"][chip]["gate_on"] for chip in ("left_d400", "right_d420")):
-                raise RuntimeError("Measured frame did not service live music on both SID chips")
+            # Quiet fixtures legitimately have no SID gates: music is DAC-only.
             mon.command("bank ram")
             state = vice.logical_game_state(layouts.decode("Game", mon.read(game_address, layouts.size("Game"))))
             end["simulation_ticks"] = state["ticks"]
@@ -801,7 +1091,7 @@ def main():
                 mon.command("bank ram")
             end["stack_guards"] = {name: mon.integer(syms[name], 1) for name in ("__stack_bottom", "__irq_stack_bottom")}
             mon.command("bank cpu")
-            native = native_bytes(mon, syms)
+            native = native_bytes(mon, syms, inspection)
             sprites = vice.sprite_state(mon)
             # Renderer-private classification flags are not geometry: bits
             # 2/4 identify cached sky/orientation, 32/64 identify the terrain
@@ -811,7 +1101,8 @@ def main():
             end.update(geometry_sha256=semantic_hash(comparable_geometry), raw_geometry_sha256=semantic_hash(geometry),
                        static_background_sha256=semantic_hash([triangle for triangle in geometry if triangle["reserved"] & 2]),
                        static_background_triangles=sum(bool(triangle["reserved"] & 2) for triangle in geometry),
-                       game_sha256=semantic_hash(state), native_sha256=digest(native),
+                       game_sha256=semantic_hash(gameplay_identity(state) if args.sfx_workloads else state),
+                       raw_game_sha256=semantic_hash(state), native_sha256=digest(native),
                        native_pixels_sha256=digest(decoded_pixels(native)),
                        native_screen_sha256=digest(native[8000:9000]), native_color_sha256=digest(native[9000:10000]),
                        native_background=native[10000],
@@ -826,22 +1117,115 @@ def main():
             if end["input_overflows"] or end["frame_dropped"] or any(value != 0xa5 for value in end["stack_guards"].values()):
                 raise RuntimeError("Fixed-work frame dropped data or changed a stack guard")
             if end.get("music_underruns", 0):
-                raise RuntimeError("Fixed-work frame underrun the score prefetch")
+                raise RuntimeError("Fixed-work frame reported an audio underrun")
             if end["dma"]["max_bytes"] > 1024:
                 raise RuntimeError("Runtime DMA exceeded the 1024-byte IRQ latency bound")
             service = end["audio_service_cycles"]
             if not service:
                 raise RuntimeError("No traced audio-service entries in measured frame")
-            lateness = [cycle - (first_deadline+index*period) for index, cycle in enumerate(service)]
+            lateness = [cycle - (first_deadline+(start["audio_ticks"]+index)*period)
+                        for index, cycle in enumerate(service)]
             end["audio_lateness_cycles"] = lateness
             end["max_audio_lateness_ms"] = max(lateness)*1000/bus_hz
             if min(lateness) < -2 or max(lateness) > bus_hz*0.002:
                 raise RuntimeError(f"Audio deadline/latency failure: {lateness}")
-            if end["audio_ticks"] != len(service):
+            if end["audio_ticks"] - start["audio_ticks"] != len(service):
                 raise RuntimeError("Audio counter does not match traced services")
             return end
 
-        for fixture in chosen:
+        if args.sustained_seconds:
+            target_ticks = args.sustained_seconds * 50
+            for fixture in chosen:
+                schedule = sustained_schedule(fixture["name"], target_ticks)
+                case = dict(fixture=fixture["name"], ticks=10, palette="retained",
+                            schedule=schedule, schedule_sha256=semantic_hash(schedule), runs=[])
+                report["cases"].append(case)
+                reference_identity = None
+                for phase in range(3):
+                    root_folder = output / fixture["name"] / f"phase-{phase}"
+                    root_folder.mkdir(parents=True, exist_ok=True)
+                    # Warm pixels/HUD and scenic history, then restart the SID
+                    # engine and CIA once. All following frames retain both.
+                    seed(fixture, 10, True, phase)
+                    finish_timer_seed()
+                    mon.run_until(syms["frame_complete"], failures)
+                    mon.run_until(syms["benchmark_frame_ready"], failures)
+                    seeded = seed(fixture, 10, False, phase, warm_history=True)
+                    run = dict(cia_phase=phase, ticks=target_ticks, next_tick=0,
+                               batches=schedule_batches(schedule), injections=[], admissions=[],
+                               suppressed_native_cues=0, frames=[], tick_entries=[], inter_frame_bus_cycles=0,
+                               initial=seeded, start_bus_cycles=mon.registers()["bus_cycles"])
+                    active_run = run
+                    frame_index = 0
+                    while True:
+                        folder = root_folder / str(frame_index)
+                        folder.mkdir(exist_ok=True)
+                        sample = measured_frame(folder, frame_index == 0, schedule,
+                                                run.get("first_deadline_bus_cycles"))
+                        if sample.get("partial"):
+                            run["boundary_frame"] = sample
+                            break
+                        identity = {field: sample[field] for field in
+                                    ("game_sha256", "geometry_sha256", "native_sha256", "sprite_state_sha256")}
+                        if reference_identity is None:
+                            reference_identity = identity
+                        if identity != reference_identity:
+                            changed = [field for field in identity if identity[field] != reference_identity[field]]
+                            raise RuntimeError(f"Sustained repeated work changed {changed} at{fixture['name']}/phase{phase}/frame{frame_index}")
+                        if fixture["patch"]["mode"] in (1, 3, 6):
+                            expected_ticks = (fixture["patch"].get("ticks", 0) + 10) & 0xffff
+                            if sample["simulation_ticks"] != expected_ticks:
+                                raise RuntimeError("Sustained frame changed its fixed simulation workload")
+                        # Full monitor traces remain on disk. Keep the report
+                        # compact while retaining every frame's costs/identity.
+                        compact = {field: sample[field] for field in (
+                            "start_bus_cycles", "bus_cycles", "bus_cycles_delta", "start_audio_ticks", "audio_ticks",
+                            "simulation_ticks", "phase_bus_cycles", "phase_load_bus_cycles", "phase_work_bus_cycles",
+                            "pixel_bus_cycles_detail", "geometry_bus_cycles_detail", "max_audio_lateness_ms",
+                            "audio_lateness_cycles", "sfx_injections", "game_sha256", "geometry_sha256",
+                            "native_sha256", "sprite_state_sha256") if field in sample}
+                        compact["dma"] = {key: value for key, value in sample["dma"].items() if key != "transfers"}
+                        compact["sid_writes"] = sum(chip["writes"] for chip in sample["sid"].values()
+                                                   if isinstance(chip, dict) and "writes" in chip)
+                        run["frames"].append(compact)
+                        gap_start = mon.registers()["bus_cycles"]
+                        try:
+                            run_scheduled_until(syms["benchmark_frame_ready"], schedule, [])
+                        except SustainedBoundary:
+                            run["boundary_frame"] = dict(partial=True, inter_frame=True,
+                                start_bus_cycles=gap_start,
+                                bus_cycles_delta=mon.registers()["bus_cycles"] - gap_start)
+                            break
+                        run["inter_frame_bus_cycles"] += mon.registers()["bus_cycles"] - gap_start
+                        seed(fixture, 10, False, phase, continuous=True)
+                        frame_index += 1
+                    active_run = None
+                    validate_sustained_schedule(schedule, run["injections"], run["next_tick"], target_ticks)
+                    if len(run["admissions"]) != target_ticks:
+                        raise RuntimeError("Sustained admission trace does not cover every completed tick")
+                    if mon.integer(vice.resident_symbol(syms, "CLOCK_MS")[1]) != (target_ticks * 20) & 0xffff:
+                        raise RuntimeError("Sustained50Hz clock changed speed")
+                    run["completed_audio_ticks"] = target_ticks
+                    run["scheduled_window_bus_cycles"] = target_ticks * period
+                    run["actual_window_bus_cycles"] = run["boundary_bus_cycles"] - run["first_deadline_bus_cycles"]
+                    run["boundary_lateness_cycles"] = run["actual_window_bus_cycles"] - target_ticks * period
+                    run["requested_events"] = len(schedule)
+                    run["admitted_groups"] = sum(len(entry["groups"]) for entry in run["admissions"])
+                    run["statistics"] = sustained_statistics(run["frames"])
+                    del run["batches"]
+                    case["runs"].append(run)
+                    case["identity"] = reference_identity
+                    print(f"SUSTAINED {args.video} {fixture['name']} phase={phase}: {len(run['frames'])} complete frames, "
+                          f"{target_ticks} ticks, {run['requested_events']} requests/{run['admitted_groups']} admitted groups, "
+                          f"median={run['statistics']['frame_bus_cycles']['median']/bus_hz*1000:.3f}ms "
+                          f"p95={run['statistics']['frame_bus_cycles']['p95']/bus_hz*1000:.3f}ms", flush=True)
+                    (output/"report.json").write_text(json.dumps(report, indent=2)+"\n")
+                    # Finish only the unscored boundary frame before the next
+                    # independently seeded phase. No scheduled tick is omitted.
+                    mon.run_until(syms["benchmark_frame_ready"], failures)
+                case["statistics"] = sustained_statistics([frame for run in case["runs"] for frame in run["frames"]])
+
+        for fixture in ([] if args.sustained_seconds else chosen):
             for ticks in ticks_values:
                 for palette in palettes:
                     case = {"fixture": fixture["name"], "ticks": ticks, "palette": palette, "samples": []}
@@ -859,7 +1243,7 @@ def main():
                             mon.run_until(syms["frame_complete"], failures)
                             mon.run_until(syms["benchmark_frame_ready"], failures)
                         seeded = seed(fixture, ticks, palette == "cold", phase)
-                        sample = measured_frame(folder, sample_index == 0)
+                        sample = measured_frame(folder, sample_index == 0, fixture.get("sfx_schedule", ()))
                         if fixture["patch"]["mode"] in (1, 3, 6):
                             expected_ticks = (fixture["patch"].get("ticks", 0) + ticks) & 0xffff
                             if sample["simulation_ticks"] != expected_ticks:
@@ -884,14 +1268,15 @@ def main():
                                 comparison_failures.append(f"Baseline comparison failed for {fixture['name']}/{ticks}/{palette}: {key}")
                         if not comparison_failures:
                             case["speedup"] = reference["median_cycles"]/case["median_cycles"]
-                            if case["speedup"] < 0.95:
-                                comparison_failures.append(f"Matched-work FPS regression exceeds 5% for {fixture['name']}/{ticks}/{palette}: {case['speedup']:.4f}x")
+                            case["frame_time_change_percent"] = (case["median_cycles"] / reference["median_cycles"] - 1) * 100
+                            if case["frame_time_change_percent"] >= args.max_frame_regression:
+                                comparison_failures.append(f"Matched-work frame-time regression reaches {args.max_frame_regression}% for {fixture['name']}/{ticks}/{palette}: {case['frame_time_change_percent']:.4f}%")
                         if comparison_failures:
                             case["comparison_failures"] = comparison_failures
                             report.setdefault("comparison_failures", []).extend(comparison_failures)
                     print(f"BENCH {args.video} {fixture['name']} ticks={ticks} palette={palette}: {case['median_cycles']/bus_hz*1000:.3f}ms DMA={case['samples'][0]['dma']['bytes']}B", flush=True)
                     (output/"report.json").write_text(json.dumps(report, indent=2)+"\n")
-        report["passed"] = True
+        report["passed"] = not bool(report.get("comparison_failures"))
     except (OSError, RuntimeError, ValueError, subprocess.CalledProcessError) as error:
         report["error"] = str(error)
         print(f"BENCH FAIL: {error}", file=sys.stderr, flush=True)

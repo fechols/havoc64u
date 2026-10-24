@@ -23,9 +23,6 @@ default = ["host-tools"]
 host-tools = []
 span-buffer = []
 span-front-to-back = ["span-buffer"]
-# Per-song modulation kernels: resident slot code swapped in from the REU at
-# each cue change. Off until the single-framebuffer layout frees the slot RAM.
-music-kernels = []
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(target_arch, values("mos"))'] }

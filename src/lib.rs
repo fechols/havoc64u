@@ -14,14 +14,11 @@ pub mod game;
 pub mod hud;
 pub mod hud_sprites;
 pub mod math;
-pub mod music;
 pub mod presentation;
 pub mod projection;
 pub mod render;
 pub mod scenery;
 pub mod shadow;
-#[cfg(feature = "host-tools")]
-pub mod soundtrack;
 pub mod space_dust;
 pub mod transition;
 pub mod victory;

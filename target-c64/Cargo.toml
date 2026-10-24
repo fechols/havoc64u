@@ -8,11 +8,10 @@ build = "build.rs"
 [workspace]
 
 [features]
-default = ["music-kernels"]
+default = []
 benchmarks = []
 span-buffer = ["havoc/span-buffer"]
 span-front-to-back = ["span-buffer", "havoc/span-front-to-back"]
-music-kernels = ["havoc/music-kernels"]
 
 [dependencies]
 havoc = { path = "..", default-features = false }

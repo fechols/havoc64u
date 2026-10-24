@@ -1,4 +1,4 @@
-"""Reject incorrect DMA layouts, transfer lengths and unsafe music directories."""
+"""Reject incorrect DMA layouts, transfer lengths and unsafe effects state."""
 from pathlib import Path
 import runpy
 import struct
@@ -55,31 +55,13 @@ def main():
             assert "REU address table disagrees" in result.stderr, result.stdout + result.stderr
             cases += 1
             print(f"Rejected REU address table phase {phase_id}")
-        directory_entry = next(
-            table.offset + index * table.entry_size
-            for table in elf.sections if table.kind == 2
-            for index, symbol in enumerate(elf.symbol_tables[table.index])
-            if overlay["readable_name"](symbol.name) == "havoc_c64::MUSIC_DIRECTORY")
-        compiler_frames = next(section for section in elf.sections if section.name == ".noinit")
         damaged_elf = Path(directory) / "damaged.elf"
-        for label, offset, form, value, expected in (
-            ("music-directory-IRQ-save", 14, "<H", compiler_frames.index, "music directory must not enter IRQ-saved"),
-            ("music-directory-size", 8, "<I", 167, "music directory must hold all 21"),
-        ):
-            data = bytearray(elf.data)
-            struct.pack_into(form, data, directory_entry + offset, value)
-            damaged_elf.write_bytes(data)
-            result = check(prg, damaged_elf)
-            assert result.returncode != 0, f"accepted {label}"
-            assert expected in result.stderr, result.stdout + result.stderr
-            cases += 1
-            print(f"Rejected {label}")
         for name, value, expected in (
-            ("__segment0_start", 0x2dff, "incorrect first mission buffer allocation"),
-            ("__segment0_end", 0x3001, "incorrect first mission buffer allocation"),
+            ("__segment0_start", 0x5ff, "incorrect first mission buffer allocation"),
+            ("__segment0_end", 0x801, "incorrect first mission buffer allocation"),
             ("__segment1_start", 0x96ff, "incorrect second mission buffer allocation"),
             ("__segment1_end", 0x9901, "incorrect second mission buffer allocation"),
-            ("__resident_end", 0x2e01, "resident code overlaps mission buffer at $2E00"),
+            ("__resident_end", 0x3001, "resident code overlaps the overlay window at $3000"),
             ("__hud_sprites_start", 0x8bff, "incorrect HUD sprite allocation"),
             ("__hud_sprites_end", 0x8e01, "incorrect HUD sprite allocation"),
             ("__startup_checks_start", 0x8dff, "startup checks must start after HUD sprites"),
@@ -88,10 +70,10 @@ def main():
             ("__phase_sim_aux_end", 0x9301, "SIM helpers exceed shared workspace"),
             ("__pixel_band_start", 0x8dff, "pixel band must occupy $8E00-$92FF after HUD sprites"),
             ("__pixel_band_end", 0x9301, "pixel band must occupy $8E00-$92FF after HUD sprites"),
-            ("__music_page_start", 0x721, "four-SID score page must occupy $0720-$07FF"),
-            ("__music_page_end", 0x720, "four-SID score page must occupy $0720-$07FF"),
-            ("__music_page_end", 0x7ff, "four-SID score page must occupy $0720-$07FF"),
-            ("__music_page_end", 0x801, "four-SID score page must occupy $0720-$07FF"),
+            ("__sfx_state_start", 0xcd01, "SFX state bounds disagree"),
+            ("__sfx_state_end", 0xcd00, "SFX state bounds disagree"),
+            ("__sfx_state_end", 0xcdff, "SFX state bounds disagree"),
+            ("__sfx_state_end", 0xce01, "SFX state bounds disagree"),
             ("__cell_hud_seen", 0x9327, "HUD-seen flag must reuse cell scratch at $9328"),
             ("__cell_hud_seen", 0x9329, "HUD-seen flag must reuse cell scratch at $9328"),
             ("__phase_pixels_prefix_size", 0x3f21, "PIXELS prefix overlaps its helpers"),
@@ -107,12 +89,11 @@ def main():
             ("__staged_color_end", 0x7751, "staged colors must reuse overflow flags only"),
             ("__reu_size", 0x800000, "incorrect 16 MiB REU image size"),
             ("__reu_digital_music", 0xf0000, "incorrect digital music address"),
-            ("__reu_digital_victory", 0x200000, "incorrect digital victory address"),
+            ("__reu_digital_victory", 0x200000, "incorrect digital victory alias"),
             ("__reu_digital_ring", 0x3e0000, "incorrect digital ring address"),
             ("__reu_digital_ring_size", 0x10000, "incorrect digital ring size"),
             ("__reu_code_slot_size", 0x4000, "incorrect REU code slot size"),
             ("__reu_models", 0xb1000, "incorrect REU model bank address"),
-            ("__reu_music", 0xd0000, "incorrect REU music bank address"),
             ("__reu_scenery_gate", 0x100000, "gate REU slot exceeds image"),
             ("__reu_scenery_gate", 0x8a001, "gate REU slot must be 4 KiB aligned"),
             ("__reu_scenery_gate", 0x8c000, "gate REU slot crosses a 64 KiB bank"),
@@ -149,17 +130,17 @@ def main():
             print(f"Rejected {name}={value}")
         section_offset = struct.unpack_from("<I", elf.data, 32)[0]
         section_stride = struct.unpack_from("<H", elf.data, 46)[0]
-        music_page = next(section for section in elf.sections if section.name == ".music_page")
-        page_header = section_offset + music_page.index * section_stride
+        sfx_state = next(section for section in elf.sections if section.name == ".sfx_state")
+        page_header = section_offset + sfx_state.index * section_stride
         for field, value in ((12, 0x721), (20, 0), (20, 223), (20, 225)):
             data = bytearray(elf.data)
             struct.pack_into("<I", data, page_header + field, value)
             damaged_elf.write_bytes(data)
             result = check(prg, damaged_elf)
-            assert result.returncode != 0, f"accepted score page field {field}={value}"
-            assert "four-SID score page section must occupy $0720-$07FF" in result.stderr, result.stdout + result.stderr
+            assert result.returncode != 0, f"accepted SFX state field {field}={value}"
+            assert "SFX state" in result.stderr or ".sfx_state outside allocation" in result.stderr, result.stdout + result.stderr
             cases += 1
-            print(f"Rejected score page field {field}={value}")
+            print(f"Rejected SFX state field {field}={value}")
         program_offset = struct.unpack_from("<I", elf.data, 28)[0]
         program_stride, program_count = struct.unpack_from("<HH", elf.data, 42)
         boot = next(section for section in elf.sections if section.name == ".phase.boot")

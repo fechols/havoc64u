@@ -39,6 +39,8 @@ const BOSS_START_TICKS: u16 = 1000;
 const SPACE_BOSS_START_TICKS: u16 = 2500;
 const ATTRACT_TICKS: u16 = 750;
 const ACTORS: usize = 12;
+/// Repeat ordinary encounters after 3.375 seconds without enlarging the cache.
+const ENEMY_REPEAT_DISTANCE: u16 = 1350;
 const ENEMY_HIT_FLASH_TICKS: u8 = 10;
 const ENEMY_HIT_FLASH_PENDING: u8 = ENEMY_HIT_FLASH_TICKS * 2 + 1;
 const SHOTS: usize = 24;
@@ -391,6 +393,8 @@ pub struct Game {
     audio_head: u8,
     audio_len: u8,
     spawn_cursor: u8,
+    repeat_spawn_cursor: u8,
+    encounter_seed: u8,
     spawn_segment: u8,
     shield: u8,
     bombs: u8,
@@ -470,6 +474,8 @@ impl Game {
             audio_head: 0,
             audio_len: 0,
             spawn_cursor: 0,
+            repeat_spawn_cursor: 0,
+            encounter_seed: 0,
             spawn_segment: 0,
             shield: 100,
             bombs: 3,
@@ -492,7 +498,7 @@ impl Game {
         }
     }
     #[inline(never)]
-    #[cfg_attr(target_arch = "mos", link_section = ".phase.sim_aux")]
+    #[cfg_attr(target_arch = "mos", link_section = ".phase.sim")]
     pub fn sample_input(&mut self, input: InputSample) {
         if matches!(self.mode, Mode::Title | Mode::Attract)
             && (input.bits | input.pressed) & (UP | DOWN | LEFT | RIGHT | FIRE) != 0
@@ -501,7 +507,12 @@ impl Game {
             // controller is released again between display-rate samples.
             self.menu_activity = true;
         }
+        let before = self.controls.charge();
         self.controls.sample(input);
+        if before < 255 && self.controls.charge() == 255
+            && matches!(self.mode, Mode::Playing | Mode::Transition) {
+            self.sound(Effect::MissileReady, 0);
+        }
     }
     /// Keep held controls and charge timing current while paused, discarding
     /// actions and tap history so gestures cannot cross the pause boundary.
@@ -734,12 +745,14 @@ impl Game {
         }
     }
     #[inline(never)]
+    #[cfg_attr(target_arch = "mos", link_section = ".phase.sim")]
     pub fn pop_audio(&mut self) -> Option<AudioEvent> {
         if self.audio_len == 0 {
             return None;
         }
-        let e = self.audio[self.audio_head as usize];
-        self.audio_head = (self.audio_head + 1) % AUDIO_CAPACITY as u8;
+        let head = self.audio_head & (AUDIO_CAPACITY as u8 - 1);
+        let e = self.audio[head as usize];
+        self.audio_head = (head + 1) & (AUDIO_CAPACITY as u8 - 1);
         self.audio_len -= 1;
         Some(e)
     }
@@ -755,34 +768,40 @@ impl Game {
     // Resident queue writer: shared by SIM and its encounter/terminal tails,
     // leaving room for damage feedback in the composed simulation overlay.
     #[inline(never)]
-    fn sound(&mut self, effect: Effect, x: i16) {
+    fn sound(&mut self, effect: Effect, pan: i8) {
         // Keep the live previews audible as music only.
         if self.mode == Mode::Attract {
             return;
         }
-        let event = AudioEvent {
-            effect,
-            pan: x.clamp(-127, 127) as i8,
-        };
-        // Reserve an event for urgent player cues even when a full formation fires.
-        if self.audio_len as usize == AUDIO_CAPACITY {
-            if matches!(
-                effect,
-                Effect::Death | Effect::Bomb | Effect::Hit | Effect::MissileLaunch
-            ) {
-                let last =
-                    (self.audio_head as usize + self.audio_len as usize - 1) % AUDIO_CAPACITY;
-                self.audio[last] = event;
-            }
-            return;
-        }
-        let i = (self.audio_head as usize + self.audio_len as usize) % AUDIO_CAPACITY;
-        self.audio[i] = event;
-        self.audio_len += 1;
+        let event = AudioEvent { effect, pan };
+        crate::audio::queue_events(&mut self.audio, self.audio_head, &mut self.audio_len, event);
+    }
+    /// Sample the source's screen side at onset; the IRQ keeps its assigned chip.
+    #[inline(always)]
+    fn sound_at(&mut self, effect: Effect, x: i16, z: i16) {
+        self.sound(effect, crate::audio::spatial_pan(x, z));
+    }
+    #[inline(never)]
+    #[cfg_attr(target_arch = "mos", link_section = ".phase.sim")]
+    fn sound_player(&mut self, effect: Effect) {
+        // The ship and its muzzle (Z=180/198) share the same integer-X
+        // center band, [-9,9]. Player movement changes X/Y only.
+        let x = self.player.x;
+        let pan = if x.wrapping_add(9) as u16 <= 18 { 0 }
+                  else if x < 0 { -100 } else { 100 };
+        self.sound(effect, pan);
     }
     #[inline(always)]
     fn reset_run(&mut self) {
+        // Launch timing varies on hardware; keep the seed fixed through deaths
+        // and stage changes so checkpoint retries retain their enemy layout.
+        let clock = self.controls.now;
+        // An odd increment cannot be zero, even when the clock repeats.
+        let seed = self
+            .encounter_seed
+            .wrapping_add((clock as u8 ^ (clock >> 8) as u8) | 1);
         self.reset_scene(Mode::Playing, 0, 0);
+        self.encounter_seed = seed;
         self.invulnerability = 50;
     }
     #[inline(never)]
@@ -791,8 +810,10 @@ impl Game {
         let bits = self.controls.bits;
         let now = self.controls.now;
         let menu_music_galactic = self.menu_music_galactic;
+        let encounter_seed = self.encounter_seed;
         self.reset_in_place();
         self.menu_music_galactic = menu_music_galactic;
+        self.encounter_seed = encounter_seed;
         self.presentation_event = PresentationEvent::Reset;
         self.mode = mode;
         self.stage_ticks = stage_ticks;
@@ -928,19 +949,10 @@ impl Game {
         if self.spawn_segment != section {
             self.spawn_segment = section;
             self.spawn_cursor = 0;
+            self.repeat_spawn_cursor = 0;
         }
         if segment.index() == section && bank.level() == section {
-            let local = self.stage_ticks * 8;
-            while self.spawn_cursor < segment.spawn_count() {
-                let spawn = segment.spawn(self.spawn_cursor);
-                if spawn.distance > local {
-                    break;
-                }
-                self.spawn_cursor += 1;
-                if self.stage_info.boss_kind == 0 || !self.boss_defeated {
-                    self.spawn_actor(spawn, local - spawn.distance, bank);
-                }
-            }
+            self.spawn_encounters(segment, bank);
         }
         #[cfg(target_arch = "mos")]
         unsafe {
@@ -1045,6 +1057,7 @@ impl Game {
                     }
                     self.spawn_segment = self.segment_index();
                     self.spawn_cursor = 0;
+                    self.repeat_spawn_cursor = 0;
                     self.boss_started = false;
                     self.boss_hit_flash_ticks = 0;
                     self.damage_feedback_tick = self.ticks;
@@ -1087,7 +1100,7 @@ impl Game {
             self.roll_direction = self.controls.roll_pending;
             self.roll_ticks = 25;
             self.roll_cooldown = 50;
-            self.sound(Effect::Roll, 0);
+            self.sound_player(Effect::Roll);
         }
         self.move_player();
         if self.controls.shot_pending {
@@ -1128,13 +1141,12 @@ impl Game {
             damage,
             kind: if charge == 255 { 3 } else { 1 },
         });
-        self.sound(
+        self.sound_player(
             if charge == 255 {
                 Effect::MissileLaunch
             } else {
                 Effect::Fire
             },
-            0,
         );
     }
     #[inline(never)]
@@ -1180,35 +1192,100 @@ impl Game {
         let dz = (position.z - PLAYER_Z).max(32);
         let dx = enemy_velocity(self.player.x, position.x, dz);
         let dy = enemy_velocity(self.player.y, position.y, dz);
-        self.add_shot(Shot {
-            pos: position,
-            dx,
-            dy,
-            damage: 12,
-            kind: 2,
-        });
-        if pattern == 2 {
-            for spread in [-2i8, 2] {
-                self.add_shot(Shot {
-                    pos: position,
-                    dx: (dx + spread).clamp(-8, 8),
-                    dy,
-                    damage: 12,
-                    kind: 2,
-                });
+        // Enemy shots only use empty slots. Fill those slots in one pass,
+        // retaining center/left/right priority when a fan only partly fits.
+        let mut remaining = if pattern == 2 { 3u8 } else { 1 };
+        let mut spread = 0i8;
+        for index in 0u8..SHOTS as u8 {
+            if self.shots[index as usize].kind != 0 {
+                continue;
             }
+            self.set_missile_lock(index as usize, 0);
+            self.shots[index as usize] = Shot {
+                pos: position,
+                dx: (dx + spread).clamp(-8, 8),
+                dy,
+                damage: 6,
+                kind: 2,
+            };
+            remaining -= 1;
+            if remaining == 0 {
+                break;
+            }
+            spread = if remaining == 2 { -2 } else { 2 };
         }
-        self.sound(Effect::EnemyFire, position.x);
+        self.sound_at(Effect::EnemyFire, position.x, position.z);
     }
     #[inline(never)]
     #[cfg_attr(target_arch = "mos", link_section = ".phase.sim")]
+    fn spawn_encounters(&mut self, segment: &Segment<'_>, bank: &AssetBank<'_>) {
+        let local = self.stage_ticks * 8;
+        loop {
+            let original = segment.spawn_distance(self.spawn_cursor, 0);
+            let repeat = segment.spawn_distance(self.repeat_spawn_cursor, ENEMY_REPEAT_DISTANCE);
+            // Original records win ties, including a delayed segment handoff.
+            let repeated = repeat < original;
+            let distance = if repeated { repeat } else { original };
+            if distance > local {
+                break;
+            }
+            let token = if repeated {
+                let index = self.repeat_spawn_cursor;
+                self.repeat_spawn_cursor += 1;
+                index | 0x80
+            } else {
+                let index = self.spawn_cursor;
+                self.spawn_cursor += 1;
+                index
+            };
+            let spawn = segment.spawn(token & 0x7f);
+            if self.stage_info.boss_kind == 0 || !self.boss_defeated {
+                let enemy = matches!(spawn.kind, assets::FIGHTER | assets::DIVER | assets::TURRET);
+                if enemy || !repeated {
+                    self.spawn_encounter(spawn, local - distance, bank, token);
+                }
+            }
+        }
+    }
+    #[inline(never)]
+    #[cfg_attr(target_arch = "mos", link_section = ".phase.sim")]
+    fn spawn_encounter(&mut self, mut spawn: Spawn, late: u16, bank: &AssetBank<'_>, token: u8) {
+        let mut z = 1800;
+        if matches!(spawn.kind, assets::FIGHTER | assets::DIVER | assets::TURRET) {
+            // A local stream makes layouts independent of kills, rendering,
+            // missile targeting, or encounters skipped during a late handoff.
+            let mut random =
+                self.encounter_seed ^ self.stage_id.rotate_left(3) ^ token.rotate_left(1);
+            random = placement_random(random);
+            spawn.x = spawn
+                .x
+                .saturating_add(i16::from(random & 31) - 16)
+                .clamp(-115, 115);
+            random = placement_random(random);
+            if spawn.kind != assets::TURRET {
+                spawn.y = spawn
+                    .y
+                    .saturating_add(i16::from(random & 31) - 16)
+                    .clamp(-55, 90);
+            }
+            random = placement_random(random);
+            z += i16::from(random & 127) - 64;
+        }
+        self.spawn_actor_at(spawn, late, bank, z);
+    }
+    #[cfg(test)]
     fn spawn_actor(&mut self, spawn: Spawn, late: u16, bank: &AssetBank<'_>) {
+        self.spawn_actor_at(spawn, late, bank, 1800);
+    }
+    #[inline(never)]
+    #[cfg_attr(target_arch = "mos", link_section = ".phase.sim")]
+    fn spawn_actor_at(&mut self, spawn: Spawn, late: u16, bank: &AssetBank<'_>, z: i16) {
         // Handles host inspection and a delayed segment handoff without replaying
         // an entire section's expired encounters at once.
         if late >= 1600 {
             return;
         }
-        let z = 1800 - late as i16;
+        let z = z - late as i16;
         if spawn.kind == assets::CRYSTAL {
             self.add_pickup(
                 Vec3 {
@@ -1319,7 +1396,7 @@ impl Game {
                 && close_xy(actor_center_sim(&a, bank), self.player, radius)
             {
                 a.kind = 0;
-                self.damage_player(30);
+                self.damage_player(15);
                 self.explode(a.pos, 8);
             } else if a.pos.z < ACTOR_RETIRE_Z {
                 a.kind = 0;
@@ -1348,6 +1425,7 @@ impl Game {
         if kind == 0 || self.stage_ticks < self.boss_start_ticks() || self.boss_defeated {
             return;
         }
+        if !self.boss_started { self.sound(Effect::BossArrival, 0); }
         self.boss_started = true;
         self.boss_z = (self.boss_z - 8).max(680);
         if self.boss_z > 900 {
@@ -1432,22 +1510,24 @@ impl Game {
             }
             if s.kind == 1 || s.kind == 3 {
                 if let Some(a) = self.shot_target(old_z, &s.pos, bank) {
-                    let target = &self.actors[a];
-                    let target_hp = target.hp;
-                    let target_x = target.pos.x;
+                    let missile = s.kind == 3;
                     s.kind = 0;
-                    if target_hp != 255 {
-                        if self.damage_actor(a, s.damage) == 0 {
-                            self.kill_actor(a, bank);
-                        } else {
-                            self.sound(Effect::Hit, target_x);
-                        }
-                    } else {
+                    let destroyed = if self.actors[a].hp == 255 {
                         self.explode(s.pos, 15);
+                        false
+                    } else {
+                        self.damage_actor(a, s.damage) == 0
+                    };
+                    if destroyed {
+                        self.kill_actor(a, bank);
+                    } else {
+                        let pos = self.actors[a].pos;
+                        self.sound_at(if missile { Effect::MissileImpact } else { Effect::EnemyHit }, pos.x, pos.z);
                     }
                 }
                 if s.kind != 0 && self.boss_started && !self.boss_defeated {
                     let mut hit = false;
+                    let mut part_destroyed = false;
                     let turret_depth =
                         swept_z(old_z, s.pos.z, self.boss_z + BOSS_TURRET_Z, BOSS_HIT_DEPTH);
                     // Turret X ranges [-176,-84] and [84,176] are disjoint,
@@ -1470,6 +1550,7 @@ impl Game {
                         )
                     {
                         damage_boss_part(turret_hp, s.damage, &mut self.boss_hit_flash_ticks);
+                        part_destroyed = *turret_hp == 0;
                         hit = true;
                     } else if swept_z(old_z, s.pos.z, self.boss_z + BOSS_CORE_Z, BOSS_HIT_DEPTH)
                         && close_xy(s.pos, Vec3 { x: 0, y: 0, z: 0 }, BOSS_CORE_RADIUS)
@@ -1484,9 +1565,13 @@ impl Game {
                         hit = true;
                     }
                     if hit {
+                        let missile = s.kind == 3;
                         s.kind = 0;
-                        self.sound(Effect::Hit, s.pos.x);
                         self.check_boss_death();
+                        if !self.boss_defeated {
+                            self.sound_at(if part_destroyed { Effect::EnemyExplosion }
+                                else if missile { Effect::MissileImpact } else { Effect::BossHit }, s.pos.x, s.pos.z);
+                        }
                     }
                 }
             } else if self.mode == Mode::Playing
@@ -1757,27 +1842,26 @@ impl Game {
     fn kill_actor(&mut self, index: usize, bank: &AssetBank<'_>) {
         let a = self.actors[index];
         self.actors[index].kind = 0;
+        self.explode(a.pos, 7);
+        self.sound_at(Effect::EnemyExplosion, a.pos.x, a.pos.z);
         if a.kind == assets::ROCK {
             self.score += 25;
-            self.explode(a.pos, 7);
-            self.sound(Effect::Death, a.pos.x);
             return;
-        }
-        self.score += bank.enemy(a.kind).score as u32;
-        self.kills = self.kills.wrapping_add(1);
-        // Keep the five-kill cadence independent of the wrapping total and
-        // consume the milestone even when the three-bomb inventory is full.
-        self.bomb_kills += 1;
-        if self.bomb_kills == 5 {
-            self.bomb_kills = 0;
-            self.bombs = (self.bombs + 1).min(3);
-        }
-        self.explode(a.pos, 7);
-        self.sound(Effect::Death, a.pos.x);
-        if a.flags & 1 != 0 {
-            self.add_pickup(a.pos, 2);
-        } else if self.kills % 8 == 0 {
-            self.add_pickup(a.pos, 1);
+        } else {
+            self.score += bank.enemy(a.kind).score as u32;
+            self.kills = self.kills.wrapping_add(1);
+            // Keep the five-kill cadence independent of the wrapping total and
+            // consume the milestone even when the three-bomb inventory is full.
+            self.bomb_kills += 1;
+            if self.bomb_kills == 5 {
+                self.bomb_kills = 0;
+                self.bombs = (self.bombs + 1).min(3);
+            }
+            if a.flags & 1 != 0 {
+                self.add_pickup(a.pos, 2);
+            } else if self.kills % 8 == 0 {
+                self.add_pickup(a.pos, 1);
+            }
         }
     }
     #[inline(never)]
@@ -1819,7 +1903,7 @@ impl Game {
             self.shield = 100;
             self.bombs = 3;
             self.score += 5000;
-            self.sound(Effect::Death, 0);
+            self.sound(Effect::BossExplosion, 0);
             for x in [-80, -40, 0, 40, 80] {
                 self.explode(
                     Vec3 {
@@ -1843,17 +1927,21 @@ impl Game {
         if self.invulnerability > 0 || self.mode != Mode::Playing {
             return;
         }
+        let previous_shield = self.shield;
         self.shield = self.shield.saturating_sub(amount);
         self.invulnerability = 35;
         self.hit_flash_ticks = 35;
         if self.presentation_event != PresentationEvent::Bomb {
             self.presentation_event = PresentationEvent::Hit;
         }
-        self.sound(Effect::Hit, 0);
+        if self.shield != 0 {
+            self.sound_player(if previous_shield > 25 && self.shield <= 25 { Effect::LowShield }
+                       else { Effect::PlayerHit });
+        }
         if self.shield == 0 {
             self.lives = self.lives.saturating_sub(1);
             self.explode(self.player, 7);
-            self.sound(Effect::Death, 0);
+            self.sound(Effect::PlayerDeath, 0);
             if self.lives == 0 {
                 self.mode = Mode::GameOver;
             } else {
@@ -1872,6 +1960,7 @@ impl Game {
         self.transition_ticks = 0;
         self.spawn_segment = self.segment_index();
         self.spawn_cursor = 0;
+        self.repeat_spawn_cursor = 0;
         self.actors = [Actor::EMPTY; ACTORS];
         self.actor_hit_flash_ticks = [0; ACTORS];
         self.boss_hit_flash_ticks = 0;
@@ -1934,6 +2023,7 @@ impl Game {
                 }
                 if depth.wrapping_add(24) as u16 <= 48 && close_xy(p.pos, self.player, 28) {
                     let kind = p.kind;
+                    let (x, z) = (p.pos.x, p.pos.z);
                     p.kind = 0;
                     if kind == 1 {
                         self.shield = self.shield.saturating_add(60).min(100);
@@ -1941,7 +2031,7 @@ impl Game {
                         self.bombs = (self.bombs + 1).min(3);
                     }
                     self.score += 50;
-                    self.sound(Effect::Pickup, 0);
+                    self.sound_at(Effect::Pickup, x, z);
                     continue;
                 }
             }
@@ -1967,7 +2057,6 @@ impl Game {
         };
     }
     #[inline(never)]
-    #[cfg_attr(target_arch = "mos", link_section = ".phase.sim")]
     fn update_explosions(&mut self) {
         for e in &mut self.explosions {
             if e.ticks > 0 {
@@ -2445,20 +2534,26 @@ impl Game {
                 }
                 if proxy {
                     let checkpoint = sink.begin_group();
-                    diamond(
-                        sink,
-                        actor_center(*a, bank),
-                        if a.kind == assets::FIGHTER {
-                            assets::enemy_scaled(22)
-                        } else if a.kind <= bank.enemy_count() {
-                            assets::enemy_scaled(18)
-                        } else if a.small_debris() {
-                            9
-                        } else {
-                            18
-                        },
-                        if a.hp == 255 { 12 } else { 2 },
-                    );
+                    if self.stage_info.theme == 4
+                        && matches!(a.kind, assets::FIGHTER | assets::DIVER)
+                    {
+                        cave_flyer_proxy(sink, bank, a.kind, a.pos);
+                    } else {
+                        diamond(
+                            sink,
+                            actor_center(*a, bank),
+                            if a.kind == assets::FIGHTER {
+                                assets::enemy_scaled(22)
+                            } else if a.kind <= bank.enemy_count() {
+                                assets::enemy_scaled(18)
+                            } else if a.small_debris() {
+                                9
+                            } else {
+                                18
+                            },
+                            if a.hp == 255 { 12 } else { 2 },
+                        );
+                    }
                     sink.finish_group(checkpoint);
                 }
                 sink.limit = limit;
@@ -2607,6 +2702,12 @@ fn shadow_model(
         half_z: spec.half_z as i16 / divisor,
         shape: spec.family | (spec.heading << 4),
     }
+}
+
+#[inline(never)]
+#[cfg_attr(target_arch = "mos", link_section = ".sfx_helpers")]
+fn placement_random(value: u8) -> u8 {
+    (value >> 1) ^ if value & 1 != 0 { 0xb8 } else { 0 }
 }
 
 // Resident: used by projectile and bomb damage without duplicating the health
@@ -2837,7 +2938,6 @@ fn actor_center(actor: Actor, bank: &AssetBank<'_>) -> Vec3 {
 // Collision and control helpers belong to every SIM profile. The small audio
 // queue drain stays resident to balance the tight SIM and resident allocations.
 #[inline(never)]
-#[cfg_attr(target_arch = "mos", link_section = ".phase.sim")]
 fn close_xy(a: Vec3, b: Vec3, radius: i16) -> bool {
     (a.x - b.x).abs() <= radius && (a.y - b.y).abs() <= radius
 }
@@ -2916,6 +3016,24 @@ fn diamond(sink: &mut impl GeometrySink, p: Vec3, r: i16, color: u8) {
 }
 
 #[inline(never)]
+#[cfg_attr(target_arch = "mos", link_section = ".phase.geometry.combat")]
+fn cave_flyer_proxy(sink: &mut impl GeometrySink, bank: &AssetBank<'_>, kind: u8, p: Vec3) {
+    // Both cave flyers store left wing, right wing, crown and keel at 1..=4.
+    // Flatten their front silhouette to two facets, retaining the skimmer's
+    // broad cyan wings and the Needle's narrower purple hull. Read the baked
+    // model so its scale and palette remain consistent at the LOD boundary.
+    // Two triangles also fit the per-actor reservation during budget fallback.
+    let mut points = [p; 4];
+    for (index, point) in points.iter_mut().enumerate() {
+        let vertex = bank.vertex(kind, index as u8 + 1);
+        point.x += vertex.x;
+        point.y += vertex.y;
+    }
+    tri(sink, points[0], points[2], points[3], bank.face(kind, 0).1);
+    tri(sink, points[3], points[2], points[1], bank.face(kind, 2).1);
+}
+
+#[inline(never)]
 #[cfg_attr(target_arch = "mos", link_section = ".phase.geometry")]
 fn shield_pickup(sink: &mut impl GeometrySink, p: Vec3) {
     // Paint the pale rim before the green inset. Equal depths retain this
@@ -2941,10 +3059,16 @@ fn bomb_pickup(sink: &mut impl GeometrySink, p: Vec3) {
 mod tests;
 
 #[cfg(test)]
+mod balance_tests;
+
+#[cfg(test)]
 mod damage_flash_tests;
 
 #[cfg(test)]
 mod culling_budget_tests;
+
+#[cfg(all(test, feature = "host-tools"))]
+mod lod_tests;
 
 #[cfg(all(test, feature = "host-tools"))]
 mod shadow_tests;

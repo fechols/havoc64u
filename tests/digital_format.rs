@@ -2,61 +2,115 @@ use havoc::digital::*;
 
 const ASSET: &[u8] = include_bytes!("../assets/music/galactic-dash.dlt");
 const HAMMOND: &[u8] = include_bytes!("../assets/music/hammond-rocker.dlt");
-const TRACKS: [(Track, &[u8]); 2] = [
-    (Track::GalacticDash, ASSET),
-    (Track::HammondRocker, HAMMOND),
-];
+const TRACKS: [(Track, &[u8]); Track::ALL.len()] = TRACK_ASSETS;
 
 #[test]
 fn shipped_tracks_have_exact_profile_bounds_and_all_stream_checksums() {
-    let metadata = validate_asset(ASSET, Track::GalacticDash).unwrap();
-    assert_eq!(metadata.total_samples, 3_685_440);
-    assert_eq!(metadata.samples_per_segment, 7_072);
-    assert_eq!(metadata.stream_offset, 50_048);
-    assert_eq!(metadata.crc_offset, 3_735_488);
-    assert_eq!(metadata.codebook_count, 521);
-    assert_eq!(ASSET.len(), 3_739_088);
-    assert_eq!(ASSET_OFFSET + ASSET.len() as u32, 4_787_664);
-    assert!(ASSET_OFFSET + (ASSET.len() as u32) < HAMMOND_OFFSET);
-    let hammond = descriptor(Track::HammondRocker);
-    let metadata = validate_asset(HAMMOND, Track::HammondRocker).unwrap();
-    assert_eq!(metadata, hammond.metadata);
-    assert_eq!(metadata.total_samples, 5_038_080);
-    assert_eq!(metadata.samples_per_segment, 9_670);
-    assert_eq!(metadata.stream_offset, 50_048);
-    assert_eq!(metadata.stream_bytes, 5_038_080);
-    assert_eq!(metadata.crc_offset, 5_088_128);
-    assert_eq!(metadata.codebook_count, 521);
-    assert_eq!(HAMMOND.len(), 5_093_048);
-    assert_eq!(hammond.asset_offset, HAMMOND_OFFSET);
-    assert_eq!(hammond.asset_offset + hammond.asset_bytes, 10_335_928);
-    assert!(hammond.asset_offset + hammond.asset_bytes < RING_OFFSET);
+    let mut previous = MUSIC_OFFSET + DIRECTORY_BYTES as u32;
     for (track, bytes) in TRACKS {
-        let d = track.descriptor();
-        assert_eq!(bytes.len() as u32, d.asset_bytes);
+        let descriptor = track.descriptor();
+        let metadata = validate_asset(bytes, track).unwrap();
+        assert_eq!(metadata, descriptor.metadata);
+        assert_eq!(bytes.len() as u32, descriptor.asset_bytes);
+        assert_eq!(&bytes[..4], b"DLT4");
+        assert!(matches!(
+            (metadata.sample_rate, metadata.channels),
+            (20_000, 2) | (16_000, 1)
+        ));
+        assert_eq!(bytes[20], 3);
+        assert_eq!(bytes[21], metadata.channels);
         assert_eq!(
-            d.metadata.stream_offset,
-            HEADER_SIZE as u32 + CODEBOOK_COUNT as u32 * CODEBOOK_BYTES as u32
-        );
-        assert_eq!(d.metadata.stream_bytes, d.metadata.total_samples);
-        assert_eq!(&bytes[..4], b"DLT3");
-        assert_eq!(bytes[21], CHANNELS);
-        assert_eq!(CHANNELS, 2);
-        assert_eq!(
-            d.metadata.samples_per_segment,
-            (d.metadata.total_samples / CODEBOOK_COUNT as u32 / 2) * 2
-        );
-        assert_eq!(
-            d.metadata.crc_offset,
-            d.metadata.stream_offset + d.metadata.stream_bytes
+            metadata.stream_offset,
+            32 + metadata.codebook_count as u32 * 8 * 3 * metadata.channels as u32
         );
         assert_eq!(
-            d.asset_bytes - d.metadata.crc_offset,
-            d.metadata.stream_bytes.div_ceil(CRC_CHUNK_BYTES as u32)
+            metadata.stream_bytes,
+            (metadata.total_samples * metadata.channels as u32 * 3).div_ceil(8)
+        );
+        let alignment = 8 / metadata.channels as u32;
+        assert_eq!(
+            metadata.samples_per_segment,
+            metadata.total_samples / metadata.codebook_count as u32 / alignment * alignment
+        );
+        assert_eq!(
+            metadata.crc_offset,
+            metadata.stream_offset + metadata.stream_bytes
+        );
+        assert_eq!(
+            descriptor.asset_bytes - metadata.crc_offset,
+            metadata.stream_bytes.div_ceil(1024)
+        );
+        assert!(descriptor.asset_offset >= previous);
+        assert_eq!(descriptor.asset_offset & 15, 0);
+        previous = descriptor.asset_offset + descriptor.asset_bytes;
+    }
+    assert_eq!(previous, CATALOG_END);
+    assert!(CATALOG_END <= RING_OFFSET);
+    assert_eq!(MUSIC_CAPACITY, 15_597_568);
+    assert_eq!(RING_OFFSET + RING_BYTES, REU_SIZE);
+    assert_eq!(
+        Track::ALL[..3],
+        [
+            Track::GalacticDash,
+            Track::HammondRocker,
+            Track::GalacticDashMono
+        ]
+    );
+    assert_eq!(
+        track_for_cue(havoc::audio::MusicState::Title),
+        Track::HammondRocker
+    );
+    assert_eq!(
+        track_for_cue(havoc::audio::MusicState::Victory),
+        Track::GalacticDash
+    );
+    assert_eq!(
+        track_for_cue(havoc::audio::MusicState::Lowlands),
+        Track::GalacticDashMono
+    );
+    for id in 0..=255 {
+        assert_eq!(
+            Track::from_id(id).is_some(),
+            (id as usize) < Track::ALL.len()
         );
     }
-    assert_eq!(REU_SIZE, 16 * 1024 * 1024);
-    assert_eq!(RING_OFFSET + RING_BYTES, REU_SIZE);
+}
+
+#[test]
+fn recorded_stages_override_shared_cues_and_special_scenes_keep_their_music() {
+    use havoc::audio::MusicState;
+    let stages = [
+        (MusicState::Lowlands, Track::LowlandApproach),
+        (MusicState::CrystalCurrent, Track::CrystalCave),
+        (MusicState::Canyon, Track::IronCanyon),
+        (MusicState::Canyon, Track::CanyonGate),
+        (MusicState::AshesAndSteel, Track::AshenWastes),
+        (MusicState::AshesAndSteel, Track::FoundryBelt),
+    ];
+    for (stage, (cue, track)) in stages.into_iter().enumerate() {
+        assert_eq!(track_for_scene(cue, stage as u8), track);
+        assert_eq!(track.descriptor().metadata.channels, 1);
+    }
+    assert_eq!(
+        track_for_scene(MusicState::GorgeWarden, 3),
+        Track::CanyonGate
+    );
+    for stage in 0..=255 {
+        for cue in [
+            MusicState::Title,
+            MusicState::Victory,
+            MusicState::Defeat,
+            MusicState::Ascent,
+        ] {
+            assert_eq!(track_for_scene(cue, stage), track_for_cue(cue));
+        }
+    }
+    for stage in 6..=255 {
+        for cue in 0..havoc::audio::CUE_COUNT as u8 {
+            let cue = MusicState::from_cue(cue).unwrap();
+            assert_eq!(track_for_scene(cue, stage), track_for_cue(cue));
+        }
+    }
 }
 
 #[test]
@@ -152,4 +206,69 @@ fn nibble_crc_matches_bit_reference_and_signed_deltas_saturate() {
             );
         }
     }
+}
+
+#[test]
+fn rounded_output_matches_mathematical_definition_for_every_predictor() {
+    for sample in i16::MIN..=i16::MAX {
+        let expected = ((sample as f64 / 256.0 + 0.5).floor() as i32).clamp(-128, 127);
+        assert_eq!(rounded_sample(sample) as i32, expected, "{sample}");
+    }
+    assert_eq!(rounded_sample(32767), 127);
+    assert_eq!(rounded_sample(-128), 0);
+    assert_eq!(rounded_sample(-129), -1);
+}
+
+#[test]
+fn directory_padding_and_packed_catalog_are_bound_to_compiled_descriptors() {
+    let mut reu = vec![0; REU_SIZE as usize];
+    let start = MUSIC_OFFSET as usize;
+    let directory = catalog_directory();
+    let stage_offset = 16 + 16 * Track::ALL.len() + havoc::audio::CUE_COUNT;
+    assert_eq!(&directory[..4], b"DMC1");
+    assert_eq!(directory[4], 2);
+    assert_eq!(directory[10] as usize, STAGE_COUNT);
+    assert_eq!(&directory[11..14], &[0; 3]);
+    assert_eq!(
+        &directory[stage_offset..stage_offset + 6],
+        &[3, 4, 5, 6, 7, 8]
+    );
+    assert_eq!(
+        &directory[stage_offset + 6..stage_offset + STAGE_COUNT],
+        &[255; 12]
+    );
+    assert!(directory[stage_offset + STAGE_COUNT..]
+        .iter()
+        .all(|&byte| byte == 0));
+    reu[start..start + DIRECTORY_BYTES].copy_from_slice(directory);
+    for (track, bytes) in TRACKS {
+        let start = track.descriptor().asset_offset as usize;
+        reu[start..start + bytes.len()].copy_from_slice(bytes);
+    }
+    validate_catalog(&reu).unwrap();
+    for offset in [
+        MUSIC_OFFSET,
+        MUSIC_OFFSET + 4,
+        MUSIC_OFFSET + 10,
+        MUSIC_OFFSET + 11,
+        MUSIC_OFFSET + 12,
+        MUSIC_OFFSET + 13,
+        MUSIC_OFFSET + 14,
+        MUSIC_OFFSET + stage_offset as u32,
+        MUSIC_OFFSET + stage_offset as u32 + 6,
+        MUSIC_OFFSET + DIRECTORY_BYTES as u32 - 1,
+        CATALOG_END,
+        RING_OFFSET - 1,
+    ] {
+        reu[offset as usize] ^= 1;
+        assert!(
+            validate_catalog(&reu).is_err(),
+            "accepted corrupt catalog byte {offset}"
+        );
+        reu[offset as usize] ^= 1;
+    }
+    // This check excludes mutable hardware playback memory by design.
+    reu[RING_OFFSET as usize] = 127;
+    reu[REU_SIZE as usize - 1] = 127;
+    validate_catalog(&reu).unwrap();
 }
