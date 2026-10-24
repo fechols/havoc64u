@@ -29,7 +29,9 @@ The four-SID effects engine runs in resident assembly at 50 Hz. Each chip acts a
 
 **Sound on!** Fly from the lowlands into orbit with smoother flight and a glimpse of the late-game Space Carrier. This fresh **91-second teaser** pairs the complete original recording of **Ashen Wastes** with quieter four-SID combat effects. Captured from v0.1.3 in a PAL emulator at the game's original speed.
 
-[![Watch the H.A.V.O.C. teaser with Ashen Wastes](docs/media/teaser.png)](https://github.com/fechols/havoc64u/releases/download/v0.1.3/havoc-teaser-v0.1.3.mp4)
+<!-- Keep the GitHub attachment URL on its own line for inline video playback. -->
+
+https://github.com/user-attachments/assets/32d73b81-79a1-41ab-b616-c33cefa40800
 
 [Watch or download the teaser (MP4)](https://github.com/fechols/havoc64u/releases/download/v0.1.3/havoc-teaser-v0.1.3.mp4).
 
@@ -79,12 +81,15 @@ Your ship flies forward automatically. You steer around enemies, incoming shots,
 | Release fire for two seconds, then press | Launch a homing missile |
 | Double-tap fire within half a second | Spend one bomb, as well as firing normally |
 | Double-tap left or right within half a second | Barrel roll and dodge in that direction |
+| Tap the second fire button or Left Shift | Trigger a two-second afterburner burst, followed by a four-second cooldown |
 | Fire at the title or after a run | Start a new game |
 | S at the title | Toggle Normal / Story mode, then press fire to launch |
 | Space bar | Pause and resume the flight |
 | F | Toggle the frame-rate readout in the top-left HUD corner |
 
 Watch the weapon meter: **HOMING MISSILE** means your next shot tracks a random target ahead, switching targets when needed. Charge longer for stronger straight shots.
+
+The afterburner doubles forward speed and increases steering speed by 50%. The **B gauge beneath SHIELD** is full when ready, drains during the burst, and refills during cooldown; B flashes while boosting. Releasing the button does not cut the burst short, and holding it does not start another burst. Steering, firing, and rolls remain available while boosting. The joystick's second button must be configured as independent C64/C64GS Fire 2; Left Shift also works with a one-button joystick.
 
 - **Roll through shots, dodge scenery.** Keep steering and firing during a roll, but avoid solid obstacles.
 - **Clear a path.** Shoot small orbital fragments; bomb large rocks and wreckage. Every 15 enemy kills restore one bomb, up to three.
