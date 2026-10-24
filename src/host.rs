@@ -1090,6 +1090,59 @@ fn flight_mesh(vertices: [[i16; 3]; 6], colors: [u8; 4]) -> Model {
     )
 }
 
+/// Bake a chipped, uneven rock with closed facets and fixed mineral shading.
+/// The extrema stay exact so tumbling, fragment scaling and shadow bounds keep
+/// the original obstacle dimensions. Relief and lighting are baked on the host.
+fn asteroid_mesh(original: [[i16; 3]; 6], variant: usize) -> Model {
+    // The runtime's coarse mesh uses this original vertex prefix and the same
+    // eight-face connectivity as flight_mesh. Close rocks raise six uneven
+    // face centers, replacing each of those faces with three chipped facets.
+    let (mut vertices, coarse) = flight_mesh(original, [12, 15, 11, 11]);
+    let mut facets = Vec::new();
+    for (index, [a, b, c, _]) in coarse.into_iter().enumerate() {
+        if index >= 6 {
+            facets.push([a, b, c]);
+            continue;
+        }
+        let variation = ((variant + index) % 3) as i32;
+        let weights = [3 + variation, 4, 5 - variation];
+        let corners = [a, b, c].map(|i| original[i as usize]);
+        let center = core::array::from_fn(|axis| {
+            let weighted = (0..3)
+                .map(|i| i32::from(corners[i][axis]) * weights[i])
+                .sum::<i32>();
+            (weighted * (10 + variation) / 96) as i16
+        });
+        let raised = vertices.len() as u8;
+        vertices.push(center);
+        facets.extend([[a, b, raised], [b, c, raised], [c, a, raised]]);
+    }
+    let faces = facets
+        .into_iter()
+        .map(|face| {
+            let [a, b, c] = face.map(|i| vertices[i as usize].map(i32::from));
+            let ab: [i32; 3] = core::array::from_fn(|axis| b[axis] - a[axis]);
+            let ac: [i32; 3] = core::array::from_fn(|axis| c[axis] - a[axis]);
+            let normal = [
+                ab[1] * ac[2] - ab[2] * ac[1],
+                ab[2] * ac[0] - ab[0] * ac[2],
+                ab[0] * ac[1] - ab[1] * ac[0],
+            ];
+            let light = -normal[0] + 2 * normal[1] - normal[2];
+            let magnitude = normal.iter().map(|n| n.abs()).sum::<i32>();
+            let color = if light <= 0 {
+                11
+            } else if light < magnitude {
+                12
+            } else {
+                15
+            };
+            [face[0], face[1], face[2], color]
+        })
+        .collect();
+    (vertices, faces)
+}
+
 fn customize_space_models(theme: u8, models: &mut [Model]) {
     // Different silhouettes, not palette swaps: fork-wing interceptors, lunar
     // blades, salvaged drones, yard tenders, deck guards and gate sentinels.
@@ -1256,7 +1309,7 @@ fn customize_space_models(theme: u8, models: &mut [Model]) {
             [0, 0, 32],
         ],
     ];
-    models[ROCK as usize] = flight_mesh(rocks[index], palettes[index]);
+    models[ROCK as usize] = asteroid_mesh(rocks[index], index);
 }
 
 /// A closed twelve-sided coin with a raised relief of the player's Kestrel.

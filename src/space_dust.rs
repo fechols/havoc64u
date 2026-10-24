@@ -3,7 +3,7 @@
 use crate::game::Mode;
 
 pub const SPECK_COUNT: usize = 8;
-pub const COLOR: u8 = 12;
+pub const COLOR: u8 = 11;
 
 /// Prepared once per frame. Offscreen positions have y=255, outside all bands.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

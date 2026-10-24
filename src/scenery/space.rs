@@ -5,7 +5,9 @@ use super::{Decoration, SceneSink};
 use crate::GeometrySink;
 use crate::Vec3;
 
-#[cfg_attr(target_arch = "mos", link_section = ".phase.scenery.space_shared.data")]
+// Small immutable orbital tables fit in the unused resident code window and
+// avoid transferring the same surface data from the REU every scenery frame.
+#[cfg_attr(target_arch = "mos", link_section = ".text.orbital_data")]
 static STARS: [[i16; 2]; 10] = [
     [-2730, 1680],
     [-2160, -420],
@@ -18,7 +20,7 @@ static STARS: [[i16; 2]; 10] = [
     [2320, 1510],
     [2860, 190],
 ];
-#[cfg_attr(target_arch = "mos", link_section = ".phase.scenery.space_shared.data")]
+#[cfg_attr(target_arch = "mos", link_section = ".text.orbital_data")]
 static RING: [[i16; 2]; 8] = [
     [0, 256],
     [181, 181],
@@ -46,7 +48,7 @@ fn stars(sink: &mut SceneSink<'_>) {
                 y,
                 z: 3000,
             },
-            15,
+            1,
             crate::game::STATIC_SKY,
         );
     }
@@ -104,35 +106,239 @@ fn clock(context: &Decoration) -> u16 {
     }
 }
 
+// Bake the fixed-radius bodies at compile time. Surface markings cost only
+// translations on the 6510, and each body stays within 24 authored triangles.
+const fn body_points<const N: usize>(mut points: [[i16; 2]; N], radius: i16) -> [[i16; 2]; N] {
+    let mut i = 0;
+    while i < N {
+        points[i][0] = (points[i][0] as i32 * radius as i32 / 128) as i16;
+        points[i][1] = (points[i][1] as i32 * radius as i32 / 128) as i16;
+        i += 1;
+    }
+    points
+}
+
+const PLANET_POINTS: [[i16; 2]; 21] = body_points(
+    [
+        [0, 128],
+        [64, 111],
+        [111, 64],
+        [128, 0],
+        [111, -64],
+        [64, -111],
+        [0, -128],
+        [-64, -111],
+        [-111, -64],
+        [-128, 0],
+        [-111, 64],
+        [-64, 111],
+        [-38, 0],
+        // Broad turquoise land/cloud banks, following the lit hemisphere's curve.
+        [0, 84],
+        [67, 88],
+        [88, 60],
+        [14, 48],
+        [-12, -65],
+        [32, -48],
+        [55, -88],
+        [12, -105],
+    ],
+    760,
+);
+
+const PLANET_FACES: [[u8; 4]; 16] = [
+    [12, 0, 1, 14],
+    [12, 1, 2, 14],
+    [12, 2, 3, 14],
+    [12, 3, 4, 14],
+    [12, 4, 5, 14],
+    [12, 5, 6, 14],
+    [12, 6, 7, 6],
+    [12, 7, 8, 6],
+    [12, 8, 9, 6],
+    [12, 9, 10, 6],
+    [12, 10, 11, 6],
+    [12, 11, 0, 6],
+    [13, 14, 15, 3],
+    [13, 15, 16, 3],
+    [17, 18, 19, 3],
+    [17, 19, 20, 3],
+];
+
+const MOON_POINTS: [[i16; 2]; 25] = body_points(
+    [
+        [0, 128],
+        [64, 111],
+        [111, 64],
+        [128, 0],
+        [111, -64],
+        [64, -111],
+        [0, -128],
+        [-64, -111],
+        [-111, -64],
+        [-128, 0],
+        [-111, 64],
+        [-64, 111],
+        [-38, 0],
+        // A broad inset crater with a bright upper rim and a charcoal basin.
+        [40, 80],
+        [78, 78],
+        [94, 61],
+        [80, 38],
+        [44, 36],
+        [26, 55],
+        // A smaller foreshortened crater on the shadowed half.
+        [-91, -16],
+        [-64, -9],
+        [-47, -27],
+        [-76, -35],
+        // An offset fracture bends between the body's two poles.
+        [-24, 35],
+        [0, 18],
+    ],
+    560,
+);
+
+const MOON_FACES: [[u8; 4]; 20] = [
+    [12, 0, 1, 15],
+    [12, 1, 2, 15],
+    [12, 2, 3, 12],
+    [12, 3, 4, 12],
+    [12, 4, 5, 12],
+    [12, 5, 6, 12],
+    [12, 6, 7, 11],
+    [12, 7, 8, 11],
+    [12, 8, 9, 11],
+    [12, 9, 10, 11],
+    [12, 10, 11, 12],
+    [12, 11, 0, 12],
+    [13, 14, 18, 12],
+    [14, 15, 18, 11],
+    [18, 15, 17, 11],
+    [15, 16, 17, 15],
+    [19, 20, 22, 12],
+    [20, 21, 22, 15],
+    [0, 24, 23, 0],
+    [23, 24, 6, 0],
+];
+
+#[derive(Clone, Copy)]
+struct BodyFace {
+    xy: [[i16; 2]; 3],
+    z: i16,
+    color: u8,
+}
+
+const fn body_faces<const N: usize>(points: &[[i16; 2]], faces: &[[u8; 4]; N]) -> [BodyFace; N] {
+    let mut result = [BodyFace {
+        xy: [[0; 2]; 3],
+        z: 0,
+        color: 0,
+    }; N];
+    let mut i = 0;
+    while i < N {
+        let face = faces[i];
+        result[i] = BodyFace {
+            xy: [
+                points[face[0] as usize],
+                points[face[1] as usize],
+                points[face[2] as usize],
+            ],
+            // Markings cover the disc; the open fracture covers both layers.
+            z: if i < 12 {
+                2800
+            } else if face[3] == 0 {
+                2768
+            } else {
+                2784
+            },
+            color: face[3],
+        };
+        i += 1;
+    }
+    result
+}
+
+#[cfg_attr(target_arch = "mos", link_section = ".text.orbital_data")]
+static PLANET: [BodyFace; 16] = body_faces(&PLANET_POINTS, &PLANET_FACES);
+#[cfg_attr(target_arch = "mos", link_section = ".phase.scenery.moon.data")]
+static MOON: [BodyFace; 20] = body_faces(&MOON_POINTS, &MOON_FACES);
+
 #[inline(never)]
 #[cfg_attr(target_arch = "mos", link_section = ".phase.scenery.space_shared")]
-fn planet(sink: &mut SceneSink<'_>, x: i16, y: i16, radius: i16, color: u8) {
-    let center = Vec3 { x, y, z: 2800 };
-    for i in 0..8usize {
-        let a = RING[i];
-        let b = RING[(i + 1) & 7];
-        sink.triangle(
-            center,
+fn body(sink: &mut SceneSink<'_>, x: i16, y: i16, faces: &[BodyFace]) {
+    for face in faces {
+        let p = |corner: usize| {
+            let xy = face.xy[corner];
             Vec3 {
-                x: x + crate::math::mul_q8(a[0], radius),
-                y: y + crate::math::mul_q8(a[1], radius),
-                z: 2800,
-            },
-            Vec3 {
-                x: x + crate::math::mul_q8(b[0], radius),
-                y: y + crate::math::mul_q8(b[1], radius),
-                z: 2800,
-            },
-            if i < 4 { color } else { 6 },
-            0,
-        );
+                x: x + xy[0],
+                y: y + xy[1],
+                z: face.z,
+            }
+        };
+        sink.triangle(p(0), p(1), p(2), face.color, 0);
     }
 }
 
 #[inline(never)]
 #[cfg_attr(target_arch = "mos", link_section = ".phase.scenery.space_shared")]
-fn rock(sink: &mut SceneSink<'_>, center: Vec3, radius: i16, color: u8) {
+fn planet(sink: &mut SceneSink<'_>, x: i16, y: i16) {
+    body(sink, x, y, &PLANET);
+}
+
+const fn rock_points(radius: i16) -> [Vec3; 8] {
+    [
+        Vec3 {
+            x: -radius / 4,
+            y: radius,
+            z: 0,
+        },
+        Vec3 {
+            x: radius / 4,
+            y: -radius,
+            z: 0,
+        },
+        Vec3 {
+            x: -radius,
+            y: radius / 8,
+            z: 0,
+        },
+        Vec3 {
+            x: -radius / 3,
+            y: -radius / 4,
+            z: radius,
+        },
+        Vec3 {
+            x: radius * 3 / 4,
+            y: 0,
+            z: radius / 2,
+        },
+        Vec3 {
+            x: radius,
+            y: -radius / 8,
+            z: 0,
+        },
+        Vec3 {
+            x: radius / 3,
+            y: radius / 4,
+            z: -radius,
+        },
+        Vec3 {
+            x: -radius * 3 / 4,
+            y: 0,
+            z: -radius / 2,
+        },
+    ]
+}
+
+#[cfg_attr(target_arch = "mos", link_section = ".text.orbital_data")]
+static ROCKS: [[Vec3; 8]; 3] = [rock_points(95), rock_points(130), rock_points(170)];
+
+#[inline(never)]
+#[cfg_attr(target_arch = "mos", link_section = ".phase.scenery.space_shared")]
+fn rock(sink: &mut SceneSink<'_>, center: Vec3, kind: usize, color: u8) {
     if sink.shadow_enabled() {
+        let radius = [95, 130, 170][kind];
         sink.shadow_caster(crate::shadow::Caster {
             center,
             half_x: radius,
@@ -140,36 +346,38 @@ fn rock(sink: &mut SceneSink<'_>, center: Vec3, radius: i16, color: u8) {
             shape: 3,
         });
     }
-    let top = Vec3 {
-        y: center.y + radius,
-        ..center
+    let points: [Vec3; 8] = core::array::from_fn(|i| {
+        let p = ROCKS[kind][i];
+        Vec3 {
+            x: center.x + p.x,
+            y: center.y + p.y,
+            z: center.z + p.z,
+        }
+    });
+    // Extra edge facets are useful only once a rock spans several pixels.
+    // The distant shell keeps the same extremal vertices and shading.
+    let ring: &[usize] = if center.z >= 600 {
+        &[2, 3, 5, 6]
+    } else {
+        &[2, 3, 4, 5, 6, 7]
     };
-    let bottom = Vec3 {
-        y: center.y - radius,
-        ..center
-    };
-    let ring = [
-        Vec3 {
-            x: center.x - radius,
-            ..center
-        },
-        Vec3 {
-            z: center.z + radius,
-            ..center
-        },
-        Vec3 {
-            x: center.x + radius,
-            ..center
-        },
-        Vec3 {
-            z: center.z - radius,
-            ..center
-        },
-    ];
-    for i in 0..4usize {
-        let next = (i + 1) & 3;
-        sink.triangle(top, ring[i], ring[next], color, 0);
-        sink.triangle(bottom, ring[next], ring[i], 11, 0);
+    for i in 0..ring.len() {
+        let a = ring[i];
+        let b = ring[if i + 1 == ring.len() { 0 } else { i + 1 }];
+        sink.triangle(
+            points[0],
+            points[a],
+            points[b],
+            if a == 6 { 15 } else { color },
+            0,
+        );
+        sink.triangle(
+            points[1],
+            points[b],
+            points[a],
+            if a == 7 { 12 } else { 11 },
+            0,
+        );
     }
 }
 
@@ -185,7 +393,7 @@ fn asteroid_debris(sink: &mut SceneSink<'_>, ticks: u16, drop: i16) {
                 y: 130 - drop,
                 z,
             },
-            95,
+            0,
             12,
         );
     }
@@ -208,7 +416,7 @@ pub fn scenic_ascent(sink: &mut SceneSink<'_>, context: &Decoration) {
         let arrival = (remaining * remaining >> 3) as i16;
         // Level out at orbital height: the curved planet enters from the left
         // and recedes below the ship, reaching the next scene's exact position.
-        planet(sink, -1040 - arrival, -540 + remaining as i16 * 4, 760, 14);
+        planet(sink, -1040 - arrival, -540 + remaining as i16 * 4);
         asteroid_debris(sink, tick.wrapping_sub(400), arrival + context.camera_y);
     }
     // Thin cloud wisps rush downward while passing through the upper atmosphere.
@@ -241,7 +449,7 @@ pub fn scenic_ascent(sink: &mut SceneSink<'_>, context: &Decoration) {
 pub fn scenic_asteroid(sink: &mut SceneSink<'_>, context: &Decoration) {
     stars(sink);
     let travel = drop(context);
-    planet(sink, -1040, -540 - travel, 760, 14);
+    planet(sink, -1040, -540 - travel);
     asteroid_debris(sink, clock(context), travel + context.camera_y);
 }
 
@@ -251,34 +459,7 @@ pub fn scenic_asteroid(sink: &mut SceneSink<'_>, context: &Decoration) {
 pub fn scenic_moon(sink: &mut SceneSink<'_>, context: &Decoration) {
     stars(sink);
     let travel = drop(context);
-    // The two displaced halves and dark crack read as a shattered moon.
-    planet(sink, 720, 680 - travel, 560, 15);
-    quad(
-        sink,
-        [
-            Vec3 {
-                x: 660,
-                y: 1270 - travel,
-                z: 2700,
-            },
-            Vec3 {
-                x: 770,
-                y: 1270 - travel,
-                z: 2700,
-            },
-            Vec3 {
-                x: 640,
-                y: 100 - travel,
-                z: 2700,
-            },
-            Vec3 {
-                x: 510,
-                y: 100 - travel,
-                z: 2700,
-            },
-        ],
-        0,
-    );
+    body(sink, 720, 680 - travel, &MOON);
     let ticks = clock(context);
     for i in 0..3u16 {
         let z = 2150 - ((ticks.wrapping_add(i * 85) & 255) * 8) as i16;
@@ -289,7 +470,7 @@ pub fn scenic_moon(sink: &mut SceneSink<'_>, context: &Decoration) {
                 y: -160 - travel - context.camera_y,
                 z,
             },
-            130,
+            1,
             15,
         );
     }
@@ -297,7 +478,7 @@ pub fn scenic_moon(sink: &mut SceneSink<'_>, context: &Decoration) {
 
 // Identical closed wreck geometry is authored once, using each environment's
 // original facet palette.
-#[cfg_attr(target_arch = "mos", link_section = ".phase.scenery.space_shared.data")]
+#[cfg_attr(target_arch = "mos", link_section = ".text.orbital_data")]
 static HULL_POINTS: [[i16; 3]; 8] = [
     [-100, 0, 0],
     [100, 0, 0],
@@ -308,7 +489,7 @@ static HULL_POINTS: [[i16; 3]; 8] = [
     [0, -120, -100],
     [210, 140, 770],
 ];
-#[cfg_attr(target_arch = "mos", link_section = ".phase.scenery.space_shared.data")]
+#[cfg_attr(target_arch = "mos", link_section = ".text.orbital_data")]
 static HULL_FACES: [[u8; 4]; 12] = [
     [0, 3, 2, 0],
     [0, 2, 1, 0],
@@ -391,7 +572,7 @@ pub fn scenic_graveyard(sink: &mut SceneSink<'_>, context: &Decoration) {
             y: 750 - travel,
             z: 2400,
         },
-        170,
+        2,
         11,
     );
 }
@@ -649,5 +830,98 @@ pub fn scenic_gate(sink: &mut SceneSink<'_>, context: &Decoration) {
             14,
             0,
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::GeometrySink;
+    use std::{collections::BTreeMap, vec::Vec};
+
+    #[derive(Default)]
+    struct Capture(Vec<([Vec3; 3], u8, u8)>);
+    impl GeometrySink for Capture {
+        fn triangle(&mut self, a: Vec3, b: Vec3, c: Vec3, color: u8, flags: u8) {
+            self.0.push(([a, b, c], color, flags));
+        }
+    }
+
+    #[test]
+    fn stationary_stars_are_white_sky_ink() {
+        let mut scene = Capture::default();
+        stars(&mut scene);
+        assert_eq!(scene.0.len(), 10);
+        assert!(scene
+            .0
+            .iter()
+            .all(|&(_, color, flags)| color == 1 && flags == crate::game::STATIC_SKY));
+        assert_eq!(crate::render::PALETTE_RGB[1], [255; 3]);
+    }
+
+    #[test]
+    fn detailed_bodies_face_the_camera_and_keep_their_surface_palettes() {
+        for moon in [false, true] {
+            let mut scene = Capture::default();
+            if moon {
+                body(&mut scene, 720, 680, &MOON);
+            } else {
+                planet(&mut scene, -1040, -540);
+            }
+            assert!(scene.0.len() <= 24);
+            let mut colors = std::collections::BTreeSet::new();
+            for (p, color, flags) in scene.0 {
+                let cross = (p[1].x - p[0].x) as i32 * (p[2].y - p[0].y) as i32
+                    - (p[1].y - p[0].y) as i32 * (p[2].x - p[0].x) as i32;
+                assert!(cross < 0, "body facet must survive backface culling: {p:?}");
+                assert_eq!(flags, 0);
+                colors.insert(color);
+            }
+            assert_eq!(
+                colors,
+                if moon {
+                    [0, 11, 12, 15].into_iter().collect()
+                } else {
+                    [3, 6, 14].into_iter().collect()
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn irregular_scenery_rocks_are_closed_outward_shells_with_gray_facets() {
+        for (kind, z) in (0..3).flat_map(|kind| [0, 599, 600, 1600].map(|z| (kind, z))) {
+            let mut scene = Capture::default();
+            rock(
+                &mut scene,
+                Vec3 {
+                    z,
+                    ..Vec3::default()
+                },
+                kind,
+                12,
+            );
+            assert_eq!(scene.0.len(), if z >= 600 { 8 } else { 12 });
+            let mut edges = BTreeMap::new();
+            for (p, color, _) in scene.0 {
+                assert!([11, 12, 15].contains(&color));
+                let v = p.map(|p| [p.x as i64, p.y as i64, (p.z - z) as i64]);
+                let a = core::array::from_fn::<_, 3, _>(|i| v[1][i] - v[0][i]);
+                let b = core::array::from_fn::<_, 3, _>(|i| v[2][i] - v[0][i]);
+                let n = [
+                    a[1] * b[2] - a[2] * b[1],
+                    a[2] * b[0] - a[0] * b[2],
+                    a[0] * b[1] - a[1] * b[0],
+                ];
+                assert!((0..3).map(|i| n[i] * v[0][i]).sum::<i64>() > 0);
+                for i in 0..3 {
+                    *edges.entry((v[i], v[(i + 1) % 3])).or_insert(0) += 1;
+                }
+            }
+            for (&(a, b), &count) in &edges {
+                assert_eq!(count, 1);
+                assert_eq!(edges.get(&(b, a)), Some(&1));
+            }
+        }
     }
 }

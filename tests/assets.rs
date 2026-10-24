@@ -1100,6 +1100,16 @@ fn orbital_hazards_are_mixed_in_three_dimensions_and_stop_before_the_final_bosse
 
 #[test]
 fn orbital_meshes_fit_the_unchanged_cache_and_keep_tumbling_obstacles_centered() {
+    // Independently recorded pre-detail bounds: visual facets must not change
+    // obstacle size, the fragment's half scale, or its baked shadow footprint.
+    let rock_bounds = [
+        [(-38, 31), (-37, 37), (-35, 35)],
+        [(-34, 34), (-46, 46), (-27, 27)],
+        [(-45, 45), (-19, 19), (-43, 43)],
+        [(-28, 28), (-29, 29), (-38, 38)],
+        [(-35, 35), (-22, 22), (-45, 45)],
+        [(-40, 40), (-40, 40), (-32, 32)],
+    ];
     for level in 12..SEGMENT_COUNT {
         let bytes = baked_assets::model_bank(level);
         let bank = AssetBank::new(&bytes).unwrap();
@@ -1111,6 +1121,31 @@ fn orbital_meshes_fit_the_unchanged_cache_and_keep_tumbling_obstacles_centered()
         };
         let (low, high) = extent(ROCK, |v| v.y);
         assert_eq!(low, -high);
+        assert_eq!(
+            [extent(ROCK, |v| v.x), (low, high), extent(ROCK, |v| v.z)],
+            rock_bounds[level as usize - 12],
+            "stage {level}: asteroid dimensions changed"
+        );
+        assert_eq!((bank.vertex_count(ROCK), bank.face_count(ROCK)), (12, 20));
+        let colors: std::collections::BTreeSet<_> = (0..bank.face_count(ROCK))
+            .map(|index| bank.face(ROCK, index).1)
+            .collect();
+        assert_eq!(colors, [11, 12, 15].into_iter().collect());
+        // The origin must remain inside every facet, not merely inside a
+        // positive-volume shell, so tumbling never reveals inward faces.
+        for index in 0..bank.face_count(ROCK) {
+            let [a, b, c] = bank.face(ROCK, index).0.map(|vertex| {
+                let p = bank.vertex(ROCK, vertex);
+                [p.x, p.y, p.z].map(i64::from)
+            });
+            let volume = a[0] * (b[1] * c[2] - b[2] * c[1])
+                + a[1] * (b[2] * c[0] - b[0] * c[2])
+                + a[2] * (b[0] * c[1] - b[1] * c[0]);
+            assert!(
+                volume > 0,
+                "stage {level}: asteroid facet {index} faces inward"
+            );
+        }
         let used =
             u16_at(&bytes, 20 + MEDAL as usize * 8) as usize + bank.face_count(MEDAL) as usize * 4;
         assert!(used <= SHADOW_SPECS_OFFSET);
@@ -1129,6 +1164,106 @@ fn orbital_meshes_fit_the_unchanged_cache_and_keep_tumbling_obstacles_centered()
             );
             assert_eq!(bank.vertex_count(CARRIER), 32);
         }
+    }
+}
+
+#[test]
+fn asteroid_detail_distance_keeps_coarse_shell_closed_and_transforms_both_sizes() {
+    use havoc::{emit_mesh, math::RotationMatrix, GeometrySink, Vec3};
+    use std::collections::BTreeMap;
+
+    #[derive(Default)]
+    struct Capture(Vec<([Vec3; 3], u8, u8)>);
+    impl GeometrySink for Capture {
+        fn triangle(&mut self, a: Vec3, b: Vec3, c: Vec3, color: u8, flags: u8) {
+            self.0.push(([a, b, c], color, flags));
+        }
+    }
+    let coarse = [
+        ([0, 1, 3], 12),
+        ([0, 3, 2], 15),
+        ([0, 4, 1], 11),
+        ([0, 2, 4], 11),
+        ([1, 5, 3], 12),
+        ([3, 5, 2], 15),
+        ([1, 4, 5], 11),
+        ([2, 5, 4], 11),
+    ];
+    // The lower-detail table must itself be a closed outward shell using only
+    // the original vertex prefix, including while the detailed bank is loaded.
+    let mut edges = BTreeMap::<(u8, u8), Vec<i8>>::new();
+    for ([a, b, c], _) in coarse {
+        for [from, to] in [[a, b], [b, c], [c, a]] {
+            edges
+                .entry((from.min(to), from.max(to)))
+                .or_default()
+                .push(if from < to { 1 } else { -1 });
+        }
+    }
+    assert!(edges
+        .values()
+        .all(|uses| uses.len() == 2 && uses[0] == -uses[1]));
+    for level in 12..SEGMENT_COUNT {
+        let bytes = baked_assets::model_bank(level);
+        let bank = AssetBank::new(&bytes).unwrap();
+        for (face, _) in coarse {
+            let [a, b, c] = face.map(|index| {
+                let v = bank.vertex(ROCK, index);
+                [v.x, v.y, v.z].map(i64::from)
+            });
+            let volume = a[0] * (b[1] * c[2] - b[2] * c[1])
+                + a[1] * (b[2] * c[0] - b[0] * c[2])
+                + a[2] * (b[0] * c[1] - b[1] * c[0]);
+            assert!(volume > 0, "stage {level}: coarse asteroid faces inward");
+        }
+        for half in [false, true] {
+            let threshold = if half { 160 } else { 320 };
+            for z in [threshold - 1, threshold, threshold + 1, 900] {
+                for [yaw, pitch, roll] in [[0, 0, 0], [32, 83, 201], [128, 64, 192], [255; 3]] {
+                    let position = Vec3 { x: -57, y: 43, z };
+                    let rotation = RotationMatrix::new(yaw, pitch, roll);
+                    let direct = |index| {
+                        let v = rotation.apply(bank.vertex_bytes(ROCK, index), 8 + half as u8);
+                        Vec3 {
+                            x: v.x + position.x,
+                            y: v.y + position.y,
+                            z: v.z + z,
+                        }
+                    };
+                    let faces = if z >= threshold {
+                        coarse.to_vec()
+                    } else {
+                        (0..bank.face_count(ROCK))
+                            .map(|index| bank.face(ROCK, index))
+                            .collect()
+                    };
+                    let expected: Vec<_> = faces
+                        .into_iter()
+                        .map(|(indices, color)| (indices.map(direct), color, 0))
+                        .collect();
+                    let mut actual = Capture::default();
+                    emit_mesh(&mut actual, &bank, ROCK, position, yaw, pitch, roll, half);
+                    assert_eq!(actual.0, expected, "stage {level}, depth {z}, half {half}");
+                }
+            }
+        }
+    }
+    let bytes = baked_assets::model_bank(0);
+    let bank = AssetBank::new(&bytes).unwrap();
+    let mut ground = Capture::default();
+    emit_mesh(
+        &mut ground,
+        &bank,
+        ROCK,
+        Vec3 { x: 0, y: 0, z: 900 },
+        0,
+        0,
+        0,
+        false,
+    );
+    assert_eq!(ground.0.len(), bank.face_count(ROCK) as usize);
+    for (index, (_, color, _)) in ground.0.iter().enumerate() {
+        assert_eq!(*color, bank.face(ROCK, index as u8).1);
     }
 }
 

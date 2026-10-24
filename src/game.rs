@@ -2887,15 +2887,16 @@ impl<S: GeometrySink> GeometrySink for SceneBudget<'_, S> {
             .checkpoint()
             .expect("native mesh needs a projected sink");
         let rotation = crate::math::RotationMatrix::new(yaw, pitch, roll);
+        let mesh = crate::asteroid::mesh_data(bank, id, position.z, half);
         let mut args = MeshArgs {
-            vertices: bank.vertex_data(id),
-            faces: bank.face_data(id),
+            vertices: mesh.vertices,
+            faces: mesh.faces,
             matrix: &rotation.m,
             position,
             camera_y: self.camera_y,
-            vertex_count: bank.vertex_count(id),
-            face_count: bank.face_count(id),
-            shift: 8 - bank.shift(id) + half as u8,
+            vertex_count: mesh.vertex_count,
+            face_count: mesh.face_count,
+            shift: mesh.shift,
             flags: self.extra_flags,
             color: self.color_override,
             face_color: 0,

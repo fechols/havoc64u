@@ -166,7 +166,11 @@ fn skipped_ticks_clock_rollover_and_call_history_do_not_change_positions() {
 }
 
 #[test]
-fn each_visible_speck_is_one_plain_gray_pixel_with_no_trail() {
+fn each_visible_speck_is_one_dark_gray_pixel_with_no_trail() {
+    assert_eq!(
+        COLOR, 11,
+        "moving debris must be darker than the stationary stars"
+    );
     let mut renderer = Renderer::new();
     renderer.begin(0);
     for ticks in rendering_ticks() {

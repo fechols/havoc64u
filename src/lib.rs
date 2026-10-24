@@ -6,6 +6,7 @@ extern crate self as havoc;
 extern crate std;
 
 pub mod assets;
+mod asteroid;
 pub mod audio;
 pub mod cells;
 pub mod digital;
@@ -115,11 +116,19 @@ pub fn emit_mesh_reference(
         shift: 8 - bank.shift(id) + half as u8,
         id,
     };
-    for index in 0..(bank.vertex_count(id) as usize).min(CACHED_VERTICES) {
+    let coarse = asteroid::coarse(bank, id, position.z, half);
+    let vertex_count = if coarse { 6 } else { bank.vertex_count(id) };
+    let face_count = if coarse { 8 } else { bank.face_count(id) };
+    for index in 0..(vertex_count as usize).min(CACHED_VERTICES) {
         vertices[index] = transformed_mesh_vertex(bank, &transform, index as u8);
     }
-    for face in 0..bank.face_count(id) {
-        let (indices, color) = bank.face(id, face);
+    for face in 0..face_count {
+        let (indices, color) = if coarse {
+            let [a, b, c, color] = asteroid::COARSE_FACES[face as usize];
+            ([a, b, c], color)
+        } else {
+            bank.face(id, face)
+        };
         let mut points = [Vec3 { x: 0, y: 0, z: 0 }; 3];
         for corner in 0..3 {
             let index = indices[corner];
