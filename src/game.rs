@@ -143,6 +143,7 @@ pub enum PresentationEvent {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Hud {
     pub mode: Mode,
+    pub story_mode: bool,
     pub shield: u8,
     pub bombs: u8,
     pub lives: u8,
@@ -390,6 +391,8 @@ pub struct Game {
     menu_activity: bool,
     /// Menu track selection survives scene resets; victory selects Galactic.
     menu_music_galactic: bool,
+    /// Title selection persists until the program restarts.
+    story_mode: bool,
     audio_head: u8,
     audio_len: u8,
     spawn_cursor: u8,
@@ -458,6 +461,7 @@ impl Game {
             menu_ticks: 0,
             menu_activity: false,
             menu_music_galactic: false,
+            story_mode: false,
             actors: [Actor::EMPTY; ACTORS],
             shots: [Shot::EMPTY; SHOTS],
             missile_targets: [0; SHOTS / 2],
@@ -683,6 +687,7 @@ impl Game {
     pub fn hud(&self) -> Hud {
         Hud {
             mode: self.mode,
+            story_mode: self.story_mode,
             shield: self.shield,
             bombs: self.bombs,
             lives: self.lives,
@@ -706,6 +711,15 @@ impl Game {
     pub fn toggle_menu_music(&mut self) {
         if matches!(self.mode, Mode::Title | Mode::Attract) {
             self.menu_music_galactic = !self.menu_music_galactic;
+        }
+    }
+    /// Change the next run's life allowance from the title screen only.
+    /// Inlined into the native PIXELS keyboard scan without an overlay call.
+    #[inline(always)]
+    pub fn toggle_story_mode(&mut self) {
+        if self.mode == Mode::Title {
+            self.story_mode = !self.story_mode;
+            self.menu_activity = true;
         }
     }
     #[inline(never)]
@@ -805,9 +819,12 @@ impl Game {
         let bits = self.controls.bits;
         let now = self.controls.now;
         let menu_music_galactic = self.menu_music_galactic;
+        let story_mode = self.story_mode;
         let encounter_seed = self.encounter_seed;
         self.reset_in_place();
         self.menu_music_galactic = menu_music_galactic;
+        self.story_mode = story_mode;
+        self.lives = if story_mode { 99 } else { 3 };
         self.encounter_seed = encounter_seed;
         self.presentation_event = PresentationEvent::Reset;
         self.mode = mode;
@@ -913,7 +930,9 @@ impl Game {
                 self.mode = Mode::Transition;
                 self.transition_ticks = 0;
                 if self.stage_info.boss_kind != 0 {
-                    self.lives = (self.lives + 1).min(3);
+                    let cap = if self.story_mode { 99 } else { 3 };
+                    // Run initialization and this cap keep lives at most 99.
+                    self.lives = (self.lives + 1).min(cap);
                 }
                 self.actors = [Actor::EMPTY; ACTORS];
                 self.actor_hit_flash_ticks = [0; ACTORS];
@@ -1648,8 +1667,9 @@ impl Game {
             locks >> 4
         }
     }
+    // Resident: shared by SIM and its attack helper, leaving room for the
+    // selected life cap in every composed simulation profile.
     #[inline(never)]
-    #[cfg_attr(target_arch = "mos", link_section = ".phase.sim")]
     fn set_missile_lock(&mut self, index: usize, target: u8) {
         let locks = &mut self.missile_targets[index / 2];
         if index & 1 == 0 {
@@ -3041,6 +3061,9 @@ fn bomb_pickup(sink: &mut impl GeometrySink, p: Vec3) {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod story_tests;
 
 #[cfg(test)]
 mod balance_tests;

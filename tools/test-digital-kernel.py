@@ -623,7 +623,8 @@ def exercise(elf, symbols, image, standard, budget):
                                  (2, 2, "iron-canyon"),
                                  (2, 3, "canyon-gate"),
                                  (8, 4, "ashen-wastes"),
-                                 (8, 5, "foundry-belt")):
+                                 (8, 5, "foundry-belt"),
+                                 (3, 6, "fortress-run")):
         select(cue, stage, expected)
         if stage == 3:
             starts = cpu.starts.copy()
@@ -631,7 +632,8 @@ def exercise(elf, symbols, image, standard, budget):
             play(3)
             require(cpu.active_name() == expected and cpu.starts == starts,
                     "Canyon Gate restarted at boss entrance")
-    select(3, 6, "galactic-dash-mono")  # Unrecorded Fortress Run.
+    # Citadel Core shares the Fortress cue but still uses the unrecorded-stage fallback.
+    select(3, 7, "galactic-dash-mono")
     starts = cpu.starts.copy()
     for stage in (18, 255):
         cpu.put("havoc_c64::REQUESTED_STAGE", stage)
@@ -647,7 +649,7 @@ def exercise(elf, symbols, image, standard, budget):
                 "protected cue was overridden by stale gameplay stage")
     select(5, 0, "galactic-dash")
     select(0, 5, "hammond-rocker")
-    select(3, 6, "galactic-dash-mono")  # Reuses a former stereo slot and prefix.
+    select(3, 7, "galactic-dash-mono")  # Reuses a former stereo slot and prefix.
     require(cpu.prefix_clears >= 3, "mono prefixes not re-cleared across preparations")
     cpu.delay(1.25)
     service()

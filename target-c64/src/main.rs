@@ -184,7 +184,7 @@ static mut CLOCK_KHZ: u16 = 985;
 // second of 50 Hz audio ticks on either video standard; the readout is in
 // tenths of frames per second.
 static mut FPS_SHOWN: bool = false;
-/// Keys seen down last frame: bit 0 space, bit 1 F, bit 2 music chord.
+/// Keys seen down last frame: bit 0 space, bit 1 F, bit 2 music chord, bit 3 S.
 static mut KEYS_HELD: u8 = 0;
 /// Set by the PIXELS key scan, consumed by SIM: simulation time stands still.
 static mut PAUSED: bool = false;
@@ -1127,7 +1127,7 @@ unsafe fn update_fps_overlay(mode: havoc::game::Mode) {
         FPS_WINDOW_FRAMES = 0;
     }
     // Row 7: Space column 4, CTRL column 2, Commodore column 5.
-    // F is row 2 column 5; DEL is row 0 column 0. CIA 1 port A
+    // F is row 2 column 5; S is row 1 column 5; DEL is row 0 column 0. CIA 1 port A
     // doubles as joystick port 2, so drive it as key rows only briefly with
     // the sampling IRQ masked, then return it to input. A column counts as a
     // key only if it also reads high with no row selected: a joystick in
@@ -1141,12 +1141,17 @@ unsafe fn update_fps_overlay(mode: havoc::game::Mode) {
     let space = row7 & idle & 0x10 != 0;
     poke(0xdc00, 0xfb);
     let f_key = peek(0xdc01) & 0x20 == 0 && idle & 0x20 != 0;
+    poke(0xdc00, 0xfd);
+    let story_key = peek(0xdc01) & 0x20 == 0;
     poke(0xdc00, 0xfe);
     let delete = peek(0xdc01) & 1 == 0;
     poke(0xdc02, 0);
     enable_irq();
     let music_chord = row7 & 0x24 == 0x24 && delete;
-    let keys = space as u8 | (f_key as u8) << 1 | (music_chord as u8) << 2;
+    let keys = space as u8
+        | (f_key as u8) << 1
+        | (music_chord as u8) << 2
+        | (story_key as u8) << 3;
     let pressed = keys & !KEYS_HELD;
     // Pause only has meaning while flying; elsewhere the key is ignored and
     // a stale pause cannot survive, because no tick runs while it is set.
@@ -1165,7 +1170,11 @@ unsafe fn update_fps_overlay(mode: havoc::game::Mode) {
         // Inlines into PIXELS; the next SIM/AUDIO pass publishes the selection.
         GAME.assume_init_mut().toggle_menu_music();
     }
-    // Latch the raw chord even when idle filtering suppresses it. Releasing
+    if pressed & 8 != 0 && idle & 0x20 != 0 {
+        // Title-only selection; the ordinary Fire edge still launches in SIM.
+        GAME.assume_init_mut().toggle_story_mode();
+    }
+    // Latch the raw chord and S even when idle filtering suppresses them. Releasing
     // joystick interference or changing modes must not rearm held keys.
     KEYS_HELD = keys;
 }

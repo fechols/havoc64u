@@ -52,7 +52,7 @@ impl DisplayState {
         }
         state.flags = COCKPIT;
         state.score = hud.score.min(999_999);
-        state.lives = hud.lives.min(9);
+        state.lives = hud.lives.min(99);
         state.bombs = hud.bombs.min(3);
         state.shield = meter(hud.shield.min(100), 22, 100);
         state.charge = meter(hud.charge, 22, 255);
@@ -178,7 +178,7 @@ pub fn render_corner(corner: u8, state: &DisplayState, output: &mut [u8; 128]) {
             }
             1 => {
                 text(output, 0, 2, &LABELS[23..27], WHITE);
-                text(output, 20, 2, &[b'0' + state.lives], WHITE);
+                text(output, 16, 2, &crate::hud::life_digits(state.lives), WHITE);
                 // Three 6x5 rectangles, with transparent gaps. Shared grey
                 // marks spent bombs; the pair's individual colour is yellow.
                 for bomb in 0..3 {

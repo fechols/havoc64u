@@ -20,9 +20,11 @@ SMOKE = runpy.run_path(str(ROOT / "tools/vice-smoke.py"))
 Cpu, KernelError, load_elf = (KERNEL[name] for name in ("Cpu", "KernelError", "load_elf"))
 IRQ_MASK, UNUSED, SENTINEL = 4, 32, 0xffff
 SELECTOR = "menu_music_galactic"
+STORY = "story_mode"
 # Standard C64 matrix: CTRL and C= share row 7; DEL is row 0, column 0.
 KEYS = {"ctrl": (7, 2), "cbm": (7, 5), "del": (0, 0),
-        "space": (7, 4), "f": (2, 5), "d": (2, 2), "five": (2, 0)}
+        "space": (7, 4), "f": (2, 5), "d": (2, 2), "five": (2, 0),
+        "s": (1, 5), "shift": (1, 7)}
 CHORD_KEYS = ("ctrl", "cbm", "del")
 CHORD = frozenset(CHORD_KEYS)
 
@@ -47,11 +49,14 @@ class Machine(Cpu):
         self.game_start = layout["address"]
         self.game_end = symbols["__game_state_end"].address
         self.selector = self.game_start + layout["fields"][SELECTOR]["offset"]
+        self.story = self.game_start + layout["fields"][STORY]["offset"]
+        self.activity = self.game_start + layout["fields"]["menu_activity"]["offset"]
         self.mode_address = self.game_start + layout["fields"]["mode"]["offset"]
         self.stack_bottom = symbols["__stack_bottom"].address
         self.stack_top = symbols["__stack"].address
         writable = [(0, 0x200), (self.stack_bottom, self.stack_top),
-                    (self.selector, self.selector + 1), (0xdc00, 0xdc01), (0xdc02, 0xdc03)]
+                    (self.selector, self.selector + 1), (self.story, self.story + 1),
+                    (self.activity, self.activity + 1), (0xdc00, 0xdc01), (0xdc02, 0xdc03)]
         for name in (".data", ".bss", ".noinit"):
             section = sections[name]
             writable.append((section.address, section.address + section.size))
@@ -59,7 +64,7 @@ class Machine(Cpu):
         self.mem[2:4] = self.stack_top.to_bytes(2, "little")
         self.mem[0xdc00] = 255
         self.mem[0xdc02] = self.mem[0xdc03] = 0
-        # Only mode and the selector are used by the inline Game method. Their
+        # Only mode and the menu selection/activity fields are used here. Their
         # offsets and valid discriminants come from this exact native build.
         self.mem[self.game_start:self.game_end] = bytes(self.game_end - self.game_start)
         self.p = UNUSED  # The caller enters with interrupts enabled.
@@ -101,7 +106,7 @@ class Machine(Cpu):
         return self.mem[self.addresses[name]]
 
     def scan(self, keys=(), mode="Title", expected=False, joy1=0, joy2=0,
-             pause=False, fps=False, label="scan"):
+             pause=False, fps=False, story=False, label="scan"):
         self.keys = frozenset(keys)
         self.joy1, self.joy2 = joy1, joy2
         self.mem[self.mode_address] = self.layout["modes"][mode]
@@ -130,7 +135,10 @@ class Machine(Cpu):
         offset = self.selector - self.game_start
         want = bytearray(before)
         want[offset] ^= int(expected)
-        require(after == want, f"{label}: wrong music toggle or unrelated Game mutation")
+        want[self.story - self.game_start] ^= int(story)
+        if story:
+            want[self.activity - self.game_start] = 1
+        require(after == want, f"{label}: wrong menu toggle/activity or unrelated Game mutation")
         require(self.flag("PAUSED") == paused ^ int(pause), f"{label}: wrong pause edge")
         require(self.flag("FPS_SHOWN") == shown ^ int(fps), f"{label}: wrong FPS edge")
         self.calls += 1
@@ -244,12 +252,53 @@ def exercise(elf, symbols, layout, budget):
     cpu.scan(CHORD | {"space"}, expected=True, label="title chord plus SPACE")
     scenarios.append("existing SPACE/F edge behavior and simultaneous shortcuts")
 
+    for mode in layout["modes"]:
+        for selected in (0, 1):
+            cpu = fresh()
+            cpu.mem[cpu.story] = selected
+            cpu.scan(("s",), mode, story=mode == "Title", label=f"{mode}: S, selected {selected}")
+            # SIM consumes activity; holding S must not continually defer attract.
+            cpu.mem[cpu.activity] = 0
+            cpu.scan(("s",), mode, label=f"{mode}: held S")
+            cpu.scan(("s",), "Title", label=f"{mode}: held into Title")
+            cpu.scan((), "Title")
+            cpu.scan(("s",), "Title", story=True, label=f"{mode}: fresh Title S")
+    fresh().scan(("s", "shift"), story=True, label="shifted S selects story")
+    scenarios.append("Title-only S toggles both ways, activity once, held-key and mode-change guards")
+
+    for joy in (1, 2, 4, 8, 16, 31):
+        for joy1, joy2 in ((joy, 0), (0, joy), (joy, joy)):
+            fresh().scan((), joy1=joy1, joy2=joy2, label=f"joystick {joy1}/{joy2} cannot fake S")
+            # S shares column 5 with F and C=. Joystick-selected rows must not
+            # let either real key impersonate S through the matrix.
+            for substitute, row in (("f", 4), ("cbm", 128)):
+                fresh().scan((substitute,), joy1=joy1, joy2=joy2 | row,
+                             label=f"joystick-selected {substitute} cannot fake S")
+    for joy1, joy2 in ((0, 2), (31, 31)):
+        cpu = fresh()
+        cpu.scan(("s",), story=True)
+        cpu.scan(("s",), joy1=joy1, joy2=joy2, label="S held with contaminated idle")
+        cpu.scan(("s",), label="joystick release does not rearm S")
+        cpu.scan(())
+        cpu.scan(("s",), story=True)
+        cpu = fresh()
+        cpu.scan(("s",), joy1=joy1, joy2=joy2, label="S initially contaminated")
+        cpu.scan(("s",), label="initial contamination clears without an edge")
+        cpu.scan(())
+        cpu.scan(("s",), story=True)
+    fresh().scan(("s",), joy2=16, story=True, label="S and joystick FIRE may coexist")
+    cpu = fresh()
+    cpu.scan(CHORD | {"s", "f", "space"}, expected=True, fps=True, story=True,
+             label="S with existing shortcuts on Title")
+    cpu.scan(CHORD | {"s", "f", "space"}, label="held simultaneous shortcuts")
+    scenarios.append("S idle filtering, both joystick ports, cross-row impostors and simultaneous shortcuts")
+
     return {"scenarios": scenarios, "fixtures": len(machines),
             "scanner_calls": sum(cpu.calls for cpu in machines),
             "maximum_cpu_cycles_per_call": max(cpu.max_cycles for cpu in machines),
             "maximum_instructions_per_call": max(cpu.max_steps for cpu in machines),
             "invariants": ["IRQ exclusion during CIA scan", "CIA ports restored to input",
-                           "balanced native stacks", "only menu song selector may change in Game"]}
+                           "balanced native stacks", "only menu selectors/activity may change in Game"]}
 
 
 def main():
@@ -265,10 +314,11 @@ def main():
     elf, symbols = load_elf(args.elf)
     raw_symbols = {symbol.name: symbol.address for symbol in elf.symbols}
     layout = SMOKE["dwarf_game_layout"](args.elf, args.llvm_dwarfdump, raw_symbols, args.report.parent)
-    field = layout["fields"].get(SELECTOR)
-    require(field is not None and field["type"] == "bool", f"missing native Game::{SELECTOR} bool")
-    require(layout["address"] + field["offset"] < symbols["__game_state_end"].address,
-            "menu song selector exceeds native Game storage")
+    for name in (SELECTOR, STORY, "menu_activity"):
+        field = layout["fields"].get(name)
+        require(field is not None and field["type"] == "bool", f"missing native Game::{name} bool")
+        require(layout["address"] + field["offset"] < symbols["__game_state_end"].address,
+                f"menu field {name} exceeds native Game storage")
     report = {"elf_sha256": hashlib.sha256(args.elf.read_bytes()).hexdigest(),
               "scope": "Linked PIXELS scanner; digital CIA matrix and joystick model, not physical keyboard timing",
               "layout": layout, "passed": False}
