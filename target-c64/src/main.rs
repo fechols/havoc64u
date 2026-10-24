@@ -1028,7 +1028,7 @@ unsafe fn setup_shadows() {
         shadows.render_unsorted(
             RENDERER.assume_init_mut(),
             ground_y,
-            havoc::shadow::SHADOW_COLOR,
+            game.shadow_color(),
         );
     }
 }

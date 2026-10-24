@@ -968,11 +968,11 @@ fn customize_stage_models(info: StageInfo, models: &mut [Model]) {
                 &mut carrier,
                 [-105, -25, -220],
                 [105, 15, 170],
-                [11, 12, 15],
+                [6, 14, 15],
             );
             model_box(&mut carrier, [-28, 15, 15], [28, 60, 105], [6, 14, 3]);
-            model_box(&mut carrier, [-165, -15, -95], [-105, 25, 205], [11, 12, 8]);
-            model_box(&mut carrier, [105, -15, -95], [165, 25, 205], [11, 12, 8]);
+            model_box(&mut carrier, [-165, -15, -95], [-105, 25, 205], [6, 14, 8]);
+            model_box(&mut carrier, [105, -15, -95], [165, 25, 205], [6, 14, 8]);
             models[CARRIER as usize] = carrier;
             for (i, face) in models[TURRET as usize].1.iter_mut().enumerate() {
                 face[3] = [11, 15, 6, 14][i % 4];

@@ -31,8 +31,8 @@ pub struct Vec3 {
     pub z: i16,
 }
 
-// The player and selected ground actors preserve their coverage against exterior
-// terrain, including embedded bases, without changing other foreground ordering.
+// The player, selected ground actors and the Dreadnought preserve coverage
+// against exterior terrain and ground shadows without changing foreground order.
 pub(crate) const TERRAIN_CLEAR_GEOMETRY: u8 = 0x20;
 pub(crate) const EXTERIOR_TERRAIN: u8 = 0x40;
 pub trait GeometrySink {

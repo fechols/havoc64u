@@ -1131,3 +1131,33 @@ fn orbital_meshes_fit_the_unchanged_cache_and_keep_tumbling_obstacles_centered()
         }
     }
 }
+
+#[test]
+fn dreadnought_blue_hull_preserves_its_size_and_clearance_above_the_gray_deck() {
+    let bytes = baked_assets::model_bank(16);
+    let bank = AssetBank::new(&bytes).unwrap();
+    let mut min = [i16::MAX; 3];
+    let mut max = [i16::MIN; 3];
+    for vertex in 0..bank.vertex_count(CARRIER) {
+        let point = bank.vertex(CARRIER, vertex);
+        // The yellow markings are the highest surface of the scenery deck.
+        assert!(point.y > -103, "boss vertex intersects the flight deck");
+        for (axis, value) in [point.x, point.y, point.z].into_iter().enumerate() {
+            min[axis] = min[axis].min(value);
+            max[axis] = max[axis].max(value);
+        }
+    }
+    assert_eq!(min, [-332, -52, -440]);
+    assert_eq!(max, [332, 120, 412]);
+
+    // The four closed boxes are the main hull, bridge, and two nacelles.
+    // Check each large hull component so a blue bridge alone cannot satisfy
+    // the contrast requirement while the flight deck remains gray on gray.
+    for (faces, accent) in [(0..12, 15), (24..36, 8), (36..48, 8)] {
+        let mut palette = 0u16;
+        for face in faces {
+            palette |= 1 << bank.face(CARRIER, face).1;
+        }
+        assert_eq!(palette, (1 << 6) | (1 << 14) | (1 << accent));
+    }
+}

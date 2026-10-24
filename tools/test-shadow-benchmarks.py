@@ -4,14 +4,38 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
+from unittest import mock
 
 spec = importlib.util.spec_from_file_location(
     'comparison', Path(__file__).with_name('compare-shadow-benchmarks.py'))
 comparison = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(comparison)
 
+spec = importlib.util.spec_from_file_location(
+    'shadow_driver', Path(__file__).with_name('bench-shadows.py'))
+driver = importlib.util.module_from_spec(spec)
+# Load the driver's pure checks, stopping before its command-line/emulator setup.
+with mock.patch('argparse.ArgumentParser.parse_args', side_effect=SystemExit):
+    try:
+        spec.loader.exec_module(driver)
+    except SystemExit:
+        pass
+
 
 class ShadowEvidence(unittest.TestCase):
+    def test_native_shadow_ink_matches_the_level_and_rejects_wrong_commands(self):
+        for stage in range(18):
+            color = 0 if stage == 16 else 11
+            with self.subTest(stage=stage):
+                self.assertEqual(driver.validate_shadow_ink(
+                    stage, [{'reserved': 0x40, 'color': color}]), color)
+                with self.assertRaises(AssertionError):
+                    driver.validate_shadow_ink(
+                        stage, [{'reserved': 0x40, 'color': 11 if color == 0 else 0}])
+                with self.assertRaises(AssertionError):
+                    driver.validate_shadow_ink(
+                        stage, [{'reserved': 0, 'color': color}])
+
     def test_black_ordinary_geometry_is_not_mistaken_for_a_shadow(self):
         base = [{'reserved': 0x40, 'color': 0}, {'reserved': 0, 'color': 5}]
         old = [base[0], {'reserved': 0xc0, 'color': 11}, base[1]]

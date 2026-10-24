@@ -69,7 +69,11 @@ fn compare_scene(game: &Game) -> (u16, u8) {
     );
     assert!(frame.caster_count() <= 64);
     for command in &commands(&shaded)[frame.base_commands() as usize..] {
-        assert_eq!(command[14], 11, "shadow ink in stage {stage}");
+        assert_eq!(
+            command[14],
+            if stage == 16 { 0 } else { 11 },
+            "shadow ink in stage {stage}"
+        );
         assert_eq!(command[15], 0x40, "shadow flags in stage {stage}");
     }
     if game.shadow_ground_y().is_none() {

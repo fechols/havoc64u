@@ -14,9 +14,10 @@ keeps the enable rules: Lowland Approach through Carrier Assault and
 Space Carrier are on; the other five orbital levels are off. Orbital crossings
 and the ascent are off while scenery moves away from the fixed plane. The named
 settings compile into three enable bytes without changing the checked stage
-format. Every enabled level and terrestrial crossing uses C64 dark gray 11,
-defined once as `SHADOW_COLOR` in `src/shadow.rs`. No palette lookup or color
-change is needed at transition entry, during the crossing, or on exit.
+format. `Game::shadow_color()` selects black 0 for Space Carrier so silhouettes
+remain visible against both gray deck shades. Other enabled levels and
+terrestrial crossings retain C64 dark gray 11, defined as `SHADOW_COLOR` in
+`src/shadow.rs`. Host previews and the native renderer use the same selection.
 Birds, crossing transports, and meteors are background animations and cast no
 ground shadows. The player and its projectiles retain their shadows during
 terrestrial crossings.
@@ -28,8 +29,8 @@ cover models, projectiles, pickups and orbital scenery. Their outline
 coordinates use shifts and additions; each vertex receives the same
 `-105 - camera_y` height before ordinary perspective projection. Scenery geometry,
 slopes, deck edges, raised objects and occlusion do not affect the silhouette.
-Caster centers at or below the plane are skipped. Shadows use a single solid
-dark gray ink without sampling or recoloring the surface beneath them.
+Caster centers at or below the plane are skipped. Shadows use one solid ink
+per level without sampling or recoloring the surface beneath them.
 They can blend into matching ground patches; overlap with scenery objects or
 another shadow is intentional.
 
@@ -38,14 +39,20 @@ Ordinary geometry finishes first. Shadows use the actual unused entries of the
 append-only transaction: insufficient command capacity rolls back its entire
 silhouette while preserving every ordinary command. Ordinary commands keep
 their stable depth order; shadow commands form a final suffix painted by the
-ordinary rasterizer. They carry neither sky nor terrain-clear flags. No receiver
+ordinary rasterizer. They carry the exterior-terrain flag, so terrain-protected
+geometry remains visible through the shadow pass. The Space Carrier protects
+its entire Dreadnought assembly (hull, live turrets and exposed core); its deck
+and guide strips also use exterior-terrain flags to prevent average-depth
+overdraw. Parked ships retain ordinary ordering and sit outside the boss's
+engine span. The blue boss armor separates it from the gray deck, with 53 world
+units between the quantized hull bottom and floor. No receiver
 records, parent links, plane normals, surface clipping or special shadow raster
 path remain. The renderer stays 4,102 bytes, commands stay 16 bytes, Game uses
 640 bytes with Story selection, and model banks stay 2,048 bytes. The 64-caster frame uses 711 bytes
 on the native target (776 on the host), down from 5,768 native bytes. It remains
 bounded to 1,024 bytes of caller-owned scratch, reused before raster preparation.
 
-The native driver transfers one 10,936-byte SHADOW image after GEOMETRY. Its entry
+The native driver transfers one 11,026-byte SHADOW image after GEOMETRY. Its entry
 generates enabled shadows, then sorts and prepares the complete command list.
 Disabled levels collect no caster descriptors and load only the 2,874-byte
 ordinary sorting and preparation prefix; an audited guarded entry prevents

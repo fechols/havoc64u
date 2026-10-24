@@ -2129,10 +2129,18 @@ mod tests {
                         scene.0.len() <= raw_face_limit(None) as usize,
                         "stage {section}, tick {tick}"
                     );
-                    assert!(scene
-                        .0
-                        .iter()
-                        .all(|f| f.1 < 16 && f.2 & EXTERIOR_TERRAIN == 0));
+                    let mut deck_faces = 0;
+                    for (points, color, flags) in &scene.0 {
+                        assert!(*color < 16);
+                        if flags & EXTERIOR_TERRAIN != 0 {
+                            assert_eq!(section, 16, "only the carrier has a protected deck");
+                            let world_y = points[0].y + camera;
+                            assert!(matches!(world_y, -105 | -103));
+                            assert!(points.iter().all(|p| p.y + camera == world_y));
+                            deck_faces += 1;
+                        }
+                    }
+                    assert_eq!(deck_faces, if section == 16 { 24 } else { 0 });
                     let mut renderer = crate::render::Renderer::new();
                     renderer.begin(0);
                     for &(p, color, flags) in &scene.0 {

@@ -3,7 +3,7 @@
 use crate::{render::Renderer, Vec3};
 
 pub const CASTER_CAPACITY: usize = 64;
-/// C64 dark gray, shared by all enabled levels and transitions.
+/// Default C64 dark gray; Space Carrier selects black for its gray deck.
 pub const SHADOW_COLOR: u8 = 11;
 const ZERO: Vec3 = Vec3 { x: 0, y: 0, z: 0 };
 

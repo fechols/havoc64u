@@ -227,7 +227,7 @@ mod terrain_visibility {
     }
 
     #[test]
-    fn foreground_protection_includes_only_ship_and_terrestrial_ground_actors() {
+    fn foreground_protection_includes_ship_ground_actors_and_space_carrier_boss() {
         for level in 0..assets::SEGMENT_COUNT {
             let models = enemies::authored::model_bank(level);
             let bank = AssetBank::new(&models).unwrap();
@@ -309,7 +309,8 @@ mod terrain_visibility {
                 }
             }
 
-            // Boss guns use the same model ID but retain normal ordering.
+            // The Space Carrier shares the deck's exclusion rule. Other boss
+            // guns retain ordinary ordering despite sharing the turret model ID.
             game.actors = [Actor::EMPTY; ACTORS];
             game.boss_started = true;
             game.boss_defeated = false;
@@ -317,10 +318,15 @@ mod terrain_visibility {
             game.boss_right = 1;
             let boss = combat_capture(&game, &bank, 174);
             assert!(boss.0.len() > bank.face_count(assets::CARRIER) as usize);
+            let expected = if game.stage_info.boss_kind == 4 {
+                TERRAIN_CLEAR_GEOMETRY
+            } else {
+                0
+            };
             assert!(boss
                 .0
                 .iter()
-                .all(|face| face.2 & (TERRAIN_CLEAR_GEOMETRY | EXTERIOR_TERRAIN) == 0));
+                .all(|face| face.2 & (TERRAIN_CLEAR_GEOMETRY | EXTERIOR_TERRAIN) == expected));
         }
     }
 
@@ -772,4 +778,5 @@ mod terrain_visibility {
             }
         }
     }
+    include!("space_carrier_visibility_tests.rs");
 }

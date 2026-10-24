@@ -71,13 +71,14 @@ fn panel(sink: &mut SceneSink<'_>, p: [Vec3; 4], color: u8) {
 
 /// Author the exposed upper surface of a deck or mirrored floor strip.
 #[inline(always)]
-fn deck(sink: &mut SceneSink<'_>, p: [Vec3; 4], color: u8) {
+fn deck(sink: &mut SceneSink<'_>, p: [Vec3; 4], color: u8, flags: u8) {
     let points = if p[0].x < p[1].x {
         [p[0], p[3], p[2], p[1]]
     } else {
         p
     };
-    quad(sink, points, color);
+    sink.triangle(points[0], points[1], points[2], color, flags);
+    sink.triangle(points[0], points[2], points[3], color, flags);
 }
 
 /// During a crossing both environments travel completely below the viewport.
@@ -540,6 +541,7 @@ pub fn scenic_carrier(sink: &mut SceneSink<'_>, context: &Decoration) {
             } else {
                 12
             },
+            crate::EXTERIOR_TERRAIN,
         );
         for side in [-1i16, 1] {
             deck(
@@ -567,19 +569,21 @@ pub fn scenic_carrier(sink: &mut SceneSink<'_>, context: &Decoration) {
                     },
                 ],
                 7,
+                crate::EXTERIOR_TERRAIN,
             );
         }
     }
     // Keep an additional near row until its entire hull passes the camera.
     // Alternating sides follow the world row when the 128-tick window advances.
+    // Keep their inward hull tips clear of the Dreadnought's +/-332 nacelles.
     let phase = ((ticks & 127) * 8) as i16;
     for i in 0..3u16 {
         let z = 52 + i as i16 * 1024 - phase;
         if z + 770 >= crate::render::NEAR {
             let x = if ((ticks >> 7).wrapping_add(i)) & 1 == 0 {
-                -330
+                -600
             } else {
-                330
+                600
             };
             hull(sink, x, -40 - travel, z);
         }
@@ -643,6 +647,7 @@ pub fn scenic_gate(sink: &mut SceneSink<'_>, context: &Decoration) {
                 },
             ],
             14,
+            0,
         );
     }
 }

@@ -53,8 +53,8 @@ const DOUBLE_TAP_WINDOW_MS: u16 = 500;
 /// instant is held within this window of the present.
 const CHARGE_FULL_MS: u16 = 2000;
 
-// Per-level switches compile into three bytes. Every enabled level uses the
-// same dark gray ink, including throughout terrestrial transitions.
+// Per-level switches compile into three bytes. Shadow ink is selected separately
+// by shadow_color so the Space Carrier can contrast with its gray deck.
 #[cfg_attr(target_arch = "mos", link_section = ".tables.shadow_levels")]
 static SHADOW_LEVELS: [u8; 3] = {
     #[rustfmt::skip]
@@ -644,6 +644,15 @@ impl Game {
             None
         } else {
             Some(-105 - scene_camera_y(self.mode, self.player.y, self.ticks))
+        }
+    }
+    /// Black separates shadows from the Space Carrier's gray flight deck.
+    #[inline(always)]
+    pub fn shadow_color(&self) -> u8 {
+        if self.stage_id == 16 {
+            0
+        } else {
+            crate::shadow::SHADOW_COLOR
         }
     }
     /// Bind only a validated page belonging to the current checkpoint. Native
@@ -2184,7 +2193,7 @@ impl Game {
             self.render_medal(renderer, bank);
         }
         self.collect_shadow_casters(frame, bank);
-        frame.render(renderer, ground_y, crate::shadow::SHADOW_COLOR);
+        frame.render(renderer, ground_y, self.shadow_color());
     }
 
     /// Collect only value descriptors: the shadow overlay never calls geometry
@@ -2454,6 +2463,12 @@ impl Game {
     fn render_combat(&self, sink: &mut SceneBudget<'_, impl GeometrySink>, bank: &AssetBank<'_>) {
         if self.boss_started && !self.boss_defeated {
             let checkpoint = sink.begin_group();
+            let previous_flags = sink.extra_flags;
+            // The Dreadnought stays above the flight deck. Protect the whole
+            // assembly from long deck triangles and the final ground shadows.
+            if self.stage_info.boss_kind == 4 {
+                sink.extra_flags |= TERRAIN_CLEAR_GEOMETRY;
+            }
             sink.color_override = u8::from(self.boss_hit_flash_ticks > ENEMY_HIT_FLASH_TICKS);
             emit_mesh(
                 sink,
@@ -2514,6 +2529,7 @@ impl Game {
                 );
             }
             sink.color_override = 0;
+            sink.extra_flags = previous_flags;
             sink.finish_group(checkpoint);
         }
         self.render_effects(sink);

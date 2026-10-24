@@ -15,7 +15,11 @@ and REU capacity matching each package when reproducing a historical run.
 Current span summaries require only four-SID PAL and NTSC results. Use
 `--historical-dual-sid` to validate archived matrices containing both SID profiles.
 
-## Uniform dark gray shadows: 2026-10-23
+Space Carrier now selects black shadow ink for contrast with its gray deck;
+other enabled levels and terrestrial crossings retain dark gray. The dated
+measurements below describe their original builds.
+
+## Uniform dark gray shadows: 2026-10-23 (superseded for Space Carrier)
 
 All enabled levels and terrestrial crossings now use C64 dark gray 11. The
 per-level color settings and lookup are removed; only the three-byte enable

@@ -179,6 +179,7 @@ fn stage_shadow_switches_include_the_space_carrier_and_disable_orbital_crossings
     for stage in 0..assets::SEGMENT_COUNT {
         let mut game = populated(stage);
         let enabled = stage < 12 || stage == 16;
+        assert_eq!(game.shadow_color(), if stage == 16 { 0 } else { 11 });
         for mode in [Mode::Playing, Mode::Title, Mode::Attract, Mode::Victory] {
             game.mode = mode;
             game.menu_ticks = 0;
@@ -289,10 +290,13 @@ fn disabled_shadows_match_ordinary_scene_pixels_and_reset_prior_frame_state() {
 }
 
 #[test]
-fn space_carrier_player_and_parked_hulls_cast_visible_flat_deck_shadows() {
+fn space_carrier_retains_visible_player_shadows_and_parked_hull_casters() {
     use crate::render::{Renderer, BAND_PIXELS};
     let mut game = populated(16);
     game.boss_started = false;
+    // The lower chase camera keeps the player's ground footprint comfortably
+    // on screen now that parked hulls sit outside the flight deck.
+    game.player.y = -65;
     game.actors.fill(Actor::EMPTY);
     game.shots.fill(Shot::EMPTY);
     game.pickups.fill(Pickup::EMPTY);
@@ -305,26 +309,30 @@ fn space_carrier_player_and_parked_hulls_cast_visible_flat_deck_shadows() {
     let bank = AssetBank::new(&model_bytes).unwrap();
     let segment_bytes = baked::segment_bank(16);
     let segment = Segment::new(&segment_bytes).unwrap();
-    let mut ordinary = Renderer::new();
-    game.render(&mut ordinary, &bank, &segment);
-    ordinary.finish();
-    let mut shaded = Renderer::new();
-    let mut frame = ShadowFrame::new();
-    game.render_with_shadows(&mut shaded, &mut frame, &bank, &segment);
-    assert!(frame.caster_count() > 1, "player and parked hulls");
-    assert!(frame.shadow_commands() > 0);
-    assert!(frame.rendered_casters() > 0);
     let mut darkened = 0;
-    for band in 0..25 {
-        let mut before = [0; BAND_PIXELS];
-        let mut after = [0; BAND_PIXELS];
-        ordinary.render_band(band, &mut before);
-        shaded.render_band(band, &mut after);
-        darkened += before
-            .iter()
-            .zip(after)
-            .filter(|(a, b)| **a == 12 && *b == 11)
-            .count();
+    // Sample both deck shades instead of depending on one row's initial ink.
+    for phase in [0, 16, 32, 48] {
+        game.stage_ticks = phase;
+        let mut ordinary = Renderer::new();
+        game.render(&mut ordinary, &bank, &segment);
+        ordinary.finish();
+        let mut shaded = Renderer::new();
+        let mut frame = ShadowFrame::new();
+        game.render_with_shadows(&mut shaded, &mut frame, &bank, &segment);
+        assert!(frame.caster_count() > 1, "player and parked hulls");
+        assert!(frame.shadow_commands() > 0);
+        assert!(frame.rendered_casters() > 0);
+        for band in 0..25 {
+            let mut before = [0; BAND_PIXELS];
+            let mut after = [0; BAND_PIXELS];
+            ordinary.render_band(band, &mut before);
+            shaded.render_band(band, &mut after);
+            darkened += before
+                .iter()
+                .zip(after)
+                .filter(|(a, b)| matches!(**a, 11 | 12) && *b == 0)
+                .count();
+        }
     }
     assert!(darkened > 10, "visible deck pixels darkened: {darkened}");
 }

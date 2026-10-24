@@ -13,8 +13,15 @@ bench = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(bench)
 vice = bench.vice
 
-# All enabled levels and transitions use C64 dark gray.
+# Space Carrier uses black against its gray deck; other enabled scenes use gray.
 SHADOW_COLOR = 11
+
+
+def validate_shadow_ink(stage, commands):
+    color = 0 if stage == 16 else SHADOW_COLOR
+    assert all(c['color'] == color and c['reserved'] == 0x40 for c in commands)
+    return color
+
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--package-dir', type=Path, required=True)
@@ -203,8 +210,7 @@ def checks(mon, syms, failures, elf, dwarf_tool, output, result):
                 assert len(shadows) == shadow_counts['command_count']
                 for command in commands:
                     assert not command['reserved'] & ~0x62
-                shadow_color = SHADOW_COLOR
-                assert all(c['color'] == shadow_color and c['reserved'] == 0x40 for c in shadows)
+                shadow_color = validate_shadow_ink(stage, shadows)
                 sample={'cia_phase':phase,'cycles':end['bus_cycles']-start['bus_cycles'],'geometry_cycles':geometry_end['bus_cycles']-start['bus_cycles'],'triangle_count':len(commands),'clear_color':clear,
                         'phase_cycles':phase_cycles,
                         'shadow_counts':shadow_counts,'shadow_color':shadow_color,
