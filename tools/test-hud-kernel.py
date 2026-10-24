@@ -55,7 +55,7 @@ class Machine(publisher.Machine):
             if not self.scroll_call:
                 assert self.p & I, "sprite publication with IRQs enabled"
                 base_y = 54 if self.corner < 2 else 225
-                for displacement in range(-3, 5):
+                for displacement in range(-4, 4):
                     assert not base_y + displacement - 1 <= self.line < base_y + displacement + 22, (
                         "sprite store during possible DMA", self.corner, self.line, hex(address))
             self.writes.append((address, value, self.now))
@@ -82,7 +82,7 @@ class Machine(publisher.Machine):
                 self.commit_end = self.now
         op = self.mem[self.pc]
         extra = (0xa2, 0xa6, 0xbd, 0x99, 0x9d, 0xc9, 0xcd, 0xd1, 0xe0,
-                 0x4a, 0x6a, 0xee, 0xe8, 0xf0, 0x48, 0x68, 0xe9)
+                 0x4a, 0x6a, 0xee, 0xe8, 0xf0, 0x48, 0x68, 0xe9, 0xe5)
         if op not in extra:
             super().step()
             return
@@ -134,14 +134,14 @@ class Machine(publisher.Machine):
         elif op == 0x68:
             self.a = self.nz(self.pop())
             cycles = 4
-        elif op == 0xe9:
-            right = self.byte()
+        elif op in (0xe9, 0xe5):
+            right = self.byte() if op == 0xe9 else self.read(self.byte())
             assert not self.p & D
             result = self.a - right - (not self.p & C)
             overflow = ((self.a ^ right) & (self.a ^ result) & 128) != 0
             self.p = (self.p & ~(C | V)) | (C if result >= 0 else 0) | (V if overflow else 0)
             self.a = self.nz(result)
-            cycles = 2
+            cycles = 2 if op == 0xe9 else 3
         self.now += cycles
         self.steps += 1
         assert self.steps < 100000, "HUD kernel did not terminate"
@@ -229,8 +229,8 @@ def main():
             machine.step()
         expected = {SCROLL: packed, 0xd010: 0xcc}
         for sprite, base_x in enumerate((30, 54, 34, 58, 30, 54, 34, 58)):
-            expected[0xd000 + sprite * 2] = base_x + (packed & 7)
-            expected[0xd001 + sprite * 2] = (54 if sprite < 4 else 225) + (packed >> 3) - 3
+            expected[0xd000 + sprite * 2] = base_x - (packed & 7)
+            expected[0xd001 + sprite * 2] = (54 if sprite < 4 else 225) - ((packed >> 3) - 3)
         assert all(machine.mem[address] == value for address, value in expected.items())
         allowed = set(expected) | {4, 5} | set(range(0x100, 0x200))
         assert all(address in allowed or old == new for address, (old, new) in enumerate(zip(before, machine.mem)))

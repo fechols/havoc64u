@@ -260,13 +260,13 @@ def composite_pixels(bitmap_pixels, state):
 
 
 def sprite_shake_alignment(state):
-    """Verify all eight fixed origins follow the exact bitmap fine scroll."""
+    """Verify all eight fixed origins oppose the exact bitmap displacement."""
     registers = state["registers"]
     dx, dy = registers[0x16] & 7, (registers[0x11] & 7) - 3
     actual = []
     for sprite in range(8):
         corner_x, corner_y = ((3, 4), (133, 4), (3, 175), (133, 175))[sprite // 2]
-        expected = (24 + corner_x * 2 + (sprite % 2) * 24 + dx, 50 + corner_y + dy)
+        expected = (24 + corner_x * 2 + (sprite % 2) * 24 - dx, 50 + corner_y - dy)
         position = (registers[sprite * 2] + (((registers[0x10] >> sprite) & 1) * 256),
                     registers[sprite * 2 + 1])
         if position != expected:
@@ -2517,8 +2517,8 @@ def weapon_checks(mon, syms, failures, elf, dwarf_tool, output, result, video, p
                 else:
                     sprite, axis = divmod(address - 0xd000, 2)
                     corner_x, corner_y = ((3, 4), (133, 4), (3, 175), (133, 175))[sprite // 2]
-                    expected = ((24 + corner_x * 2 + (sprite % 2) * 24 + applied[0]) & 255
-                                if axis == 0 else 50 + corner_y + applied[1] - 3)
+                    expected = ((24 + corner_x * 2 + (sprite % 2) * 24 - applied[0]) & 255
+                                if axis == 0 else 50 + corner_y - (applied[1] - 3))
                 if value != expected:
                     raise RuntimeError(f"Sprite shake register ${address:04x} wrote {value}, expected {expected}")
                 sprite_position_writes += 1

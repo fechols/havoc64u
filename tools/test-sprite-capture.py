@@ -44,7 +44,7 @@ class SpriteCaptureTests(unittest.TestCase):
         self.assertEqual(pixels[at:at + 8], bytes([5, 5, 0, 0, 3, 3, 1, 1]))
         self.assertEqual(pixels[25 * 320 + 6], 5)
 
-    def test_odd_horizontal_shake_preserves_half_bitmap_pixel_alignment(self):
+    def test_odd_horizontal_shake_keeps_opposite_hud_motion_on_hardware_pixels(self):
         sprites = state()
         image = bytearray(64)
         image[0] = 0b11000000
@@ -52,14 +52,15 @@ class SpriteCaptureTests(unittest.TestCase):
         sprites["registers"][0x16] |= 1
         sprites["registers"][0x11] = 0x3c
         for sprite in range(8):
-            sprites["registers"][sprite * 2] += 1
-            sprites["registers"][sprite * 2 + 1] += 1
+            sprites["registers"][sprite * 2] -= 1
+            sprites["registers"][sprite * 2 + 1] -= 1
         self.assertEqual(vice.sprite_shake_alignment(sprites)["offset"], [1, 1])
         source = bytes(x % 16 for y in range(200) for x in range(160))
         pixels = vice.composite_pixels(source, sprites)
         self.assertEqual(pixels[320:326], bytes([0, 0, 0, 1, 1, 2]))
-        self.assertEqual(pixels[5 * 320 + 7:5 * 320 + 9], bytes([1, 1]))
-        self.assertEqual(pixels[5 * 320 + 6], 2)
+        self.assertEqual(pixels[3 * 320 + 5:3 * 320 + 7], bytes([1, 1]))
+        self.assertEqual(pixels[3 * 320 + 7], 3)
+        self.assertEqual(pixels[5 * 320 + 7:5 * 320 + 9], bytes([3, 3]))
 
     def test_high_x_bit_and_sprite_priority(self):
         sprites = state()
@@ -92,6 +93,26 @@ class SpriteCaptureTests(unittest.TestCase):
             changed["registers"][index] += 1
             with self.subTest(register=index), self.assertRaisesRegex(RuntimeError, "shake"):
                 vice.sprite_shake_alignment(changed)
+
+    def test_alignment_accepts_opposite_scroll_and_rejects_same_direction(self):
+        for dx in range(8):
+            for y_scroll in range(8):
+                dy = y_scroll - 3
+                sprites = state()
+                registers = sprites["registers"]
+                registers[0x16] = 0x18 | dx
+                registers[0x11] = 0x38 | y_scroll
+                for sprite in range(8):
+                    registers[sprite * 2] -= dx
+                    registers[sprite * 2 + 1] -= dy
+                with self.subTest(offset=(dx, dy)):
+                    self.assertEqual(vice.sprite_shake_alignment(sprites)["offset"], [dx, dy])
+                    if dx or dy:
+                        for sprite in range(8):
+                            registers[sprite * 2] += 2 * dx
+                            registers[sprite * 2 + 1] += 2 * dy
+                        with self.assertRaisesRegex(RuntimeError, "shake"):
+                            vice.sprite_shake_alignment(sprites)
 
     def test_commit_timing_accepts_no_dirty_corners_and_guard_retry(self):
         symbols = dict(hud_publish_guard=0x4000, hud_publish_commit=0x4010, hud_publish_done=0x4050)
