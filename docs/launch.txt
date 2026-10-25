@@ -1,4 +1,4 @@
-H.A.V.O.C. v0.1.4 - Heavy Assault Vessel: Orbital Combat
+H.A.V.O.C. v0.1.5 - Heavy Assault Vessel: Orbital Combat
 
 Requires a C64 Ultimate at 64 MHz with 16 MiB of REU memory and a joystick
 connected to port 2. The supplied configuration enables the four built-in SIDs
@@ -26,9 +26,11 @@ Right 1 for gentle headphone separation.
 If startup reports a mismatch or invalid REU data, reload this package's REU
 at zero before running its PRG again.
 
-When upgrading from any earlier version, including v0.1.2, replace all three
+When upgrading from any earlier version, including v0.1.4, replace all three
 runtime files and re-import havoc.cfg for the current 16 MiB REU and audio
 settings. Load the new havoc.reu at address zero before running the new havoc.prg.
+This release uses the compact v17 internal layout; earlier PRG and REU files
+must not be mixed with this package.
 
 Turn your joystick's hardware autofire off. The game supplies its own autofire;
 controller-generated fire pulses can accidentally spend your bombs.

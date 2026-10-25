@@ -27,9 +27,11 @@ Fly an original 3D rail shooter for the **64 MHz C64 Ultimate**. Skim green hill
 - **Normal and Story modes** — Start with three lives, or choose 99 lives to explore the full campaign.
 - **Punchy impacts** — Feel hits and bombs through screen shake and flashes.
 
+Version 0.1.5 improves the encoding of all twenty-one soundtrack recordings, adds a colorful startup splash, and lets you preview every song with CTRL + Commodore + DEL at the title or during attract mode. A more compact REU layout makes room for an extra 512 KiB of music codebooks, and parked Space Carrier hulls no longer cast shadows onto the flight deck.
+
 Version 0.1.4 adds a two-second afterburner burst with its own HUD gauge, a final Gate Guardian encounter that grows from one boss to two and then four, and a single-pixel aiming reticle that stays hidden behind the ship and exhaust. More detailed orbital scenery, clearer Space Carrier visibility, and revised cockpit readouts make the flight easier to follow.
 
-Version 0.1.3 includes twenty-one original digital recordings composed for H.A.V.O.C. by William Echols. All eighteen stages have their own songs; Shattered Moon plays Lunar Awe. Mission Failed plays after losing all lives, and Galactic Dash celebrates victory. Stage music, Mission Failed, and Galactic Dash use 16 kHz, 3-bit mono compression with a 10 ms delay between outputs. Hammond Rocker retains true stereo, and SID combat effects remain active. Every song keeps its full length, with one encoding per recording. See the [soundtrack implementation notes](docs/digital-music-handoff.md#current-development-status-dlt4).
+Version 0.1.3 includes twenty-one original digital recordings composed for H.A.V.O.C. by William Echols. All eighteen stages have their own songs; Shattered Moon plays Lunar Awe. Mission Failed plays after losing all lives, and Galactic Dash celebrates victory. Stage music, Mission Failed, and Galactic Dash use 16 kHz, 3-bit mono compression with a 10 ms delay between outputs. Hammond Rocker retains true stereo, and SID combat effects remain active. Every song keeps its full length, with one encoding per recording. See the [soundtrack implementation notes](docs/digital-music-handoff.md#current-development-status-dlt5).
 
 The four-SID effects engine runs in resident assembly at 50 Hz. Each chip acts as one instrument with three hardware voices shaping its attack, body, and tail. Each effect uses at most one SID per channel; a stereo bomb leaves one left and one right chip available for ship explosions, and repeating it restarts its existing pair. Shots and impacts follow their screen position with a narrow center band and gentle headphone separation. Pitch and pulse-width movement, staged waveforms, sync, ring modulation and filter sweeps shape the sound. Track changes fade the outgoing digital music for about one second before the next song starts, without a crossfade. Validation and the sustained-combat CPU measurements are tracked in the [audio implementation notes](docs/hardware.md#quad-sid-effects).
 
@@ -61,7 +63,7 @@ Screenshots: matching scenes from the **physical C64 Ultimate playthrough record
 
 ## Download and launch
 
-**[Download H.A.V.O.C. v0.1.4](https://github.com/fechols/havoc64u/releases/download/v0.1.4/havoc-v0.1.4.zip)** — the complete eighteen-stage campaign with twenty-one digital songs, four-SID combat effects, and optional 99-life Story mode. It uses the C64 Ultimate's built-in audio; no extra chips or hardware installation needed.
+**[Download H.A.V.O.C. v0.1.5](https://github.com/fechols/havoc64u/releases/download/v0.1.5/havoc-v0.1.5.zip)** — the complete eighteen-stage campaign with twenty-one digital songs, four-SID combat effects, and optional 99-life Story mode. It uses the C64 Ultimate's built-in audio; no extra chips or hardware installation needed.
 
 You need a **C64 Ultimate running at 64 MHz**, **16 MiB of REU memory**, and a joystick connected to **port 2**. The supplied configuration enables Ultimate Audio and sets the speed, memory, and SID routing. A stock C64 cannot run the game.
 
@@ -80,7 +82,7 @@ The compact v17 internal package layout gives the 21-song soundtrack an extra
 512 KiB of codebooks while retaining 3-bit audio. Replace both the PRG and REU
 when moving from an earlier internal layout, even if the release name matches.
 
-When upgrading from any earlier version, including v0.1.3, replace all three runtime files and re-import `havoc.cfg` to apply the current 16 MiB REU and audio settings. Load the new `havoc.reu` at address zero before running the new `havoc.prg`.
+When upgrading from any earlier version, including v0.1.4, replace all three runtime files and re-import `havoc.cfg` to apply the current 16 MiB REU and audio settings. Load the new `havoc.reu` at address zero before running the new `havoc.prg`.
 
 **Turn your joystick's hardware autofire off.** The game supplies its own autofire; controller-generated fire pulses can accidentally spend your bombs.
 
@@ -122,7 +124,7 @@ Secret music preview: press **CTRL + C= (Commodore) + DEL** at the title or duri
 
 ## Help
 
-See the [setup and troubleshooting guide](docs/hardware.md) for help getting started, or the [release notes](https://github.com/fechols/havoc64u/releases/tag/v0.1.4) for what's new. Found a problem? [Report it](https://github.com/fechols/havoc64u/issues) with your hardware, video standard, and what happened.
+See the [setup and troubleshooting guide](docs/hardware.md) for help getting started, or the [release notes](https://github.com/fechols/havoc64u/releases/tag/v0.1.5) for what's new. Found a problem? [Report it](https://github.com/fechols/havoc64u/issues) with your hardware, video standard, and what happened.
 
 ## License
 

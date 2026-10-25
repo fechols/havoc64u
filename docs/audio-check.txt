@@ -47,9 +47,10 @@ Check all 21 selections and the wrap back to Hammond Rocker. Holding DEL must
 advance only once. Let attract mode begin, confirm the selected song continues,
 then start a run and confirm normal stage music returns.
 
-DLT5 changes books roughly every 30 ms. Compare its previews under
-target/digital-music/dlt5 with the previous recordings at matched listening
-levels, focusing on attacks, cymbals, sustained tones, quiet passages, and
+DLT5 changes books roughly every 20.9 ms. Compare the selected previews listed
+in target/digital-music/quality-experiments/quality-report.json with the previous
+recordings at matched listening levels, focusing on attacks, cymbals,
+sustained tones, quiet passages, and
 segment/loop seams. Confirm that the more frequent book loads do not introduce
 dropouts during combat or song changes. The quality report records coding-error
 and peak measurements; those measurements do not replace this listening check.

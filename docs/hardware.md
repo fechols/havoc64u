@@ -1,6 +1,6 @@
 # H.A.V.O.C. hardware and build notes
 
-H.A.V.O.C. (Heavy Assault Vessel: Orbital Combat) targets the C64 Ultimate at 64 MHz with its built-in REU configured to 16 MB (16 MiB). The v0.1.4 package uses Ultimate Audio for digital music and built-in UltiSIDs for combat effects; the SID soundtrack has been removed. All twelve oscillators and four filters are dedicated to effects. All eighteen stages have their own recordings, and Mission Failed plays after losing all lives. No physical SID chips are required. Import `havoc.cfg`, load `havoc.reu` at REU address zero, then run `havoc.prg`. Keep all three files from the same build together. Historical 1 MiB, 8 MiB and v0.1.2 packages retain their original memory and soundtrack behavior when reproducing older results.
+H.A.V.O.C. (Heavy Assault Vessel: Orbital Combat) targets the C64 Ultimate at 64 MHz with its built-in REU configured to 16 MB (16 MiB). The v0.1.5 package uses Ultimate Audio for digital music and built-in UltiSIDs for combat effects; the SID soundtrack has been removed. All twelve oscillators and four filters are dedicated to effects. All eighteen stages have their own recordings, and Mission Failed plays after losing all lives. No physical SID chips are required. Import `havoc.cfg`, load `havoc.reu` at REU address zero, then run `havoc.prg`. Keep all three files from the same build together. Historical 1 MiB, 8 MiB and v0.1.2 packages retain their original memory and soundtrack behavior when reproducing older results.
 
 The configuration selects the C64U turbo registers, 64 MHz CPU speed, disabled badline timing, and quiet bus operation. The runtime programs the turbo register at startup and checks that the setting is available. An ordinary 1 MHz C64 is not a supported execution target.
 
@@ -427,9 +427,9 @@ The 50 Hz CIA1 IRQ continues to sample input and run SID effects during DAC play
 
 [Host backend tests](../tests/digital_backend.rs) independently decode catalog assets through a sampler model, including complete loops, both slots, mono delay, cancellation/replacement, scratch reuse, corrupted data and underruns. [Effects tests](../tests/quad_audio.rs) check allocation, synthesis and bomb compatibility. The [linked native-player harness](../tools/test-digital-kernel.py) checks assembled code, ABI, layout, timing and effects continuity through DAC handoffs. Host-model success does not establish native throughput, physical sampler behavior, perceived quality or final mixer balance; those require their own current-build reports and Ultimate listening checks.
 
-**Earlier complete twenty-one-track build validation:** 452 host tests pass (two ignored), along with ten packaging tests, four SFX-profile tests, 23 SFX benchmark-tool tests, 24 encoder tests, and five catalog tests. Production memory-layout, overlay, IRQ-frame, and REU packing checks pass. The matching PAL/NTSC native audio reports each pass 160 assembly cases, all twenty-one tracks and 24 handoffs, checking 2,469,487 PAL / 2,460,962 NTSC decoded frames. All eighteen stages, five boss continuities, defeat/restart, mono victory, protected ascent, handoffs and fault handling pass. Initial priming takes seven stereo or nine mono service visits, and total decoding stays within 250 ms of PCM per service call. See the [current soundtrack validation](digital-music-handoff.md#current-development-status-dlt4) for report paths and binary identities. These native execution models do not measure physical Ultimate throughput, mixer balance or listening quality; use the [hardware comparison procedure](audio-check.txt) for that acceptance.
+**Earlier complete twenty-one-track build validation:** 452 host tests pass (two ignored), along with ten packaging tests, four SFX-profile tests, 23 SFX benchmark-tool tests, 24 encoder tests, and five catalog tests. Production memory-layout, overlay, IRQ-frame, and REU packing checks pass. The matching PAL/NTSC native audio reports each pass 160 assembly cases, all twenty-one tracks and 24 handoffs, checking 2,469,487 PAL / 2,460,962 NTSC decoded frames. All eighteen stages, five boss continuities, defeat/restart, mono victory, protected ascent, handoffs and fault handling pass. Initial priming takes seven stereo or nine mono service visits, and total decoding stays within 250 ms of PCM per service call. See the [current soundtrack validation](digital-music-handoff.md#current-development-status-dlt5) for report paths and binary identities. These native execution models do not measure physical Ultimate throughput, mixer balance or listening quality; use the [hardware comparison procedure](audio-check.txt) for that acceptance.
 
-Before the six stage recordings were added, the three-asset DLT4 build passed 160 assembly oracle/ABI cases and complete PAL/NTSC native playback checks. Its modeled steady stereo service cost about 159 ms per audio second on PAL and 153 ms on NTSC; mono cost about 71/68 ms. Stereo servicing was approximately three times faster than the prior player, including modeled DMA cost. These are historical measurements of that build, not validation of the current twenty-one-asset catalog and stage mapping. See the [handoff measurements](digital-music-handoff.md#current-development-status-dlt4) for the model, comparison basis and report paths. Current-build timing and physical Ultimate listening require their own acceptance checks.
+Before the six stage recordings were added, the three-asset DLT4 build passed 160 assembly oracle/ABI cases and complete PAL/NTSC native playback checks. Its modeled steady stereo service cost about 159 ms per audio second on PAL and 153 ms on NTSC; mono cost about 71/68 ms. Stereo servicing was approximately three times faster than the prior player, including modeled DMA cost. These are historical measurements of that build, not validation of the current twenty-one-asset catalog and stage mapping. See the [handoff measurements](digital-music-handoff.md#current-development-status-dlt5) for the model, comparison basis and report paths. Current-build timing and physical Ultimate listening require their own acceptance checks.
 
 The [DLT3 handoff snapshot](digital-music-handoff.md#havoc-digital-music-compression-and-real-time-playback-handoff) preserves the former 24 kHz, four-bit, signed-16 stereo design and measurements. The v0.1.2 release validation below describes that historical package, not DLT4. Keep matching PRG, REU and configuration files together, and re-import the configuration when upgrading.
 
@@ -540,6 +540,34 @@ the package. `target/single-ultisid/validation-summary.json` ties together these
 reports, host tests, audits and package hashes. These monitor-assisted checks are
 not continuous campaign playthroughs or physical-machine measurements; four-UltiSID
 listening and shared mixer balance still need physical-hardware confirmation.
+
+## v0.1.5 release validation (2026-10-25)
+
+The release includes the DLT5 soundtrack quality improvements, expanded music
+codebooks in the compact v17 REU layout, all-song preview, refined startup splash,
+full initial music-buffer readiness, and parked Space Carrier shadow correction.
+The complete build ran through `scripts/build.sh` in Ubuntu-24.04 WSL.
+
+- **514 host tests passed**, with 2 fixture-export tests ignored. All 10 packaging, 4 SFX-profile, 23 SFX benchmark-tool, 10 catalog, 34 encoder, 15 quality-pipeline, 24 regeneration, and 20 splash-converter tests passed.
+- **Native startup and memory:** poisoned-RAM splash startup and 738 REU-loader cases passed, alongside production layout, overlay, IRQ-frame, and package audits. All 201 layout and 103 overlay rejection fixtures passed. The final build retains 137 bytes of resident headroom.
+- **PAL/NTSC digital audio:** 160 assembly decoder cases, all 21 songs, 24 transitions and 11 corruption cases per standard passed against the release binaries. The models checked 2,733,167 PAL and 2,723,515 NTSC frames. Separate startup checks confirmed a complete 32,768-frame initial music buffer before playback and bounded subsequent refills.
+- **Keyboard and emulator gameplay:** 243 native keyboard fixtures and 786 scans passed. PAL/NTSC runs passed splash preservation and first-frame replacement, controls, afterburner, pause, weapons, multi-phase bosses, HUD/reticle clipping, stage transitions, checkpoints, victory/restarts, attract mode, and Normal/Story lifecycle. All four emulator runs finished with zero reticle interrupt misses.
+- **Release ZIP:** all six entries passed integrity checks and match the validated runtime files, instructions, and licenses byte for byte. Report identities and final file hashes match the frozen release package.
+
+Fresh logs, package identities, native reports, and emulator captures are retained
+under `target/release-v0.1.5-publish/`. Its `validation-summary.json` verifies report
+identities and the unchanged final files against the frozen package manifest.
+The ZIP is 15,855,935 bytes; the REU is 16 MiB.
+
+Native audio results are modeled execution; VICE uses effects-only audio. These checks do not establish physical C64 Ultimate playback timing or listening quality.
+
+| Release artifact | SHA-256 |
+| --- | --- |
+| `havoc.cfg` | `c97d40c3f588049037631716fa4b4c8648214cfc0dc037b7e468aa234ca9c037` |
+| `havoc.prg` | `ac98ef2c3c51327d480283baf42d01c39175f25b6be38f582de133a30ac19a91` |
+| `havoc.reu` | `62935b73e8e5f89c2ff00e60e47050c9f0ddeaf6904a0b25821bcbf0c17b79b9` |
+| `havoc.elf` | `97e565bdb53730e6d37b7342a3f8e16ef49babb5e5be8490be7720eb3b776c26` |
+| `havoc-v0.1.5.zip` | `ed04a79f5b3df24ed37d2bb22be94c1b08e0923cca1ffca4248267080cfe8d26` |
 
 ## v0.1.4 release validation (2026-10-24)
 
@@ -660,7 +688,7 @@ Or from Linux/WSL:
 bash scripts/build.sh
 ```
 
-The complete build runs host and package tests, bakes assets, links one C64 program, audits memory and overlays, and produces matching `havoc.prg`, `havoc.reu`, and `havoc.cfg` files in `dist/`. It also creates `havoc-v0.1.4.zip` with the three runtime files, launch instructions, and game/music licenses. The native build uses `target-c64/target`. Generated packages are ignored by Git; cloning the repository does not supply `dist/`.
+The complete build runs host and package tests, bakes assets, links one C64 program, audits memory and overlays, and produces matching `havoc.prg`, `havoc.reu`, and `havoc.cfg` files in `dist/`. It also creates `havoc-v0.1.5.zip` with the three runtime files, launch instructions, and game/music licenses. The native build uses `target-c64/target`. Generated packages are ignored by Git; cloning the repository does not supply `dist/`.
 
 After changing assets, bake with `cargo +stable run --release -- bake dist`, then run `bash scripts/build-target.sh`. The bake step alone does not produce executable overlays. Use the full build script to run checks and produce the release ZIP. On Windows, `scripts/build-windows.ps1` runs the same build through WSL; its optional output directory receives the single package and ZIP. SID-profile arguments and the `four-sid` Cargo feature have been removed.
 
