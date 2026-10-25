@@ -30,6 +30,17 @@ def main():
     cases = 0
     with tempfile.TemporaryDirectory(prefix="havoc-layout-audit-") as directory:
         damaged = Path(directory) / "damaged.prg"
+        for section_name in ('.splash', '.splash_init'):
+            section = next(section for section in elf.sections if section.name == section_name)
+            for relative in (0, section.size - 1):
+                data = bytearray(original)
+                data[2 + section.address - 0x801 + relative] ^= 1
+                damaged.write_bytes(data)
+                result = check(damaged)
+                assert result.returncode != 0, f'accepted changed {section_name} byte {relative}'
+                assert f'PRG {section_name} differs from ELF' in result.stderr, result.stdout + result.stderr
+                cases += 1
+                print(f'Rejected changed {section_name} byte {relative}')
         for table, count, expected, label in tables:
             symbol = next(symbol for symbol in elf.symbols if symbol.name == table)
             offset = symbol.address - int.from_bytes(original[:2], "little") + 2
@@ -58,6 +69,10 @@ def main():
             print(f"Rejected REU address table phase {phase_id}")
         damaged_elf = Path(directory) / "damaged.elf"
         for name, value, expected in (
+            ("__splash_start", 0x3001, "incorrect packed splash allocation"),
+            ("__splash_end", 0x5712, "incorrect packed splash allocation"),
+            ("__splash_init_start", 0x5710, "incorrect splash initializer allocation"),
+            ("__splash_init_end", 0x7201, "incorrect splash initializer allocation"),
             ("__segment0_start", 0x5ff, "incorrect first mission buffer allocation"),
             ("__segment0_end", 0x801, "incorrect first mission buffer allocation"),
             ("__segment1_start", 0x96ff, "incorrect second mission buffer allocation"),

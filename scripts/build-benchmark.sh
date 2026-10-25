@@ -8,6 +8,7 @@ fi
 root=$(cd "$(dirname "$0")/.." && pwd)
 cd "$root"
 source scripts/env.sh
+python3 tools/encode-splash.py --verify-assets
 renderer=${2:-painter}
 native_features=benchmarks
 default_output=target/bench/instrumented
@@ -39,6 +40,7 @@ cp "$native_prg" "$output/havoc.prg"
 cp "$elf" "$output/havoc.elf"
 python3 tools/check-layout.py "$output/havoc.elf" "$output/havoc.prg" > "$output/memory-map.txt"
 python3 tools/check-overlays.py "$output/havoc.elf"
+python3 tools/test-splash-startup.py "$output/havoc.elf" "$output/havoc.prg"
 python3 tools/test-reu-loader.py "$output/havoc.elf"
 python3 tools/pack-overlays.py "$output/havoc.elf" "$output/havoc.prg" "$output/havoc.reu"
 cargo +stable run --release -- check "$output/havoc.reu"

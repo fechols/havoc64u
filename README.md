@@ -70,6 +70,10 @@ You need a **C64 Ultimate running at 64 MHz**, **16 MiB of REU memory**, and a j
 3. Load `havoc.reu` into the REU at **address zero**.
 4. Run `havoc.prg`, then press fire to launch.
 
+The splash artwork appears as soon as the PRG starts and stays visible during
+package checks, audio calibration, and music-buffer preparation. The first title
+frame draws over it automatically when initialization finishes.
+
 Keep all three files from the **same package and version** together. If startup reports a mismatch or invalid REU data, reload the matching REU at zero before running the PRG again.
 
 The compact v17 internal package layout gives the 21-song soundtrack an extra

@@ -29,6 +29,18 @@ metadata = overlay_audit['Elf'](elf)
 data=prg.read_bytes()
 assert int.from_bytes(data[:2],'little')==0x0801,'PRG must load at0801'
 assert len(data)-2+0x0801==0xa000,'PRG must initialize through9FFF'
+assert (symbols.get('__splash_start'), symbols.get('__splash_end')) == (0x3000, 0x5711), 'incorrect packed splash allocation'
+assert symbols.get('__splash_init_start') == 0x5711 and 0x5711 < symbols.get('__splash_init_end', 0) <= 0x7200, 'incorrect splash initializer allocation'
+for name, start_name, end_name, flags in (
+        ('.splash', '__splash_start', '__splash_end', 2),
+        ('.splash_init', '__splash_init_start', '__splash_init_end', 6)):
+    section = next(section for section in metadata.sections if section.name == name)
+    assert section.kind == 1 and section.flags == flags, f'{name}: incorrect PRG splash section type or permissions'
+    assert (section.address, section.address + section.size) == (symbols[start_name], symbols[end_name]), f'{name}: splash section disagrees with allocation'
+    offset = section.address - 0x801 + 2
+    assert data[offset:offset + section.size] == metadata.contents(section), f'PRG {name} differs from ELF'
+splash = next(section for section in metadata.sections if section.name == '.splash')
+assert all(value < 16 for value in metadata.contents(splash)[9000:]), 'splash color RAM and background must contain valid C64 colors'
 assert symbols.get('__stack')==0xc800,'incorrect main stack'
 assert symbols.get('__irq_stack')==0x7600,'incorrect IRQ stack'
 assert (symbols['__segment0_start'], symbols['__segment0_end']) == (0x600, 0x800), 'incorrect first mission buffer allocation'
@@ -108,6 +120,8 @@ assert symbols['__irq_stack']<=symbols['__raster_prepare_scratch_start']<symbols
 ranges={'.basic_header':(0x801,0x3000),'.text':(0x801,0x3000),'.data':(0x200,low_end),'.bss':(0x200,low_end),'.noinit':(0x200,low_end),'.sfx_state':(0xcd00,0xce00),'.sfx_patches':(0x7200,0x7500),'.startup_checks':(0x8e00,0x9300),'.rodata':(0x7800,0x8000),'.tables':(0x9900,0xa000),'.renderer':(0xcffa,0xe000),'.game_state':(0xc800,0xcb00),'.audio_state':(0xce00,0xcfb0),'.zp.data':(0x22,0xf0),'.zp.bss':(0x22,0xf0),'.zp.noinit':(0x22,0xf0)}
 ranges['.benchmark_resident'] = (0xff20, 0xfffa)
 ranges['.sfx_helpers'] = (0x7800, 0x8000)
+ranges['.splash'] = (0x3000, 0x5711)
+ranges['.splash_init'] = (0x5711, 0x7200)
 used=[]
 phase_sizes={}
 kernel_sizes={}

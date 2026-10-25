@@ -21,7 +21,7 @@ MEMORY {
     scenery_extra (rx) : ORIGIN = 0xE000, LENGTH = 0x0800
     constants (r) : ORIGIN = 0x7800, LENGTH = 0x0800
     tables (r) : ORIGIN = 0x9900, LENGTH = 0x0700
-    /* Empty regions materialize zero-filled holes in the contiguous PRG. */
+    /* The splash occupies the retired overlay hole in the contiguous PRG. */
     image_gap (r) : ORIGIN = 0x3000, LENGTH = 0x4200
     sfx_patches (r) : ORIGIN = 0x7200, LENGTH = 0x0300
     image_sfx_gap (r) : ORIGIN = 0x7500, LENGTH = 0x0300
@@ -117,6 +117,19 @@ SECTIONS {
         *(.data..Lstatic_stack .bss..Lstatic_stack)
     } >low
     INCLUDE zp.ld
+
+    /* Visible before the CRT and REU validation. Both source and initializer
+     * are dead before check_code_package loads any overlay into this window. */
+    .splash : {
+        __splash_start = .;
+        KEEP(*(.splash))
+        __splash_end = .;
+    } >image_gap
+    .splash_init : {
+        __splash_init_start = .;
+        KEEP(*(.splash_init))
+        __splash_init_end = .;
+    } >image_gap
 
     .phase.boot 0x3000 : AT(__reu_boot) {
         __phase_boot_start = .;
@@ -629,6 +642,8 @@ ASSERT(__phase_scenery_aux_size > 0 && __phase_scenery_aux_size <= __reu_code_sl
 
 ASSERT(__rc31 == 0x21, "IRQ save range must match compiler imaginary registers")
 ASSERT(__resident_end <= __phase_run, "resident code overlaps the overlay window at $3000")
+ASSERT(__splash_start == 0x3000 && __splash_end - __splash_start == 10001, "splash must contain bitmap, screen, color RAM and background")
+ASSERT(__splash_init_start == __splash_end && __splash_init_end <= 0x7200, "early splash initializer exceeds the retired overlay window")
 ASSERT(__segment0_start == 0x0600 && __segment0_end == 0x0800 && __segment0_end - __segment0_start == 512, "incorrect first mission buffer allocation")
 ASSERT(ADDR(.noinit) + SIZEOF(.noinit) <= __segment0_start, "low globals overlap the first mission buffer at $0600")
 ASSERT(__segment1_start == 0x9700 && __segment1_end == ORIGIN(tables) && __segment1_end - __segment1_start == 512, "incorrect second mission buffer allocation")

@@ -821,6 +821,115 @@
       }
     },
     "decoder_kernel_bytes_identical": 1426,
-    "native_reports": "target/digital-music/quality-experiments/final-package"
+    "native_reports": "target/digital-music/quality-experiments/final-package",
+    "scope": "Pre-merge quality worktree; package retained under target/digital-music/quality-experiments/final-package"
+  },
+  "merge_validation": {
+    "passed": true,
+    "model": "NMOS6502 at64x bus; DMA1byte/bus tick; sampler6.25MHz/(divider+2)",
+    "host_tests_passed": 514,
+    "host_tests_ignored": 2,
+    "splash_converter_tests_passed": 10,
+    "splash_startup_poisoned_ram_cases": 4,
+    "reu_loader_cases": 738,
+    "resident_headroom_bytes": 137,
+    "prg_bytes": 38913,
+    "package_sha256": {
+      "havoc.elf": "95e1e1295b5f3cf133061a56c05f040b7767d223c1d1fac8869f81fd52329f97",
+      "havoc.reu": "f0d7b85a27e9e072c1f2c0ce6dac82ba6772d84472b4e8d8d4974ef2eba867a7",
+      "havoc.prg": "43ca501840189e90f960c6c02fc13da47ef6268030e545c83b0028e72added8d",
+      "havoc.cfg": "edb4577b4382695a93495737b82d4e25c12955e628a692f35d139750565280e8",
+      "havoc-v0.1.4.zip": "a1082764a1f0cd611e2b374815a7705a1a8d32e6fc6c38e4acea08f91ab93ad4"
+    },
+    "standards": {
+      "pal": {
+        "assembly_kernel_cases": 160,
+        "checked_frames": 2733167,
+        "tracks_checked": 21,
+        "minimum_lead_samples": 10699,
+        "maximum_dma_bytes": 1024,
+        "main_stack_bytes_written": 312,
+        "ring_wraps": 73,
+        "fades": 24,
+        "corruption_scenarios": 11,
+        "expected_underrun_fault": 5,
+        "emulator_sfx_only_passed": true,
+        "fatal_shutdown_passed": true
+      },
+      "ntsc": {
+        "assembly_kernel_cases": 160,
+        "checked_frames": 2723515,
+        "tracks_checked": 21,
+        "minimum_lead_samples": 10604,
+        "maximum_dma_bytes": 1024,
+        "main_stack_bytes_written": 312,
+        "ring_wraps": 73,
+        "fades": 24,
+        "corruption_scenarios": 11,
+        "expected_underrun_fault": 5,
+        "emulator_sfx_only_passed": true,
+        "fatal_shutdown_passed": true
+      }
+    },
+    "startup": {
+      "pal": {
+        "stereo": {
+          "initial_primed_frames": 32768,
+          "bounded_decoder_visits": 7,
+          "ready": 1,
+          "sampler_voice_starts": [
+            1,
+            1
+          ],
+          "first_refill_frames": 4608,
+          "first_refill_decoded_ms": 230.4
+        },
+        "mono": {
+          "initial_primed_frames": 32768,
+          "bounded_decoder_visits": 9,
+          "ready": 1,
+          "sampler_voice_starts": [
+            1,
+            1
+          ],
+          "first_refill_frames": 2816,
+          "first_refill_decoded_ms": 176.0
+        },
+        "emulator_sfx_only_passed": true,
+        "fatal_shutdown_passed": true
+      },
+      "ntsc": {
+        "stereo": {
+          "initial_primed_frames": 32768,
+          "bounded_decoder_visits": 7,
+          "ready": 1,
+          "sampler_voice_starts": [
+            1,
+            1
+          ],
+          "first_refill_frames": 4480,
+          "first_refill_decoded_ms": 224.0
+        },
+        "mono": {
+          "initial_primed_frames": 32768,
+          "bounded_decoder_visits": 9,
+          "ready": 1,
+          "sampler_voice_starts": [
+            1,
+            1
+          ],
+          "first_refill_frames": 2816,
+          "first_refill_decoded_ms": 176.0
+        },
+        "emulator_sfx_only_passed": true,
+        "fatal_shutdown_passed": true
+      }
+    },
+    "reports_sha256": {
+      "merged-pal.json": "9ec882acb9dec1041c938de87cbfd792d95bcd65ddbfe17dbfab63f8005ae24a",
+      "merged-ntsc.json": "ecc00852888e6e6a474e0062ec842feec256d767ba280b6975cc25477ab851e9",
+      "startup.json": "abd09e557633cf554e0502133771dda39b29287bd423ae967bb5d09ba28bd28c"
+    },
+    "scope": "Quality worktree integrated with master ac2db67, preserving splash/startup/scenery changes"
   }
 }

@@ -508,11 +508,11 @@ static HULL_FACES: [[u8; 4]; 12] = [
 // Each compact decoder remains in its own loaded tail. A shared decoder would
 // enlarge every terrestrial scenery image even though it never draws wrecks.
 macro_rules! wreck {
-    ($name:ident, $section:literal, $palette:expr) => {
+    ($name:ident, $section:literal, $palette:expr, $casts_shadow:literal) => {
         #[inline(never)]
         #[cfg_attr(target_arch = "mos", link_section = $section)]
         fn $name(sink: &mut SceneSink<'_>, x: i16, y: i16, z: i16) {
-            if sink.shadow_enabled() {
+            if $casts_shadow && sink.shadow_enabled() {
                 sink.shadow_caster(crate::shadow::Caster {
                     center: Vec3 {
                         x: x + 55,
@@ -539,11 +539,13 @@ macro_rules! wreck {
         }
     };
 }
-wreck!(hull, ".phase.scenery.carrier", [15, 11, 8, 12, 12]);
+// Parked carrier hulls sit outside the flight deck, with no surface below them.
+wreck!(hull, ".phase.scenery.carrier", [15, 11, 8, 12, 12], false);
 wreck!(
     graveyard_hull,
     ".phase.scenery.graveyard",
-    [15, 12, 8, 12, 15]
+    [15, 12, 8, 12, 15],
+    true
 );
 
 #[inline(never)]

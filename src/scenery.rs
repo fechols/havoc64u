@@ -1416,8 +1416,34 @@ mod tests {
     }
 
     #[test]
+    fn space_carrier_side_hulls_remain_visible_without_decorative_casters() {
+        for camera in [-65, 0, 65] {
+            // Two 128-tick rows cover the complete scroll cycle and both side parities.
+            for elapsed in 0..256 {
+                let enabled = shadow_scene(16, elapsed, false, camera, true);
+                let disabled = shadow_scene(16, elapsed, false, camera, false);
+                assert!(
+                    enabled.casters.is_empty(),
+                    "parked hull shadow: tick {elapsed}, camera {camera}"
+                );
+                assert_eq!(enabled.geometry, disabled.geometry);
+                let hull_faces = enabled
+                    .geometry
+                    .0
+                    .iter()
+                    .filter(|face| face.2 & (STATIC_SKY | crate::EXTERIOR_TERRAIN) == 0)
+                    .count();
+                assert!(
+                    matches!(hull_faces, 24 | 36),
+                    "two or three parked hulls must remain: tick {elapsed}, camera {camera}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn decorative_casters_follow_geometry_camera_offsets_exactly_once() {
-        for stage in [12, 13, 14, 15, 16] {
+        for stage in [12, 13, 14, 15] {
             let a = shadow_scene(stage, 150, false, 24, true);
             let b = shadow_scene(stage, 150, false, 56, true);
             assert_eq!(a.casters.len(), b.casters.len());

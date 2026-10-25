@@ -7,6 +7,7 @@ fi
 root=$(cd "$(dirname "$0")/.." && pwd)
 cd "$root"
 source scripts/env.sh
+python3 tools/encode-splash.py --verify-assets
 output=dist
 native_target="$root/target-c64/target"
 (cd target-c64 && CARGO_TARGET_DIR="$native_target" cargo build --release)
@@ -27,6 +28,7 @@ cp "$elf" "$output/havoc.elf"
 python3 tools/check-layout.py "$output/havoc.elf" "$output/havoc.prg" > "$output/memory-map.txt"
 python3 tools/check-overlays.py "$output/havoc.elf"
 python3 tools/check-irq-frames.py "$output/havoc.elf"
+python3 tools/test-splash-startup.py "$output/havoc.elf" "$output/havoc.prg"
 python3 tools/test-reu-loader.py "$output/havoc.elf"
 cat "$output/memory-map.txt"
 python3 tools/pack-overlays.py "$output/havoc.elf" "$output/havoc.prg" "$output/havoc.reu"
