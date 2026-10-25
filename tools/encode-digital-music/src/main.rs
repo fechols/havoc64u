@@ -5,6 +5,7 @@ mod format;
 mod lloyd;
 mod normalize;
 mod resample;
+mod som;
 
 use anyhow::{bail, Context, Result};
 use sha2::{Digest, Sha256};
@@ -227,29 +228,54 @@ fn snr(reference: &[i16], decoded: &[i16]) -> f64 {
 fn main() -> Result<()> {
     let arguments: Vec<_> = env::args_os().collect();
     if arguments.get(1).is_some_and(|arg| arg == "--profile") {
-        let usage = "usage: encode-digital-music --profile stereo20k3|mono16k3 [--codebooks COUNT] input.flac output.dlt preview.wav";
-        if arguments.len() != 6 && arguments.len() != 8 {
+        let usage = "usage: encode-digital-music --profile stereo20k3|mono16k3 [--codebooks COUNT] [--training baseline|beam-refine|som|combined] [--beam-width 32|64|128] [--reference-wav PATH --reference-metadata PATH] input.flac output.dlt preview.wav";
+        if arguments.len() < 6 {
             bail!("{usage}");
         }
         let profile = dlt4::Profile::parse(&arguments[2].to_string_lossy())?;
-        let (books, first_path) = if arguments.len() == 8 {
-            if arguments[3] != "--codebooks" {
+        let mut books = 521;
+        let mut options = dlt4::Options::default();
+        let (mut reference_wav, mut reference_metadata) = (None, None);
+        let mut first_path = 3;
+        let mut seen = std::collections::HashSet::new();
+        while first_path + 3 < arguments.len() {
+            let option = arguments[first_path].to_string_lossy();
+            if !seen.insert(option.to_string()) || first_path + 1 >= arguments.len() - 3 {
                 bail!("{usage}");
             }
-            let books = arguments[4]
-                .to_string_lossy()
-                .parse::<u16>()
-                .context("codebook count must be 1..=65535")?;
-            if books == 0 {
-                bail!("codebook count must be 1..=65535");
+            let value = &arguments[first_path + 1];
+            match option.as_ref() {
+                "--codebooks" => {
+                    books = value
+                        .to_string_lossy()
+                        .parse::<u16>()
+                        .context("codebook count must be 1..=65535")?
+                }
+                "--training" => options.training = dlt4::Training::parse(&value.to_string_lossy())?,
+                "--beam-width" => {
+                    options.beam_width = value
+                        .to_string_lossy()
+                        .parse()
+                        .context("invalid beam width")?
+                }
+                "--reference-wav" => reference_wav = Some(Path::new(value)),
+                "--reference-metadata" => reference_metadata = Some(Path::new(value)),
+                _ => bail!("{usage}"),
             }
-            (books, 5)
-        } else {
-            (521, 3)
-        };
+            first_path += 2;
+        }
+        if first_path + 3 != arguments.len()
+            || reference_wav.is_some() != reference_metadata.is_some()
+            || books == 0
+        {
+            bail!("{usage}");
+        }
+        options.validate()?;
         return dlt4::run(
             profile,
             books,
+            options,
+            reference_wav.zip(reference_metadata),
             Path::new(&arguments[first_path]),
             Path::new(&arguments[first_path + 1]),
             Path::new(&arguments[first_path + 2]),

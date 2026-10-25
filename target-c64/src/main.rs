@@ -231,6 +231,8 @@ extern "C" {
     fn victory_geometry(game: *const (), renderer: *mut Renderer, bank: *const ());
     static __phase_pixels_prefix_size: u8;
     static __phase_pixels_aux_size: u8;
+    static __phase_pixels_aux_reu_bank: u8;
+    static __phase_pixels_aux_reu_offset: u8;
     static __phase_audio_size: u8;
     static __phase_audio_runtime_size: u8;
     static __phase_scenery_size: u8;
@@ -415,25 +417,26 @@ unsafe fn dma(mut reu: u32, mut cpu: u16, mut count: u16) {
 #[inline(never)]
 unsafe fn load_phase(page: u8, size: u16) {
     // Callers select fixed logical phase IDs; the checked linker table maps
-    // them to 4 KiB-aligned slots without widening the hot loader interface.
+    // them to 2 KiB-aligned slots without widening the hot loader interface.
     let reu_page = *__code_reu_pages.get_unchecked(page as usize);
-    let reu_middle = reu_page << 4;
-    let reu_bank = reu_page >> 4;
+    let reu_middle = reu_page << 3;
+    let reu_bank = reu_page >> 5;
     let mut offset = 0u16;
     while offset < size {
         let n = (size - offset).min(1024);
         // Every caller uses a linker size (or a checked prefix),
         // bounded by $4200; startup also validates each full package size.
-        // CPU $3000-$71FF never reaches I/O or wraps. The linker and package
-        // audit keep every slot inside one 64 KiB bank of the 1 MiB image,
-        // so adding its middle byte cannot carry into another REU bank.
+        // CPU $3000-$71FF never reaches I/O or wraps. Compact slots may cross
+        // a 64 KiB source bank; carry the middle byte into the bank register.
+        // Aligned starts and 1 KiB steps keep each individual DMA in one bank.
         // Thus general dma() would emit exactly one identical transfer here.
         // Keep its register order and 1024-byte IRQ-latency limit, avoiding its
         // repeated 32-bit bounds arithmetic for these statically bounded loads.
         word(0xdf02, 0x3000 + offset);
         poke(0xdf04, offset as u8);
-        poke(0xdf05, reu_middle + (offset >> 8) as u8);
-        poke(0xdf06, reu_bank);
+        let (middle, carry) = reu_middle.overflowing_add((offset >> 8) as u8);
+        poke(0xdf05, middle);
+        poke(0xdf06, reu_bank + u8::from(carry));
         word(0xdf07, n);
         poke(0xdf09, 0);
         poke(0xdf0a, 0);
@@ -446,14 +449,14 @@ unsafe fn load_sim(profile: u8) {
     // GEOMETRY, PIXELS and AUDIO reuse this workspace after SIM returns.
     // Reload on every SIM entry; the IRQ never references these helpers.
     dma(
-        (__code_reu_pages[23] as u32) << 12,
+        (__code_reu_pages[23] as u32) << 11,
         0x8e00,
         core::ptr::addr_of!(__phase_sim_aux_prefix_size) as u16,
     );
     // Previous raster/shadow records are dead. SCENERY resets the shadow frame
     // later in this frame, after SIM and its extra helper code have returned.
     dma(
-        ((__code_reu_pages[23] as u32) << 12) + 0x500,
+        ((__code_reu_pages[23] as u32) << 11) + 0x500,
         0xe000,
         core::ptr::addr_of!(__phase_sim_extra_size) as u16,
     );
@@ -961,12 +964,12 @@ unsafe fn update_fps_overlay(mode: havoc::game::Mode) {
 unsafe fn prepare_scenery(current: u8, sounds: &mut TransitionAudio) -> u8 {
     io_on();
     dma(
-        (__code_reu_pages[33] as u32) << 12,
+        (__code_reu_pages[33] as u32) << 11,
         0x8e00,
         core::ptr::addr_of!(__phase_scenery_aux_prefix_size) as u16,
     );
     dma(
-        ((__code_reu_pages[33] as u32) << 12) + 0x500,
+        ((__code_reu_pages[33] as u32) << 11) + 0x500,
         0xe000,
         core::ptr::addr_of!(__phase_scenery_extra_size) as u16,
     );
@@ -986,7 +989,7 @@ unsafe fn prepare_scenery(current: u8, sounds: &mut TransitionAudio) -> u8 {
         };
         io_on();
         dma(
-            ((__code_reu_pages[page] as u32) << 12)
+            ((__code_reu_pages[page] as u32) << 11)
                 + core::ptr::addr_of!(__phase_scenery_base_size) as u32,
             core::ptr::addr_of!(__phase_scenery_base_end) as u16,
             core::ptr::addr_of!(__phase_scenery_earth_tail_size) as u16,
@@ -1030,7 +1033,7 @@ unsafe fn prepare_scenery(current: u8, sounds: &mut TransitionAudio) -> u8 {
 unsafe fn benchmark_load_projection() {
     io_on();
     dma(
-        ((__code_reu_pages[3] as u32) << 12) + 0x3f20,
+        ((__code_reu_pages[3] as u32) << 11) + 0x3f20,
         0x6f20,
         core::ptr::addr_of!(__phase_render_aux_size) as u16,
     );
@@ -1046,7 +1049,7 @@ unsafe fn prepare_geometry(scenery_count: u8, bank: &AssetBank<'_>) {
     {
         io_on();
         dma(
-            ((__code_reu_pages[3] as u32) << 12) + 0x3f20,
+            ((__code_reu_pages[3] as u32) << 11) + 0x3f20,
             0x6f20,
             core::ptr::addr_of!(__phase_render_aux_size) as u16,
         );
@@ -1210,7 +1213,8 @@ unsafe fn draw_pixels() {
     // VIC background takes the frame's clear colour (the cell writer's code 0).
     io_on();
     dma(
-        0x043f20,
+        ((core::ptr::addr_of!(__phase_pixels_aux_reu_bank) as u8 as u32) << 16)
+            | (core::ptr::addr_of!(__phase_pixels_aux_reu_offset) as u32),
         0x6f20,
         core::ptr::addr_of!(__phase_pixels_aux_size) as u16,
     );

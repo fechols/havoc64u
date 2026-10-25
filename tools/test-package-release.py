@@ -47,7 +47,7 @@ class ReleasePackageTests(unittest.TestCase):
         (self.package / "havoc.prg").write_bytes(b"\x01\x08native fixture")
         reu = bytearray(16 * 1024 * 1024)
         reu[:4] = b"SM64"
-        reu[4:8] = (0x534d1000).to_bytes(4, "little")
+        reu[4:8] = (0x534d1100).to_bytes(4, "little")
         reu[17] = 4
         (self.package / "havoc.reu").write_bytes(reu)
         (self.root / "docs/launch.txt").write_bytes(b"Launch instructions\n")
@@ -99,7 +99,7 @@ class ReleasePackageTests(unittest.TestCase):
         path = self.package / "havoc.reu"
         original = path.read_bytes()
         obsolete = original[:4] + (0x534d0900).to_bytes(4, "little") + original[8:]
-        previous = original[:4] + (0x534d0f00).to_bytes(4, "little") + original[8:]
+        previous = original[:4] + (0x534d1000).to_bytes(4, "little") + original[8:]
         for data in (original[:17] + b"\x02" + original[18:], original[:-1],
                      original[:8 * 1024 * 1024], b"NOPE" + original[4:], obsolete, previous):
             with self.subTest(length=len(data), header=data[:18]):

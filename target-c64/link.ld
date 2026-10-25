@@ -39,44 +39,73 @@ INPUT(basic-header.o)
 REGION_ALIAS("c_readonly", ram)
 REGION_ALIAS("c_writeable", low)
 
-/* Package v8 keeps the original logical phase IDs while packing code into
- * 4 KiB-aligned slots. No slot crosses a 64 KiB bank. Bank 4 remains PIXELS-only
- * so its split-transfer audit can distinguish prefix/helper DMA by bank. */
+/* Compact package: the fixed logical IDs address 2 KiB units in the first
+ * 512 KiB. Reservations may cross 64 KiB banks; the bounded loader carries
+ * the source bank between its 1 KiB transfers. */
 __reu_size = 0x1000000;
-/* The DMC1 manifest directory and its contiguous DLT5 assets share this region. */
-__reu_digital_music = 0x100000;
-/* Legacy symbol now aliases the manifest region; assets have generated offsets. */
+/* The DMC1 directory and contiguous DLT5 assets fill the reclaimed region. */
+__reu_digital_music = 0x080000;
 __reu_digital_victory = __reu_digital_music;
 __reu_digital_ring = 0xFE0000;
 __reu_digital_ring_size = 0x20000;
+/* Maximum executable image, independent of each rounded storage reservation. */
 __reu_code_slot_size = 0x4200;
-__reu_models = 0x0B0000;
-__reu_boot = 0x010000;
-__reu_sim_lowlands = 0x020000;
-__reu_geometry = 0x030000;
-__reu_pixels = 0x040000;
-__reu_audio = 0x050000;
-__reu_scenery_wildlife = 0x070000;
-__reu_sim_canyon = 0x080000;
-__reu_sim_fortress = 0x090000;
-__reu_sim_carrier = 0x0A0000;
-__reu_victory = 0x015000;
-__reu_sim_terminal = 0x01A000;
-__reu_sim_warden = 0x025000;
-__reu_sim_citadel = 0x02A000;
-__reu_sim_flagship = 0x035000;
-__reu_scenery_transport = 0x03A000;
-__reu_scenery_meteors = 0x055000;
-__reu_sim_helpers = 0x05A000;
-__reu_scenery_ascent = 0x060000;
-__reu_scenery_asteroid = 0x065000;
-__reu_scenery_moon = 0x06A000;
-__reu_scenery_graveyard = 0x075000;
-__reu_scenery_shipyard = 0x07A000;
-__reu_scenery_carrier = 0x085000;
-__reu_scenery_gate = 0x08A000;
-__reu_shadow = 0x095000;
-__reu_scenery_helpers = 0x0AA000;
+__reu_probe_start = 0x000C00;
+__reu_probe_end = 0x001000;
+__reu_models = 0x00B000;
+__reu_models_end = 0x014000;
+__reu_boot = 0x014000;
+__reu_boot_end = 0x017000;
+__reu_sim_lowlands = 0x017000;
+__reu_sim_lowlands_end = 0x01B800;
+__reu_geometry = 0x01B800;
+__reu_geometry_end = 0x020000;
+__reu_pixels = 0x020000;
+__reu_pixels_end = 0x024800;
+__reu_audio = 0x024800;
+__reu_audio_end = 0x028000;
+__reu_scenery_wildlife = 0x028000;
+__reu_scenery_wildlife_end = 0x02C800;
+__reu_sim_canyon = 0x02C800;
+__reu_sim_canyon_end = 0x031000;
+__reu_sim_fortress = 0x031000;
+__reu_sim_fortress_end = 0x035800;
+__reu_sim_carrier = 0x035800;
+__reu_sim_carrier_end = 0x03A000;
+__reu_victory = 0x03A000;
+__reu_victory_end = 0x03D800;
+__reu_sim_terminal = 0x03D800;
+__reu_sim_terminal_end = 0x042000;
+__reu_sim_warden = 0x042000;
+__reu_sim_warden_end = 0x046800;
+__reu_sim_citadel = 0x046800;
+__reu_sim_citadel_end = 0x04B000;
+__reu_sim_flagship = 0x04B000;
+__reu_sim_flagship_end = 0x04F800;
+__reu_scenery_transport = 0x04F800;
+__reu_scenery_transport_end = 0x054000;
+__reu_scenery_meteors = 0x054000;
+__reu_scenery_meteors_end = 0x058800;
+__reu_sim_helpers = 0x058800;
+__reu_sim_helpers_end = 0x05A800;
+__reu_scenery_ascent = 0x05A800;
+__reu_scenery_ascent_end = 0x05F000;
+__reu_scenery_asteroid = 0x05F000;
+__reu_scenery_asteroid_end = 0x063800;
+__reu_scenery_moon = 0x063800;
+__reu_scenery_moon_end = 0x068000;
+__reu_scenery_graveyard = 0x068000;
+__reu_scenery_graveyard_end = 0x06C800;
+__reu_scenery_shipyard = 0x06C800;
+__reu_scenery_shipyard_end = 0x071000;
+__reu_scenery_carrier = 0x071000;
+__reu_scenery_carrier_end = 0x075800;
+__reu_scenery_gate = 0x075800;
+__reu_scenery_gate_end = 0x07A000;
+__reu_shadow = 0x07A000;
+__reu_shadow_end = 0x07D800;
+__reu_scenery_helpers = 0x07D800;
+__reu_scenery_helpers_end = 0x07E800;
 
 SECTIONS {
     /* The stock C64 .init.250 case-mode hook calls KERNAL CHROUT. Our BSS
@@ -311,39 +340,39 @@ SECTIONS {
         SHORT(SIZEOF(.phase.sim) + SIZEOF(.phase.enemy.flagship))
         SHORT(SIZEOF(.phase.sim) + SIZEOF(.phase.terminal))
         /* Logical phase IDs retain their original values. Each byte stores
-         * the 4 KiB page of its physical REU slot; unused IDs remain zero. */
+         * the 2 KiB unit of its physical REU slot; unused IDs remain zero. */
         __code_reu_pages = .;
         BYTE(0)
-        BYTE(__reu_boot >> 12)
-        BYTE(__reu_sim_lowlands >> 12)
-        BYTE(__reu_geometry >> 12)
-        BYTE(__reu_pixels >> 12)
-        BYTE(__reu_audio >> 12)
+        BYTE(__reu_boot >> 11)
+        BYTE(__reu_sim_lowlands >> 11)
+        BYTE(__reu_geometry >> 11)
+        BYTE(__reu_pixels >> 11)
+        BYTE(__reu_audio >> 11)
         BYTE(0)
-        BYTE(__reu_scenery_wildlife >> 12)
-        BYTE(__reu_sim_canyon >> 12)
-        BYTE(__reu_sim_fortress >> 12)
-        BYTE(__reu_sim_carrier >> 12)
+        BYTE(__reu_scenery_wildlife >> 11)
+        BYTE(__reu_sim_canyon >> 11)
+        BYTE(__reu_sim_fortress >> 11)
+        BYTE(__reu_sim_carrier >> 11)
         BYTE(0)
-        BYTE(__reu_victory >> 12)
-        BYTE(__reu_sim_terminal >> 12)
+        BYTE(__reu_victory >> 11)
+        BYTE(__reu_sim_terminal >> 11)
         BYTE(0) BYTE(0) BYTE(0) BYTE(0)
-        BYTE(__reu_sim_warden >> 12)
-        BYTE(__reu_sim_citadel >> 12)
-        BYTE(__reu_sim_flagship >> 12)
-        BYTE(__reu_scenery_transport >> 12)
-        BYTE(__reu_scenery_meteors >> 12)
-        BYTE(__reu_sim_helpers >> 12)
-        BYTE(__reu_scenery_ascent >> 12)
-        BYTE(__reu_scenery_asteroid >> 12)
-        BYTE(__reu_scenery_moon >> 12)
-        BYTE(__reu_scenery_graveyard >> 12)
-        BYTE(__reu_scenery_shipyard >> 12)
-        BYTE(__reu_scenery_carrier >> 12)
-        BYTE(__reu_scenery_gate >> 12)
-        BYTE(__reu_shadow >> 12)
+        BYTE(__reu_sim_warden >> 11)
+        BYTE(__reu_sim_citadel >> 11)
+        BYTE(__reu_sim_flagship >> 11)
+        BYTE(__reu_scenery_transport >> 11)
+        BYTE(__reu_scenery_meteors >> 11)
+        BYTE(__reu_sim_helpers >> 11)
+        BYTE(__reu_scenery_ascent >> 11)
+        BYTE(__reu_scenery_asteroid >> 11)
+        BYTE(__reu_scenery_moon >> 11)
+        BYTE(__reu_scenery_graveyard >> 11)
+        BYTE(__reu_scenery_shipyard >> 11)
+        BYTE(__reu_scenery_carrier >> 11)
+        BYTE(__reu_scenery_gate >> 11)
+        BYTE(__reu_shadow >> 11)
         BYTE(0) /* retired shadow-draw logical ID 32 */
-        BYTE(__reu_scenery_helpers >> 12)
+        BYTE(__reu_scenery_helpers >> 11)
         __code_reu_pages_end = .;
         *(.tables .tables.*)
         *(.rodata.*PROJECT_X* .rodata.*PROJECT_Y* .rodata.*COLOR_DISTANCE* .rodata.*SIN*)
@@ -440,6 +469,9 @@ __phase_scenery_aux_size = 0x500 + __phase_scenery_extra_size;
 __phase_pixels_prefix_size = SIZEOF(.phase.pixels);
 __phase_pixels_aux_size = SIZEOF(.phase.pixels_aux);
 __phase_pixels_aux_load = LOADADDR(.phase.pixels_aux);
+/* Native pointers are 16-bit, so expose the 24-bit source in link-time pieces. */
+__phase_pixels_aux_reu_bank = __phase_pixels_aux_load >> 16;
+__phase_pixels_aux_reu_offset = __phase_pixels_aux_load & 0xFFFF;
 /* Startup checks the complete image, including its zero-filled raster gap.
  * Runtime DMA transfers only the prefix and auxiliary tail. */
 __phase_pixels_size = __phase_pixels_aux_end - __phase_pixels_start;
@@ -506,66 +538,94 @@ ASSERT(__span_front_heads_start > __raster_player_seen && __span_front_heads_end
 __quarter_squares_start = 0xC000;
 __quarter_squares_end = 0xC400;
 
-/* The byte address table and bounded loader rely on these physical slots. */
+/* The byte table reaches exactly 512 KiB using 2 KiB units. Runtime images
+ * retain the $4200 execution cap; smaller images have explicit reservations. */
 ASSERT(__reu_size == 0x1000000 && __reu_code_slot_size == 0x4200, "incorrect 16 MiB REU allocation")
-ASSERT(__reu_digital_music == 0x100000 && __reu_digital_victory == __reu_digital_music && __reu_digital_ring == 0xFE0000 &&
+ASSERT(__reu_digital_music == 0x80000 && __reu_digital_victory == __reu_digital_music && __reu_digital_ring == 0xFE0000 &&
        __reu_digital_ring_size == 0x20000 && __reu_digital_ring + __reu_digital_ring_size == __reu_size,
        "incorrect digital music or sampler ring allocation")
 ASSERT(__code_reu_pages_end - __code_reu_pages == 34, "incorrect logical REU page table size")
-ASSERT((__reu_boot & 0xFFF) == 0 && (__reu_boot & 0xFFFF) + __reu_code_slot_size <= 0x10000, "boot REU slot must be aligned and stay in one bank")
-ASSERT((__reu_sim_lowlands & 0xFFF) == 0 && (__reu_sim_lowlands & 0xFFFF) + __reu_code_slot_size <= 0x10000, "sim_lowlands REU slot must be aligned and stay in one bank")
-ASSERT((__reu_geometry & 0xFFF) == 0 && (__reu_geometry & 0xFFFF) + __reu_code_slot_size <= 0x10000, "geometry REU slot must be aligned and stay in one bank")
-ASSERT((__reu_pixels & 0xFFF) == 0 && (__reu_pixels & 0xFFFF) + __reu_code_slot_size <= 0x10000, "pixels REU slot must be aligned and stay in one bank")
-ASSERT((__reu_audio & 0xFFF) == 0 && (__reu_audio & 0xFFFF) + __reu_code_slot_size <= 0x10000, "audio REU slot must be aligned and stay in one bank")
-ASSERT((__reu_scenery_wildlife & 0xFFF) == 0 && (__reu_scenery_wildlife & 0xFFFF) + __reu_code_slot_size <= 0x10000, "scenery_wildlife REU slot must be aligned and stay in one bank")
-ASSERT((__reu_sim_canyon & 0xFFF) == 0 && (__reu_sim_canyon & 0xFFFF) + __reu_code_slot_size <= 0x10000, "sim_canyon REU slot must be aligned and stay in one bank")
-ASSERT((__reu_sim_fortress & 0xFFF) == 0 && (__reu_sim_fortress & 0xFFFF) + __reu_code_slot_size <= 0x10000, "sim_fortress REU slot must be aligned and stay in one bank")
-ASSERT((__reu_sim_carrier & 0xFFF) == 0 && (__reu_sim_carrier & 0xFFFF) + __reu_code_slot_size <= 0x10000, "sim_carrier REU slot must be aligned and stay in one bank")
-ASSERT((__reu_victory & 0xFFF) == 0 && (__reu_victory & 0xFFFF) + __reu_code_slot_size <= 0x10000, "victory REU slot must be aligned and stay in one bank")
-ASSERT((__reu_sim_terminal & 0xFFF) == 0 && (__reu_sim_terminal & 0xFFFF) + __reu_code_slot_size <= 0x10000, "sim_terminal REU slot must be aligned and stay in one bank")
-ASSERT((__reu_sim_warden & 0xFFF) == 0 && (__reu_sim_warden & 0xFFFF) + __reu_code_slot_size <= 0x10000, "sim_warden REU slot must be aligned and stay in one bank")
-ASSERT((__reu_sim_citadel & 0xFFF) == 0 && (__reu_sim_citadel & 0xFFFF) + __reu_code_slot_size <= 0x10000, "sim_citadel REU slot must be aligned and stay in one bank")
-ASSERT((__reu_sim_flagship & 0xFFF) == 0 && (__reu_sim_flagship & 0xFFFF) + __reu_code_slot_size <= 0x10000, "sim_flagship REU slot must be aligned and stay in one bank")
-ASSERT((__reu_scenery_transport & 0xFFF) == 0 && (__reu_scenery_transport & 0xFFFF) + __reu_code_slot_size <= 0x10000, "scenery_transport REU slot must be aligned and stay in one bank")
-ASSERT((__reu_scenery_meteors & 0xFFF) == 0 && (__reu_scenery_meteors & 0xFFFF) + __reu_code_slot_size <= 0x10000, "scenery_meteors REU slot must be aligned and stay in one bank")
-ASSERT((__reu_sim_helpers & 0xFFF) == 0 && (__reu_sim_helpers & 0xFFFF) + __reu_code_slot_size <= 0x10000, "sim_helpers REU slot must be aligned and stay in one bank")
-ASSERT((__reu_scenery_ascent & 0xFFF) == 0 && (__reu_scenery_ascent & 0xFFFF) + __reu_code_slot_size <= 0x10000, "scenery_ascent REU slot must be aligned and stay in one bank")
-ASSERT((__reu_scenery_asteroid & 0xFFF) == 0 && (__reu_scenery_asteroid & 0xFFFF) + __reu_code_slot_size <= 0x10000, "scenery_asteroid REU slot must be aligned and stay in one bank")
-ASSERT((__reu_scenery_moon & 0xFFF) == 0 && (__reu_scenery_moon & 0xFFFF) + __reu_code_slot_size <= 0x10000, "scenery_moon REU slot must be aligned and stay in one bank")
-ASSERT((__reu_scenery_graveyard & 0xFFF) == 0 && (__reu_scenery_graveyard & 0xFFFF) + __reu_code_slot_size <= 0x10000, "scenery_graveyard REU slot must be aligned and stay in one bank")
-ASSERT((__reu_scenery_shipyard & 0xFFF) == 0 && (__reu_scenery_shipyard & 0xFFFF) + __reu_code_slot_size <= 0x10000, "scenery_shipyard REU slot must be aligned and stay in one bank")
-ASSERT((__reu_scenery_carrier & 0xFFF) == 0 && (__reu_scenery_carrier & 0xFFFF) + __reu_code_slot_size <= 0x10000, "scenery_carrier REU slot must be aligned and stay in one bank")
-ASSERT((__reu_scenery_gate & 0xFFF) == 0 && (__reu_scenery_gate & 0xFFFF) + __reu_code_slot_size <= 0x10000, "scenery_gate REU slot must be aligned and stay in one bank")
-ASSERT((__reu_shadow & 0xFFF) == 0 && (__reu_shadow & 0xFFFF) + __reu_code_slot_size <= 0x10000, "shadow REU slot must be aligned and stay in one bank")
-ASSERT(0xB000 <= __reu_boot &&
-       __reu_boot + __reu_code_slot_size <= __reu_victory &&
-       __reu_victory + __reu_code_slot_size <= __reu_sim_terminal &&
-       __reu_sim_terminal + __reu_code_slot_size <= __reu_sim_lowlands &&
-       __reu_sim_lowlands + __reu_code_slot_size <= __reu_sim_warden &&
-       __reu_sim_warden + __reu_code_slot_size <= __reu_sim_citadel &&
-       __reu_sim_citadel + __reu_code_slot_size <= __reu_geometry &&
-       __reu_geometry + __reu_code_slot_size <= __reu_sim_flagship &&
-       __reu_sim_flagship + __reu_code_slot_size <= __reu_scenery_transport &&
-       __reu_scenery_transport + __reu_code_slot_size <= __reu_pixels &&
-       __reu_pixels + __reu_code_slot_size <= __reu_audio &&
-       __reu_audio + __reu_code_slot_size <= __reu_scenery_meteors &&
-       __reu_scenery_meteors + __reu_code_slot_size <= __reu_sim_helpers &&
-       __reu_sim_helpers + __reu_code_slot_size <= __reu_scenery_ascent &&
-       __reu_scenery_ascent + __reu_code_slot_size <= __reu_scenery_asteroid &&
-       __reu_scenery_asteroid + __reu_code_slot_size <= __reu_scenery_moon &&
-       __reu_scenery_moon + __reu_code_slot_size <= __reu_scenery_wildlife &&
-       __reu_scenery_wildlife + __reu_code_slot_size <= __reu_scenery_graveyard &&
-       __reu_scenery_graveyard + __reu_code_slot_size <= __reu_scenery_shipyard &&
-       __reu_scenery_shipyard + __reu_code_slot_size <= __reu_sim_canyon &&
-       __reu_sim_canyon + __reu_code_slot_size <= __reu_scenery_carrier &&
-       __reu_scenery_carrier + __reu_code_slot_size <= __reu_scenery_gate &&
-       __reu_scenery_gate + __reu_code_slot_size <= __reu_sim_fortress &&
-       __reu_sim_fortress + __reu_code_slot_size <= __reu_shadow &&
-       __reu_shadow + __reu_code_slot_size <= __reu_sim_carrier &&
-       __reu_sim_carrier + __reu_code_slot_size <= __reu_models &&
-       __reu_models + 0x9000 <= __reu_digital_music,
-       "REU code, asset and music reservations overlap or exceed the image")
-ASSERT(__reu_pixels == 0x40000 && __reu_audio >= 0x50000, "REU bank 4 must remain PIXELS-only")
+ASSERT(__reu_probe_start == 0xC00 && __reu_probe_end == 0x1000, "incorrect probe scratch reservation")
+ASSERT(__reu_models == 0xB000 && __reu_models_end - __reu_models == 0x9000, "incorrect model bank reservation")
+ASSERT(__reu_models_end == __reu_boot && __reu_scenery_helpers_end == 0x7E800 &&
+       __reu_scenery_helpers_end <= __reu_digital_music, "compact code/assets exceed the music boundary")
+ASSERT((__reu_boot & 0x7FF) == 0 && __reu_boot < __reu_boot_end && __reu_boot_end <= __reu_digital_music, "boot REU reservation exceeds the 2 KiB address table")
+ASSERT(__phase_boot_size > 0 && __phase_boot_size <= __reu_code_slot_size && __reu_boot + __phase_boot_size <= __reu_boot_end, "boot image exceeds its REU reservation")
+ASSERT(__reu_boot_end == __reu_sim_lowlands, "boot REU reservation must end at the next image")
+ASSERT((__reu_sim_lowlands & 0x7FF) == 0 && __reu_sim_lowlands < __reu_sim_lowlands_end && __reu_sim_lowlands_end <= __reu_digital_music, "sim_lowlands REU reservation exceeds the 2 KiB address table")
+ASSERT(__phase_sim_size > 0 && __phase_sim_size <= __reu_code_slot_size && __reu_sim_lowlands + __phase_sim_size <= __reu_sim_lowlands_end, "sim_lowlands image exceeds its REU reservation")
+ASSERT(__reu_sim_lowlands_end == __reu_geometry, "sim_lowlands REU reservation must end at the next image")
+ASSERT((__reu_geometry & 0x7FF) == 0 && __reu_geometry < __reu_geometry_end && __reu_geometry_end <= __reu_digital_music, "geometry REU reservation exceeds the 2 KiB address table")
+ASSERT(__phase_geometry_size > 0 && __phase_geometry_size <= __reu_code_slot_size && __reu_geometry + __phase_geometry_size <= __reu_geometry_end, "geometry image exceeds its REU reservation")
+ASSERT(__reu_geometry_end == __reu_pixels, "geometry REU reservation must end at the next image")
+ASSERT((__reu_pixels & 0x7FF) == 0 && __reu_pixels < __reu_pixels_end && __reu_pixels_end <= __reu_digital_music, "pixels REU reservation exceeds the 2 KiB address table")
+ASSERT(__phase_pixels_size > 0 && __phase_pixels_size <= __reu_code_slot_size && __reu_pixels + __phase_pixels_size <= __reu_pixels_end, "pixels image exceeds its REU reservation")
+ASSERT(__reu_pixels_end == __reu_audio, "pixels REU reservation must end at the next image")
+ASSERT((__reu_audio & 0x7FF) == 0 && __reu_audio < __reu_audio_end && __reu_audio_end <= __reu_digital_music, "audio REU reservation exceeds the 2 KiB address table")
+ASSERT(__phase_audio_size > 0 && __phase_audio_size <= __reu_code_slot_size && __reu_audio + __phase_audio_size <= __reu_audio_end, "audio image exceeds its REU reservation")
+ASSERT(__reu_audio_end == __reu_scenery_wildlife, "audio REU reservation must end at the next image")
+ASSERT((__reu_scenery_wildlife & 0x7FF) == 0 && __reu_scenery_wildlife < __reu_scenery_wildlife_end && __reu_scenery_wildlife_end <= __reu_digital_music, "scenery_wildlife REU reservation exceeds the 2 KiB address table")
+ASSERT(__phase_scenery_size > 0 && __phase_scenery_size <= __reu_code_slot_size && __reu_scenery_wildlife + __phase_scenery_size <= __reu_scenery_wildlife_end, "scenery_wildlife image exceeds its REU reservation")
+ASSERT(__reu_scenery_wildlife_end == __reu_sim_canyon, "scenery_wildlife REU reservation must end at the next image")
+ASSERT((__reu_sim_canyon & 0x7FF) == 0 && __reu_sim_canyon < __reu_sim_canyon_end && __reu_sim_canyon_end <= __reu_digital_music, "sim_canyon REU reservation exceeds the 2 KiB address table")
+ASSERT(__phase_sim_size > 0 && __phase_sim_size <= __reu_code_slot_size && __reu_sim_canyon + __phase_sim_size <= __reu_sim_canyon_end, "sim_canyon image exceeds its REU reservation")
+ASSERT(__reu_sim_canyon_end == __reu_sim_fortress, "sim_canyon REU reservation must end at the next image")
+ASSERT((__reu_sim_fortress & 0x7FF) == 0 && __reu_sim_fortress < __reu_sim_fortress_end && __reu_sim_fortress_end <= __reu_digital_music, "sim_fortress REU reservation exceeds the 2 KiB address table")
+ASSERT(__phase_sim_size > 0 && __phase_sim_size <= __reu_code_slot_size && __reu_sim_fortress + __phase_sim_size <= __reu_sim_fortress_end, "sim_fortress image exceeds its REU reservation")
+ASSERT(__reu_sim_fortress_end == __reu_sim_carrier, "sim_fortress REU reservation must end at the next image")
+ASSERT((__reu_sim_carrier & 0x7FF) == 0 && __reu_sim_carrier < __reu_sim_carrier_end && __reu_sim_carrier_end <= __reu_digital_music, "sim_carrier REU reservation exceeds the 2 KiB address table")
+ASSERT(__phase_sim_size > 0 && __phase_sim_size <= __reu_code_slot_size && __reu_sim_carrier + __phase_sim_size <= __reu_sim_carrier_end, "sim_carrier image exceeds its REU reservation")
+ASSERT(__reu_sim_carrier_end == __reu_victory, "sim_carrier REU reservation must end at the next image")
+ASSERT((__reu_victory & 0x7FF) == 0 && __reu_victory < __reu_victory_end && __reu_victory_end <= __reu_digital_music, "victory REU reservation exceeds the 2 KiB address table")
+ASSERT(__phase_victory_size > 0 && __phase_victory_size <= __reu_code_slot_size && __reu_victory + __phase_victory_size <= __reu_victory_end, "victory image exceeds its REU reservation")
+ASSERT(__reu_victory_end == __reu_sim_terminal, "victory REU reservation must end at the next image")
+ASSERT((__reu_sim_terminal & 0x7FF) == 0 && __reu_sim_terminal < __reu_sim_terminal_end && __reu_sim_terminal_end <= __reu_digital_music, "sim_terminal REU reservation exceeds the 2 KiB address table")
+ASSERT(__phase_sim_size > 0 && __phase_sim_size <= __reu_code_slot_size && __reu_sim_terminal + __phase_sim_size <= __reu_sim_terminal_end, "sim_terminal image exceeds its REU reservation")
+ASSERT(__reu_sim_terminal_end == __reu_sim_warden, "sim_terminal REU reservation must end at the next image")
+ASSERT((__reu_sim_warden & 0x7FF) == 0 && __reu_sim_warden < __reu_sim_warden_end && __reu_sim_warden_end <= __reu_digital_music, "sim_warden REU reservation exceeds the 2 KiB address table")
+ASSERT(__phase_sim_size > 0 && __phase_sim_size <= __reu_code_slot_size && __reu_sim_warden + __phase_sim_size <= __reu_sim_warden_end, "sim_warden image exceeds its REU reservation")
+ASSERT(__reu_sim_warden_end == __reu_sim_citadel, "sim_warden REU reservation must end at the next image")
+ASSERT((__reu_sim_citadel & 0x7FF) == 0 && __reu_sim_citadel < __reu_sim_citadel_end && __reu_sim_citadel_end <= __reu_digital_music, "sim_citadel REU reservation exceeds the 2 KiB address table")
+ASSERT(__phase_sim_size > 0 && __phase_sim_size <= __reu_code_slot_size && __reu_sim_citadel + __phase_sim_size <= __reu_sim_citadel_end, "sim_citadel image exceeds its REU reservation")
+ASSERT(__reu_sim_citadel_end == __reu_sim_flagship, "sim_citadel REU reservation must end at the next image")
+ASSERT((__reu_sim_flagship & 0x7FF) == 0 && __reu_sim_flagship < __reu_sim_flagship_end && __reu_sim_flagship_end <= __reu_digital_music, "sim_flagship REU reservation exceeds the 2 KiB address table")
+ASSERT(__phase_sim_size > 0 && __phase_sim_size <= __reu_code_slot_size && __reu_sim_flagship + __phase_sim_size <= __reu_sim_flagship_end, "sim_flagship image exceeds its REU reservation")
+ASSERT(__reu_sim_flagship_end == __reu_scenery_transport, "sim_flagship REU reservation must end at the next image")
+ASSERT((__reu_scenery_transport & 0x7FF) == 0 && __reu_scenery_transport < __reu_scenery_transport_end && __reu_scenery_transport_end <= __reu_digital_music, "scenery_transport REU reservation exceeds the 2 KiB address table")
+ASSERT(__phase_scenery_size > 0 && __phase_scenery_size <= __reu_code_slot_size && __reu_scenery_transport + __phase_scenery_size <= __reu_scenery_transport_end, "scenery_transport image exceeds its REU reservation")
+ASSERT(__reu_scenery_transport_end == __reu_scenery_meteors, "scenery_transport REU reservation must end at the next image")
+ASSERT((__reu_scenery_meteors & 0x7FF) == 0 && __reu_scenery_meteors < __reu_scenery_meteors_end && __reu_scenery_meteors_end <= __reu_digital_music, "scenery_meteors REU reservation exceeds the 2 KiB address table")
+ASSERT(__phase_scenery_size > 0 && __phase_scenery_size <= __reu_code_slot_size && __reu_scenery_meteors + __phase_scenery_size <= __reu_scenery_meteors_end, "scenery_meteors image exceeds its REU reservation")
+ASSERT(__reu_scenery_meteors_end == __reu_sim_helpers, "scenery_meteors REU reservation must end at the next image")
+ASSERT((__reu_sim_helpers & 0x7FF) == 0 && __reu_sim_helpers < __reu_sim_helpers_end && __reu_sim_helpers_end <= __reu_digital_music, "sim_helpers REU reservation exceeds the 2 KiB address table")
+ASSERT(__phase_sim_aux_size > 0 && __phase_sim_aux_size <= __reu_code_slot_size && __reu_sim_helpers + __phase_sim_aux_size <= __reu_sim_helpers_end, "sim_helpers image exceeds its REU reservation")
+ASSERT(__reu_sim_helpers_end == __reu_scenery_ascent, "sim_helpers REU reservation must end at the next image")
+ASSERT((__reu_scenery_ascent & 0x7FF) == 0 && __reu_scenery_ascent < __reu_scenery_ascent_end && __reu_scenery_ascent_end <= __reu_digital_music, "scenery_ascent REU reservation exceeds the 2 KiB address table")
+ASSERT(__phase_scenery_size > 0 && __phase_scenery_size <= __reu_code_slot_size && __reu_scenery_ascent + __phase_scenery_size <= __reu_scenery_ascent_end, "scenery_ascent image exceeds its REU reservation")
+ASSERT(__reu_scenery_ascent_end == __reu_scenery_asteroid, "scenery_ascent REU reservation must end at the next image")
+ASSERT((__reu_scenery_asteroid & 0x7FF) == 0 && __reu_scenery_asteroid < __reu_scenery_asteroid_end && __reu_scenery_asteroid_end <= __reu_digital_music, "scenery_asteroid REU reservation exceeds the 2 KiB address table")
+ASSERT(__phase_scenery_size > 0 && __phase_scenery_size <= __reu_code_slot_size && __reu_scenery_asteroid + __phase_scenery_size <= __reu_scenery_asteroid_end, "scenery_asteroid image exceeds its REU reservation")
+ASSERT(__reu_scenery_asteroid_end == __reu_scenery_moon, "scenery_asteroid REU reservation must end at the next image")
+ASSERT((__reu_scenery_moon & 0x7FF) == 0 && __reu_scenery_moon < __reu_scenery_moon_end && __reu_scenery_moon_end <= __reu_digital_music, "scenery_moon REU reservation exceeds the 2 KiB address table")
+ASSERT(__phase_scenery_size > 0 && __phase_scenery_size <= __reu_code_slot_size && __reu_scenery_moon + __phase_scenery_size <= __reu_scenery_moon_end, "scenery_moon image exceeds its REU reservation")
+ASSERT(__reu_scenery_moon_end == __reu_scenery_graveyard, "scenery_moon REU reservation must end at the next image")
+ASSERT((__reu_scenery_graveyard & 0x7FF) == 0 && __reu_scenery_graveyard < __reu_scenery_graveyard_end && __reu_scenery_graveyard_end <= __reu_digital_music, "scenery_graveyard REU reservation exceeds the 2 KiB address table")
+ASSERT(__phase_scenery_size > 0 && __phase_scenery_size <= __reu_code_slot_size && __reu_scenery_graveyard + __phase_scenery_size <= __reu_scenery_graveyard_end, "scenery_graveyard image exceeds its REU reservation")
+ASSERT(__reu_scenery_graveyard_end == __reu_scenery_shipyard, "scenery_graveyard REU reservation must end at the next image")
+ASSERT((__reu_scenery_shipyard & 0x7FF) == 0 && __reu_scenery_shipyard < __reu_scenery_shipyard_end && __reu_scenery_shipyard_end <= __reu_digital_music, "scenery_shipyard REU reservation exceeds the 2 KiB address table")
+ASSERT(__phase_scenery_size > 0 && __phase_scenery_size <= __reu_code_slot_size && __reu_scenery_shipyard + __phase_scenery_size <= __reu_scenery_shipyard_end, "scenery_shipyard image exceeds its REU reservation")
+ASSERT(__reu_scenery_shipyard_end == __reu_scenery_carrier, "scenery_shipyard REU reservation must end at the next image")
+ASSERT((__reu_scenery_carrier & 0x7FF) == 0 && __reu_scenery_carrier < __reu_scenery_carrier_end && __reu_scenery_carrier_end <= __reu_digital_music, "scenery_carrier REU reservation exceeds the 2 KiB address table")
+ASSERT(__phase_scenery_size > 0 && __phase_scenery_size <= __reu_code_slot_size && __reu_scenery_carrier + __phase_scenery_size <= __reu_scenery_carrier_end, "scenery_carrier image exceeds its REU reservation")
+ASSERT(__reu_scenery_carrier_end == __reu_scenery_gate, "scenery_carrier REU reservation must end at the next image")
+ASSERT((__reu_scenery_gate & 0x7FF) == 0 && __reu_scenery_gate < __reu_scenery_gate_end && __reu_scenery_gate_end <= __reu_digital_music, "scenery_gate REU reservation exceeds the 2 KiB address table")
+ASSERT(__phase_scenery_size > 0 && __phase_scenery_size <= __reu_code_slot_size && __reu_scenery_gate + __phase_scenery_size <= __reu_scenery_gate_end, "scenery_gate image exceeds its REU reservation")
+ASSERT(__reu_scenery_gate_end == __reu_shadow, "scenery_gate REU reservation must end at the next image")
+ASSERT((__reu_shadow & 0x7FF) == 0 && __reu_shadow < __reu_shadow_end && __reu_shadow_end <= __reu_digital_music, "shadow REU reservation exceeds the 2 KiB address table")
+ASSERT(__phase_shadow_size > 0 && __phase_shadow_size <= __reu_code_slot_size && __reu_shadow + __phase_shadow_size <= __reu_shadow_end, "shadow image exceeds its REU reservation")
+ASSERT(__reu_shadow_end == __reu_scenery_helpers, "shadow REU reservation must end at the next image")
+ASSERT((__reu_scenery_helpers & 0x7FF) == 0 && __reu_scenery_helpers < __reu_scenery_helpers_end && __reu_scenery_helpers_end <= __reu_digital_music, "scenery_helpers REU reservation exceeds the 2 KiB address table")
+ASSERT(__phase_scenery_aux_size > 0 && __phase_scenery_aux_size <= __reu_code_slot_size && __reu_scenery_helpers + __phase_scenery_aux_size <= __reu_scenery_helpers_end, "scenery_helpers image exceeds its REU reservation")
 
 ASSERT(__rc31 == 0x21, "IRQ save range must match compiler imaginary registers")
 ASSERT(__resident_end <= __phase_run, "resident code overlaps the overlay window at $3000")
@@ -600,8 +660,7 @@ ASSERT(__phase_render_aux_start == 0x6F20 && __phase_render_aux_size > 0 && __ph
 ASSERT(__phase_shadow_size > 0 && __phase_shadow_size <= 0x3F20, "SHADOW overlaps shared projection helpers at $6F20")
 ASSERT(__phase_scenery_aux_prefix_size > 0 && __phase_scenery_aux_prefix_size <= 0x500, "SCENERY helpers exceed retired pixel workspace")
 ASSERT(__phase_scenery_extra_size > 0 && __phase_scenery_extra_size <= 0x800, "SCENERY extra helpers overlap persistent shadow frame")
-ASSERT((__reu_scenery_helpers & 0xFFF) == 0 && (__reu_scenery_helpers & 0xFFFF) + __reu_code_slot_size <= 0x10000, "SCENERY helper REU slot crosses bank")
-ASSERT(__reu_sim_carrier + __reu_code_slot_size <= __reu_scenery_helpers && __reu_scenery_helpers + __reu_code_slot_size <= __reu_models, "SCENERY helper REU slot overlaps carrier or models")
+
 ASSERT(SIZEOF(.phase.pixels) <= 0x3F20, "PIXELS overlay overlaps its helpers at $6F20")
 ASSERT(__phase_pixels_aux_start == 0x6F20, "PIXELS helpers must start at $6F20")
 ASSERT(__phase_pixels_aux_size > 0 && __phase_pixels_aux_size <= 0x02E0, "PIXELS helpers exceed $6F20-$71FF")

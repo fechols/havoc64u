@@ -106,6 +106,10 @@ class RegenerateMusicTests(unittest.TestCase):
             raise subprocess.CalledProcessError(1, command)
         blob, metadata = fixture()
         metadata["flac_sha256"] = sha(Path(command[-3]).read_bytes())
+        if "--training" in command:
+            metadata.update(encoder_training=command[command.index("--training") + 1],
+                            encoder_beam_width=int(command[command.index("--beam-width") + 1]),
+                            fixed_reference=True)
         if self.mutate_metadata:
             self.mutate_metadata(metadata)
         asset.write_bytes(blob)
@@ -354,6 +358,80 @@ class RegenerateMusicTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "baseline asset, metadata and provenance disagree"):
             self.run_command("--install")
         self.assertEqual(self.live_files(), self.original)
+
+    def select_experimental_recipe(self):
+        path = self.music / "catalog.json"
+        manifest = json.loads(path.read_text())
+        _, metadata = fixture()
+        manifest["tracks"][0]["encoder_options"] = dict(
+            training="som", beam_width=64,
+            reference=dict(training="baseline", beam_width=32, codebook_count=2,
+                           pcm_sha256=metadata["reference_pcm_sha256"], asset_sha256=metadata["asset_sha256"]))
+        regen.write_json(path, manifest)
+        return manifest
+
+    def test_selected_recipe_reconstructs_reference_from_source_and_records_settings(self):
+        self.select_experimental_recipe()
+        self.run_command("--install")
+        self.assertEqual(self.calls, ["alpha", "alpha", "beta"])
+        provenance = json.loads((self.music / "alpha.provenance.json").read_text())
+        self.assertEqual(provenance["conversion"]["encoder_training"], "som")
+        self.assertEqual(provenance["conversion"]["encoder_beam_width"], 64)
+        self.assertIn("--reference-wav", provenance["reproduction_commands"]["encode"])
+        self.assertIn("reference", provenance["reproduction_commands"])
+        # Rebuilding a missing reference does not require a preserved binary or WAV.
+        reference = self.work / "reference-inputs/alpha.reference.wav"
+        reference.unlink()
+        self.run_command()
+        self.assertEqual(self.calls, ["alpha", "alpha", "beta", "alpha"])
+        self.assertTrue(reference.exists())
+
+    def test_selected_recipe_rejects_a_reference_with_different_bytes(self):
+        manifest = self.select_experimental_recipe()
+        manifest["tracks"][0]["encoder_options"]["reference"]["pcm_sha256"] = sha(b"different reference")
+        regen.write_json(self.music / "catalog.json", manifest)
+        before = self.live_files()
+        with self.assertRaisesRegex(ValueError, "regenerated reference differs"):
+            self.run_command("--install")
+        self.assertEqual(self.live_files(), before)
+
+    def test_invalid_selected_recipe_is_rejected(self):
+        manifest = self.select_experimental_recipe()
+        manifest["tracks"][0]["encoder_options"]["beam_width"] = 256
+        regen.write_json(self.music / "catalog.json", manifest)
+        with self.assertRaisesRegex(ValueError, "invalid encoder options"):
+            self.run_command()
+
+    def test_report_identifies_authenticated_fixed_references(self):
+        self.select_experimental_recipe()
+        self.run_command()
+        report = json.loads((self.work / "quality-report.json").read_text())
+        self.assertTrue(report["all_tracks_same_reference"])
+        self.assertIn("identical authenticated normalized PCM", report["snr_reference"])
+        for track in report["tracks"]:
+            self.assertTrue(track["same_reference"])
+            self.assertEqual(track["old_reference_pcm_sha256"], track["reference_pcm_sha256"])
+            self.assertIn("old_snr_db", track)
+            self.assertIn("snr_gain_db", track)
+
+    def test_report_keeps_caveat_when_even_one_reference_differs(self):
+        # Equal gain metadata alone cannot prove that normalized PCM is identical.
+        changed_hash = sha(b"different normalized baseline PCM")
+        for suffix in ("json", "provenance.json"):
+            path = self.music / f"alpha.{suffix}"
+            metadata = json.loads(path.read_text())
+            metadata["reference_pcm_sha256"] = changed_hash
+            regen.write_json(path, metadata)
+        self.run_command()
+        report = json.loads((self.work / "quality-report.json").read_text())
+        self.assertFalse(report["all_tracks_same_reference"])
+        self.assertIn("not a fixed-reference comparison for every track", report["snr_reference"])
+        alpha, beta = report["tracks"]
+        self.assertFalse(alpha["same_reference"])
+        self.assertTrue(beta["same_reference"])
+        self.assertEqual(alpha["old_normalization_gain_db"], alpha["normalization_gain_db"])
+        self.assertEqual(alpha["old_reference_pcm_sha256"], changed_hash)
+        self.assertNotEqual(alpha["old_reference_pcm_sha256"], alpha["reference_pcm_sha256"])
 
 
 if __name__ == "__main__":

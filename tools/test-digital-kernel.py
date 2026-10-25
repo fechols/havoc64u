@@ -1085,7 +1085,9 @@ def main():
     parser.add_argument("--elf", type=Path, default=ROOT / "dist/havoc.elf")
     parser.add_argument("--reu", type=Path, default=ROOT / "dist/havoc.reu")
     parser.add_argument("--standard", choices=("pal", "ntsc", "both"), default="both")
-    parser.add_argument("--budget", type=int, default=100000000)
+    # BOOT authenticates the expanded codebooks; the runtime decoding cap is unchanged.
+    parser.add_argument("--budget", type=int, default=200000000,
+                        help="maximum emulated instructions per native entry, not the runtime decode budget")
     parser.add_argument("--emulator-only", action="store_true")
     parser.add_argument("--menu-only", action="store_true", help="only check menu track routing and decoded prefixes")
     parser.add_argument("--kernel-only", action="store_true", help="only execute directed assembly decoder cases")

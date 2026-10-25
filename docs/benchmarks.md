@@ -5,9 +5,10 @@ VICE build used by `tools/vice-smoke.py`. These are emulator measurements, not
 claims about physical C64 Ultimate frame rates. The package is read-only during
 measurement; its PRG, REU, and ELF hashes are recorded and checked afterward.
 
-Current package ID `$534D1000` uses SMA6 model banks, a 16 MiB REU image, four
+Current package ID `$534D1100` uses SMA6 model banks, a 16 MiB REU image, four
 built-in UltiSIDs for effects and DAC music throughout the game. Code and models
-retain their first-MiB addresses; the SID soundtrack has been removed. See the
+fit below `$080000`, leaving an extra 512 KiB for DLT5 audio codebooks; the SID
+soundtrack has been removed. See the
 [current sustained audio benchmarks](hardware.md#quad-sid-effects). Recorded measurements
 below retain their original package layouts and hashes; use the configuration
 and REU capacity matching each package when reproducing a historical run.
@@ -1257,7 +1258,7 @@ program (`tools/hwprobe/`) that times the operations bounding the game's frame
 with CIA 1 as a 1 MHz clock and prints microseconds to the text screen. Import
 the game's `havoc.cfg` first, then run the PRG; it issues the game's exact turbo
 request (`$D031 = $8F`) after a stock-speed reference loop. The REU stash test
-writes 1 KiB into the image's unreserved padding at `$0BFC00` in current builds,
+writes 1 KiB into its reserved scratch region at `$000C00` in current builds,
 so a loaded `havoc.reu` stays valid. The historical 16 MiB probe used `$FFFC00`;
 the measurements below retain that original layout. The probe never returns to
 BASIC; reset to exit.

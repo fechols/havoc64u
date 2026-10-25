@@ -150,6 +150,90 @@ def load_authenticated_recording(directory, name, label):
     return metadata, provenance
 
 
+def encoder_options(track):
+    """Validate the optional, manifest-owned recipe for a measured winner."""
+    options = track.get("encoder_options")
+    if options is None:
+        return None
+    if not isinstance(options, dict) or options.get("training") not in (
+            "baseline", "beam-refine", "som", "combined") or options.get("beam_width") not in (32, 64, 128):
+        raise ValueError(f'{track["name"]}: invalid encoder options')
+    reference = options.get("reference")
+    if (not isinstance(reference, dict) or reference.get("training") != "baseline"
+            or reference.get("beam_width") != 32
+            or reference.get("codebook_count") != track["codebook_count"]):
+        raise ValueError(f'{track["name"]}: invalid reference regeneration recipe')
+    for key in ("pcm_sha256", "asset_sha256"):
+        value = reference.get(key)
+        if not isinstance(value, str) or len(value) != 64 or any(c not in "0123456789abcdef" for c in value):
+            raise ValueError(f'{track["name"]}: invalid reference {key}')
+    return options
+
+
+def prepare_reference(encoder, track, flac, directory, fingerprint):
+    """Rebuild the exact normalized baseline from source, without cached WAV dependency."""
+    options = encoder_options(track)
+    if options is None:
+        return []
+    directory.mkdir(parents=True, exist_ok=True)
+    name = track["name"]
+    asset = directory / f"{name}.dlt"
+    preview = directory / f"{name}.wav"
+    reference = preview.with_suffix(".reference.wav")
+    stamp = directory / f"{name}.inputs.json"
+    expected = dict(fingerprint, reference_recipe=options["reference"])
+
+    def validate():
+        metadata = json.loads(asset.with_suffix(".json").read_text())
+        digital.validate_blob(asset.read_bytes(), metadata, track["profile"])
+        validate_previews(preview, metadata)
+        if (metadata["reference_pcm_sha256"] != options["reference"]["pcm_sha256"]
+                or metadata["asset_sha256"] != options["reference"]["asset_sha256"]):
+            raise ValueError(f"{name}: regenerated reference differs from the authenticated baseline")
+        if metadata["flac_sha256"] != digest(flac):
+            raise ValueError(f"{name}: regenerated reference source differs")
+
+    try:
+        cached = json.loads(stamp.read_text()) == expected
+        if cached:
+            validate()
+    except (OSError, ValueError, KeyError, AssertionError, EOFError, wave.Error):
+        cached = False
+    if not cached:
+        with (directory / f"{name}.log").open("w", encoding="utf-8") as log:
+            subprocess.run([str(encoder), "--profile", track["profile"], "--codebooks",
+                            str(track["codebook_count"]), str(flac), str(asset), str(preview)],
+                           stdout=log, stderr=subprocess.STDOUT, check=True)
+        validate()
+        write_json(stamp, expected)
+    return ["--training", options["training"], "--beam-width", str(options["beam_width"]),
+            "--reference-wav", str(reference), "--reference-metadata", str(asset.with_suffix(".json"))]
+
+
+def record_encoder_options(provenance, track, metadata):
+    """Keep chosen settings and source-to-reference reproduction in tracked provenance."""
+    options = encoder_options(track)
+    conversion = provenance["conversion"]
+    for key in ("encoder_training", "encoder_beam_width", "beam_retraining_passes", "som_trainer", "fixed_reference"):
+        if key in metadata:
+            conversion[key] = metadata[key]
+    if options is None:
+        return
+    conversion["encoder_options"] = options
+    name = track["name"]
+    prefix = ("cargo run --release --manifest-path tools/encode-digital-music/Cargo.toml "
+              "--target-dir target/digital-music/tool-build -- "
+              f'--profile {track["profile"]} --codebooks {track["codebook_count"]} ')
+    source = f"target/digital-music/{name}-source.flac"
+    reference = f"target/digital-music/reference-inputs/{name}"
+    provenance["reproduction_commands"]["reference"] = (
+        f"{prefix}{source} {reference}.dlt {reference}.wav")
+    provenance["reproduction_commands"]["encode"] = (
+        f'{prefix}--training {options["training"]} --beam-width {options["beam_width"]} '
+        f"--reference-wav {reference}.reference.wav --reference-metadata {reference}.json "
+        f"{source} assets/music/{name}.dlt target/digital-music/{name}-dlt5.wav")
+
+
 def install_files(files):
     """Prepare all files, then copy into existing destinations to preserve their ACLs.
 
@@ -246,6 +330,11 @@ def main():
         preview = work / f"{name}-dlt5.wav"
         fingerprint = dict(source=flac_hash, encoder=binary_hash, encoder_sources=source_hashes,
                            ffmpeg=ffmpeg_version, profile=track["profile"], books=track["codebook_count"])
+        options = encoder_options(track)
+        extra = []
+        if options is not None:
+            extra = prepare_reference(encoder, track, flac, work / "reference-inputs", fingerprint)
+            fingerprint["encoder_options"] = options
         stamp = work / f"{name}.inputs.json"
         cached = False
         try:
@@ -261,7 +350,7 @@ def main():
             print(f'Encoding {name}: {track["codebook_count"]} books', flush=True)
             with (work / f"{name}.log").open("w", encoding="utf-8") as log:
                 subprocess.run([str(encoder), "--profile", track["profile"], "--codebooks",
-                                str(track["codebook_count"]), str(flac), str(asset), str(preview)],
+                                str(track["codebook_count"]), *extra, str(flac), str(asset), str(preview)],
                                stdout=log, stderr=subprocess.STDOUT, check=True)
             write_json(stamp, fingerprint)
             print(f"Encoded {name} in {time.monotonic() - started:.1f}s", flush=True)
@@ -276,6 +365,15 @@ def main():
                 raise ValueError(f"{name}: changed {key}")
         if metadata["flac_sha256"] != flac_hash:
             raise ValueError(f"{name}: metadata does not identify the authenticated source intermediate")
+        if options is not None and (metadata["reference_pcm_sha256"] != options["reference"]["pcm_sha256"]
+                                    or metadata.get("encoder_training") != options["training"]
+                                    or metadata.get("encoder_beam_width") != options["beam_width"]
+                                    or metadata.get("fixed_reference") is not True):
+            raise ValueError(f"{name}: encoder settings or fixed reference differ from the manifest")
+        if options is not None:
+            reference_metadata = json.loads(Path(extra[-1]).read_text())
+            if metadata["normalization_gain_db"] != reference_metadata["normalization_gain_db"]:
+                raise ValueError(f"{name}: encoder changed the frozen reference gain")
         channels = []
         for before, after in zip(old["channel_metrics"], metadata["channel_metrics"]):
             gain = after["matched_level_snr_db"] - before["matched_level_snr_db"]
@@ -311,6 +409,7 @@ def main():
             f'--profile {track["profile"]} --codebooks {track["codebook_count"]} '
             f"target/digital-music/{name}-source.flac assets/music/{name}.dlt "
             f"target/digital-music/{name}-dlt5.wav")
+        record_encoder_options(provenance, track, metadata)
         write_json(staged / f"{name}.provenance.json", provenance)
         return dict(name=name, old_books=old["codebook_count"], books=metadata["codebook_count"],
                     average_interval_ms=metadata["sample_count"] / metadata["sample_rate"]
@@ -320,6 +419,9 @@ def main():
                     snr_gain_db=metadata["matched_level_snr_db"] - old["matched_level_snr_db"],
                     old_normalization_gain_db=old["normalization_gain_db"],
                     normalization_gain_db=metadata["normalization_gain_db"],
+                    old_reference_pcm_sha256=old["reference_pcm_sha256"],
+                    reference_pcm_sha256=metadata["reference_pcm_sha256"],
+                    same_reference=old["reference_pcm_sha256"] == metadata["reference_pcm_sha256"],
                     channels=channels, preview=str(preview))
 
     results = {}
@@ -329,11 +431,17 @@ def main():
             results[result["name"]] = result
     catalog = digital.load_catalog(work)
     generated = digital.rust_catalog(catalog)
+    same_reference = all(result["same_reference"] for result in results.values())
     report = dict(passed=True, used_bytes=catalog["used_bytes"],
                   remaining_bytes=digital.MUSIC_CAPACITY - catalog["used_bytes"],
                   encoder_sha256=binary_hash, listening_review="not performed by this script",
-                  snr_reference="Each encoding's own normalized reference at the unchanged profile; "
-                                "normalization gains may differ, so this is not a fixed-reference comparison.",
+                  all_tracks_same_reference=same_reference,
+                  snr_reference=(
+                      "Every track compares both encodings against identical authenticated normalized PCM, "
+                      "verified by matching reference PCM SHA-256 values."
+                      if same_reference else
+                      "At least one track uses different normalized reference PCM for its two encodings; "
+                      "normalization gains may differ, so this is not a fixed-reference comparison for every track."),
                   tracks=[results[track["name"]] for track in manifest["tracks"]])
     write_json(work / "quality-report.json", report)
     if args.install:

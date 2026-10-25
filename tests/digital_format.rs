@@ -71,7 +71,8 @@ fn shipped_tracks_have_exact_profile_bounds_and_all_stream_checksums() {
     }
     assert_eq!(previous, CATALOG_END);
     assert!(CATALOG_END <= RING_OFFSET);
-    assert_eq!(MUSIC_CAPACITY, 15_597_568);
+    assert_eq!(MUSIC_OFFSET, 0x80000);
+    assert_eq!(MUSIC_CAPACITY, 16_121_856);
     assert_eq!(RING_OFFSET + RING_BYTES, REU_SIZE);
     assert_eq!(Track::ALL.len(), 21);
     assert_eq!(DIRECTORY_BYTES, 400);

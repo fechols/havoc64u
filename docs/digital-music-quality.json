@@ -1,0 +1,826 @@
+{
+  "comparison": "Exact whole-track squared error against the same authenticated normalized PCM; no channel regressions",
+  "summary": {
+    "baseline": {
+      "arithmetic_mean_snr_db": 22.827077221645975,
+      "arithmetic_mean_snr_status": "finite",
+      "pooled_snr_db": 22.825632814408582,
+      "pooled_snr_status": "finite",
+      "track_count": 21,
+      "finite_track_count": 21,
+      "signal_sum_squares": 1310000318727642,
+      "error_sum_squares": 6834521591770
+    },
+    "selected": {
+      "arithmetic_mean_snr_db": 23.016139944754357,
+      "arithmetic_mean_snr_status": "finite",
+      "pooled_snr_db": 23.008737233792715,
+      "pooled_snr_status": "finite",
+      "track_count": 21,
+      "finite_track_count": 21,
+      "signal_sum_squares": 1310000318727642,
+      "error_sum_squares": 6552358906330,
+      "mean_gain_db": 0.18906272310838293,
+      "mean_gain_status": "finite"
+    },
+    "improved_tracks": 21,
+    "selected_strategy_counts": {
+      "combined-128": 18,
+      "combined-64": 2,
+      "combined-32": 1
+    },
+    "methods": {
+      "baseline-32": {
+        "arithmetic_mean_snr_db": 22.827077221645975,
+        "arithmetic_mean_snr_status": "finite",
+        "pooled_snr_db": 22.825632814408582,
+        "pooled_snr_status": "finite",
+        "track_count": 21,
+        "finite_track_count": 21,
+        "signal_sum_squares": 1310000318727642,
+        "error_sum_squares": 6834521591770,
+        "mean_gain_db": 0.0,
+        "mean_gain_status": "finite",
+        "attempted_tracks": 21,
+        "baseline_fallback_tracks": 21,
+        "beam_width_counts": {
+          "32": 21
+        }
+      },
+      "beam-refine-32": {
+        "arithmetic_mean_snr_db": 22.940983676962716,
+        "arithmetic_mean_snr_status": "finite",
+        "pooled_snr_db": 22.93698871153086,
+        "pooled_snr_status": "finite",
+        "track_count": 21,
+        "finite_track_count": 21,
+        "signal_sum_squares": 1310000318727642,
+        "error_sum_squares": 6661507637722,
+        "mean_gain_db": 0.11390645531674319,
+        "mean_gain_status": "finite",
+        "attempted_tracks": 21,
+        "baseline_fallback_tracks": 0,
+        "beam_width_counts": {
+          "32": 21
+        }
+      },
+      "som-32": {
+        "arithmetic_mean_snr_db": 22.91100857863849,
+        "arithmetic_mean_snr_status": "finite",
+        "pooled_snr_db": 22.90996363619611,
+        "pooled_snr_status": "finite",
+        "track_count": 21,
+        "finite_track_count": 21,
+        "signal_sum_squares": 1310000318727642,
+        "error_sum_squares": 6703089801690,
+        "mean_gain_db": 0.08393135699251733,
+        "mean_gain_status": "finite",
+        "attempted_tracks": 21,
+        "baseline_fallback_tracks": 2,
+        "beam_width_counts": {
+          "32": 21
+        }
+      },
+      "baseline-64": {
+        "arithmetic_mean_snr_db": 22.864326557751433,
+        "arithmetic_mean_snr_status": "finite",
+        "pooled_snr_db": 22.86360353794525,
+        "pooled_snr_status": "finite",
+        "track_count": 21,
+        "finite_track_count": 21,
+        "signal_sum_squares": 1310000318727642,
+        "error_sum_squares": 6775027268570,
+        "mean_gain_db": 0.03724933610545987,
+        "mean_gain_status": "finite",
+        "attempted_tracks": 21,
+        "baseline_fallback_tracks": 3,
+        "beam_width_counts": {
+          "64": 21
+        }
+      },
+      "baseline-128": {
+        "arithmetic_mean_snr_db": 22.889001941416602,
+        "arithmetic_mean_snr_status": "finite",
+        "pooled_snr_db": 22.879361252180892,
+        "pooled_snr_status": "finite",
+        "track_count": 21,
+        "finite_track_count": 21,
+        "signal_sum_squares": 1310000318727642,
+        "error_sum_squares": 6750489655770,
+        "mean_gain_db": 0.061924719770626524,
+        "mean_gain_status": "finite",
+        "attempted_tracks": 21,
+        "baseline_fallback_tracks": 3,
+        "beam_width_counts": {
+          "128": 21
+        }
+      },
+      "combined": {
+        "arithmetic_mean_snr_db": 23.016139944754357,
+        "arithmetic_mean_snr_status": "finite",
+        "pooled_snr_db": 23.008737233792715,
+        "pooled_snr_status": "finite",
+        "track_count": 21,
+        "finite_track_count": 21,
+        "signal_sum_squares": 1310000318727642,
+        "error_sum_squares": 6552358906330,
+        "mean_gain_db": 0.18906272310838293,
+        "mean_gain_status": "finite",
+        "attempted_tracks": 21,
+        "baseline_fallback_tracks": 0,
+        "beam_width_counts": {
+          "128": 18,
+          "64": 2,
+          "32": 1
+        }
+      }
+    },
+    "method_policy": "Each method falls back to the baseline unless complete-track error improves with no channel regression; combined uses each track's best standalone beam width."
+  },
+  "asset_bytes": 16121852,
+  "free_music_bytes": 4,
+  "encoder_sha256": "d342628e185712b2234ee84f322ca17957ae24a0be017a86488ae36e3aa0f68b",
+  "source_regeneration_exact_tracks": 21,
+  "listening_review": "not performed; numerical improvement is the adoption criterion",
+  "full_report": "target/digital-music/quality-experiments/quality-report.json",
+  "tracks": [
+    {
+      "name": "galactic-dash",
+      "profile": "mono16k3",
+      "asset_bytes": 1039829,
+      "baseline_asset_sha256": "689228a7a13f45a4bbebcb6aadc9d07232f59c67171095f7ae7c58ea4806022c",
+      "selected_asset_sha256": "dc4a1d45c7552cfd06a6ec92f1e84e9ff79ad418644609c997c31bd3177f360a",
+      "reference_pcm_sha256": "6cde7fea682b485fc8bcb9ed5f8aa16c1d20b7e9210dbd3d86547d461ca78281",
+      "configuration": {
+        "training": "combined",
+        "beam_width": 128
+      },
+      "baseline_snr_db": 22.478040944315524,
+      "selected_snr_db": 22.674298982338676,
+      "channel_snr_gain_db": [
+        0.1962580380231529
+      ],
+      "baseline_error_sum_squares": [
+        494027236745
+      ],
+      "selected_error_sum_squares": [
+        472199028617
+      ],
+      "peaks": [
+        {
+          "sample_dbfs": -1.803533,
+          "true_peak_dbtp": -1.214608
+        }
+      ]
+    },
+    {
+      "name": "hammond-rocker",
+      "profile": "stereo20k3",
+      "asset_bytes": 3473263,
+      "baseline_asset_sha256": "6e64d66b757de002a9817bea08c545bc8b466f6337e2aa3377c00213fcb81a7b",
+      "selected_asset_sha256": "868ef1889a6d8da4f600dc2f802a723d870d0521c8d34b262303b7ec72f9e7b3",
+      "reference_pcm_sha256": "6bf10721f4f348c5fec4720987cb429aa4fe2c27d4605bb1225aa725f89b684f",
+      "configuration": {
+        "training": "combined",
+        "beam_width": 64
+      },
+      "baseline_snr_db": 23.324337126047023,
+      "selected_snr_db": 23.48248417165435,
+      "channel_snr_gain_db": [
+        0.1578330445009115,
+        0.15847626727707365
+      ],
+      "baseline_error_sum_squares": [
+        612332082509,
+        584066020351
+      ],
+      "selected_error_sum_squares": [
+        590477984589,
+        563137325567
+      ],
+      "peaks": [
+        {
+          "sample_dbfs": -1.159839,
+          "true_peak_dbtp": -1.164804
+        },
+        {
+          "sample_dbfs": -1.720413,
+          "true_peak_dbtp": -1.036633
+        }
+      ]
+    },
+    {
+      "name": "mission-failed",
+      "profile": "mono16k3",
+      "asset_bytes": 605437,
+      "baseline_asset_sha256": "284acc0135b1b5450bf8e7321081d204c1c9209d14e1c0f813f0d94e677f272a",
+      "selected_asset_sha256": "148ebeffc76c4580bac044d65ec6fd48d9d1fee94ad811d9fe4c281bacb4d4af",
+      "reference_pcm_sha256": "57a272c9c8cf4991edec6751e589da4a4bd4f8ec4a861d3c5e1dd5f5447ee23f",
+      "configuration": {
+        "training": "combined",
+        "beam_width": 128
+      },
+      "baseline_snr_db": 25.46239862011469,
+      "selected_snr_db": 25.69930419485049,
+      "channel_snr_gain_db": [
+        0.23690557473580043
+      ],
+      "baseline_error_sum_squares": [
+        153938454107
+      ],
+      "selected_error_sum_squares": [
+        145766109787
+      ],
+      "peaks": [
+        {
+          "sample_dbfs": -1.556524,
+          "true_peak_dbtp": -1.294894
+        }
+      ]
+    },
+    {
+      "name": "lowland-approach",
+      "profile": "mono16k3",
+      "asset_bytes": 600825,
+      "baseline_asset_sha256": "ad2e3a15310f688a972bfa9bab917830fd3bdc4be7bc68b0d45643e720720015",
+      "selected_asset_sha256": "95bd46abef1f55c22251a3df7dd9bcdc2fbb63b1e1b7e5bde43ec89775b1ac16",
+      "reference_pcm_sha256": "82b857d1b05f4930d4d715c745f812f03f594f5102c0ff6da3e76059cb66f27d",
+      "configuration": {
+        "training": "combined",
+        "beam_width": 64
+      },
+      "baseline_snr_db": 23.237282976375063,
+      "selected_snr_db": 23.423578129074343,
+      "channel_snr_gain_db": [
+        0.1862951526992802
+      ],
+      "baseline_error_sum_squares": [
+        180226090713
+      ],
+      "selected_error_sum_squares": [
+        172658573017
+      ],
+      "peaks": [
+        {
+          "sample_dbfs": -1.556524,
+          "true_peak_dbtp": -1.447461
+        }
+      ]
+    },
+    {
+      "name": "crystal-cave",
+      "profile": "mono16k3",
+      "asset_bytes": 606783,
+      "baseline_asset_sha256": "7989d2830d82d9691dc605fad210f83c65911511cc956d31c8665e956a6e7f73",
+      "selected_asset_sha256": "02c30a22e4209aaa3ee246470070b1a8ecaeab6defdff628bd92b570d9d7b764",
+      "reference_pcm_sha256": "dee651c34bf2e68a873e0baaeb45ab8fde963f6f7726f93e1a39cf232d3fa9de",
+      "configuration": {
+        "training": "combined",
+        "beam_width": 128
+      },
+      "baseline_snr_db": 24.967685474463316,
+      "selected_snr_db": 25.182528154964313,
+      "channel_snr_gain_db": [
+        0.21484268050099686
+      ],
+      "baseline_error_sum_squares": [
+        152242553137
+      ],
+      "selected_error_sum_squares": [
+        144894463281
+      ],
+      "peaks": [
+        {
+          "sample_dbfs": -1.556524,
+          "true_peak_dbtp": -1.164804
+        }
+      ]
+    },
+    {
+      "name": "iron-canyon",
+      "profile": "mono16k3",
+      "asset_bytes": 609489,
+      "baseline_asset_sha256": "060d6837612d2d5b8d47a906f06e7ad272cb6aec0153bec412f36bee5a06e1c7",
+      "selected_asset_sha256": "fd4804e91624763f9f71cb07d944fa1a7a2a9fd1ac204de2a0f0e5b4062b5422",
+      "reference_pcm_sha256": "c875ac8075f0b5ca225c6ba59a5d4fb33fa57abdfc6cdcdafd23ae6929c1b036",
+      "configuration": {
+        "training": "combined",
+        "beam_width": 128
+      },
+      "baseline_snr_db": 23.06381183945538,
+      "selected_snr_db": 23.24661473213371,
+      "channel_snr_gain_db": [
+        0.18280289267833183
+      ],
+      "baseline_error_sum_squares": [
+        292295489164
+      ],
+      "selected_error_sum_squares": [
+        280247549580
+      ],
+      "peaks": [
+        {
+          "sample_dbfs": -1.475724,
+          "true_peak_dbtp": -1.164804
+        }
+      ]
+    },
+    {
+      "name": "canyon-gate",
+      "profile": "mono16k3",
+      "asset_bytes": 601098,
+      "baseline_asset_sha256": "a5f2de79ed3d764b08ef139c30da678b926825c0f3b767bbe557ba8377c5909e",
+      "selected_asset_sha256": "2125a2dfcf6977d9ba3d63de656fa6e02ab7abc51d5030832b82194504f611d7",
+      "reference_pcm_sha256": "de64a613af626025e54d28b8b5f182c61df088f3ad25a9bfde170949726ccdab",
+      "configuration": {
+        "training": "combined",
+        "beam_width": 128
+      },
+      "baseline_snr_db": 22.610073850837576,
+      "selected_snr_db": 22.799654962822096,
+      "channel_snr_gain_db": [
+        0.18958111198451988
+      ],
+      "baseline_error_sum_squares": [
+        284154303185
+      ],
+      "selected_error_sum_squares": [
+        272017049809
+      ],
+      "peaks": [
+        {
+          "sample_dbfs": -1.720413,
+          "true_peak_dbtp": -1.416732
+        }
+      ]
+    },
+    {
+      "name": "ashen-wastes",
+      "profile": "mono16k3",
+      "asset_bytes": 617624,
+      "baseline_asset_sha256": "c5fdeb4703ba54bb02279e0884ccfa13106b15d68f0131bd07b440fb7315fb61",
+      "selected_asset_sha256": "02296951e50cc2c3cca0d1cfe053cad3b8c1def96d457047da378cd5b1a8a178",
+      "reference_pcm_sha256": "64e0f49dda1ec9ed1166247de339426e73323a520d085ee557d8cdc78bda65cb",
+      "configuration": {
+        "training": "combined",
+        "beam_width": 128
+      },
+      "baseline_snr_db": 24.032951060652998,
+      "selected_snr_db": 24.23222890328008,
+      "channel_snr_gain_db": [
+        0.19927784262708315
+      ],
+      "baseline_error_sum_squares": [
+        236921212969
+      ],
+      "selected_error_sum_squares": [
+        226295627817
+      ],
+      "peaks": [
+        {
+          "sample_dbfs": -1.475724,
+          "true_peak_dbtp": -1.416732
+        }
+      ]
+    },
+    {
+      "name": "foundry-belt",
+      "profile": "mono16k3",
+      "asset_bytes": 609489,
+      "baseline_asset_sha256": "86ee391148a3f8fbfefce8fdab4ecbbd9031d7f1e75017e11ee33870cd4d43ca",
+      "selected_asset_sha256": "fb0f5607ee78c661ab2b18bd448022248429aad680ffbff8bb16e852f179bf5c",
+      "reference_pcm_sha256": "4bbcc20ad9b82141f9b6670b8b8a933c4ffa8a0a7969a47b76032849096c91a7",
+      "configuration": {
+        "training": "combined",
+        "beam_width": 128
+      },
+      "baseline_snr_db": 23.05126785396331,
+      "selected_snr_db": 23.233839826727873,
+      "channel_snr_gain_db": [
+        0.18257197276456338
+      ],
+      "baseline_error_sum_squares": [
+        300106648808
+      ],
+      "selected_error_sum_squares": [
+        287752045800
+      ],
+      "peaks": [
+        {
+          "sample_dbfs": -1.23774,
+          "true_peak_dbtp": -1.095554
+        }
+      ]
+    },
+    {
+      "name": "fortress-run",
+      "profile": "mono16k3",
+      "asset_bytes": 601370,
+      "baseline_asset_sha256": "ea9b98fc27dd569319fc328c986cc601a7f5090fb833a408a69fc3ef9413df3c",
+      "selected_asset_sha256": "15b0322a2d2ab0860832889b14ae172e1cdbe4da5876207c773a33df8d388d2d",
+      "reference_pcm_sha256": "5a37e7ef968e0a900a5cd83fc9a5412c8c4bb0f6d573a31ab7195a32e4ef4c02",
+      "configuration": {
+        "training": "combined",
+        "beam_width": 128
+      },
+      "baseline_snr_db": 23.081032136649693,
+      "selected_snr_db": 23.266111073492862,
+      "channel_snr_gain_db": [
+        0.18507893684316912
+      ],
+      "baseline_error_sum_squares": [
+        215603391831
+      ],
+      "selected_error_sum_squares": [
+        206608267095
+      ],
+      "peaks": [
+        {
+          "sample_dbfs": -1.159839,
+          "true_peak_dbtp": -1.135057
+        }
+      ]
+    },
+    {
+      "name": "storm-front",
+      "profile": "mono16k3",
+      "asset_bytes": 603532,
+      "baseline_asset_sha256": "019f2cb1de8ec957ca9abf5e161f285d0ff45fff91e80a2a1822a6d579d8c963",
+      "selected_asset_sha256": "3c6ca99fc8048693df382fa6aadb32b906ea9b137f3c7f7632759645fc7d197a",
+      "reference_pcm_sha256": "7572e581698150c7571eb6abb09cf0427cfdfa664e16a5bf804ec72291560963",
+      "configuration": {
+        "training": "combined",
+        "beam_width": 128
+      },
+      "baseline_snr_db": 22.563239459953696,
+      "selected_snr_db": 22.758535256804965,
+      "channel_snr_gain_db": [
+        0.1952957968512692
+      ],
+      "baseline_error_sum_squares": [
+        238362193161
+      ],
+      "selected_error_sum_squares": [
+        227880830217
+      ],
+      "peaks": [
+        {
+          "sample_dbfs": -1.556524,
+          "true_peak_dbtp": -1.335317
+        }
+      ]
+    },
+    {
+      "name": "meteor-reach",
+      "profile": "mono16k3",
+      "asset_bytes": 606510,
+      "baseline_asset_sha256": "67b866eb6b0f0c877688d1662511e06f6f43885bbe343c3577867dde7186ed56",
+      "selected_asset_sha256": "0ab8b5b9a63c54f7e06ba48dca35fe39b45f832bac31cc5790fd81f319fa3777",
+      "reference_pcm_sha256": "68f43b96c3564dd1acc5854c0bd83dc3f36ceed95638b1bd5197318d12738168",
+      "configuration": {
+        "training": "combined",
+        "beam_width": 128
+      },
+      "baseline_snr_db": 23.3942990956173,
+      "selected_snr_db": 23.590315800984186,
+      "channel_snr_gain_db": [
+        0.19601670536688687
+      ],
+      "baseline_error_sum_squares": [
+        239030641868
+      ],
+      "selected_error_sum_squares": [
+        228481955532
+      ],
+      "peaks": [
+        {
+          "sample_dbfs": -1.23774,
+          "true_peak_dbtp": -1.204624
+        }
+      ]
+    },
+    {
+      "name": "carrier-coast",
+      "profile": "mono16k3",
+      "asset_bytes": 601098,
+      "baseline_asset_sha256": "1c1ed9d52827c6f3ed8d96ffca0117848f8cccffee0dcce99e2a2f00eb6400f1",
+      "selected_asset_sha256": "6fedd2bbe43c3a4b53b8e071d4be0177b24e3d8c8c2dc4593035c657b3939f98",
+      "reference_pcm_sha256": "fde6559bdaa93500c2062de9018d7689a54b20fa31c209f9ae98cbd473cc9e37",
+      "configuration": {
+        "training": "combined",
+        "beam_width": 128
+      },
+      "baseline_snr_db": 22.841031093195916,
+      "selected_snr_db": 23.043748846322373,
+      "channel_snr_gain_db": [
+        0.202717753126457
+      ],
+      "baseline_error_sum_squares": [
+        250521846616
+      ],
+      "selected_error_sum_squares": [
+        239096835928
+      ],
+      "peaks": [
+        {
+          "sample_dbfs": -1.720413,
+          "true_peak_dbtp": -1.488602
+        }
+      ]
+    },
+    {
+      "name": "carrier-assault",
+      "profile": "mono16k3",
+      "asset_bytes": 609217,
+      "baseline_asset_sha256": "15bb113db8e254cad890f777c9ce5040b8a97ce088b3fcec06e2827fd22e5bed",
+      "selected_asset_sha256": "96ba9340c0e77d2a8b29c68e310e8dd55ddf64e9b956c9c2266db34dfbbebd84",
+      "reference_pcm_sha256": "829fee5bcd133309f39fb72fb903e04d0539be80b6e8def22ea42e6a8cc4e09e",
+      "configuration": {
+        "training": "combined",
+        "beam_width": 128
+      },
+      "baseline_snr_db": 21.779845448686963,
+      "selected_snr_db": 21.970608032697875,
+      "channel_snr_gain_db": [
+        0.19076258401091195
+      ],
+      "baseline_error_sum_squares": [
+        238628446701
+      ],
+      "selected_error_sum_squares": [
+        228373630445
+      ],
+      "peaks": [
+        {
+          "sample_dbfs": -2.231496,
+          "true_peak_dbtp": -1.386112
+        }
+      ]
+    },
+    {
+      "name": "asteroid-belt",
+      "profile": "mono16k3",
+      "asset_bytes": 619241,
+      "baseline_asset_sha256": "83b4110de384559949793edab5bd539ccc9a741f92f23b9888f469466e2402c0",
+      "selected_asset_sha256": "f18b489dc77688f63a2f7df8647e389825516887812e06dc7c887f458766229b",
+      "reference_pcm_sha256": "ca8426133e8d1586624cdc780afd82209644ab65622b908c729f1389d4f15b48",
+      "configuration": {
+        "training": "combined",
+        "beam_width": 128
+      },
+      "baseline_snr_db": 21.287142900600568,
+      "selected_snr_db": 21.477253617237206,
+      "channel_snr_gain_db": [
+        0.1901107166366387
+      ],
+      "baseline_error_sum_squares": [
+        318879255749
+      ],
+      "selected_error_sum_squares": [
+        305221551813
+      ],
+      "peaks": [
+        {
+          "sample_dbfs": -1.475724,
+          "true_peak_dbtp": -1.345453
+        }
+      ]
+    },
+    {
+      "name": "lunar-awe",
+      "profile": "mono16k3",
+      "asset_bytes": 671783,
+      "baseline_asset_sha256": "5e0d7321f48869c96a3042981797e7d9ded4fbc8f9e3b194f7d88e2a58343fd7",
+      "selected_asset_sha256": "15f6b3bb5e6962282dd0a274e0e2d764ce99773b971869b33d006813bb3ffd3d",
+      "reference_pcm_sha256": "8780023dbda1a836aad6b8b011b5ced8efa696f1242ffce84f5107611670315b",
+      "configuration": {
+        "training": "combined",
+        "beam_width": 32
+      },
+      "baseline_snr_db": 23.904635663645877,
+      "selected_snr_db": 24.037821887976484,
+      "channel_snr_gain_db": [
+        0.13318622433060767
+      ],
+      "baseline_error_sum_squares": [
+        306071754112
+      ],
+      "selected_error_sum_squares": [
+        296827838848
+      ],
+      "peaks": [
+        {
+          "sample_dbfs": -1.23774,
+          "true_peak_dbtp": -1.194652
+        }
+      ]
+    },
+    {
+      "name": "ship-graveyard",
+      "profile": "mono16k3",
+      "asset_bytes": 618425,
+      "baseline_asset_sha256": "162340b8444dce74d92e95bafe36615157867873ced622c7fc2cd3f5384b8472",
+      "selected_asset_sha256": "31133ca167a3ee6054495e02b5616414b525ef818b0e8ca6641a829f931b5f8d",
+      "reference_pcm_sha256": "dafa1b1426926e7b5d596f5eb7db8d51baeaa3ed915baa07453e3db5b2fd6e74",
+      "configuration": {
+        "training": "combined",
+        "beam_width": 128
+      },
+      "baseline_snr_db": 20.779688815631584,
+      "selected_snr_db": 20.958171243102598,
+      "channel_snr_gain_db": [
+        0.17848242747101395
+      ],
+      "baseline_error_sum_squares": [
+        420445914559
+      ],
+      "selected_error_sum_squares": [
+        403517053887
+      ],
+      "peaks": [
+        {
+          "sample_dbfs": -1.395669,
+          "true_peak_dbtp": -1.386112
+        }
+      ]
+    },
+    {
+      "name": "citadel-core",
+      "profile": "mono16k3",
+      "asset_bytes": 608944,
+      "baseline_asset_sha256": "892c256dc95fcce6806354cc1453594103b2d0e5d5dfaf39f5a3e1e24d470b84",
+      "selected_asset_sha256": "627737becf1cceea0522a8896d712cfb15de35f88d5a4ac6d9c86bafa85d9b89",
+      "reference_pcm_sha256": "b33f8c42364ec10682ef0378ef9413426d963a5dfdf4962821d0918984e4bcde",
+      "configuration": {
+        "training": "combined",
+        "beam_width": 128
+      },
+      "baseline_snr_db": 22.38690684319816,
+      "selected_snr_db": 22.57541599290974,
+      "channel_snr_gain_db": [
+        0.18850914971157806
+      ],
+      "baseline_error_sum_squares": [
+        326615255099
+      ],
+      "selected_error_sum_squares": [
+        312741525563
+      ],
+      "peaks": [
+        {
+          "sample_dbfs": -1.159839,
+          "true_peak_dbtp": -1.095554
+        }
+      ]
+    },
+    {
+      "name": "orbital-shipyard",
+      "profile": "mono16k3",
+      "asset_bytes": 606510,
+      "baseline_asset_sha256": "cbc729e2636f41fbe1eef880c3487731fc99907b298f1121ba59fb4bb639345a",
+      "selected_asset_sha256": "467a7ba27305dd699b57d1ec682e963dec458c11eb03f4f99e8d9696d89b324d",
+      "reference_pcm_sha256": "7600d7de6ac4de4a428b4ca75290a0a04319233a1f49626e100048e7f649cc9d",
+      "configuration": {
+        "training": "combined",
+        "beam_width": 128
+      },
+      "baseline_snr_db": 21.68786008379287,
+      "selected_snr_db": 21.877153557731162,
+      "channel_snr_gain_db": [
+        0.18929347393829232
+      ],
+      "baseline_error_sum_squares": [
+        287986598312
+      ],
+      "selected_error_sum_squares": [
+        275703913384
+      ],
+      "peaks": [
+        {
+          "sample_dbfs": -1.475724,
+          "true_peak_dbtp": -1.468007
+        }
+      ]
+    },
+    {
+      "name": "space-carrier",
+      "profile": "mono16k3",
+      "asset_bytes": 606783,
+      "baseline_asset_sha256": "1ae30948cfb6446bac8d615b5198f2fa5ebe0ec2d3916a51ee27b9e6b739ec9a",
+      "selected_asset_sha256": "7bd1986682c86edd28ec176678e4da1b904adafff0cde8080d8ca4ccc9c0bce8",
+      "reference_pcm_sha256": "8649ddd5e2e24245b39d9bb701eedd266e7c0b6494b7c1223051d2ebc8b87c65",
+      "configuration": {
+        "training": "combined",
+        "beam_width": 128
+      },
+      "baseline_snr_db": 22.421844754716975,
+      "selected_snr_db": 22.608745433848494,
+      "channel_snr_gain_db": [
+        0.18690067913151864
+      ],
+      "baseline_error_sum_squares": [
+        300757730622
+      ],
+      "selected_error_sum_squares": [
+        288089036606
+      ],
+      "peaks": [
+        {
+          "sample_dbfs": -1.159839,
+          "true_peak_dbtp": -1.095554
+        }
+      ]
+    },
+    {
+      "name": "jump-gate",
+      "profile": "mono16k3",
+      "asset_bytes": 604076,
+      "baseline_asset_sha256": "306dd6ff33728a7ae688f3fbeee61c4a01e7f6ceabb24fa13e78d4837a29e041",
+      "selected_asset_sha256": "ad1005f10e8e3c0d031c25f2ca8ce8bdc7277fad44c672eee6b317635baf3a4a",
+      "reference_pcm_sha256": "a04f423d44d53ca146a79ffca2f0537fd92c9e32b0a6b1e78975d743de3acf44",
+      "configuration": {
+        "training": "combined",
+        "beam_width": 128
+      },
+      "baseline_snr_db": 21.013245612650966,
+      "selected_snr_db": 21.20052603888761,
+      "channel_snr_gain_db": [
+        0.18728042623664365
+      ],
+      "baseline_error_sum_squares": [
+        401308471452
+      ],
+      "selected_error_sum_squares": [
+        384370709148
+      ],
+      "peaks": [
+        {
+          "sample_dbfs": -1.316346,
+          "true_peak_dbtp": -1.315082
+        }
+      ]
+    }
+  ],
+  "validation": {
+    "host_tests_passed": 513,
+    "host_tests_ignored": 2,
+    "encoder_tests_passed": 34,
+    "quality_tests_passed": 15,
+    "regeneration_tests_run": 24,
+    "regeneration_platform_skips": 1,
+    "loader_cases_passed": 738,
+    "source_regeneration_exact_tracks": 21,
+    "model": "NMOS6502 at64x bus; DMA1byte/bus tick; sampler6.25MHz/(divider+2)",
+    "package_sha256": {
+      "havoc.elf": "dc848e36be2b7d5ba62d3f44cc7a24687e935d5cbdcc5225fe8ba0553593865e",
+      "havoc.reu": "660d4e5c59acbbcf28c84587ec7ec97a245e6917820624ae9f130e3af6472f75",
+      "havoc.prg": "c3684e7241df46d6f1a50d92e38d676ebb412d8713640cdc9ba94d68282687ab",
+      "havoc.cfg": "edb4577b4382695a93495737b82d4e25c12955e628a692f35d139750565280e8",
+      "havoc-v0.1.4.zip": "acd3fe2bb89466347d689115f6e34313d18c194d06e460793758d32e69135ea3"
+    },
+    "standards": {
+      "pal": {
+        "checked_frames": 2733167,
+        "baseline_checked_frames": 2733167,
+        "minimum_lead_samples": 10698,
+        "baseline_minimum_lead_samples": 10698,
+        "max_dma_bytes": 1024,
+        "baseline_max_dma_bytes": 1024,
+        "main_stack_bytes_written": 312,
+        "baseline_main_stack_bytes_written": 312,
+        "ring_wraps": 73,
+        "fades": 24,
+        "corruption_scenarios": 11,
+        "final_expected_underrun_fault": 5,
+        "startup_cpu_cycles": 293154562,
+        "baseline_startup_cpu_cycles": 293158757,
+        "startup_bus_ticks": 11025727,
+        "baseline_startup_bus_ticks": 11025794,
+        "max_service_change_percent": 0.0030789362275296384,
+        "min_service_change_percent": -0.004343246794147326
+      },
+      "ntsc": {
+        "checked_frames": 2723515,
+        "baseline_checked_frames": 2723515,
+        "minimum_lead_samples": 10604,
+        "baseline_minimum_lead_samples": 10604,
+        "max_dma_bytes": 1024,
+        "baseline_max_dma_bytes": 1024,
+        "main_stack_bytes_written": 312,
+        "baseline_main_stack_bytes_written": 312,
+        "ring_wraps": 73,
+        "fades": 24,
+        "corruption_scenarios": 11,
+        "final_expected_underrun_fault": 5,
+        "startup_cpu_cycles": 293154472,
+        "baseline_startup_cpu_cycles": 293158664,
+        "startup_bus_ticks": 11202127,
+        "baseline_startup_bus_ticks": 11202192,
+        "max_service_change_percent": 0.0023103047291916923,
+        "min_service_change_percent": -0.00325920453679851
+      }
+    },
+    "decoder_kernel_bytes_identical": 1426,
+    "native_reports": "target/digital-music/quality-experiments/final-package"
+  }
+}

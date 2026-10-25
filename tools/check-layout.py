@@ -1,5 +1,6 @@
 """Reject allocated sections outside the fixed C64 ownership map."""
 import os, pathlib, re, runpy, struct, subprocess, sys
+from reu_layout import CODE_IMAGES, OFFSETS, PAGE_SHIFT, checked_layout
 elf, prg = map(pathlib.Path, sys.argv[1:3])
 nm = pathlib.Path(os.environ.get('LLVM_MOS', str(pathlib.Path.home()/'.local/llvm-mos')))/'bin/llvm-nm'
 readelf = nm.with_name('llvm-readelf')
@@ -97,7 +98,9 @@ assert symbols['__phase_pixels_aux_start'] == 0x6f20, 'PIXELS helpers must start
 assert 0 < symbols['__phase_pixels_aux_size'] <= 0x2e0, 'PIXELS helpers exceed workspace'
 assert symbols['__phase_pixels_aux_end'] == 0x6f20 + symbols['__phase_pixels_aux_size']
 assert symbols['__phase_pixels_aux_end'] <= symbols['__irq_stack_bottom'], 'PIXELS helpers overlap IRQ stack'
-assert symbols['__phase_pixels_aux_load'] == 0x43f20, 'incorrect PIXELS helper REU address'
+assert symbols['__phase_pixels_aux_load'] == symbols['__reu_pixels'] + 0x3f20, 'incorrect PIXELS helper REU address'
+assert symbols['__phase_pixels_aux_reu_bank'] == symbols['__phase_pixels_aux_load'] >> 16, 'incorrect PIXELS helper REU bank'
+assert symbols['__phase_pixels_aux_reu_offset'] == symbols['__phase_pixels_aux_load'] & 0xffff, 'incorrect PIXELS helper REU bank offset'
 assert symbols['__phase_pixels_size'] == 0x3f20 + symbols['__phase_pixels_aux_size'], 'incorrect composed PIXELS size'
 assert symbols['__raster_player_seen']==0x77ab
 assert (symbols['__raster_prepare_scratch_start'],symbols['__raster_prepare_scratch_end'])==(0x77a0,0x77bf)
@@ -154,57 +157,10 @@ for line in listing.splitlines():
         used.append((name,address,address+size))
     print(f'{name:18} ${address:04X}-${address+size-1:04X} {size:5} bytes')
 # Linker bases are the source for both packaging and the runtime address table.
-# Validate the fixed v12 map independently, including each full reserved slot.
-reu_layout = (
-    (1, 'boot', 0x10000),
-    (2, 'sim_lowlands', 0x20000),
-    (3, 'geometry', 0x30000),
-    (4, 'pixels', 0x40000),
-    (5, 'audio', 0x50000),
-    (7, 'scenery_wildlife', 0x70000),
-    (8, 'sim_canyon', 0x80000),
-    (9, 'sim_fortress', 0x90000),
-    (10, 'sim_carrier', 0xa0000),
-    (12, 'victory', 0x15000),
-    (13, 'sim_terminal', 0x1a000),
-    (18, 'sim_warden', 0x25000),
-    (19, 'sim_citadel', 0x2a000),
-    (20, 'sim_flagship', 0x35000),
-    (21, 'scenery_transport', 0x3a000),
-    (22, 'scenery_meteors', 0x55000),
-    (23, 'sim_helpers', 0x5a000),
-    (24, 'scenery_ascent', 0x60000),
-    (25, 'scenery_asteroid', 0x65000),
-    (26, 'scenery_moon', 0x6a000),
-    (27, 'scenery_graveyard', 0x75000),
-    (28, 'scenery_shipyard', 0x7a000),
-    (29, 'scenery_carrier', 0x85000),
-    (30, 'scenery_gate', 0x8a000),
-    (31, 'shadow', 0x95000),
-    (33, 'scenery_helpers', 0xaa000),
-)
-assert symbols['__reu_size'] == 0x1000000, 'incorrect 16 MiB REU image size'
-assert symbols['__reu_digital_music'] == 0x100000, 'incorrect digital music address'
-assert symbols['__reu_digital_victory'] == symbols['__reu_digital_music'], 'incorrect digital victory alias'
-assert symbols['__reu_digital_ring'] == 0xfe0000, 'incorrect digital ring address'
-assert symbols['__reu_digital_ring_size'] == 0x20000, 'incorrect digital ring size'
-assert symbols['__reu_code_slot_size'] == 0x4200, 'incorrect REU code slot size'
-assert symbols['__reu_models'] == 0xb0000, 'incorrect REU model bank address'
-reu_allocations = [(0, 0x180, 'directories'), (0x1000, 0x1c00, 'common assets'),
-                   (0x2000, 0xb000, 'encounters'), (0xb0000, 0xb9000, 'models'),
-                   (0x100000, 0xfe0000, 'digital soundtrack'),
-                   (0xfe0000, 0x1000000, 'mutable PCM ring')]
-for phase_id, name, expected in reu_layout:
-    address = symbols[f'__reu_{name}']
-    end = address + symbols['__reu_code_slot_size']
-    assert 0 <= address < end <= 0x100000, f'{name} REU slot exceeds image code region'
-    assert address & 0xfff == 0, f'{name} REU slot must be 4 KiB aligned'
-    assert (address & 0xffff) + 0x4200 <= 0x10000, f'{name} REU slot crosses a 64 KiB bank'
-    for start, stop, owner in reu_allocations:
-        assert end <= start or address >= stop, f'{name} REU slot overlaps {owner}'
-    reu_allocations.append((address, end, name))
-for phase_id, name, expected in reu_layout:
-    assert symbols[f'__reu_{name}'] == expected, f'incorrect {name} REU slot address'
+# Validate the fixed v17 map and actual payload lengths within each reservation.
+reu_layout = tuple((logical_id, symbol, OFFSETS[name])
+                   for name, symbol, logical_id in CODE_IMAGES)
+_, reu_allocations = checked_layout(symbols)
 
 reu_table = symbols['__code_reu_pages']
 assert symbols['__code_reu_pages_end'] - reu_table == 34, 'incorrect REU address table size'
@@ -214,7 +170,7 @@ reu_table_offset = reu_table - 0x0801 + 2
 reu_pages = data[reu_table_offset:reu_table_offset+34]
 expected_reu_pages = bytearray(34)
 for phase_id, name, expected in reu_layout:
-    expected_reu_pages[phase_id] = symbols[f'__reu_{name}'] >> 12
+    expected_reu_pages[phase_id] = symbols[f'__reu_{name}'] >> PAGE_SHIFT
 assert reu_pages == expected_reu_pages, 'REU address table disagrees with linked slots'
 
 # ELF physical addresses must match the bases used by the packer. Virtual
@@ -318,7 +274,7 @@ print(f'SIM common prefix {symbols["__phase_sim_base_size"]} bytes; largest simu
 print('SIM runtime transfer sizes by profile0..7: ' + ', '.join(map(str, sim_load_sizes)))
 print('OVL7 startup code sizes by directory order: ' + ', '.join(map(str, code_sizes)))
 reserved = sum(end - start for start, end, _ in reu_allocations)
-print(f'REU 16 MiB: {reserved:,} reserved bytes; {symbols["__reu_size"] - reserved:,} unreserved bytes; DMC1 soundtrack $100000-$FDFFFF; two mutable 64 KiB PCM slots $FE0000-$FFFFFF')
+print(f'REU 16 MiB: {reserved:,} reserved bytes; {symbols["__reu_size"] - reserved:,} unreserved bytes; DMC1 soundtrack $80000-$FDFFFF; two mutable 64 KiB PCM slots $FE0000-$FFFFFF')
 print('REU logical phase slots: ' + ', '.join(f'{phase_id:02X}=${symbols[f"__reu_{name}"]:06X}' for phase_id, name, expected in reu_layout))
 print(f'SIM helpers: {symbols["__phase_sim_aux_prefix_size"]} bytes at8E00 and {symbols["__phase_sim_extra_size"]} bytes atE000; reloaded before every SIM profile, retire before SCENERY resets shadow records')
 print(f'Victory GEOMETRY composed image {symbols["__phase_victory_size"]} bytes')

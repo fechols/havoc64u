@@ -26,17 +26,19 @@ resample in FFmpeg: the encoder owns those operations.
 New-Item -ItemType Directory -Force -Path target/digital-music | Out-Null
 ffmpeg -v error -y -i 'assets/music/source/Galactic Dash.m4a' -map 0:a:0 -vn -sample_fmt s16 -c:a flac -threads 1 target/digital-music/galactic-dash-source.flac
 ffmpeg -v error -y -i 'assets/music/source/Hammond Rocker.m4a' -map 0:a:0 -vn -sample_fmt s16 -c:a flac -threads 1 target/digital-music/hammond-rocker-source.flac
-cargo run --release --manifest-path tools/encode-digital-music/Cargo.toml --target-dir target/digital-music/tool-build -- --profile mono16k3 --codebooks 5142 target/digital-music/galactic-dash-source.flac assets/music/galactic-dash.dlt target/digital-music/galactic-dash-dlt5.wav
-cargo run --release --manifest-path tools/encode-digital-music/Cargo.toml --target-dir target/digital-music/tool-build -- --profile stereo20k3 --codebooks 7029 target/digital-music/hammond-rocker-source.flac assets/music/hammond-rocker.dlt target/digital-music/hammond-rocker-dlt5.wav
+cargo run --release --manifest-path tools/encode-digital-music/Cargo.toml --target-dir target/digital-music/tool-build -- --profile mono16k3 --codebooks 7341 target/digital-music/galactic-dash-source.flac target/digital-music/galactic-dash.dlt target/digital-music/galactic-dash-dlt5.wav
+cargo run --release --manifest-path tools/encode-digital-music/Cargo.toml --target-dir target/digital-music/tool-build -- --profile stereo20k3 --codebooks 10036 target/digital-music/hammond-rocker-source.flac target/digital-music/hammond-rocker.dlt target/digital-music/hammond-rocker-dlt5.wav
 ```
 
 Regenerating an asset also requires updating its provenance and regenerating the
 soundtrack catalog. The positional legacy interface remains
 `input.flac output.dlt preview.wav`; it reproduces the previous DLT3 bytes.
-Profile encoding accepts `--codebooks COUNT` immediately after the profile;
+Profile encoding accepts `--codebooks COUNT` after the profile;
 the default is 521. Counts must be 1 through 65,535 and are capped at the number
 of packing groups in short inputs. The soundtrack's explicit catalog counts
-allocate the available REU music region at approximately 30 ms per book.
+allocate the expanded REU music region at approximately 20.92 ms per book.
+Use the catalog regeneration tool for installed per-track settings; the commands
+above demonstrate the unchanged baseline encoder and stage their outputs.
 
 ## Reconstruction and encoder search
 
@@ -50,6 +52,51 @@ iterations. Up to three closed-loop retraining passes are retained only when
 they improve squared error after final DAC rounding. A 32-trajectory beam search
 then selects sample codes across each segment; it is retained only when it
 improves on the greedy encoding. This search adds no target CPU work or bits.
+
+### Optional offline quality experiments
+
+All options precede the three positional paths. Existing invocations retain the
+original baseline encoding, including its tie rules and encoded bytes.
+
+| Option | Values and behavior |
+|---|---|
+| `--training` | `baseline` (default), `beam-refine`, `som`, or `combined` |
+| `--beam-width` | `32` (default), `64`, or `128` predictor trajectories |
+| `--reference-wav` / `--reference-metadata` | Paired paths to an authenticated, already-normalized reference and its baseline metadata |
+
+`beam-refine` adds up to two closed-loop retraining passes using residuals from
+the selected beam path. `som` proposes a second eight-entry book trained from
+those residuals by a deterministic scalar self-organizing map. `combined` tries
+the SOM candidate and then beam-residual retraining. Candidates replace the
+current segment result only when their exact rounded-output squared error is
+lower. Segment-end predictors still affect later segments, so acceptance of an
+asset requires a separate complete-track comparison.
+
+The SOM uses eight nodes initialized uniformly between residual extrema. Sorted
+histogram data drive integer batch updates with triangular neighborhood radii
+3, 2, and 1, four epochs each, followed by twenty seeded Lloyd iterations. It uses
+no random seed or target neural-network code. Books are converted to the actual
+signed-16 deltas before decoder evaluation. The trainer identifier is
+`batch-triangular-v1`.
+
+Frozen-reference mode validates the WAV rate, channels, frame count and PCM hash,
+the requested book count, and the input FLAC hash against the reference metadata.
+It encodes the exact reference samples without another downmix, resampling, or
+gain adjustment. A peak failure exits with `FROZEN_REFERENCE_PEAK_LIMIT` before
+writing any deliverable. This makes comparisons share one reference instead of
+letting normalization changes affect the apparent SNR gain.
+
+Metadata includes the actual training strategy and beam width, configured beam
+retraining passes, SOM identifier, fixed-reference flag, and exact integer
+`signal_sum_squares` / `error_sum_squares` for each channel and the full track.
+Ordinary encoding also records full-precision linear gains; frozen encoding
+preserves those when present and retains the original gain metadata otherwise.
+The supplied reference PCM hash is authoritative: rounded historical dB values
+are not used to reconstruct its samples.
+
+Beam search deduplicates predictor states before selecting the best trajectories.
+It preserves the original ordering by error, sample, parent and code; tests
+compare it against the original full-sort algorithm at all supported widths.
 
 Each channel keeps its own signed-16 saturating predictor across codebook changes.
 Only publication is rounded:

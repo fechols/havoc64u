@@ -39,36 +39,52 @@
     "sample_count": 1433816,
     "sample_count_unit": "frames",
     "codebook_entries": 8,
-    "codebook_count": 3001,
+    "codebook_count": 4284,
     "lloyd_iterations": 20,
     "closed_loop_training_passes": 3,
-    "encoder_beam_width": 32,
+    "encoder_beam_width": 128,
     "bits_per_sample": 3,
     "output_bits_per_sample": 8,
     "channel_processing": "Average (L+R)/2 in floating point before resampling; retain fractional samples",
     "resampler": "Sequential 512-phase 100 dB Kaiser-windowed sinc; floating-point output retained until normalization",
     "normalization": "One track-wide gain; validate final rounded 8-bit PCM sample and true peaks <= -1 dBTP including loop seam; reduce excess plus 0.1 dB and re-encode, at most five attempts",
-    "normalization_gain_db": 6.222816,
-    "normalization_attempts": 1,
+    "normalization_gain_db": 6.023502,
+    "normalization_attempts": 2,
     "true_peak_meter": "FFmpeg EBU R128; loop seam included; upper bounds include 0.0005 linear metadata rounding margin",
     "packing": "Continuous LSB-first three-bit codes; stereo alternates left/right; balanced ceil(frame_count/alignment) groups, first remainder books one group longer; final segment clipped; zero final padding",
     "reconstruction": "Independent signed-16 saturating predictors retained across segments; output clamp(floor(sample/256+0.5),-128,127); predictors reset at exact loop length",
     "crc": "CRC-8 polynomial 0x07, initial zero, cumulative per 1024 packed bytes including final short chunk",
     "flac_sha256": "4f3082dc5fbee2275d5ef0493a661abf266179e9fad9db91ecb5466498d2c2c9",
     "encoder_files_sha256": {
-      "dlt4.rs": "ffceb603711151bf6b00c3ed63ec89abed347b3d1438a8e072a4f6d5fa3daf71",
+      "dlt4.rs": "40e08f3d315f92f1bf61a07160b926a59e961c64ac8cffacd5e0683fd78f6e74",
       "encoder.rs": "335fdd3296b6662193cb72292c254eb44d58e08d411d9d1d6e240662ae1382c0",
-      "format.rs": "50fa306edc25382d2b445ca6cf0a2a2a377029534c30a4d6efebc6d05a627c67",
+      "format.rs": "a7d1500c578a58628bc197933b640f91fedc24cafa131deda2e0e8c627515e5e",
       "lloyd.rs": "4421d54add65d69ef1063204481caa312ed11377e7d8eb34aca7b7e65a3547d5",
-      "main.rs": "9d99b3e1ccbc7a4ef5c42f67e65c302ac63a667a7c1db3bd749d3ae7547a10dd",
-      "normalize.rs": "943300775b7e4826e969ee38a29d3c4dde2f47368060d5b44cfb1e696c316caf",
-      "resample.rs": "9c4d2215feafa4846f244070cd9af035f72570bd89f6395a9ef35da960f3e482"
+      "main.rs": "d33e102441f5410eedc5af605876b29ad8ae78b83092478f8e0c8ca52dca257c",
+      "normalize.rs": "486100dcbe98906a46cfb82a2776b4b7bdb016f26bfc85a4ba38a90e91bdda2b",
+      "resample.rs": "43cd5edd2290f069520da93664f8d7fb7df98ffbaa6dcb09489628fb51c4375e",
+      "som.rs": "181ac07919c7d383c60c33d9116378a5fb28bfb935311c83d0901c12c60177e9"
     },
-    "encoder_binary_sha256": "087bdd1549f0afaae8f6cd018f1b7aa2940dda7f0839ecf336f6dae27ce13852",
+    "encoder_binary_sha256": "d342628e185712b2234ee84f322ca17957ae24a0be017a86488ae36e3aa0f68b",
     "codebook_entry_bytes": 2,
-    "samples_per_segment": 472,
-    "long_segment_count": 2168,
-    "codebooks": "Little-endian signed-16 deltas; eight entries per channel"
+    "samples_per_segment": 328,
+    "long_segment_count": 3583,
+    "codebooks": "Little-endian signed-16 deltas; eight entries per channel",
+    "encoder_training": "combined",
+    "beam_retraining_passes": 2,
+    "som_trainer": "batch-triangular-v1",
+    "fixed_reference": true,
+    "encoder_options": {
+      "training": "combined",
+      "beam_width": 128,
+      "reference": {
+        "training": "baseline",
+        "beam_width": 32,
+        "codebook_count": 4284,
+        "pcm_sha256": "8649ddd5e2e24245b39d9bb701eedd266e7c0b6494b7c1223051d2ebc8b87c65",
+        "asset_sha256": "1ae30948cfb6446bac8d615b5198f2fa5ebe0ec2d3916a51ee27b9e6b739ec9a"
+      }
+    }
   },
   "tool_source": {
     "project": "secondreality-opt",
@@ -79,11 +95,11 @@
       "src/audio/lloyd.rs": "4421d54add65d69ef1063204481caa312ed11377e7d8eb34aca7b7e65a3547d5",
       "target-c64/s64-adpcm-music/src/lib.rs": "b17cc8771c8c2a4fdd433ee5d2cdbdfa14b2b7fc0ba4b96f0e4265f2f5fb561e"
     },
-    "note": "Original source hashes identify the imported Second Reality algorithms. The local encoder adds DLT5 compact signed-16 books, balanced segments, closed-loop retraining, beam search, floating-point mono downmix, rounded output and loop-aware peak validation; conversion.encoder_files_sha256 identifies this implementation."
+    "note": "Original source hashes identify the imported Second Reality algorithms. The local encoder adds DLT5 compact signed-16 books, balanced segments, closed-loop retraining, beam search, floating-point mono downmix, rounded output and loop-aware peak validation; conversion.encoder_files_sha256 identifies this implementation. Offline quality experiment selected this configuration using whole-track integer squared error against authenticated fixed-reference PCM, with no channel regression."
   },
-  "asset_sha256": "96331d054161997f1b170d0853eaf36ca6f44b4fd1cd1b5dc7c2d2205026aa3a",
-  "decoded_pcm_sha256": "2a1c3eb00b38f72a908624ed7ae51085af9bdaff413cb40a11385637d00a8063",
-  "reference_pcm_sha256": "36152096ecc75c1f16f77c82680ebc5c36dbe454c73ee8e41456284098575e85",
+  "asset_sha256": "7bd1986682c86edd28ec176678e4da1b904adafff0cde8080d8ca4ccc9c0bce8",
+  "decoded_pcm_sha256": "d27cdac889b2249ac8ded62cf10ef71d2db68017d5655097fcbd0f9a2c136c56",
+  "reference_pcm_sha256": "8649ddd5e2e24245b39d9bb701eedd266e7c0b6494b7c1223051d2ebc8b87c65",
   "generated_metadata": "space-carrier.json",
   "temporary_gameplay_fixture": false,
   "attribution": {
@@ -94,6 +110,7 @@
   },
   "reproduction_commands": {
     "intermediate": "ffmpeg -v error -y -i \"assets/music/source/Space Carrier.m4a\" -map 0:a:0 -vn -sample_fmt s16 -c:a flac -threads 1 target/digital-music/space-carrier-source.flac",
-    "encode": "cargo run --release --manifest-path tools/encode-digital-music/Cargo.toml --target-dir target/digital-music/tool-build -- --profile mono16k3 --codebooks 3001 target/digital-music/space-carrier-source.flac assets/music/space-carrier.dlt target/digital-music/space-carrier-dlt5.wav"
+    "encode": "cargo run --release --manifest-path tools/encode-digital-music/Cargo.toml --target-dir target/digital-music/tool-build -- --profile mono16k3 --codebooks 4284 --training combined --beam-width 128 --reference-wav target/digital-music/reference-inputs/space-carrier.reference.wav --reference-metadata target/digital-music/reference-inputs/space-carrier.json target/digital-music/space-carrier-source.flac assets/music/space-carrier.dlt target/digital-music/space-carrier-dlt5.wav",
+    "reference": "cargo run --release --manifest-path tools/encode-digital-music/Cargo.toml --target-dir target/digital-music/tool-build -- --profile mono16k3 --codebooks 4284 target/digital-music/space-carrier-source.flac target/digital-music/reference-inputs/space-carrier.dlt target/digital-music/reference-inputs/space-carrier.wav"
   }
 }

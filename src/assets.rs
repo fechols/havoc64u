@@ -10,7 +10,7 @@ pub const MAX_SEGMENT_SPAWNS: u8 = 62;
 pub const SEGMENT_COUNT: u8 = 18;
 pub const SEGMENT_DISTANCE: u32 = 30_000;
 pub const REU_SIZE: u32 = crate::digital::REU_SIZE;
-/// DMC1 directory and contiguous DLT5 soundtrack follow the unchanged first MiB.
+/// DMC1 directory and contiguous DLT5 soundtrack follow the compact first 512 KiB.
 pub const DIGITAL_MUSIC_OFFSET: u32 = crate::digital::MUSIC_OFFSET;
 /// Compatibility asset address; individual tracks no longer own fixed slots.
 pub const DIGITAL_VICTORY_OFFSET: u32 = crate::digital::HAMMOND_OFFSET;
@@ -27,7 +27,7 @@ pub const SEGMENT_CHECKSUM_OFFSET: usize = 20;
 pub const MODEL_DIRECTORY_OFFSET: u32 = 0x40;
 pub const MODEL_DIRECTORY_SIZE: usize = 64;
 pub const MODEL_DIRECTORY_CHECKSUM_OFFSET: usize = MODEL_DIRECTORY_SIZE - 2;
-pub const MODEL_BANKS_OFFSET: u32 = 0x0b0000;
+pub const MODEL_BANKS_OFFSET: u32 = 0x00b000;
 pub const MODEL_COUNT: u8 = 9;
 pub const ENEMY_SPECS_OFFSET: usize = 16 + MODEL_COUNT as usize * 8;
 pub const ENEMY_SPEC_SIZE: usize = 8;
@@ -41,7 +41,8 @@ pub const SHADOW_SPEC_SIZE: usize = 12;
 // Version 8 packed code and music into the unchanged first MiB.
 // Version 7 stores mesh vertices as i8 with a per-mesh shift (SMA4 banks);
 // version 6 extended the checked campaign through orbital combat and the gate.
-pub const PACKAGE_ID: u32 = 0x534D1000;
+// Version 17 packs assets/code below $080000 using 2 KiB overlay address units.
+pub const PACKAGE_ID: u32 = 0x534D1100;
 pub const PLAYER: u8 = 0;
 pub const FIGHTER: u8 = 1;
 pub const DIVER: u8 = 2;

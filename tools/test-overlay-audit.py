@@ -191,7 +191,8 @@ def main():
         ('shadow-finalize-calls-unloaded-tail', lambda data: replace_target(data, shadow_finalize_call, shadow_tail_name), 'unsafe overlay references'),
         ('irq-calls-projection-helper', lambda data: replace_target(data, irq, 'fast_project'), 'unsafe overlay references'),
         ('geometry-calls-retired-scenery-helper', lambda data: replace_target(data, geometry, scenery_helper_name), 'unsafe overlay references'),
-        ('projection-helper-wrong-load-address', lambda data: symbol_address(data, '__phase_render_aux_load', 0x33f21), 'shared projection'),
+        ('projection-helper-wrong-load-address', lambda data: symbol_address(data, '__phase_render_aux_load',
+            next(symbol.address for symbol in elf.symbols if symbol.name == '__phase_render_aux_load') + 1), 'shared projection'),
     ]
     # Symbol presence is sufficient: generic arithmetic must stay absent even
     # if an optimizer currently leaves a helper unreachable.

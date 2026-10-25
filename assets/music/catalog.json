@@ -5,127 +5,358 @@
       "name": "galactic-dash",
       "rust_name": "GalacticDash",
       "profile": "mono16k3",
-      "codebook_count": 5142
+      "codebook_count": 7341,
+      "encoder_options": {
+        "training": "combined",
+        "beam_width": 128,
+        "reference": {
+          "training": "baseline",
+          "beam_width": 32,
+          "codebook_count": 7341,
+          "pcm_sha256": "6cde7fea682b485fc8bcb9ed5f8aa16c1d20b7e9210dbd3d86547d461ca78281",
+          "asset_sha256": "689228a7a13f45a4bbebcb6aadc9d07232f59c67171095f7ae7c58ea4806022c"
+        }
+      }
     },
     {
       "name": "hammond-rocker",
       "rust_name": "HammondRocker",
       "profile": "stereo20k3",
-      "codebook_count": 7029
+      "codebook_count": 10036,
+      "encoder_options": {
+        "training": "combined",
+        "beam_width": 64,
+        "reference": {
+          "training": "baseline",
+          "beam_width": 32,
+          "codebook_count": 10036,
+          "pcm_sha256": "6bf10721f4f348c5fec4720987cb429aa4fe2c27d4605bb1225aa725f89b684f",
+          "asset_sha256": "6e64d66b757de002a9817bea08c545bc8b466f6337e2aa3377c00213fcb81a7b"
+        }
+      }
     },
     {
       "name": "mission-failed",
       "rust_name": "MissionFailed",
       "profile": "mono16k3",
-      "codebook_count": 2994
+      "codebook_count": 4275,
+      "encoder_options": {
+        "training": "combined",
+        "beam_width": 128,
+        "reference": {
+          "training": "baseline",
+          "beam_width": 32,
+          "codebook_count": 4275,
+          "pcm_sha256": "57a272c9c8cf4991edec6751e589da4a4bd4f8ec4a861d3c5e1dd5f5447ee23f",
+          "asset_sha256": "284acc0135b1b5450bf8e7321081d204c1c9209d14e1c0f813f0d94e677f272a"
+        }
+      }
     },
     {
       "name": "lowland-approach",
       "rust_name": "LowlandApproach",
       "profile": "mono16k3",
-      "codebook_count": 2971
+      "codebook_count": 4242,
+      "encoder_options": {
+        "training": "combined",
+        "beam_width": 64,
+        "reference": {
+          "training": "baseline",
+          "beam_width": 32,
+          "codebook_count": 4242,
+          "pcm_sha256": "82b857d1b05f4930d4d715c745f812f03f594f5102c0ff6da3e76059cb66f27d",
+          "asset_sha256": "ad2e3a15310f688a972bfa9bab917830fd3bdc4be7bc68b0d45643e720720015"
+        }
+      }
     },
     {
       "name": "crystal-cave",
       "rust_name": "CrystalCave",
       "profile": "mono16k3",
-      "codebook_count": 3001
+      "codebook_count": 4284,
+      "encoder_options": {
+        "training": "combined",
+        "beam_width": 128,
+        "reference": {
+          "training": "baseline",
+          "beam_width": 32,
+          "codebook_count": 4284,
+          "pcm_sha256": "dee651c34bf2e68a873e0baaeb45ab8fde963f6f7726f93e1a39cf232d3fa9de",
+          "asset_sha256": "7989d2830d82d9691dc605fad210f83c65911511cc956d31c8665e956a6e7f73"
+        }
+      }
     },
     {
       "name": "iron-canyon",
       "rust_name": "IronCanyon",
       "profile": "mono16k3",
-      "codebook_count": 3014
+      "codebook_count": 4303,
+      "encoder_options": {
+        "training": "combined",
+        "beam_width": 128,
+        "reference": {
+          "training": "baseline",
+          "beam_width": 32,
+          "codebook_count": 4303,
+          "pcm_sha256": "c875ac8075f0b5ca225c6ba59a5d4fb33fa57abdfc6cdcdafd23ae6929c1b036",
+          "asset_sha256": "060d6837612d2d5b8d47a906f06e7ad272cb6aec0153bec412f36bee5a06e1c7"
+        }
+      }
     },
     {
       "name": "canyon-gate",
       "rust_name": "CanyonGate",
       "profile": "mono16k3",
-      "codebook_count": 2972
+      "codebook_count": 4244,
+      "encoder_options": {
+        "training": "combined",
+        "beam_width": 128,
+        "reference": {
+          "training": "baseline",
+          "beam_width": 32,
+          "codebook_count": 4244,
+          "pcm_sha256": "de64a613af626025e54d28b8b5f182c61df088f3ad25a9bfde170949726ccdab",
+          "asset_sha256": "a5f2de79ed3d764b08ef139c30da678b926825c0f3b767bbe557ba8377c5909e"
+        }
+      }
     },
     {
       "name": "ashen-wastes",
       "rust_name": "AshenWastes",
       "profile": "mono16k3",
-      "codebook_count": 3054
+      "codebook_count": 4361,
+      "encoder_options": {
+        "training": "combined",
+        "beam_width": 128,
+        "reference": {
+          "training": "baseline",
+          "beam_width": 32,
+          "codebook_count": 4361,
+          "pcm_sha256": "64e0f49dda1ec9ed1166247de339426e73323a520d085ee557d8cdc78bda65cb",
+          "asset_sha256": "c5fdeb4703ba54bb02279e0884ccfa13106b15d68f0131bd07b440fb7315fb61"
+        }
+      }
     },
     {
       "name": "foundry-belt",
       "rust_name": "FoundryBelt",
       "profile": "mono16k3",
-      "codebook_count": 3014
+      "codebook_count": 4303,
+      "encoder_options": {
+        "training": "combined",
+        "beam_width": 128,
+        "reference": {
+          "training": "baseline",
+          "beam_width": 32,
+          "codebook_count": 4303,
+          "pcm_sha256": "4bbcc20ad9b82141f9b6670b8b8a933c4ffa8a0a7969a47b76032849096c91a7",
+          "asset_sha256": "86ee391148a3f8fbfefce8fdab4ecbbd9031d7f1e75017e11ee33870cd4d43ca"
+        }
+      }
     },
     {
       "name": "fortress-run",
       "rust_name": "FortressRun",
       "profile": "mono16k3",
-      "codebook_count": 2974
+      "codebook_count": 4246,
+      "encoder_options": {
+        "training": "combined",
+        "beam_width": 128,
+        "reference": {
+          "training": "baseline",
+          "beam_width": 32,
+          "codebook_count": 4246,
+          "pcm_sha256": "5a37e7ef968e0a900a5cd83fc9a5412c8c4bb0f6d573a31ab7195a32e4ef4c02",
+          "asset_sha256": "ea9b98fc27dd569319fc328c986cc601a7f5090fb833a408a69fc3ef9413df3c"
+        }
+      }
     },
     {
       "name": "storm-front",
       "rust_name": "StormFront",
       "profile": "mono16k3",
-      "codebook_count": 2984
+      "codebook_count": 4261,
+      "encoder_options": {
+        "training": "combined",
+        "beam_width": 128,
+        "reference": {
+          "training": "baseline",
+          "beam_width": 32,
+          "codebook_count": 4261,
+          "pcm_sha256": "7572e581698150c7571eb6abb09cf0427cfdfa664e16a5bf804ec72291560963",
+          "asset_sha256": "019f2cb1de8ec957ca9abf5e161f285d0ff45fff91e80a2a1822a6d579d8c963"
+        }
+      }
     },
     {
       "name": "meteor-reach",
       "rust_name": "MeteorReach",
       "profile": "mono16k3",
-      "codebook_count": 2999
+      "codebook_count": 4282,
+      "encoder_options": {
+        "training": "combined",
+        "beam_width": 128,
+        "reference": {
+          "training": "baseline",
+          "beam_width": 32,
+          "codebook_count": 4282,
+          "pcm_sha256": "68f43b96c3564dd1acc5854c0bd83dc3f36ceed95638b1bd5197318d12738168",
+          "asset_sha256": "67b866eb6b0f0c877688d1662511e06f6f43885bbe343c3577867dde7186ed56"
+        }
+      }
     },
     {
       "name": "carrier-coast",
       "rust_name": "CarrierCoast",
       "profile": "mono16k3",
-      "codebook_count": 2972
+      "codebook_count": 4244,
+      "encoder_options": {
+        "training": "combined",
+        "beam_width": 128,
+        "reference": {
+          "training": "baseline",
+          "beam_width": 32,
+          "codebook_count": 4244,
+          "pcm_sha256": "fde6559bdaa93500c2062de9018d7689a54b20fa31c209f9ae98cbd473cc9e37",
+          "asset_sha256": "1c1ed9d52827c6f3ed8d96ffca0117848f8cccffee0dcce99e2a2f00eb6400f1"
+        }
+      }
     },
     {
       "name": "carrier-assault",
       "rust_name": "CarrierAssault",
       "profile": "mono16k3",
-      "codebook_count": 3013
+      "codebook_count": 4301,
+      "encoder_options": {
+        "training": "combined",
+        "beam_width": 128,
+        "reference": {
+          "training": "baseline",
+          "beam_width": 32,
+          "codebook_count": 4301,
+          "pcm_sha256": "829fee5bcd133309f39fb72fb903e04d0539be80b6e8def22ea42e6a8cc4e09e",
+          "asset_sha256": "15bb113db8e254cad890f777c9ce5040b8a97ce088b3fcec06e2827fd22e5bed"
+        }
+      }
     },
     {
       "name": "asteroid-belt",
       "rust_name": "AsteroidBelt",
       "profile": "mono16k3",
-      "codebook_count": 3062
+      "codebook_count": 4372,
+      "encoder_options": {
+        "training": "combined",
+        "beam_width": 128,
+        "reference": {
+          "training": "baseline",
+          "beam_width": 32,
+          "codebook_count": 4372,
+          "pcm_sha256": "ca8426133e8d1586624cdc780afd82209644ab65622b908c729f1389d4f15b48",
+          "asset_sha256": "83b4110de384559949793edab5bd539ccc9a741f92f23b9888f469466e2402c0"
+        }
+      }
     },
     {
       "name": "lunar-awe",
       "rust_name": "LunarAwe",
       "profile": "mono16k3",
-      "codebook_count": 3322
+      "codebook_count": 4743,
+      "encoder_options": {
+        "training": "combined",
+        "beam_width": 32,
+        "reference": {
+          "training": "baseline",
+          "beam_width": 32,
+          "codebook_count": 4743,
+          "pcm_sha256": "8780023dbda1a836aad6b8b011b5ced8efa696f1242ffce84f5107611670315b",
+          "asset_sha256": "5e0d7321f48869c96a3042981797e7d9ded4fbc8f9e3b194f7d88e2a58343fd7"
+        }
+      }
     },
     {
       "name": "ship-graveyard",
       "rust_name": "ShipGraveyard",
       "profile": "mono16k3",
-      "codebook_count": 3058
+      "codebook_count": 4366,
+      "encoder_options": {
+        "training": "combined",
+        "beam_width": 128,
+        "reference": {
+          "training": "baseline",
+          "beam_width": 32,
+          "codebook_count": 4366,
+          "pcm_sha256": "dafa1b1426926e7b5d596f5eb7db8d51baeaa3ed915baa07453e3db5b2fd6e74",
+          "asset_sha256": "162340b8444dce74d92e95bafe36615157867873ced622c7fc2cd3f5384b8472"
+        }
+      }
     },
     {
       "name": "citadel-core",
       "rust_name": "CitadelCore",
       "profile": "mono16k3",
-      "codebook_count": 3011
+      "codebook_count": 4299,
+      "encoder_options": {
+        "training": "combined",
+        "beam_width": 128,
+        "reference": {
+          "training": "baseline",
+          "beam_width": 32,
+          "codebook_count": 4299,
+          "pcm_sha256": "b33f8c42364ec10682ef0378ef9413426d963a5dfdf4962821d0918984e4bcde",
+          "asset_sha256": "892c256dc95fcce6806354cc1453594103b2d0e5d5dfaf39f5a3e1e24d470b84"
+        }
+      }
     },
     {
       "name": "orbital-shipyard",
       "rust_name": "OrbitalShipyard",
       "profile": "mono16k3",
-      "codebook_count": 2999
+      "codebook_count": 4282,
+      "encoder_options": {
+        "training": "combined",
+        "beam_width": 128,
+        "reference": {
+          "training": "baseline",
+          "beam_width": 32,
+          "codebook_count": 4282,
+          "pcm_sha256": "7600d7de6ac4de4a428b4ca75290a0a04319233a1f49626e100048e7f649cc9d",
+          "asset_sha256": "cbc729e2636f41fbe1eef880c3487731fc99907b298f1121ba59fb4bb639345a"
+        }
+      }
     },
     {
       "name": "space-carrier",
       "rust_name": "SpaceCarrier",
       "profile": "mono16k3",
-      "codebook_count": 3001
+      "codebook_count": 4284,
+      "encoder_options": {
+        "training": "combined",
+        "beam_width": 128,
+        "reference": {
+          "training": "baseline",
+          "beam_width": 32,
+          "codebook_count": 4284,
+          "pcm_sha256": "8649ddd5e2e24245b39d9bb701eedd266e7c0b6494b7c1223051d2ebc8b87c65",
+          "asset_sha256": "1ae30948cfb6446bac8d615b5198f2fa5ebe0ec2d3916a51ee27b9e6b739ec9a"
+        }
+      }
     },
     {
       "name": "jump-gate",
       "rust_name": "JumpGate",
       "profile": "mono16k3",
-      "codebook_count": 2987
+      "codebook_count": 4265,
+      "encoder_options": {
+        "training": "combined",
+        "beam_width": 128,
+        "reference": {
+          "training": "baseline",
+          "beam_width": 32,
+          "codebook_count": 4265,
+          "pcm_sha256": "a04f423d44d53ca146a79ffca2f0537fd92c9e32b0a6b1e78975d743de3acf44",
+          "asset_sha256": "306dd6ff33728a7ae688f3fbeee61c4a01e7f6ceabb24fa13e78d4837a29e041"
+        }
+      }
     }
   ],
   "default_gameplay": "galactic-dash",

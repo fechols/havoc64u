@@ -2,8 +2,8 @@
 import importlib.util
 from pathlib import Path
 import unittest
-import json
 from digital_format import load_catalog, pack_catalog
+from reu_layout import CODE_BASE, CODE_END, CODE_IMAGES, MUSIC_OFFSET, OFFSETS, RESERVATIONS, image_size_symbol
 
 
 spec = importlib.util.spec_from_file_location('packer', Path(__file__).with_name('pack-overlays.py'))
@@ -12,17 +12,16 @@ spec.loader.exec_module(packer)
 
 
 def layout():
-    addresses = (0x10000, 0x20000, 0x30000, 0x40000, 0x50000, 0x70000,
-                 0x80000, 0x90000, 0xa0000, 0x15000, 0x1a000, 0x25000,
-                 0x2a000, 0x35000, 0x3a000, 0x55000, 0x5a000, 0x60000,
-                 0x65000, 0x6a000, 0x75000, 0x7a000, 0x85000, 0x8a000, 0x95000, 0xaa000)
     symbols = {'__reu_size': 0x1000000, '__reu_code_slot_size': 0x4200,
-               '__reu_models': 0xb0000,
-               '__reu_digital_music': 0x100000, '__reu_digital_ring': 0xfe0000,
-               '__reu_digital_victory': 0x100000,
+               '__reu_models': 0xb000, '__reu_models_end': CODE_BASE,
+               '__reu_probe_start': 0xc00, '__reu_probe_end': 0x1000,
+               '__reu_digital_music': MUSIC_OFFSET, '__reu_digital_ring': 0xfe0000,
+               '__reu_digital_victory': MUSIC_OFFSET,
                '__reu_digital_ring_size': 0x20000}
-    symbols.update((f'__reu_{symbol}', address)
-                   for (_, symbol, _), address in zip(packer.CODE_IMAGES, addresses))
+    for name, symbol, _ in CODE_IMAGES:
+        symbols[f'__reu_{symbol}'] = OFFSETS[name]
+        symbols[f'__reu_{symbol}_end'] = OFFSETS[name] + RESERVATIONS[name]
+        symbols[image_size_symbol(name)] = min(RESERVATIONS[name], 0x4200)
     return symbols
 
 
@@ -58,17 +57,29 @@ class ReuLayout(unittest.TestCase):
     def test_complete_package_fits_with_full_music_and_code_reservations(self):
         offsets, allocations = packer.checked_layout(layout())
         self.assertEqual(len(offsets), 26)
-        self.assertEqual(sum(end - start for start, end, _ in allocations), 16245120)
-        self.assertFalse(any(start < 0x100000 and end > 0xb9000 for start, end, _ in allocations))
+        self.assertEqual((CODE_BASE, CODE_END), (0x14000, 0x7e800))
+        self.assertEqual(MUSIC_OFFSET, 0x80000)
+        self.assertEqual(sum(RESERVATIONS.values()), CODE_END - CODE_BASE)
+        ordered = sorted(allocations)
+        self.assertTrue(all(end <= following[0]
+                            for (_, end, _), following in zip(ordered, ordered[1:])))
+        self.assertTrue(any(start >> 16 != (end - 1) >> 16
+                            for start, end, name in allocations if name in offsets))
+        pixels_bank = offsets['pixels'] >> 16
+        self.assertTrue(any(name != 'pixels' and offset >> 16 == pixels_bank
+                            for name, offset in offsets.items()))
 
-    def test_rejects_aliases_bank_crossings_and_out_of_bounds_reservations(self):
+    def test_rejects_invalid_reservations_and_image_overflow(self):
         for symbol, value, message in (
-            ('__reu_scenery_gate', 0x10000, 'overlaps'),
-            ('__reu_scenery_gate', 0x1c000, 'crosses a 64 KiB bank'),
-            ('__reu_scenery_gate', 0x100000, 'exceeds REU'),
-            ('__reu_scenery_gate', 0x8a100, '4 KiB aligned'),
-            ('__reu_scenery_gate', 0x45000, 'exclusive REU bank'),
-            ('__reu_models', 0xa0000, 'overlaps'),
+            ('__reu_scenery_gate', 0x80000, 'exceeds image'),
+            ('__reu_scenery_gate', OFFSETS['scenery-gate'] + 1, '2 KiB aligned'),
+            ('__reu_scenery_gate_end', OFFSETS['scenery-gate'] + 0x4000, 'reservation size'),
+            ('__reu_models', 0xa0000, 'model bank address'),
+            ('__reu_models_end', CODE_BASE + 1, 'model bank end'),
+            ('__reu_probe_start', 0x100, 'probe reservation'),
+            ('__reu_probe_end', 0x1001, 'probe reservation'),
+            ('__phase_boot_size', 0x3001, 'exceeds REU reservation'),
+            ('__phase_scenery_size', 0x4201, 'exceeds execution window'),
             ('__reu_digital_music', 0xf0000, 'digital music address'),
             ('__reu_digital_victory', 0x200000, 'digital victory alias'),
             ('__reu_digital_ring', 0x3e0000, 'digital ring address'),
@@ -79,6 +90,26 @@ class ReuLayout(unittest.TestCase):
                 symbols[symbol] = value
                 with self.assertRaisesRegex(AssertionError, message):
                     packer.checked_layout(symbols)
+
+        symbols = layout()
+        symbols['__reu_scenery_gate'] = OFFSETS['scenery-carrier']
+        symbols['__reu_scenery_gate_end'] = OFFSETS['scenery-carrier'] + RESERVATIONS['scenery-gate']
+        with self.assertRaisesRegex(AssertionError, 'overlaps scenery-carrier'):
+            packer.checked_layout(symbols)
+
+    def test_packing_short_reservations_preserves_neighbors_and_rejects_overflow(self):
+        symbols = layout()
+        for name in ('boot', 'audio', 'sim-helpers', 'scenery-helpers'):
+            start, size = OFFSETS[name], RESERVATIONS[name]
+            reu = bytearray([0xa5]) * 0x80000
+            code = bytes([0x5a]) * (size - 1)
+            packer.write_code_image(reu, symbols, name, code)
+            self.assertEqual(reu[start:start + size], code + b'\0')
+            self.assertEqual((reu[start - 1], reu[start + size]), (0xa5, 0xa5))
+            before = reu[:]
+            with self.assertRaisesRegex(AssertionError, 'exceeds REU reservation'):
+                packer.write_code_image(reu, symbols, name, bytes(size + 1))
+            self.assertEqual(reu, before)
 
 
 if __name__ == '__main__':

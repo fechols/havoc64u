@@ -317,7 +317,7 @@ def audit(path):
     require(render_auxiliary.address == 0x6F20 and 0 < render_auxiliary.size <= 0x2E0
             and symbols['fast_project'].section == render_auxiliary.index
             and symbols['__phase_render_aux_size'].address == render_auxiliary.size
-            and symbols['__phase_render_aux_load'].address == 0x33F20,
+            and symbols['__phase_render_aux_load'].address == symbols['__reu_geometry'].address + 0x3F20,
             'shared projection must occupy the reviewed GEOMETRY helper tail')
     require(all(phases[name].address + phases[name].size <= 0x6F20 for name in RENDER_SECTIONS),
             'GEOMETRY/SHADOW prefix overlaps shared projection')
@@ -333,7 +333,7 @@ def audit(path):
     require(symbols["__phase_pixels_aux_start"].address == pixels_auxiliary.address
             and symbols["__phase_pixels_aux_end"].address == pixels_auxiliary.address + pixels_auxiliary.size
             and symbols["__phase_pixels_aux_size"].address == pixels_auxiliary.size
-            and symbols["__phase_pixels_aux_load"].address == 0x43F20
+            and symbols["__phase_pixels_aux_load"].address == symbols['__reu_pixels'].address + 0x3F20
             and symbols["__phase_pixels_prefix_size"].address == phases[".phase.pixels"].size
             and phases[".phase.pixels"].address == 0x3000
             and phases[".phase.pixels"].size <= 0x3F20
