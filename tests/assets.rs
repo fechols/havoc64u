@@ -1027,8 +1027,10 @@ fn eighteen_stage_profiles_cover_terrestrial_and_orbital_campaign_with_contiguou
     );
     assert_eq!(
         MODEL_BANKS_OFFSET + MODEL_SIZE as u32 * SEGMENT_COUNT as u32,
-        0xb9000
+        0x14000
     );
+    assert_eq!(MODEL_BANKS_OFFSET, SEGMENTS_OFFSET + SEGMENT_SIZE as u32 * SEGMENT_COUNT as u32);
+    assert_eq!(DIGITAL_MUSIC_OFFSET, 0x80000);
     assert_eq!(REU_SIZE, 16 * 1024 * 1024);
     assert_eq!(DIGITAL_MUSIC_OFFSET, havoc::digital::MUSIC_OFFSET);
     assert_eq!(DIGITAL_VICTORY_OFFSET, havoc::digital::HAMMOND_OFFSET);

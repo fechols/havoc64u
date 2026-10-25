@@ -188,6 +188,9 @@ ALTERNATE_ENTRIES = {
 }
 STARTUP_SECTION = ".startup_checks"
 STARTUP_ENTRY = "havoc_c64::check_code_package"
+SPLASH_SECTION = ".splash"
+SPLASH_INIT_SECTION = ".splash_init"
+SPLASH_ENTRY = "__havoc_show_splash"
 SIM_AUX_SECTION = ".phase.sim_aux"
 SIM_EXTRA_SECTION = ".phase.sim_extra"
 SIM_HELPERS = {SIM_AUX_SECTION, SIM_EXTRA_SECTION}
@@ -206,11 +209,11 @@ def audit_startup(elf):
     """Fail closed if a future SDK adds a ROM hook before main.
 
     Low BSS deliberately owns the KERNAL vector area. Only register setup,
-    BSS clearing, our data relocation, and the final call to main are valid.
+    the PRG splash, BSS clearing, data relocation, and the call to main are valid.
     Keep this small instruction whitelist explicit when changing the CRT.
     """
     symbols = {symbol.name: symbol for symbol in elf.symbols if symbol.name}
-    names = ("_start", "__after_main", "__zero_bss", "__havoc_copy_data", "main")
+    names = ("_start", "__after_main", SPLASH_ENTRY, "__zero_bss", "__havoc_copy_data", "main")
     require(all(name in symbols for name in names), "startup audit symbols are missing")
     start, end = symbols["_start"], symbols["__after_main"]
     require(start.section == end.section and start.address < end.address, "invalid startup range")
@@ -237,13 +240,86 @@ def audit_startup(elf):
             calls.append(target)
         previous = instruction
         offset += width
-    expected = [symbols[name].address for name in ("__zero_bss", "__havoc_copy_data", "main")]
-    require(calls == expected, "startup calls must be exactly BSS clear, data copy, main; reject SDK ROM hooks")
+    expected = [symbols[name].address for name in (SPLASH_ENTRY, "__zero_bss", "__havoc_copy_data", "main")]
+    require(calls == expected, "startup calls must be exactly splash, BSS clear, data copy, main; reject SDK ROM hooks")
+
+
+def audit_splash(elf):
+    """The PRG-only splash image retires before the first REU overlay load."""
+    sections = {section.name: section for section in elf.sections}
+    symbols = {symbol.name: symbol for symbol in elf.symbols if symbol.name}
+    require(SPLASH_SECTION in sections and SPLASH_INIT_SECTION in sections,
+            "missing PRG splash sections")
+    data, init = sections[SPLASH_SECTION], sections[SPLASH_INIT_SECTION]
+    require(data.address == 0x3000 and data.size == 10001 and data.flags == 2,
+            "splash data must be exactly 10001 read-only bytes at $3000")
+    require(init.address == data.address + data.size and 0 < init.size
+            and init.address + init.size <= 0x7200 and init.flags == 6,
+            "splash initializer must follow its data inside the retired overlay gap")
+    startup_entries = (SPLASH_ENTRY, '__havoc_copy_data')
+    require(all(name in symbols and symbols[name].section == init.index
+                and init.address <= symbols[name].address < init.address + init.size
+                for name in (*startup_entries, '__havoc_copy_bytes')),
+            "splash and data-copy helpers must occupy the retired initializer section")
+    start, end = symbols["_start"], symbols["__after_main"]
+    copies = data_copies = 0
+    entries = Counter()
+    for source, address, kind, symbol, addend in elf.relocations():
+        if not source.flags & 2:
+            continue
+        target = elf.sections[symbol.section] if symbol.section < len(elf.sections) else None
+        destination = symbol.address + addend
+        instruction = address - source.address - 1
+        jsr = (kind == 3 and 0 <= instruction < source.size
+               and elf.contents(source)[instruction] == 0x20)
+        jmp = (kind == 3 and 0 <= instruction < source.size
+               and elf.contents(source)[instruction] == 0x4c)
+        if target is not None and target.index == init.index and source.index != init.index:
+            require(source.index == start.section and start.address <= address - 1 < end.address
+                    and symbol.name in startup_entries and addend == 0 and jsr,
+                    "retired splash initializer may only be called directly by early startup")
+            entries[symbol.name] += 1
+        if target is not None and target.index == data.index:
+            require(source.index == init.index and data.address <= destination < data.address + data.size,
+                    "retired splash data may only be referenced by its initializer")
+        if source.index != init.index:
+            continue
+        caller = elf.function_at(source.index, address)
+        require(caller is not None, 'unresolved splash initializer caller')
+        if target is not None and target.index == data.index:
+            require(caller.name == SPLASH_ENTRY, 'only the splash entry may reference its picture')
+            continue
+        if target is not None and target.index == init.index:
+            if caller.name == SPLASH_ENTRY:
+                require(jsr and destination == symbols['__havoc_copy_bytes'].address,
+                        'splash initializer may only call the pre-runtime byte copier')
+                copies += 1
+            elif caller.name == '__havoc_copy_data':
+                require(jmp and destination == symbols['__havoc_copy_bytes'].address,
+                        'data initializer must tail-call the pre-runtime byte copier')
+                data_copies += 1
+            else:
+                require(caller.name == '__havoc_copy_bytes'
+                        and caller.address <= destination < caller.end and not jsr,
+                        'byte copier must remain within its retired initializer body')
+            continue
+        if target is None and re.fullmatch(r"__rc\d+", symbol.name):
+            require(2 <= destination <= 0x21, "splash imaginary register outside fixed zero page")
+            continue
+        require(caller.name == '__havoc_copy_data'
+                and symbol.name in ('__data_load_start', '__data_start', '__data_size')
+                and kind in (4, 5) and addend == 0,
+                'splash initializer may only call its retired copier or reference startup data bounds')
+    require(entries == Counter({name: 1 for name in startup_entries}),
+            "splash and data initializers each need exactly one early startup call")
+    require(copies == 3, "splash initializer must copy bitmap, screen and color exactly once")
+    require(data_copies == 1, 'data initializer must copy the runtime data exactly once')
 
 
 def audit(path):
     elf = Elf(path)
     audit_startup(elf)
+    audit_splash(elf)
     phases = {section.name: section for section in elf.sections if section.name.startswith(".phase.")}
     require(set(phases) == set(ENTRIES) | set(ENEMY_ENTRIES) | set(SCENERY_ENTRIES) | set(ALTERNATE_ENTRIES) | {*SIM_HELPERS, *SCENERY_HELPERS, PIXELS_AUX_SECTION, RENDER_AUX_SECTION},
             "ELF must contain seven common phases, seven encounter tails, ten scenery tails, terminal SIM, victory GEOMETRY and SIM/PIXELS/projection helpers")
@@ -317,7 +393,7 @@ def audit(path):
     require(render_auxiliary.address == 0x6F20 and 0 < render_auxiliary.size <= 0x2E0
             and symbols['fast_project'].section == render_auxiliary.index
             and symbols['__phase_render_aux_size'].address == render_auxiliary.size
-            and symbols['__phase_render_aux_load'].address == 0x33F20,
+            and symbols['__phase_render_aux_load'].address == symbols['__reu_geometry'].address + 0x3F20,
             'shared projection must occupy the reviewed GEOMETRY helper tail')
     require(all(phases[name].address + phases[name].size <= 0x6F20 for name in RENDER_SECTIONS),
             'GEOMETRY/SHADOW prefix overlaps shared projection')
@@ -333,7 +409,7 @@ def audit(path):
     require(symbols["__phase_pixels_aux_start"].address == pixels_auxiliary.address
             and symbols["__phase_pixels_aux_end"].address == pixels_auxiliary.address + pixels_auxiliary.size
             and symbols["__phase_pixels_aux_size"].address == pixels_auxiliary.size
-            and symbols["__phase_pixels_aux_load"].address == 0x43F20
+            and symbols["__phase_pixels_aux_load"].address == symbols['__reu_pixels'].address + 0x3F20
             and symbols["__phase_pixels_prefix_size"].address == phases[".phase.pixels"].size
             and phases[".phase.pixels"].address == 0x3000
             and phases[".phase.pixels"].size <= 0x3F20
@@ -855,6 +931,7 @@ def audit(path):
         reached.add(function)
         require(elf.sections[function.section].name not in phases, f"IRQ reference graph reaches overlay function {function.name}")
         require(elf.sections[function.section].name != STARTUP_SECTION, f"IRQ reference graph reaches retired startup function {function.name}")
+        require(elf.sections[function.section].name != SPLASH_INIT_SECTION, f"IRQ reference graph reaches retired splash function {function.name}")
         require("call_indir" not in function.name, f"IRQ calls an indirect-call trampoline: {function.name}")
         require(not function.name.startswith(('span_', 'fast_span_')),
                 f'IRQ reference graph reaches span compositor {function.name}')
@@ -873,7 +950,8 @@ def audit(path):
     print(f"IRQ relocation graph: {len(reached)} functions, all resident")
     if span_enabled:
         print('Span compositor: resident pure core; PIXELS-only callers and flush; absent from IRQ graph')
-    print("Startup: ROMs disabled before BSS; only BSS clear, data copy, main are called")
+    print("Startup: ROMs disabled before splash; only splash, BSS clear, data copy, main are called")
+    print("Splash: PRG-only image and initializer retire before overlays; no runtime or IRQ references")
     print("Startup checks: one main call before BOOT; no phase or IRQ references into retired workspace")
 
 

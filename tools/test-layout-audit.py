@@ -5,6 +5,7 @@ import struct
 import subprocess
 import sys
 import tempfile
+from reu_layout import CODE_IMAGES, OFFSETS
 
 
 def main():
@@ -29,6 +30,17 @@ def main():
     cases = 0
     with tempfile.TemporaryDirectory(prefix="havoc-layout-audit-") as directory:
         damaged = Path(directory) / "damaged.prg"
+        for section_name in ('.splash', '.splash_init'):
+            section = next(section for section in elf.sections if section.name == section_name)
+            for relative in (0, section.size - 1):
+                data = bytearray(original)
+                data[2 + section.address - 0x801 + relative] ^= 1
+                damaged.write_bytes(data)
+                result = check(damaged)
+                assert result.returncode != 0, f'accepted changed {section_name} byte {relative}'
+                assert f'PRG {section_name} differs from ELF' in result.stderr, result.stdout + result.stderr
+                cases += 1
+                print(f'Rejected changed {section_name} byte {relative}')
         for table, count, expected, label in tables:
             symbol = next(symbol for symbol in elf.symbols if symbol.name == table)
             offset = symbol.address - int.from_bytes(original[:2], "little") + 2
@@ -57,6 +69,10 @@ def main():
             print(f"Rejected REU address table phase {phase_id}")
         damaged_elf = Path(directory) / "damaged.elf"
         for name, value, expected in (
+            ("__splash_start", 0x3001, "incorrect packed splash allocation"),
+            ("__splash_end", 0x5712, "incorrect packed splash allocation"),
+            ("__splash_init_start", 0x5710, "incorrect splash initializer allocation"),
+            ("__splash_init_end", 0x7201, "incorrect splash initializer allocation"),
             ("__segment0_start", 0x5ff, "incorrect first mission buffer allocation"),
             ("__segment0_end", 0x801, "incorrect first mission buffer allocation"),
             ("__segment1_start", 0x96ff, "incorrect second mission buffer allocation"),
@@ -85,7 +101,9 @@ def main():
             ("__phase_pixels_prefix_size", 0x3f21, "PIXELS prefix overlaps its helpers"),
             ("__phase_pixels_aux_start", 0x6f1f, "PIXELS helpers must start at $6F20"),
             ("__phase_pixels_aux_size", 0x2e1, "PIXELS helpers exceed workspace"),
-            ("__phase_pixels_aux_load", 0x43f21, "incorrect PIXELS helper REU address"),
+            ("__phase_pixels_aux_load", OFFSETS['pixels'] + 0x3f21, "incorrect PIXELS helper REU address"),
+            ("__phase_pixels_aux_reu_bank", (OFFSETS['pixels'] >> 16) + 1, "incorrect PIXELS helper REU bank"),
+            ("__phase_pixels_aux_reu_offset", 0x3f21, "incorrect PIXELS helper REU bank offset"),
             ("__phase_pixels_size", 0x3000, "incorrect composed PIXELS size"),
             ("__staged_bitmap_start", 0x953f, "staged bitmap must reuse cell coverage only"),
             ("__staged_bitmap_end", 0x9681, "staged bitmap must reuse cell coverage only"),
@@ -100,11 +118,16 @@ def main():
             ("__reu_digital_ring_size", 0x10000, "incorrect digital ring size"),
             ("__reu_code_slot_size", 0x4000, "incorrect REU code slot size"),
             ("__reu_models", 0xb1000, "incorrect REU model bank address"),
-            ("__reu_scenery_gate", 0x100000, "gate REU slot exceeds image"),
-            ("__reu_scenery_gate", 0x8a001, "gate REU slot must be 4 KiB aligned"),
-            ("__reu_scenery_gate", 0x8c000, "gate REU slot crosses a 64 KiB bank"),
-            ("__reu_scenery_gate", 0x88000, "gate REU slot overlaps scenery_carrier"),
-            ("__reu_scenery_gate", 0x95000, "shadow REU slot overlaps scenery_gate"),
+            ("__reu_models_end", 0x14001, "incorrect REU model bank end"),
+            ("__reu_probe_start", 0xb00, "incorrect REU probe reservation"),
+            ("__reu_probe_end", 0x1001, "incorrect REU probe reservation"),
+            ("__reu_scenery_gate", 0x80000, "scenery-gate REU slot exceeds image"),
+            ("__reu_scenery_gate", OFFSETS['scenery-gate'] + 1, "scenery-gate REU slot must be 2 KiB aligned"),
+            ("__reu_scenery_gate_end", OFFSETS['scenery-gate'] + 0x4000, "incorrect scenery-gate REU reservation size"),
+            ("__phase_boot_size", 0x3001, "boot exceeds REU reservation"),
+            ("__phase_audio_size", 0x3801, "audio exceeds REU reservation"),
+            *((f'__reu_{symbol}_end', OFFSETS[name] + 0x800,
+               f'incorrect {name} REU reservation size') for name, symbol, _ in CODE_IMAGES),
             ("__shadow_frame_start", 0xe7ff, "incorrect persistent shadow frame allocation"),
             ("__shadow_frame_end", 0xff21, "incorrect persistent shadow frame allocation"),
             ("__phase_shadow_finalize_size", 0, "SHADOW finalization prefix must be shorter"),

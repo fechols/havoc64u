@@ -4,6 +4,55 @@ H.A.V.O.C. (Heavy Assault Vessel: Orbital Combat) targets the C64 Ultimate at 64
 
 The configuration selects the C64U turbo registers, 64 MHz CPU speed, disabled badline timing, and quiet bus operation. The runtime programs the turbo register at startup and checks that the setting is available. An ordinary 1 MHz C64 is not a supported execution target.
 
+## Startup splash
+
+The PRG carries `assets/splash/havoc_splash.bin` in its existing `$3000–$71FF`
+load-image gap: 8,000 bitmap bytes, 1,000 screen bytes, 1,000 color nibbles, and
+one background byte. A temporary assembly initializer follows the payload.
+After masking interrupts and mapping RAM/I/O, `.init.000` selects turbo and
+copies the image to `$A000`, `$8000`, and `$D800`, then enables VIC bank 2 in
+multicolor bitmap mode. This happens before BSS clearing, data initialization,
+REU access, or Rust `main`. The PRG remains 38,913 bytes; its first overlay load
+retires both the source image and its initializer. The splash cannot appear
+before the external loader transfers control to the PRG.
+
+BOOT preserves the visible image through code/package validation, asset setup,
+and audio calibration. The first AUDIO call fills the initial music ring using
+bounded decoder visits before returning; `AUDIO_READY` keeps the input queue
+and simulation clock gated until playback starts. Later music calls retain
+their existing work allowance. The effects-only emulator/benchmark backend
+does not wait for the unsupported sampler. The first rendered frame overwrites
+the splash band by band, and its sprite enables wait until frame completion.
+Both images share background index 6, so changing to the title does not recolor
+the unpainted remainder. Fatal startup errors still show the text diagnostic.
+
+The offline converter, `tools/encode-splash.py`, preserves the source's full
+composition and filters in linear light to 160×200 logical pixels. It tests all
+455 local color triples per 4×8 cell using edge-weighted Oklab error, then uses
+full-strength serpentine Floyd–Steinberg diffusion with reduced error transfer
+across strong edges. The pinned palette comes from the
+[Ultimate firmware default colors](https://github.com/GideonZ/1541ultimate/blob/master/software/u64/u64_config.cc).
+This splash-specific palette does not change the gameplay quantizer or the
+machine's saved palette settings. The committed
+[640×480 preview](../assets/splash/havoc_splash.preview.png) is decoded from the
+packed bytes, not the intermediate image.
+
+Regeneration requires Python, Pillow, and NumPy:
+
+```sh
+python3 tools/encode-splash.py
+python3 tools/encode-splash.py --check
+python3 tools/test-splash-converter.py
+```
+
+The JSON sidecar records the source/output hashes, palette, conversion settings,
+and dependency versions. Normal target builds consume the committed binary and
+run `python3 tools/encode-splash.py --verify-assets` to reject stale assets using
+only the Python standard library; they do not need image-processing dependencies.
+Linked startup, layout, and
+overlay tests check exact display copies, the transient initializer's lifetime,
+and rejection of references after its memory is reclaimed.
+
 ## Graphics and memory
 
 Flying objects cast fixed-size, recognizable silhouettes directly downward onto
@@ -21,6 +70,9 @@ terrestrial crossings retain C64 dark gray 11, defined as `SHADOW_COLOR` in
 Birds, crossing transports, and meteors are background animations and cast no
 ground shadows. The player and its projectiles retain their shadows during
 terrestrial crossings.
+Space Carrier's parked side hulls also cast no shadows: they sit outside the
+flight deck with no surface beneath them. Player, enemy, boss, projectile, and
+pickup shadows remain enabled.
 
 `SMA6` retains nine 12-byte descriptors in each model bank's final 128 bytes:
 template family, quarter-turn heading, local XZ offset and half extents derived
@@ -157,23 +209,26 @@ Production companion screenshots have an existing screen/color-fetch defect with
 | `$EF20–$FF1F` | Sixteen-byte persistent raster heads, one per sorted position |
 | `$FF20–$FFF9` | Free RAM; the CPU vectors follow at `$FFFA` |
 
-The PRG spans `$0801-$9FFF`, including resident constants and zero-filled gaps; its load image excludes phase overlays. BOOT's initial 3,072-byte common-bank validation temporarily writes `$8400-$8FFF`, so sprite images are initialized only after it finishes; later model loads end at `$8BFF`. The CPU can use the shared workspace across `$9000` normally; the VIC character-ROM window is avoided by keeping every sprite image below that address. The retired IRQ backup ranges are free; interrupt-reachable static frames are forbidden by the linked audit. The nine code bases at `$010000`, `$020000`, `$030000`, `$040000`, `$050000`, `$070000`, `$080000`, `$090000` and `$0A0000` remain in place. Common data and encounter allocations are unchanged, and eighteen model banks occupy `$0B0000-$0B8FFF`. The remaining code images fill unused gaps below the models:
+The PRG spans `$0801-$9FFF`, including resident constants and the temporary splash; its load image excludes phase overlays. BOOT's initial 3,072-byte common-bank validation temporarily writes `$8400-$8FFF`, so sprite images are initialized only after it finishes; later model loads end at `$8BFF`. The CPU can use the shared workspace across `$9000` normally; the VIC character-ROM window is avoided by keeping every sprite image below that address. Interrupt-reachable static frames are forbidden by the linked audit. Package v17 preserves common data and encounter allocations, moves eighteen model banks to `$00B000-$013FFF`, and packs the 26 code images in directory order from `$014000`:
 
 | Code images, in order | REU bases, respectively |
 | --- | --- |
-| Victory GEOMETRY, terminal SIM | `$015000`, `$01A000` |
-| Warden, citadel, flagship SIM | `$025000`, `$02A000`, `$035000` |
-| Transport, meteors, SIM helpers | `$03A000`, `$055000`, `$05A000` |
-| Ascent, asteroid, moon SCENERY | `$060000`, `$065000`, `$06A000` |
-| Graveyard, shipyard SCENERY | `$075000`, `$07A000` |
-| Space carrier, gate SCENERY | `$085000`, `$08A000` |
-| SHADOW, SCENERY helpers | `$095000`, `$0AA000` |
+| BOOT, lowlands SIM, GEOMETRY | `$014000`, `$017000`, `$01B800` |
+| PIXELS, AUDIO, wildlife SCENERY | `$020000`, `$024800`, `$028000` |
+| Canyon, fortress, carrier SIM | `$02C800`, `$031000`, `$035800` |
+| Victory GEOMETRY, terminal SIM | `$03A000`, `$03D800` |
+| Warden, citadel, flagship SIM | `$042000`, `$046800`, `$04B000` |
+| Transport, meteors, SIM helpers | `$04F800`, `$054000`, `$058800` |
+| Ascent, asteroid, moon SCENERY | `$05A800`, `$05F000`, `$063800` |
+| Graveyard, shipyard SCENERY | `$068000`, `$06C800` |
+| Space carrier, gate SCENERY | `$071000`, `$075800` |
+| SHADOW, SCENERY helpers | `$07A000`, `$07D800` |
 
-The retired SID music/kernel area `$0B9000-$0FFFFF` is unreserved. Every code reservation stays within one 64 KiB bank, and PIXELS retains its exclusive bank. Existing logical overlay IDs retain their values: ID 31 is SHADOW, ID 32 is unused, and ID 33 holds SCENERY helpers. A linker-authored, 34-byte table in resident `.tables` maps IDs to REU bases in 4 KiB units. The loader resolves each base once before its bounded DMA loop. The helper image contains SCENERY code at offsets zero and `$500`, loaded into `$8E00` and `$E000` for that phase only. OVL7 checksums all 26 complete code images, including padding and helper portions.
+Code reservations end at `$07E800`, leaving 6 KiB before music at `$080000`. Reservations are `$4800` bytes except BOOT (`$3000`), AUDIO/victory/SHADOW (`$3800`), SIM helpers (`$2000`), and SCENERY helpers (`$1000`); every actual execution image remains bounded by `$4200`. Existing logical overlay IDs retain their values: ID 31 is SHADOW, ID 32 is unused, and ID 33 holds SCENERY helpers. A linker-authored, 34-byte table in resident `.tables` maps IDs to REU bases in 2 KiB units. The loader carries source addresses across 64 KiB banks while keeping every DMA at most 1,024 bytes. PIXELS shares banks with other images; its transfer audit checks linked ranges and phase markers. OVL7 checksums all 26 complete images, including padding and helper portions. The startup-only byte/data copy routines share `.splash_init` and retire before any overlay load, freeing 60 bytes of resident code.
 
-The SIM helper image at logical ID 23 / REU `$05A000` also has two parts: its prefix loads into `$8E00-$92FF`, and the extra code at REU `$05A500` loads into `$E000-$F7FF`. The combined checksum covers the prefix, padding through offset `$500`, and the extra code; runtime uses each part's linked length. Both parts reload before every SIM profile. This space contains only retired raster and shadow data during SIM; SCENERY resets its shadow frame after SIM finishes. The four-boss logic therefore fits without increasing the main `$3000-$71FF` overlay window or reducing renderer capacity. The corruption harness flips a byte at the extra code's REU start and requires startup to report `REU CODE CHECKSUM FAILED`.
+The SIM helper image at logical ID 23 / REU `$058800` has two parts: its prefix loads into `$8E00-$92FF`, and the extra code at REU `$058D00` loads into `$E000-$F7FF`. The combined checksum covers the prefix, padding through offset `$500`, and the extra code; runtime uses each part's linked length. Both parts reload before every SIM profile. This space contains only retired raster and shadow data during SIM; SCENERY resets its shadow frame after SIM finishes. The four-boss logic therefore fits without increasing the main `$3000-$71FF` overlay window or reducing renderer capacity. The corruption harness flips a byte at the extra code's REU start and requires startup to report `REU CODE CHECKSUM FAILED`.
 
-The build produces an exactly 16,777,216-byte REU image. Existing code, models and encounters retain their addresses in the first MiB. The DMC1 catalog and aligned DLT4 assets share `$100000-$FDFFFF`; the decoder writes two 64 KiB playback slots at `$FE0000-$FFFFFF`. These slots are mutable during playback and start zero-filled in the packaged image. Game state remains in C64 RAM. The separate hardware timing probe writes solely to unreserved padding at `$0BFC00-$0BFFFF`. The packer reports reserved and unreserved totals from the linked layout.
+The build produces an exactly 16,777,216-byte REU image. The DMC1 catalog and aligned DLT5 assets share `$080000-$FDFFFF`, a 16,121,856-byte music budget. The decoder writes two 64 KiB playback slots at `$FE0000-$FFFFFF`; these start zero-filled in the package. Game state remains in C64 RAM. The hardware timing probe writes to its explicit reservation at `$000C00-$000FFF`. The linked layout leaves 9,856 unreserved bytes. Reclaiming 512 KiB increases codebook storage from 1,225,632 to 1,749,920 bytes across all 21 tracks, shortening average adaptation intervals from about 29.9 to 20.9 ms. The packed soundtrack leaves four bytes unused in its own region.
 
 The historical 1 MiB layout's same-source comparison against a 16 MiB build passes eighteen four-SID PAL fixtures with identical game state, geometry and native pixels. Measured frame-time changes range from -0.209% to +0.177% in calibrated VICE, with one sample per fixture; these are not physical-machine measurements. `target/reu-1m/performance-summary.json` and its source manifest record the comparison. Benchmark-only builds keep the unchanged segment-checksum helper in resident RAM to accommodate their SIM instrumentation; production retains its existing SIM placement.
 
@@ -185,11 +240,11 @@ The frozen historical 16 MiB `target/offplanet-release/` images contain 496,349 
 
 Each composed SIM image has the same common prefix and one profile tail. The audited `encounter_step(Game*, AssetBank*)` entry owns actor movement, attacks, and the optional boss update. Shared code handles controls, progression, spawning, collisions, projectiles, and pickups. Stage identity is independent of this code profile: changing stages always refreshes the encounter metadata and model bank even when the next stage shares code. Native SIM reloads every frame because later phases reuse the window. A catch-up stage/profile change returns to the resident loader before another tick or render, preserving its existing fixed deadline. Enemy updates remain suspended during scenic flights.
 
-SIM also loads a checked helper image from REU `$05A000` into `$8E00–$92FF`, a 1,280-byte execution allowance. This reuses retired startup-check space and the later geometry/pixel workspace; it does not replace the model cache, sprite images, or mission buffers. The resident loader restores it in two transfers before every SIM entry because later rendering phases overwrite that RAM. All general DMA transfers are capped at 1,024 bytes to bound audio IRQ latency. The IRQ never calls the helper image.
+SIM also loads a checked helper image from REU `$058800` into `$8E00–$92FF`, a 1,280-byte execution allowance. This reuses retired startup-check space and the later geometry/pixel workspace; it does not replace the model cache, sprite images, or mission buffers. The resident loader restores it in two transfers before every SIM entry because later rendering phases overwrite that RAM. All general DMA transfers are capped at 1,024 bytes to bound audio IRQ latency. The IRQ never calls the helper image.
 
 The 128-byte `OVL7` directory at REU `$000100` records twenty-six checked code images: existing phases, all eight SIM compositions, victory GEOMETRY, ten composed scenery images, the SIM helper, SHADOW and the SCENERY helper. The ascent and six orbital scenery records occupy bytes 88-115; SIM helper fields remain at 84-87, SHADOW uses 116-119, and SCENERY helpers use 58-61. The directory also authenticates SID configuration and the PRG, constants and startup code. SIM images retain the common padded size for startup validation and the eight-entry `__sim_load_sizes` table for shorter runtime transfers. Boss kinds 4 and 5 reuse SIM profiles 6 and 5; terminal profile 7 remains distinct. The packer rejects overlapping allocations and images beyond the 16 MiB REU. Build the PRG and REU together.
 
-Current package ID `$534D1000` retains outward-wound `SMA6` models with baked shadow descriptors in the 16 MiB DAC-music and quad-SID-effects layout. It retains eighteen 2,048-byte model banks at `$0B0000-$0B8FFF`: each mesh descriptor keeps its vertex/face offsets and counts, coordinate shift (byte 6, 0–3), and a reserved zero byte (byte 7). Vertices remain three `i8` bytes in units of `1 << shift`. Every regular enemy, the player, the pickups and the medal fit shift 0 exactly; ordinary slot-4 hulls use shift 1 (their doubled coordinates are even, so they are exact too) and only the Dreadnought and Gate Guardian need shift 2. Faces keep three indices and a colour. Every triangle is backface culled; solid models have outward surfaces and thin sheets have explicitly authored reverse faces where both sides must be visible. Older model magic and nonzero reserved descriptor bytes are rejected. The 64-byte `MDL2` directory at `$000040` retains version 2: magic at 0-3, stage count at 4, version at 5, bank size at 6, REU base at 8, eighteen checksums at 12-47, zero padding at 48-61, and checksum at 62. BOOT validates every bank, leaving stage 0 in the existing `$8400-$8BFF` cache. A stage change checks and copies the incoming bank in two 1,024-byte transfers. Same-stage frames and respawns retain the cache; model views never survive replacement.
+Current package ID `$534D1100` retains outward-wound `SMA6` models with baked shadow descriptors in the 16 MiB DAC-music and quad-SID-effects layout. It retains eighteen 2,048-byte model banks at `$00B000-$013FFF`: each mesh descriptor keeps its vertex/face offsets and counts, coordinate shift (byte 6, 0–3), and a reserved zero byte (byte 7). Vertices remain three `i8` bytes in units of `1 << shift`. Every regular enemy, the player, the pickups and the medal fit shift 0 exactly; ordinary slot-4 hulls use shift 1 (their doubled coordinates are even, so they are exact too) and only the Dreadnought and Gate Guardian need shift 2. Faces keep three indices and a colour. Every triangle is backface culled; solid models have outward surfaces and thin sheets have explicitly authored reverse faces where both sides must be visible. Older model magic and nonzero reserved descriptor bytes are rejected. The 64-byte `MDL2` directory at `$000040` retains version 2: magic at 0-3, stage count at 4, version at 5, bank size at 6, REU base at 8, eighteen checksums at 12-47, zero padding at 48-61, and checksum at 62. BOOT validates every bank, leaving stage 0 in the existing `$8400-$8BFF` cache. A stage change checks and copies the incoming bank in two 1,024-byte transfers. Same-stage frames and respawns retain the cache; model views never survive replacement.
 
 The 64-byte main header contains eighteen encounter checksums at 20-55, zero padding at 56-61, and its checksum at 62. Eighteen 2,048-byte encounter allocations occupy `$002000-$00AFFF`; only their checked 512-byte prefixes enter the two gameplay buffers. `SMS2` keeps spawn records at byte 16 and the 62-record maximum. Bytes 8-15 hold the unchanged eight-byte `StageInfo`: enemy profile, music cue, crossing profile, boss kind, current/next/previous themes and one reserved zero byte. Complete campaign authoring remains host-only. Orbital encounters use ordinary movement profiles 0-3 and explicit three-dimensional hazard positions; ROCK flag bit 1 (`SMALL_DEBRIS = 2`) marks a shootable fragment. Unflagged rocks resist guns and missiles. A bomb destroys either size of active orbital ROCK, including wreckage, for 25 points without advancing enemy-kill rewards.
 
@@ -318,19 +373,19 @@ The Ultimate Audio mapping at `$DF20–$DFFF` is enabled, and both sampler mixer
 
 Earlier downloads offered two-SID and four-SID variants, and the original four-SID configuration used physical sockets. Replace all three runtime files with the refreshed single package and re-import its configuration. An old two-SID REU image is incompatible with the current executable and is rejected at startup. Keep historical binaries with their original matching REU images and memory settings when reproducing archived measurements.
 
-## Digital music in v0.1.3
+## Digital music
 
-The DLT4 build preserves **Hammond Rocker** as true stereo at 20 kHz, with three compressed bits per channel and rounded signed 8-bit sampler output. **Galactic Dash**, **Mission Failed**, and all eighteen stage recordings use the 16 kHz, three-bit mono profile. Their right output reads the same PCM 160 samples (10 ms) later through separate sampler start and repeat addresses; there is no second mono PCM stream. Hammond Rocker receives no artificial delay. Galactic Dash has one canonical mono encoding, with its original full length preserved.
+The DLT5 build preserves **Hammond Rocker** as true stereo at 20 kHz, with three compressed bits per channel and rounded signed 8-bit sampler output. **Galactic Dash**, **Mission Failed**, and all eighteen stage recordings use the 16 kHz, three-bit mono profile. Their right output reads the same PCM 160 samples (10 ms) later through separate sampler start and repeat addresses; there is no second mono PCM stream. Hammond Rocker receives no artificial delay. Galactic Dash has one canonical mono encoding, with its original full length preserved.
 
-The [catalog](../assets/music/catalog.json) includes twenty-one original digital recordings composed for H.A.V.O.C. by William Echols. Each of the eighteen stages has its own song, including Citadel Core, Orbital Shipyard, Space Carrier, and Jump Gate; Shattered Moon plays Lunar Awe. Mission Failed supplies Defeat, Galactic Dash supplies Victory and the default fallback including ascent, and Hammond Rocker remains the initial title song. The twenty-one stored assets occupy 14,647,076 bytes, including a 400-byte directory and alignment, leaving 950,492 bytes of soundtrack space free. The unique recordings total 34:37.8835, with no duplicate encoding or shortened song. Title/attract continuity, the secret menu-song toggle, and the final Galactic Dash selection are retained. A requested track is prepared in the inactive buffer while the current track continues. The outgoing track fades for about one second through hardware sampler volume before the new track starts from its first sample; there is no crossfade or per-sample gain processing. The explicit emulator-only SFX mode disables digital playback for tools without an Ultimate sampler. All supplied digital source recordings and encoded versions use the [music MIT License](../assets/music/LICENSE), distributed as `MUSIC-LICENSE.txt` in player archives; the game's existing MIT notice and the encoder's Unlicense remain separate.
+The [catalog](../assets/music/catalog.json) includes twenty-one original digital recordings composed for H.A.V.O.C. by William Echols. Each of the eighteen stages has its own song, including Citadel Core, Orbital Shipyard, Space Carrier, and Jump Gate; Shattered Moon plays Lunar Awe. Mission Failed supplies Defeat, Galactic Dash supplies Victory and the default fallback including ascent, and Hammond Rocker remains the initial title song. The twenty-one stored assets occupy 16,121,852 bytes, including a 400-byte directory and alignment, leaving four bytes of soundtrack space free. The 99,334 local codebooks use 1,749,920 bytes, with average adaptation intervals of 20.915-20.920 ms. The unique recordings total 34:37.8835, with no duplicate encoding or shortened song. Title/attract continuity, the secret menu-song toggle, and the final Galactic Dash selection are retained. A requested track is prepared in the inactive buffer while the current track continues. The outgoing track fades for about one second through hardware sampler volume before the new track starts from its first sample; there is no crossfade or per-sample gain processing. The explicit emulator-only SFX mode disables digital playback for tools without an Ultimate sampler. All supplied digital source recordings and encoded versions use the [music MIT License](../assets/music/LICENSE), distributed as `MUSIC-LICENSE.txt` in player archives; the game's existing MIT notice and the encoder's Unlicense remain separate.
 
-The catalog and track assets occupy `$100000-$FDFFFF`. A checked `DMC1` version 2 directory describes aligned, nonoverlapping DLT4 assets and carries separate semantic-cue and eighteen-stage maps; the generated Rust descriptors and package checks use that same catalog. Explicit stage mapping permits distinct recordings for stages that share a SID cue. Each DLT4 header describes an exact frame count, one or two channels, and eight-entry local codebooks. Three-bit codes form one continuous least-significant-bit-first stream. Signed-16 predictors persist across codebook changes and reset at the exact song loop. Publication rounds to signed 8-bit; cumulative CRC-8 checkpoints cover every 1,024 compressed bytes. See the [encoder instructions](../tools/encode-digital-music/README.md) for byte layout, gain selection, provenance and reproducible listening previews.
+The catalog and track assets occupy `$080000-$FDFFFF`. A checked `DMC1` version 2 directory describes aligned, nonoverlapping DLT5 assets and carries separate semantic-cue and eighteen-stage maps; the generated Rust descriptors and package checks use that same catalog. Explicit stage mapping permits distinct recordings for stages that share a SID cue. Each DLT5 header describes an exact frame count, one or two channels, and eight-entry local codebooks. Three-bit codes form one continuous least-significant-bit-first stream. Signed-16 predictors persist across codebook changes and reset at the exact song loop. Publication rounds to signed 8-bit; cumulative CRC-8 checkpoints cover every 1,024 compressed bytes. See the [encoder instructions](../tools/encode-digital-music/README.md) for byte layout, gain selection, provenance and reproducible listening previews.
 
 The final 128 KiB of REU is split into two 64 KiB slots at `$FE0000` and `$FF0000`. A stereo ring holds 32,768 interleaved frames throughout its slot (1.6384 seconds); a mono ring holds 32,768 bytes in the slot's upper half (2.048 seconds). Mono preparation explicitly clears the preceding 160-byte prefix, including after the slot held stereo. Two sampler voices use hard left/right pan, unity volume outside the outgoing fade, and the cached divider for the selected profile. Their gate writes are adjacent but sequential.
 
 BOOT validates the catalog, track headers, codebooks and CRC tables before enabling playback. A short muted signed-16 transfer first clears retained sampler low bytes; subsequent playback uses signed 8-bit. Both 20 kHz stereo and 16 kHz mono timing are calibrated once and cached across track changes. Runtime code and both decoder contexts remain separate from BOOT validation code. Rendering may overwrite the shared `$8E00-$91FF` staging workspace after AUDIO returns: predictor, bit reservoir, compressed cache, CRC and transition state are persistent.
 
-Each AUDIO visit services the active ring first, with a total decode allowance of 250 ms of PCM: at most 4,000 mono or 5,000 stereo frames. Active and pending streams share that duration; when their rates differ, the unused allowance is converted to the pending stream's rate. Initial loading uses the same per-visit decode cap, priming the complete ring across frames before starting either sampler. The old song continues at full volume until the new ring is ready, then fades through 32 equal hardware-volume steps from 32 to zero over about one second, measured from the existing CIA timer in foreground service. Handoff waits for both silence and a complete pending ring. Repeated pending requests preserve preparation and fade progress. Replacing the pending song restarts its preparation without restarting an active fade; if that preparation takes longer, the old stream remains muted until ready. Requesting the active song cancels the change and restores full volume without restarting playback. The active clock advances during preparation. The 2,048-frame underrun guard remains larger than the mono delay. An unsafe lead or integrity fault mutes and stops both sampler voices. The per-byte stream CRC-8 is a debug hook (`DIGITAL_STREAM_CRC`, off in production): startup authenticates headers, codebooks and checkpoint tables once, and the gameplay decoder carries no continuous checksum cost.
+Each AUDIO visit services the active ring first, with a total decode allowance of 250 ms of PCM: at most 4,000 mono or 5,000 stereo frames. Active and pending streams share that duration; when their rates differ, the unused allowance is converted to the pending stream's rate. Initial loading repeats bounded decoder visits inside the first AUDIO call, priming the complete ring before starting either sampler and opening the simulation/input gate. The old song continues at full volume until the new ring is ready, then fades through 32 equal hardware-volume steps from 32 to zero over about one second, measured from the existing CIA timer in foreground service. Handoff waits for both silence and a complete pending ring. Repeated pending requests preserve preparation and fade progress. Replacing the pending song restarts its preparation without restarting an active fade; if that preparation takes longer, the old stream remains muted until ready. Requesting the active song cancels the change and restores full volume without restarting playback. The active clock advances during preparation. The 2,048-frame underrun guard remains larger than the mono delay. An unsafe lead or integrity fault mutes and stops both sampler voices. The per-byte stream CRC-8 is a debug hook (`DIGITAL_STREAM_CRC`, off in production): startup authenticates headers, codebooks and checkpoint tables once, and the gameplay decoder carries no continuous checksum cost.
 
 The 50 Hz CIA1 IRQ continues to sample input and run SID effects during DAC playback and song preparation. Effects have their own persistent engine and queue, separate from the persistent DAC state. The IRQ does no REU access or digital decoding. Music reset, stop and backend replacement leave the effects voices and global SID volume intact.
 

@@ -113,6 +113,16 @@ def main():
     scenery_helper_name = next(symbol.name for symbol in elf.symbols
                                if symbol.kind == 2 and symbol.section < len(elf.sections)
                                and elf.sections[symbol.section].name == '.phase.scenery_aux')
+    splash_call = next(entry for entry in entries if entry[1].name == '.text'
+                       and entry[4].name == checker['SPLASH_ENTRY'])
+    copy_address = next(symbol.address for symbol in elf.symbols if symbol.name == '__havoc_copy_bytes')
+    splash_copy = next(entry for entry in entries if entry[1].name == checker['SPLASH_INIT_SECTION']
+                       and entry[3] == 3 and entry[4].address
+                       + struct.unpack_from('<i', elf.data, entry[0] + 8)[0] == copy_address
+                       and elf.function_at(entry[1].index, entry[2]).name == checker['SPLASH_ENTRY'])
+    data_call = next(entry for entry in entries if entry[1].name == '.text'
+                     and entry[4].name == '__havoc_copy_data')
+    splash_data = next(symbol.name for symbol in elf.symbols if symbol.name == '__splash_start')
 
     def auxiliary_header(data, field, value):
         headers = struct.unpack_from("<I", data, 32)[0]
@@ -138,7 +148,38 @@ def main():
         _position, owner, address, _kind, _symbol, _table = entry
         data[owner.offset + address - owner.address - 1] = 0xad
 
+    def skip_splash(data):
+        _position, owner, address, _kind, _symbol, _table = splash_call
+        main_address = next(symbol.address for symbol in elf.symbols if symbol.name == 'main')
+        struct.pack_into('<H', data, owner.offset + address - owner.address, main_address)
+
     cases = [
+        ('irq-calls-retired-splash', lambda data: replace_target(data, irq, checker['SPLASH_ENTRY']),
+         'retired splash initializer'),
+        ('geometry-calls-retired-splash', lambda data: replace_target(data, geometry, checker['SPLASH_ENTRY']),
+         'retired splash initializer'),
+        ('escaped-splash-code-pointer', lambda data: replace_target(data, pointer, checker['SPLASH_ENTRY']),
+         'retired splash initializer'),
+        ('escaped-splash-data-pointer', lambda data: replace_target(data, pointer, splash_data),
+         'retired splash data'),
+        ('irq-calls-retired-data-copy', lambda data: replace_target(data, irq, '__havoc_copy_data'),
+         'retired splash initializer'),
+        ('geometry-calls-retired-byte-copy', lambda data: replace_target(data, geometry, '__havoc_copy_bytes'),
+         'retired splash initializer'),
+        ('escaped-data-copy-pointer', lambda data: replace_target(data, pointer, '__havoc_copy_data'),
+         'retired splash initializer'),
+        ('data-copy-interior-entry', lambda data: nonzero_addend(data, data_call),
+         'retired splash initializer'),
+        ('splash-interior-entry', lambda data: nonzero_addend(data, splash_call),
+         'retired splash initializer'),
+        ('splash-startup-jump', lambda data: non_jsr(data, splash_call), 'unreviewed startup opcode'),
+        ('splash-startup-skipped', skip_splash, 'startup calls must be exactly splash'),
+        ('splash-calls-overlay', lambda data: replace_target(data, splash_copy, 'encounter_lowlands'),
+         'splash initializer may only call'),
+        ('splash-calls-runtime', lambda data: replace_target(data, splash_copy, 'main'),
+         'splash initializer may only call'),
+        ('splash-copy-interior', lambda data: nonzero_addend(data, splash_copy),
+         'splash initializer may only call'),
         ("opaque-tail-jump", lambda data: non_jsr(data, opaque), "opaque encounter ABI"),
         ("opaque-interior-entry", lambda data: nonzero_addend(data, opaque), "opaque encounter ABI"),
         ("direct-common-to-tail", lambda data: replace_target(data, opaque, "encounter_lowlands"), "unsafe overlay references"),
@@ -191,7 +232,8 @@ def main():
         ('shadow-finalize-calls-unloaded-tail', lambda data: replace_target(data, shadow_finalize_call, shadow_tail_name), 'unsafe overlay references'),
         ('irq-calls-projection-helper', lambda data: replace_target(data, irq, 'fast_project'), 'unsafe overlay references'),
         ('geometry-calls-retired-scenery-helper', lambda data: replace_target(data, geometry, scenery_helper_name), 'unsafe overlay references'),
-        ('projection-helper-wrong-load-address', lambda data: symbol_address(data, '__phase_render_aux_load', 0x33f21), 'shared projection'),
+        ('projection-helper-wrong-load-address', lambda data: symbol_address(data, '__phase_render_aux_load',
+            next(symbol.address for symbol in elf.symbols if symbol.name == '__phase_render_aux_load') + 1), 'shared projection'),
     ]
     # Symbol presence is sufficient: generic arithmetic must stay absent even
     # if an optimizer currently leaves a helper unreachable.

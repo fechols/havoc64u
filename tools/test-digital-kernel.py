@@ -317,23 +317,20 @@ class Machine(Cpu):
             self.p &= ~KERNEL["I"]
 
     def prime(self, budget):
-        """Drive the real per-frame startup without bypassing its decoding cap."""
+        """The first AUDIO call must finish bounded decoder visits before returning."""
         require(self.active_name() is None and self.starts == [0, 0], "prime requires stopped startup")
         name = self.requested_track()
         entry = next(entry for entry in self.references if entry["name"] == name)
         cost = 4 if entry["metadata"]["channels"] == 2 else 5
         per_visit = DECODE_BUDGET_UNITS // cost
         visits = (FRAMES + per_visit - 1) // per_visit
-        for visit in range(visits):
-            if visit:
-                self.delay(0.02)
-            self.call("havoc_c64::service_audio", budget)
-            require(self.get("MUSIC_BACKEND") == 1, "priming must retain DAC ownership")
-            require(self.pcm_samples[name] == min(FRAMES, (visit + 1) * per_visit),
-                    "initial prime did not use its bounded per-visit allowance")
-            if visit + 1 < visits:
-                require(self.starts == [0, 0] and self.control == self.volume == [0, 0],
-                        "sampler started before the initial ring was complete")
+        require(self.get("AUDIO_READY") == 0, "startup input/clock gate must begin closed")
+        self.call("havoc_c64::service_audio", budget)
+        require(self.get("MUSIC_BACKEND") == 1 and self.get("AUDIO_READY") == 1,
+                "initial AUDIO call must return with music ready")
+        require(self.pcm_samples[name] == FRAMES, "initial AUDIO returned before its ring was full")
+        require(self.calls[-1]["decode_service_visits"] == visits,
+                "startup must retain bounded decoder service visits")
         require(self.starts == [1, 1] and self.active_name() == name, "completed prime did not start once")
         return visits
 
@@ -359,6 +356,10 @@ class Machine(Cpu):
     def write(self, address, value):
         address &= 0xffff
         require(self.allowed[address], f"store outside owned memory ${address:04x}, PC ${self.pc:04x}")
+        if (address == self.symbols["havoc_c64::AUDIO_READY"].address and value
+                and not self.mem[address] and self.get("MUSIC_BACKEND") == 1):
+            require(self.starts == [1, 1] and self.active_name() is not None,
+                    "input/clock gate opened before initial music playback")
         if address in (0xdf20, 0xdf40):
             self.flush_playback()
         self.mem[address] = value & 255
@@ -584,11 +585,17 @@ class Machine(Cpu):
         divider = self.be16(0xdf2e) if active is not None else None
         requested = self.requested_track()
         steady = name.endswith("service_audio") and active is not None and active == requested
+        startup = name.endswith("service_audio") and not self.get("AUDIO_READY")
+        service_entry = self.symbols["havoc_c64::digital::service"].address
+        visits, visit_units = 0, self.decoded_units
         failure = self.symbols["havoc_c64::fail"].address
         decoder = self.symbols["digital_decode_run"].address
         for steps in range(budget):
             if self.pc in (SENTINEL, failure):
                 break
+            if self.phase == "audio" and self.pc == service_entry:
+                visits += 1
+                visit_units = self.decoded_units
             if self.phase == "audio" and self.pc == decoder:
                 require(not self.p & KERNEL["I"], "PCM preparation must remain interruptible")
                 pointer = int.from_bytes(self.mem[4:6], "little")
@@ -602,8 +609,14 @@ class Machine(Cpu):
                 self.decoded_samples[entry["name"]] += self.a
                 self.decoded_units += self.a * (4 if channels == 2 else 5)
                 if name.endswith("service_audio"):
-                    require(self.decoded_units - units_before <= DECODE_BUDGET_UNITS,
-                            "audio service decoded more than 250 ms across both slots")
+                    require(self.decoded_units - visit_units <= DECODE_BUDGET_UNITS,
+                            "decoder service decoded more than 250 ms across both slots")
+                    if startup:
+                        require(self.get("AUDIO_READY") == 0 and self.starts == [0, 0],
+                                "startup clock/input/playback began before priming completed")
+                    else:
+                        require(self.decoded_units - units_before <= DECODE_BUDGET_UNITS,
+                                "runtime AUDIO visit exceeded its decoding allowance")
                 if self.first_kernel_call is None:
                     source = int.from_bytes(self.mem[6:8], "little")
                     self.first_kernel_call = dict(pointer=hex(pointer), state=self.mem[pointer:pointer+40].hex(),
@@ -627,6 +640,7 @@ class Machine(Cpu):
                                       for track, count in self.decoded_samples.items()
                                       if count != decoded_before[track]},
                       decoded_budget_units=self.decoded_units - units_before,
+                      decode_service_visits=visits,
                       active_track=active,
                       sampler_divider=divider,
                       modeled_sampler_rate_hz=None if divider is None else 6250000 / (divider + 2),
@@ -1030,11 +1044,14 @@ def exercise_emulator_sfx_only(elf, symbols, image, standard, budget):
 def exercise_menu_routing(elf, symbols, image, standard, budget):
     """Decode bounded prefixes for every menu ID through production AUDIO.
 
-    Replace requests during startup priming so this routing check does not
-    repeat the existing full playback/fade/fault suite for every selection.
+    Seed an initialized effects backend, then replace requests during bounded
+    runtime priming. Initial full-ring readiness is covered separately.
     """
     cpu = Machine(elf, symbols, image, standard)
     cpu.boot(budget)
+    cpu.put("EMULATOR_SFX_ONLY", 1)
+    cpu.call("havoc_c64::service_audio", budget)
+    cpu.put("EMULATOR_SFX_ONLY", 0)
     checked = []
     for track, entry in enumerate(cpu.references):
         cpu.put("havoc_c64::REQUESTED_MENU_TRACK", track)
@@ -1060,7 +1077,30 @@ def exercise_menu_routing(elf, symbols, image, standard, budget):
             "menu routing did not decode every selected recording")
     require(cpu.get("DIGITAL_FAULT") == 0, "menu routing caused a digital fault")
     return dict(passed=True, tracks=checked, pcm_samples_checked=cpu.pcm_samples,
-                scope="Native AUDIO catalog overrides and decoded prefixes; startup requests replaced before playback")
+                scope="Native AUDIO catalog overrides and decoded prefixes; initialized-backend requests replaced before playback")
+
+
+def exercise_startup(elf, symbols, image, standard, budget):
+    """Observe actual first-call readiness for both decoder channel profiles."""
+    results = {}
+    for label, cue, stage, expected_visits in (("stereo", 0, 255, 7), ("mono", 1, 0, 9)):
+        cpu = Machine(elf, symbols, image, standard)
+        cpu.put("havoc_c64::REQUESTED_CUE", cue)
+        cpu.put("havoc_c64::REQUESTED_STAGE", stage)
+        cpu.boot(budget)
+        clock = cpu.get("havoc_c64::CLOCK_MS", 2)
+        visits = cpu.prime(budget)
+        require(visits == expected_visits, f"{label} startup decoder visit count")
+        require(cpu.get("havoc_c64::CLOCK_MS", 2) == clock, "startup priming advanced simulation time")
+        initial = cpu.calls[-1]
+        cpu.delay(0.3)
+        cpu.call("havoc_c64::service_audio", budget)
+        require(cpu.calls[-1]["decode_service_visits"] == 1, "ready AUDIO must make one bounded visit")
+        require(cpu.get("DIGITAL_FAULT") == 0, "initial music service faulted")
+        results[label] = dict(initial_call=initial, first_refill=cpu.calls[-1],
+                              starts=cpu.starts, ready=cpu.get("AUDIO_READY"))
+        print(f"{standard}: {label} startup returned ready after {visits} bounded decoder visits", flush=True)
+    return results
 
 
 def exercise_fatal_shutdown(elf, symbols, image, standard):
@@ -1085,18 +1125,23 @@ def main():
     parser.add_argument("--elf", type=Path, default=ROOT / "dist/havoc.elf")
     parser.add_argument("--reu", type=Path, default=ROOT / "dist/havoc.reu")
     parser.add_argument("--standard", choices=("pal", "ntsc", "both"), default="both")
-    parser.add_argument("--budget", type=int, default=100000000)
+    # BOOT authenticates every byte of the expanded 1,749,920-byte book tables.
+    # This interpreter guard does not change the runtime decoder's 250 ms allowance.
+    parser.add_argument("--budget", type=int, default=200000000,
+                        help="maximum emulated instructions per native entry, not the runtime decode budget")
     parser.add_argument("--emulator-only", action="store_true")
     parser.add_argument("--menu-only", action="store_true", help="only check menu track routing and decoded prefixes")
     parser.add_argument("--kernel-only", action="store_true", help="only execute directed assembly decoder cases")
+    parser.add_argument("--startup-only", action="store_true", help="check first-call music readiness, bounded refills, and emulator/fatal paths")
     parser.add_argument("--llvm-dwarfdump", type=Path,
                         default=Path(os.environ.get("LLVM_MOS", Path.home() / ".local/llvm-mos")) / "bin/llvm-dwarfdump")
     parser.add_argument("--report", type=Path, default=ROOT / "target/digital-kernel/report.json")
     args = parser.parse_args()
     elf, symbols = load_elf(args.elf)
     report = dict(model="NMOS6502 at64x bus; DMA1byte/bus tick; sampler6.25MHz/(divider+2)",
-                  elf_sha256=hashlib.sha256(args.elf.read_bytes()).hexdigest(), standards={})
-    if not args.emulator_only and not args.menu_only:
+                  elf_sha256=hashlib.sha256(args.elf.read_bytes()).hexdigest(),
+                  instruction_budget_per_call=args.budget, standards={})
+    if not args.emulator_only and not args.menu_only and not args.startup_only:
         report["assembly_kernel"] = exercise_decode_kernel(elf, symbols)
     if not args.kernel_only:
         preview = runpy.run_path(str(ROOT / "tools/sfx-previews.py"))
@@ -1112,9 +1157,10 @@ def main():
             if args.menu_only:
                 report["standards"][standard] = exercise_menu_routing(elf, symbols, image, standard, args.budget)
                 continue
-            result = {} if args.emulator_only else exercise(elf, symbols, image, standard, args.budget)
+            result = (exercise_startup(elf, symbols, image, standard, args.budget) if args.startup_only
+                      else {} if args.emulator_only else exercise(elf, symbols, image, standard, args.budget))
             result["emulator_sfx_only"] = exercise_emulator_sfx_only(elf, symbols, image, standard, args.budget)
-            if not args.emulator_only:
+            if not args.emulator_only and not args.startup_only:
                 result["corruption_faults"] = exercise_corruption(elf, symbols, image, standard, args.budget)
             result["fatal_shutdown"] = exercise_fatal_shutdown(elf, symbols, image, standard)
             report["standards"][standard] = result

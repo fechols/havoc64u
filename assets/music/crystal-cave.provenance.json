@@ -39,7 +39,7 @@
     "sample_count": 1433816,
     "sample_count_unit": "frames",
     "codebook_entries": 8,
-    "codebook_count": 3001,
+    "codebook_count": 4284,
     "lloyd_iterations": 20,
     "closed_loop_training_passes": 3,
     "encoder_beam_width": 32,
@@ -48,8 +48,8 @@
     "channel_processing": "Average (L+R)/2 in floating point before resampling; retain fractional samples",
     "resampler": "Sequential 512-phase 100 dB Kaiser-windowed sinc; floating-point output retained until normalization",
     "normalization": "One track-wide gain; validate final rounded 8-bit PCM sample and true peaks <= -1 dBTP including loop seam; reduce excess plus 0.1 dB and re-encode, at most five attempts",
-    "normalization_gain_db": 3.292964,
-    "normalization_attempts": 3,
+    "normalization_gain_db": 3.283868,
+    "normalization_attempts": 2,
     "true_peak_meter": "FFmpeg EBU R128; loop seam included; upper bounds include 0.0005 linear metadata rounding margin",
     "packing": "Continuous LSB-first three-bit codes; stereo alternates left/right; balanced ceil(frame_count/alignment) groups, first remainder books one group longer; final segment clipped; zero final padding",
     "reconstruction": "Independent signed-16 saturating predictors retained across segments; output clamp(floor(sample/256+0.5),-128,127); predictors reset at exact loop length",
@@ -66,8 +66,8 @@
     },
     "encoder_binary_sha256": "087bdd1549f0afaae8f6cd018f1b7aa2940dda7f0839ecf336f6dae27ce13852",
     "codebook_entry_bytes": 2,
-    "samples_per_segment": 472,
-    "long_segment_count": 2168,
+    "samples_per_segment": 328,
+    "long_segment_count": 3583,
     "codebooks": "Little-endian signed-16 deltas; eight entries per channel"
   },
   "tool_source": {
@@ -81,9 +81,9 @@
     },
     "note": "Original source hashes identify the imported Second Reality algorithms. The local encoder adds DLT5 compact signed-16 books, balanced segments, closed-loop retraining, beam search, floating-point mono downmix, rounded output and loop-aware peak validation; conversion.encoder_files_sha256 identifies this implementation."
   },
-  "asset_sha256": "f83e393d52b76a02788bd7db93250ffaefa80cb7e78f22aad54133500fba6beb",
-  "decoded_pcm_sha256": "8bf7e53e6df2c2535bede5cb43ef3922ac27e2e50ddd23f13da6183c75f080cb",
-  "reference_pcm_sha256": "ce79a52f7f63ba27c577e59e2a8bc4b70b697d32323352bbdb525be09ab6aa60",
+  "asset_sha256": "7989d2830d82d9691dc605fad210f83c65911511cc956d31c8665e956a6e7f73",
+  "decoded_pcm_sha256": "337750608655719e6453dbf3ef890bb088d45fe454ce7f4ab9b65aa5f53192f3",
+  "reference_pcm_sha256": "dee651c34bf2e68a873e0baaeb45ab8fde963f6f7726f93e1a39cf232d3fa9de",
   "generated_metadata": "crystal-cave.json",
   "temporary_gameplay_fixture": false,
   "attribution": {
@@ -94,6 +94,6 @@
   },
   "reproduction_commands": {
     "intermediate": "ffmpeg -v error -y -i \"C:/Work/Projects/GitHub/sueme64/assets/music/source/Crystal Cave.m4a\" -map 0:a:0 -vn -sample_fmt s16 -c:a flac -threads 1 C:/Work/Projects/GitHub/sueme64/target/digital-music/crystal-cave-source.flac",
-    "encode": "cargo run --release --manifest-path tools/encode-digital-music/Cargo.toml --target-dir target/digital-music/tool-build -- --profile mono16k3 --codebooks 3001 target/digital-music/crystal-cave-source.flac assets/music/crystal-cave.dlt target/digital-music/crystal-cave-dlt5.wav"
+    "encode": "cargo run --release --manifest-path tools/encode-digital-music/Cargo.toml --target-dir target/digital-music/tool-build -- --profile mono16k3 --codebooks 4284 target/digital-music/crystal-cave-source.flac assets/music/crystal-cave.dlt target/digital-music/crystal-cave-dlt5.wav"
   }
 }

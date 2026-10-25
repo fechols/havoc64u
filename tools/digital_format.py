@@ -13,7 +13,7 @@ import re
 import struct
 
 ROOT = Path(__file__).resolve().parents[1]
-DIGITAL_OFFSET = 0x100000
+DIGITAL_OFFSET = 0x80000
 RING_OFFSET = 0xfe0000
 RING_BYTES = 0x20000
 REU_BYTES = 0x1000000
@@ -177,7 +177,7 @@ def load_catalog(root=ROOT, *, validate=True):
         length = metadata["asset_bytes"]
         assert isinstance(length, int) and 32 < length <= MUSIC_CAPACITY, "invalid soundtrack asset extent"
         offset = (offset + 15) & ~15
-        assert offset + length <= RING_OFFSET, "soundtrack exceeds 15,597,568-byte music budget"
+        assert offset + length <= RING_OFFSET, f"soundtrack exceeds {MUSIC_CAPACITY:,}-byte music budget"
         result.append(dict(entry, index=index, offset=offset, end=offset + length,
                            metadata=metadata, blob=blob))
         offset += length

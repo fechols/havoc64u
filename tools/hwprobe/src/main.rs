@@ -25,8 +25,8 @@ extern "C" {
 const CPU_LOOP_CYCLES: u32 = 329_229;
 const SCREEN: u16 = 0x0400;
 const COLOR_RAM: u16 = 0xd800;
-/// Stash destination in the 1 MiB image's unreserved padding before music.
-const STASH_REU_ADDRESS: u32 = 0x0bfc00;
+/// Reserved 1 KiB probe scratch between package directories and common assets.
+const STASH_REU_ADDRESS: u32 = 0x000c00;
 
 #[inline(always)]
 unsafe fn poke(address: u16, value: u8) {

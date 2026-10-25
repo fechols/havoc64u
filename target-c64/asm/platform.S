@@ -40,6 +40,9 @@
     ; RAM, so the complete remaining startup runs with both ROMs disabled.
     lda #$35
     sta $01
+    ; Show the PRG-owned image before the CRT, REU checks, or Rust startup.
+    ; Its initializer and source retire when the first overlay is loaded.
+    jsr __havoc_show_splash
 
 ; Unlike the default C64 image, our .data VMA is below the PRG load address.
 .section .init.251,"ax",@progbits
@@ -50,7 +53,8 @@
     lda #$35
     sta $01
 
-.section .text.__havoc_copy_data,"ax",@progbits
+; Both copy helpers retire with the splash before any overlay is loaded.
+.section .splash_init,"ax",@progbits
 .globl __havoc_copy_data
 __havoc_copy_data:
     lda #<__data_load_start
@@ -69,7 +73,7 @@ __havoc_copy_data:
 
 ; Copy rc6/7 bytes from rc2/3 to rc4/5 without touching any compiler static
 ; frame (the startup data copy runs before BSS and the stacks are ready).
-.section .text.__havoc_copy_bytes,"ax",@progbits
+.section .splash_init,"ax",@progbits
 __havoc_copy_bytes:
     ldy #0
     ldx __rc7
@@ -92,6 +96,83 @@ __havoc_copy_bytes:
     jmp .Lcopy_data_tail
 .Lcopy_data_done:
     rts
+
+; This code shares the PRG's otherwise empty overlay window with the splash.
+; Only the hardware stack and imaginary registers exist at this early point.
+.section .splash_init,"ax",@progbits
+.globl __havoc_show_splash
+.type __havoc_show_splash,@function
+__havoc_show_splash:
+    ; Use the configured C64U speed for the initial copies. Main still checks
+    ; that the turbo register is available and supplies the normal diagnostic.
+    lda #$8f
+    sta $d031
+    lda #$2b
+    sta $d011
+    lda #$18
+    sta $d016
+    lda #$08
+    sta $d018
+    lda #0
+    sta $d015
+    sta $d020
+    lda __splash_start+10000
+    sta $d021
+    lda $dd02
+    ora #3
+    sta $dd02
+    lda $dd00
+    and #$fc
+    ora #1
+    sta $dd00
+
+    lda #<__splash_start
+    sta __rc2
+    lda #>__splash_start
+    sta __rc3
+    lda #<$a000
+    sta __rc4
+    lda #>$a000
+    sta __rc5
+    lda #<8000
+    sta __rc6
+    lda #>8000
+    sta __rc7
+    jsr __havoc_copy_bytes
+
+    lda #<(__splash_start+8000)
+    sta __rc2
+    lda #>(__splash_start+8000)
+    sta __rc3
+    lda #<$8000
+    sta __rc4
+    lda #>$8000
+    sta __rc5
+    lda #<1000
+    sta __rc6
+    lda #>1000
+    sta __rc7
+    jsr __havoc_copy_bytes
+
+    lda #<(__splash_start+9000)
+    sta __rc2
+    lda #>(__splash_start+9000)
+    sta __rc3
+    lda #<$d800
+    sta __rc4
+    lda #>$d800
+    sta __rc5
+    lda #<1000
+    sta __rc6
+    lda #>1000
+    sta __rc7
+    jsr __havoc_copy_bytes
+    lda #$3b
+    sta $d011
+.globl __havoc_splash_ready
+__havoc_splash_ready:
+    rts
+.size __havoc_show_splash, .-__havoc_show_splash
 
 .section .text.irq_entry,"ax",@progbits
 .globl irq_entry

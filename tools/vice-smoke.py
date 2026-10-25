@@ -1138,14 +1138,26 @@ def music_pitch_audit(events, registers, voices, notes, clock_hz):
              "tuning_tolerance_register_units": 1} for lane in range(len(voices))]
 
 
-def package_model_layout(package, *, validate_size=False):
+def model_bank_offset(package):
+    """Read model placement from MDL2; retain pre-directory fixture support."""
+    if package[0x40:0x44] == b"MDL2":
+        offset = int.from_bytes(package[0x48:0x4c], "little")
+        if offset > 0 and offset + package[16] * 2048 <= len(package):
+            return offset
+        raise RuntimeError("Invalid model-bank extent in MDL2")
+    if int.from_bytes(package[4:8], "little") >= 0x534d1100:
+        raise RuntimeError("Compact package requires an MDL2 model directory")
+    return 0xb0000
+
+
+def package_model_layout(package, *, validate_size=False, symbols=None):
     """Keep baseline benchmarks compatible while checking the current format."""
     version = int.from_bytes(package[4:8], "little")
     formats = {0x534d0300: (b"SMA2", 80), 0x534d0400: (b"SMA3", 88),
                0x534d0500: (b"SMA3", 88), 0x534d0600: (b"SMA3", 88),
                0x534d0700: (b"SMA4", 88), 0x534d0800: (b"SMA4", 88),
                0x534d0900: (b"SMA4", 88), 0x534d0a00: (b"SMA4", 88),
-               0x534d0b00: (b"SMA5", 88), 0x534d0c00: (b"SMA6", 88), 0x534d0d00: (b"SMA6", 88), 0x534d0e00: (b"SMA6", 88), 0x534d0f00: (b"SMA6", 88), 0x534d1000: (b"SMA6", 88)}
+               0x534d0b00: (b"SMA5", 88), 0x534d0c00: (b"SMA6", 88), 0x534d0d00: (b"SMA6", 88), 0x534d0e00: (b"SMA6", 88), 0x534d0f00: (b"SMA6", 88), 0x534d1000: (b"SMA6", 88), 0x534d1100: (b"SMA6", 88)}
     campaign = version >= 0x534d0500
     space = version >= 0x534d0600
     digital = version >= 0x534d0900
@@ -1153,7 +1165,7 @@ def package_model_layout(package, *, validate_size=False):
     count = 18 if space else 12 if campaign else 4
     if (len(package) < 18 or package[:4] != b"SM64" or version not in formats
             or package[16] != count or package[17] not in (2, 4)):
-        raise RuntimeError("Expected supported package v3/v4, twelve-stage v5 or eighteen-stage v6-v16")
+        raise RuntimeError("Expected supported package v3/v4, twelve-stage v5 or eighteen-stage v6-v17")
     reu_size = (0x1000000 if version >= 0x534d0a00 else 0x800000 if digital
                 else 0x100000 if compact else 0x1000000)
     if validate_size and len(package) != reu_size:
@@ -1170,11 +1182,29 @@ def package_model_layout(package, *, validate_size=False):
         overlay_offsets[31] = 0x95000
         overlay_offsets[32] = 0xa5000
         overlay_offsets[33] = 0xaa000
+    if version >= 0x534d1100:
+        # Metadata-only callers need no code map. Execution/corruption tools
+        # pass the matching ELF instead of reconstructing physical addresses.
+        overlay_offsets = {}
+        if symbols is not None:
+            from reu_layout import CODE_IMAGES
+            try:
+                overlay_offsets = {page: symbols[f"__reu_{name}"]
+                                   for _, name, page in CODE_IMAGES}
+            except KeyError as error:
+                raise RuntimeError(f"Missing linked compact REU address: {error}") from error
+    try:
+        model_offset = model_bank_offset(package)
+    except RuntimeError:
+        # Leave malformed directories to the native boot diagnostic. Tools
+        # that read model bytes require a valid directory after boot succeeds.
+        model_offset = None
     return {"version": version, "magic": magic, "descriptors": descriptors,
             "medal": version >= 0x534d0400, "campaign": campaign, "space": space, "count": count,
             "segment_magic": b"SMS2" if campaign else b"SMS1", "reu_size": reu_size,
             "digital": digital, "quad_sfx": version >= 0x534d0d00,
-            "music_offset": 0xc0000 if compact else 0x200000 if space else 0x100000,
+            "music_offset": 0x80000 if version >= 0x534d1100 else 0xc0000 if compact else 0x200000 if space else 0x100000,
+            "model_offset": model_offset,
             "overlay_offsets": overlay_offsets}
 
 
@@ -1202,8 +1232,9 @@ def enemy_bank_check(mon, syms, package, section, game=None):
     required = ("ENEMY_CODE_PROFILE", "ENEMY_MODEL_PROFILE", "MODEL_STREAM_BYTES")
     if any(name not in syms for name in required):
         raise RuntimeError("Enemy streaming requires code/model identity telemetry")
-    format = package_model_layout(package)
-    reference = package[0xb0000+section*2048:0xb0000+(section+1)*2048]
+    format = package_model_layout(package, symbols=syms)
+    base = model_bank_offset(package)
+    reference = package[base+section*2048:base+(section+1)*2048]
     if len(reference) != 2048 or reference[:4] != format["magic"] or reference[5] != section:
         raise RuntimeError(f"Invalid packaged level {section} model reference")
     mon.command("bank ram")
@@ -1304,7 +1335,7 @@ def streaming_checks(mon, syms, failures, elf, reu, dwarf_tool, output, result):
                   excluded_from_timing=True, render_segment_telemetry="RENDER_SEGMENT" in syms,
                   layout=layout, scenarios=[])
     data = reu.read_bytes()
-    format = package_model_layout(data)
+    format = package_model_layout(data, symbols=syms)
     if format["digital"]:
         menu_music_fixture(format, layout["fields"], 5)
         result["scope"] += (" Digital-package cue selection is checked with DAC disabled; no DAC playback is validated."
@@ -1714,7 +1745,7 @@ def attract_checks(mon, syms, failures, elf, reu, dwarf_tool, output, result):
                   scope="A natural 15-second title and every 15-second attract map, returning to title and repeating, verified by native 20-ms Game::tick calls. Monitor writes establish a clean timer baseline and per-map dismissal fixtures; all dismiss/relaunch input uses joystick port 2.",
                   scenarios=[])
     data = reu.read_bytes()
-    format = package_model_layout(data)
+    format = package_model_layout(data, symbols=syms)
     if format["digital"]:
         menu_music_fixture(format, fields, 0)
         observed += (menu_music_field(fields),)
@@ -3528,9 +3559,9 @@ def main():
             if not path.exists():
                 raise RuntimeError(f"Required path is missing: {path}")
         package_image = reu.read_bytes()
-        package_format = package_model_layout(package_image, validate_size=True)
-        sid_count = package_image[17]
         syms = symbols(elf, args.llvm_nm)
+        package_format = package_model_layout(package_image, validate_size=True, symbols=syms)
+        sid_count = package_image[17]
         failures = {address: name for name, address in syms.items()
                     if ("havoc_c64" in name and "4fail" in name) or name == "rust_begin_unwind"}
         if not failures:

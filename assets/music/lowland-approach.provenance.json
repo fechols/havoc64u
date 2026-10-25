@@ -39,7 +39,7 @@
     "sample_count": 1419736,
     "sample_count_unit": "frames",
     "codebook_entries": 8,
-    "codebook_count": 2971,
+    "codebook_count": 4242,
     "lloyd_iterations": 20,
     "closed_loop_training_passes": 3,
     "encoder_beam_width": 32,
@@ -48,8 +48,8 @@
     "channel_processing": "Average (L+R)/2 in floating point before resampling; retain fractional samples",
     "resampler": "Sequential 512-phase 100 dB Kaiser-windowed sinc; floating-point output retained until normalization",
     "normalization": "One track-wide gain; validate final rounded 8-bit PCM sample and true peaks <= -1 dBTP including loop seam; reduce excess plus 0.1 dB and re-encode, at most five attempts",
-    "normalization_gain_db": 2.141133,
-    "normalization_attempts": 2,
+    "normalization_gain_db": 2.772717,
+    "normalization_attempts": 1,
     "true_peak_meter": "FFmpeg EBU R128; loop seam included; upper bounds include 0.0005 linear metadata rounding margin",
     "packing": "Continuous LSB-first three-bit codes; stereo alternates left/right; balanced ceil(frame_count/alignment) groups, first remainder books one group longer; final segment clipped; zero final padding",
     "reconstruction": "Independent signed-16 saturating predictors retained across segments; output clamp(floor(sample/256+0.5),-128,127); predictors reset at exact loop length",
@@ -66,8 +66,8 @@
     },
     "encoder_binary_sha256": "087bdd1549f0afaae8f6cd018f1b7aa2940dda7f0839ecf336f6dae27ce13852",
     "codebook_entry_bytes": 2,
-    "samples_per_segment": 472,
-    "long_segment_count": 2178,
+    "samples_per_segment": 328,
+    "long_segment_count": 3545,
     "codebooks": "Little-endian signed-16 deltas; eight entries per channel"
   },
   "tool_source": {
@@ -81,9 +81,9 @@
     },
     "note": "Original source hashes identify the imported Second Reality algorithms. The local encoder adds DLT5 compact signed-16 books, balanced segments, closed-loop retraining, beam search, floating-point mono downmix, rounded output and loop-aware peak validation; conversion.encoder_files_sha256 identifies this implementation."
   },
-  "asset_sha256": "2dfe64b4248608cb76d16b64954dad4cc9d333e161cf6e1f8a44ee7de469ea17",
-  "decoded_pcm_sha256": "fd7db8b6a538bb5c5e05812ba47d2d7a438da60df070eb73e972b8aad2a256da",
-  "reference_pcm_sha256": "cea96225283ed0a7837b84ca906b7c4d1c0d2fff331515236b7a4d4e88e26614",
+  "asset_sha256": "ad2e3a15310f688a972bfa9bab917830fd3bdc4be7bc68b0d45643e720720015",
+  "decoded_pcm_sha256": "55c7d230a6f3a390b6e96291a51d4f39d08e679cb6f4843279b3aa8ad7fc82a9",
+  "reference_pcm_sha256": "82b857d1b05f4930d4d715c745f812f03f594f5102c0ff6da3e76059cb66f27d",
   "generated_metadata": "lowland-approach.json",
   "temporary_gameplay_fixture": false,
   "attribution": {
@@ -94,6 +94,6 @@
   },
   "reproduction_commands": {
     "intermediate": "ffmpeg -v error -y -i \"C:/Work/Projects/GitHub/sueme64/assets/music/source/Lowland Approach.m4a\" -map 0:a:0 -vn -sample_fmt s16 -c:a flac -threads 1 C:/Work/Projects/GitHub/sueme64/target/digital-music/lowland-approach-source.flac",
-    "encode": "cargo run --release --manifest-path tools/encode-digital-music/Cargo.toml --target-dir target/digital-music/tool-build -- --profile mono16k3 --codebooks 2971 target/digital-music/lowland-approach-source.flac assets/music/lowland-approach.dlt target/digital-music/lowland-approach-dlt5.wav"
+    "encode": "cargo run --release --manifest-path tools/encode-digital-music/Cargo.toml --target-dir target/digital-music/tool-build -- --profile mono16k3 --codebooks 4242 target/digital-music/lowland-approach-source.flac assets/music/lowland-approach.dlt target/digital-music/lowland-approach-dlt5.wav"
   }
 }

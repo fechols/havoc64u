@@ -39,7 +39,7 @@
     "sample_count": 1440216,
     "sample_count_unit": "frames",
     "codebook_entries": 8,
-    "codebook_count": 3014,
+    "codebook_count": 4303,
     "lloyd_iterations": 20,
     "closed_loop_training_passes": 3,
     "encoder_beam_width": 32,
@@ -48,7 +48,7 @@
     "channel_processing": "Average (L+R)/2 in floating point before resampling; retain fractional samples",
     "resampler": "Sequential 512-phase 100 dB Kaiser-windowed sinc; floating-point output retained until normalization",
     "normalization": "One track-wide gain; validate final rounded 8-bit PCM sample and true peaks <= -1 dBTP including loop seam; reduce excess plus 0.1 dB and re-encode, at most five attempts",
-    "normalization_gain_db": 5.069792,
+    "normalization_gain_db": 4.818683,
     "normalization_attempts": 2,
     "true_peak_meter": "FFmpeg EBU R128; loop seam included; upper bounds include 0.0005 linear metadata rounding margin",
     "packing": "Continuous LSB-first three-bit codes; stereo alternates left/right; balanced ceil(frame_count/alignment) groups, first remainder books one group longer; final segment clipped; zero final padding",
@@ -66,8 +66,8 @@
     },
     "encoder_binary_sha256": "087bdd1549f0afaae8f6cd018f1b7aa2940dda7f0839ecf336f6dae27ce13852",
     "codebook_entry_bytes": 2,
-    "samples_per_segment": 472,
-    "long_segment_count": 2201,
+    "samples_per_segment": 328,
+    "long_segment_count": 3604,
     "codebooks": "Little-endian signed-16 deltas; eight entries per channel"
   },
   "tool_source": {
@@ -81,9 +81,9 @@
     },
     "note": "Original source hashes identify the imported Second Reality algorithms. The local encoder adds DLT5 compact signed-16 books, balanced segments, closed-loop retraining, beam search, floating-point mono downmix, rounded output and loop-aware peak validation; conversion.encoder_files_sha256 identifies this implementation."
   },
-  "asset_sha256": "6699337bb2781ac59dbd580c3bc4248940c9622ab1f0a3e5147d12e2491b1842",
-  "decoded_pcm_sha256": "2922290832c2a855a7caec8a23c5c29f097fb6ee44896afb126c3adeda2d53aa",
-  "reference_pcm_sha256": "72ff761d1bccb451286464a7146c098653700e9a74f975034c63b7aecdda1a2c",
+  "asset_sha256": "060d6837612d2d5b8d47a906f06e7ad272cb6aec0153bec412f36bee5a06e1c7",
+  "decoded_pcm_sha256": "48fcf9caf70adfafba0233ffa40de780cf0323ab397182ae28fc834fa8508b9e",
+  "reference_pcm_sha256": "c875ac8075f0b5ca225c6ba59a5d4fb33fa57abdfc6cdcdafd23ae6929c1b036",
   "generated_metadata": "iron-canyon.json",
   "temporary_gameplay_fixture": false,
   "attribution": {
@@ -94,6 +94,6 @@
   },
   "reproduction_commands": {
     "intermediate": "ffmpeg -v error -y -i \"C:/Work/Projects/GitHub/sueme64/assets/music/source/Iron Canyon.m4a\" -map 0:a:0 -vn -sample_fmt s16 -c:a flac -threads 1 C:/Work/Projects/GitHub/sueme64/target/digital-music/iron-canyon-source.flac",
-    "encode": "cargo run --release --manifest-path tools/encode-digital-music/Cargo.toml --target-dir target/digital-music/tool-build -- --profile mono16k3 --codebooks 3014 target/digital-music/iron-canyon-source.flac assets/music/iron-canyon.dlt target/digital-music/iron-canyon-dlt5.wav"
+    "encode": "cargo run --release --manifest-path tools/encode-digital-music/Cargo.toml --target-dir target/digital-music/tool-build -- --profile mono16k3 --codebooks 4303 target/digital-music/iron-canyon-source.flac assets/music/iron-canyon.dlt target/digital-music/iron-canyon-dlt5.wav"
   }
 }

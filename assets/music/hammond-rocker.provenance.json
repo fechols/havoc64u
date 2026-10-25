@@ -45,7 +45,7 @@
     "sample_count": 4198670,
     "sample_count_unit": "frames",
     "codebook_entries": 8,
-    "codebook_count": 7029,
+    "codebook_count": 10036,
     "lloyd_iterations": 20,
     "closed_loop_training_passes": 3,
     "encoder_beam_width": 32,
@@ -54,8 +54,8 @@
     "channel_processing": "Preserve original left/right channels with one shared gain",
     "resampler": "Sequential 512-phase 100 dB Kaiser-windowed sinc; floating-point output retained until normalization",
     "normalization": "One track-wide gain; validate final rounded 8-bit PCM sample and true peaks <= -1 dBTP including loop seam; reduce excess plus 0.1 dB and re-encode, at most five attempts",
-    "normalization_gain_db": 2.863561,
-    "normalization_attempts": 2,
+    "normalization_gain_db": 2.985452,
+    "normalization_attempts": 1,
     "true_peak_meter": "FFmpeg EBU R128; loop seam included; upper bounds include 0.0005 linear metadata rounding margin",
     "packing": "Continuous LSB-first three-bit codes; stereo alternates left/right; balanced ceil(frame_count/alignment) groups, first remainder books one group longer; final segment clipped; zero final padding",
     "reconstruction": "Independent signed-16 saturating predictors retained across segments; output clamp(floor(sample/256+0.5),-128,127); predictors reset at exact loop length",
@@ -72,8 +72,8 @@
     },
     "encoder_binary_sha256": "087bdd1549f0afaae8f6cd018f1b7aa2940dda7f0839ecf336f6dae27ce13852",
     "codebook_entry_bytes": 2,
-    "samples_per_segment": 596,
-    "long_segment_count": 2347,
+    "samples_per_segment": 416,
+    "long_segment_count": 5924,
     "codebooks": "Little-endian signed-16 deltas; eight entries per channel"
   },
   "tool_source": {
@@ -87,13 +87,13 @@
     },
     "note": "Original source hashes identify the imported Second Reality algorithms. The local encoder adds DLT5 compact signed-16 books, balanced segments, closed-loop retraining, beam search, floating-point mono downmix, rounded output and loop-aware peak validation; conversion.encoder_files_sha256 identifies this implementation."
   },
-  "asset_sha256": "224b02a0563051ce0e13ff31347d1004ce92ade2b52fc059ef559da4496d1bef",
-  "decoded_pcm_sha256": "1948ffd58833dbffffdbe470a65eceac1a01d1eeef493855bfdd8e15855853f5",
-  "reference_pcm_sha256": "33e01c019e96e2b01421170f32d07f535479cf0cb9432849375bd01195a3c23e",
+  "asset_sha256": "6e64d66b757de002a9817bea08c545bc8b466f6337e2aa3377c00213fcb81a7b",
+  "decoded_pcm_sha256": "87641f7c5bb7fde322122ec794ab02d69ee5d2d25c0e05aa0a56b677f93dc8e9",
+  "reference_pcm_sha256": "6bf10721f4f348c5fec4720987cb429aa4fe2c27d4605bb1225aa725f89b684f",
   "generated_metadata": "hammond-rocker.json",
   "temporary_gameplay_fixture": false,
   "reproduction_commands": {
     "intermediate": "ffmpeg -v error -y -i \"assets/music/source/Hammond Rocker.m4a\" -map 0:a:0 -vn -sample_fmt s16 -c:a flac -threads 1 target/digital-music/hammond-rocker-source.flac",
-    "encode": "cargo run --release --manifest-path tools/encode-digital-music/Cargo.toml --target-dir target/digital-music/tool-build -- --profile stereo20k3 --codebooks 7029 target/digital-music/hammond-rocker-source.flac assets/music/hammond-rocker.dlt target/digital-music/hammond-rocker-dlt5.wav"
+    "encode": "cargo run --release --manifest-path tools/encode-digital-music/Cargo.toml --target-dir target/digital-music/tool-build -- --profile stereo20k3 --codebooks 10036 target/digital-music/hammond-rocker-source.flac assets/music/hammond-rocker.dlt target/digital-music/hammond-rocker-dlt5.wav"
   }
 }

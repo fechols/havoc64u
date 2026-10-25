@@ -5,6 +5,7 @@ fn main() {
         "build.rs",
         "link.ld",
         "../tools/branch-audit.py",
+        "../assets/splash/havoc_splash.bin",
         "asm/platform.S",
         "asm/pack.S",
         "asm/memcpy.S",
@@ -34,6 +35,10 @@ fn main() {
     }
     let directory = PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").unwrap());
     let output = PathBuf::from(env::var_os("OUT_DIR").unwrap());
+    let splash_path = directory.join("../assets/splash/havoc_splash.bin");
+    let splash = std::fs::read(&splash_path).expect("missing converted splash: run tools/encode-splash.py");
+    assert!(splash.len() == 10001 && splash[10000] == 6,
+            "splash must contain 10001 bytes and share the first frame's blue background");
     let compiler = env::var("MOS_CLANG").unwrap_or_else(|_| {
         let sdk = env::var("LLVM_MOS").unwrap_or_else(|_| {
             format!("{}/.local/llvm-mos", env::var("HOME").unwrap_or_default())
@@ -49,6 +54,7 @@ fn main() {
             "HAVOC_SPAN_PREPARED_POINTERS must be 0 or 1");
     for source in [
         "platform",
+        "splash",
         "pack",
         "memcpy",
         "raster",
@@ -88,6 +94,11 @@ fn main() {
                 .replace("fast_clip_triangle", "fast_shadow_clip_triangle");
             let path = output.join(format!("{source}.S"));
             std::fs::write(&path, core).unwrap();
+            path
+        } else if source == "splash" {
+            let path = output.join("splash.S");
+            let include = splash_path.to_string_lossy().replace('\\', "\\\\").replace('"', "\\\"");
+            std::fs::write(&path, format!(".section .splash,\"a\",@progbits\n.incbin \"{include}\"\n")).unwrap();
             path
         } else {
             directory.join(format!("asm/{source}.S"))

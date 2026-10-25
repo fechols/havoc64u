@@ -135,11 +135,17 @@ class DigitalCatalogTests(unittest.TestCase):
         self.assertEqual(result['fixed_bytes'], 14371932)
         self.assertEqual(result['used_bytes'], digital.MUSIC_CAPACITY - 4)
         self.assertEqual(result['counts'], [track['codebook_count'] for track in manifest['tracks']])
-        self.assertEqual(result['counts'][:2], [5142, 7029])
+        self.assertEqual(digital.MUSIC_CAPACITY, 16121856)
+        self.assertEqual(result['counts'][:2], [7341, 10036])
+        self.assertEqual(sum(result['counts']), 99334)
+        self.assertEqual(sum(count * 16 * track['channels']
+                             for track, count in zip(metadata, result['counts'])), 1749920)
+        previous = digital.allocate_codebooks(metadata, capacity=digital.MUSIC_CAPACITY - 0x80000)
+        self.assertEqual(result['used_bytes'] - previous['used_bytes'], 0x80000)
         intervals = [track['sample_count'] / track['sample_rate'] / count
                      for track, count in zip(metadata, result['counts'])]
-        self.assertGreater(min(intervals), 0.0298)
-        self.assertLess(max(intervals), 0.0299)
+        self.assertGreater(min(intervals), 0.0209)
+        self.assertLess(max(intervals), 0.0210)
 
     def test_manifest_rejects_duplicates_unknown_mappings_and_overflow(self):
         manifest_path = digital.ROOT / 'assets/music/catalog.json'

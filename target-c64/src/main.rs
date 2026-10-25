@@ -95,6 +95,10 @@ pub static mut BOMB_EFFECT: BombEffect = BombEffect::new();
 // Image storage lives in the VIC bank; retain only the compact display key.
 static mut HUD_STATE: MaybeUninit<hud_sprites::DisplayState> = MaybeUninit::uninit();
 static mut HUD_VALID: bool = false;
+// The first frame replaces the boot bitmap band by band. Keep HUD sprites
+// hidden until that publication finishes; this latch never repeats on wrap.
+static mut FIRST_FRAME_PENDING: bool = true;
+static mut HUD_ENABLE_STAGED: u8 = 0;
 #[no_mangle]
 pub static mut HUD_SCROLL: u8 = 0xff;
 #[no_mangle]
@@ -231,6 +235,8 @@ extern "C" {
     fn victory_geometry(game: *const (), renderer: *mut Renderer, bank: *const ());
     static __phase_pixels_prefix_size: u8;
     static __phase_pixels_aux_size: u8;
+    static __phase_pixels_aux_reu_bank: u8;
+    static __phase_pixels_aux_reu_offset: u8;
     static __phase_audio_size: u8;
     static __phase_audio_runtime_size: u8;
     static __phase_scenery_size: u8;
@@ -279,8 +285,8 @@ pub unsafe extern "C" fn irq_body(frame_event: u8) {
         VIDEO_FRAMES = VIDEO_FRAMES.wrapping_add(1);
         let [scroll, border] = BOMB_EFFECT.sample();
         poke(0xd016, 0x18 | (scroll & 7));
-        // Keep display enable unchanged until the first published frame. Bit
-        // seven reads raster position but writes the IRQ compare high bit.
+        // Preserve the splash/frame display enable. Bit seven reads raster
+        // position but writes the IRQ compare high bit.
         poke(0xd011, (peek(0xd011) & 0x78) | (scroll >> 3));
         poke(0xd020, border);
         // Reassert positions every video frame: sprite zero has been borrowed
@@ -415,25 +421,26 @@ unsafe fn dma(mut reu: u32, mut cpu: u16, mut count: u16) {
 #[inline(never)]
 unsafe fn load_phase(page: u8, size: u16) {
     // Callers select fixed logical phase IDs; the checked linker table maps
-    // them to 4 KiB-aligned slots without widening the hot loader interface.
+    // them to 2 KiB-aligned slots without widening the hot loader interface.
     let reu_page = *__code_reu_pages.get_unchecked(page as usize);
-    let reu_middle = reu_page << 4;
-    let reu_bank = reu_page >> 4;
+    let reu_middle = reu_page << 3;
+    let reu_bank = reu_page >> 5;
     let mut offset = 0u16;
     while offset < size {
         let n = (size - offset).min(1024);
         // Every caller uses a linker size (or a checked prefix),
         // bounded by $4200; startup also validates each full package size.
-        // CPU $3000-$71FF never reaches I/O or wraps. The linker and package
-        // audit keep every slot inside one 64 KiB bank of the 1 MiB image,
-        // so adding its middle byte cannot carry into another REU bank.
+        // CPU $3000-$71FF never reaches I/O or wraps. Compact slots may cross
+        // a 64 KiB source bank; carry the middle byte into the bank register.
+        // Aligned starts and 1 KiB steps keep each individual DMA in one bank.
         // Thus general dma() would emit exactly one identical transfer here.
         // Keep its register order and 1024-byte IRQ-latency limit, avoiding its
         // repeated 32-bit bounds arithmetic for these statically bounded loads.
         word(0xdf02, 0x3000 + offset);
         poke(0xdf04, offset as u8);
-        poke(0xdf05, reu_middle + (offset >> 8) as u8);
-        poke(0xdf06, reu_bank);
+        let (middle, carry) = reu_middle.overflowing_add((offset >> 8) as u8);
+        poke(0xdf05, middle);
+        poke(0xdf06, reu_bank + u8::from(carry));
         word(0xdf07, n);
         poke(0xdf09, 0);
         poke(0xdf0a, 0);
@@ -446,14 +453,14 @@ unsafe fn load_sim(profile: u8) {
     // GEOMETRY, PIXELS and AUDIO reuse this workspace after SIM returns.
     // Reload on every SIM entry; the IRQ never references these helpers.
     dma(
-        (__code_reu_pages[23] as u32) << 12,
+        (__code_reu_pages[23] as u32) << 11,
         0x8e00,
         core::ptr::addr_of!(__phase_sim_aux_prefix_size) as u16,
     );
     // Previous raster/shadow records are dead. SCENERY resets the shadow frame
     // later in this frame, after SIM and its extra helper code have returned.
     dma(
-        ((__code_reu_pages[23] as u32) << 12) + 0x500,
+        ((__code_reu_pages[23] as u32) << 11) + 0x500,
         0xe000,
         core::ptr::addr_of!(__phase_sim_extra_size) as u16,
     );
@@ -668,24 +675,9 @@ unsafe fn detect_standard() -> VideoStandard {
 #[link_section = ".phase.boot"]
 #[inline(never)]
 unsafe fn initialize_video() {
-    // Display stays disabled until the first complete frame has been drawn.
-    poke(0xd011, 0x2b);
-    poke(0xd016, 0x18);
-    poke(0xd018, 0x08);
-    poke(0xd015, 0);
-    poke(0xd020, 0);
-    poke(0xd021, 0);
-    poke(0xdd02, peek(0xdd02) | 3);
-    // VIC bank 2: screen $8000, bitmap $A000. The game never switches banks.
-    poke(0xdd00, (peek(0xdd00) & 0xfc) | 1);
+    // Early assembly already displays the splash in VIC bank 2. Preserve
+    // its bitmap, attributes and mode through all remaining initialization.
     wr(core::ptr::addr_of_mut!(FRONT_BANK), 2);
-    for i in 0..8000u16 {
-        poke(0xa000 + i, 0);
-    }
-    for i in 0..1000u16 {
-        poke(0x8000 + i, 0);
-        poke(0xd800 + i, 0);
-    }
     for i in 0..32u16 {
         poke(0xc400 + i, 0xa5);
     }
@@ -792,10 +784,15 @@ unsafe fn service_audio() {
         if let Err(fault) = digital::init(&mut *state, &mut DIGITAL_CALIBRATION, CLOCK_KHZ == 985, track) {
             digital_failure(fault);
         }
-        // Service primes the initial ring over bounded foreground visits.
+        // Keep the boot splash visible while the initial ring is primed.
         MUSIC_BACKEND = BACKEND_DAC;
     } else { digital::request(&mut *state, track); }
-    if let Err(fault) = digital::service(&mut *state) { digital_failure(fault); }
+    loop {
+        if let Err(fault) = digital::service(&mut *state) { digital_failure(fault); }
+        // Only startup waits for a complete ring. Once ready, each foreground
+        // visit keeps the existing bounded refill/track-transition budget.
+        if AUDIO_READY || (*state).is_running() { break; }
+    }
     DIGITAL_LOOPS = (*state).loops;
     DIGITAL_MINIMUM_LEAD = (*state).minimum_lead;
     MUSIC_UNDERRUNS = (*state).underruns;
@@ -869,17 +866,24 @@ pub unsafe extern "C" fn benchmark_frame_ready() {
 unsafe fn benchmark_now(sim_ms: u16, ticks: u8) -> u16 {
     sim_ms.wrapping_add(ticks as u16 * 20)
 }
-#[link_section = ".phase.pixels"]
+// The front renderer keeps the completed-frame handoff in its roomier helper
+// tail; draw_pixels has restored that tail before raster work begins.
+#[cfg_attr(feature = "span-front-to-back", link_section = ".phase.pixels_aux")]
+#[cfg_attr(not(feature = "span-front-to-back"), link_section = ".phase.pixels")]
 #[inline(never)]
 unsafe fn present() {
     io_on();
     // Every band has already been published into the visible bank and color RAM.
-    // Enable the display once the first complete frame exists, preserving the
-    // raster-driven bomb shake's Y scroll; the IRQ keeps these mode bits.
+    // The boot splash was already visible. Finish its first-frame handoff
+    // without blanking, preserving the raster-driven bomb shake's Y scroll.
     disable_irq();
     RETICLE_PENDING_X = RETICLE_FRAME_X;
     RETICLE_PENDING_Y = RETICLE_FRAME_Y;
     RETICLE_PENDING_VISIBLE = RETICLE_FRAME_VISIBLE & !PAUSED as u8;
+    if FIRST_FRAME_PENDING {
+        HUD_ENABLE_PENDING = HUD_ENABLE_STAGED;
+        FIRST_FRAME_PENDING = false;
+    }
     poke(0xd011, 0x38 | (peek(0xd011) & 7));
     enable_irq();
     frame_complete();
@@ -961,12 +965,12 @@ unsafe fn update_fps_overlay(mode: havoc::game::Mode) {
 unsafe fn prepare_scenery(current: u8, sounds: &mut TransitionAudio) -> u8 {
     io_on();
     dma(
-        (__code_reu_pages[33] as u32) << 12,
+        (__code_reu_pages[33] as u32) << 11,
         0x8e00,
         core::ptr::addr_of!(__phase_scenery_aux_prefix_size) as u16,
     );
     dma(
-        ((__code_reu_pages[33] as u32) << 12) + 0x500,
+        ((__code_reu_pages[33] as u32) << 11) + 0x500,
         0xe000,
         core::ptr::addr_of!(__phase_scenery_extra_size) as u16,
     );
@@ -986,7 +990,7 @@ unsafe fn prepare_scenery(current: u8, sounds: &mut TransitionAudio) -> u8 {
         };
         io_on();
         dma(
-            ((__code_reu_pages[page] as u32) << 12)
+            ((__code_reu_pages[page] as u32) << 11)
                 + core::ptr::addr_of!(__phase_scenery_base_size) as u32,
             core::ptr::addr_of!(__phase_scenery_base_end) as u16,
             core::ptr::addr_of!(__phase_scenery_earth_tail_size) as u16,
@@ -1030,7 +1034,7 @@ unsafe fn prepare_scenery(current: u8, sounds: &mut TransitionAudio) -> u8 {
 unsafe fn benchmark_load_projection() {
     io_on();
     dma(
-        ((__code_reu_pages[3] as u32) << 12) + 0x3f20,
+        ((__code_reu_pages[3] as u32) << 11) + 0x3f20,
         0x6f20,
         core::ptr::addr_of!(__phase_render_aux_size) as u16,
     );
@@ -1046,7 +1050,7 @@ unsafe fn prepare_geometry(scenery_count: u8, bank: &AssetBank<'_>) {
     {
         io_on();
         dma(
-            ((__code_reu_pages[3] as u32) << 12) + 0x3f20,
+            ((__code_reu_pages[3] as u32) << 11) + 0x3f20,
             0x6f20,
             core::ptr::addr_of!(__phase_render_aux_size) as u16,
         );
@@ -1196,7 +1200,12 @@ unsafe fn update_sprite_hud(status: &Hud) {
         }
     }
     // Byte publication is atomic; the line-251 IRQ latches the desired mask.
-    wr(core::ptr::addr_of_mut!(HUD_ENABLE_PENDING), next.enabled_mask());
+    // The first mask waits until present, after the splash has been covered.
+    let enable = next.enabled_mask();
+    HUD_ENABLE_STAGED = enable;
+    if !FIRST_FRAME_PENDING {
+        wr(core::ptr::addr_of_mut!(HUD_ENABLE_PENDING), enable);
+    }
     HUD_STATE.write(next);
     HUD_VALID = true;
 }
@@ -1210,7 +1219,8 @@ unsafe fn draw_pixels() {
     // VIC background takes the frame's clear colour (the cell writer's code 0).
     io_on();
     dma(
-        0x043f20,
+        ((core::ptr::addr_of!(__phase_pixels_aux_reu_bank) as u8 as u32) << 16)
+            | (core::ptr::addr_of!(__phase_pixels_aux_reu_offset) as u32),
         0x6f20,
         core::ptr::addr_of!(__phase_pixels_aux_size) as u16,
     );

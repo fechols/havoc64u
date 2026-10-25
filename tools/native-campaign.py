@@ -33,7 +33,7 @@ def actor_center(actor, stage, image):
     elif kind == 6:
         center = 30
     elif 1 <= kind <= 3:
-        descriptor = 0xb0000 + stage * 2048 + 88 + (kind - 1) * 8
+        descriptor = vice.model_bank_offset(image) + stage * 2048 + 88 + (kind - 1) * 8
         center = int.from_bytes(image[descriptor + 1:descriptor + 2], "little", signed=True)
     else:
         center = 0

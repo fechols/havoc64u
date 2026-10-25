@@ -50,7 +50,9 @@ def main():
                 for extension in ("prg", "elf", "reu", "cfg")}
     before = {extension: hashlib.sha256(data).hexdigest() for extension, data in original.items()}
     image = original["reu"]
-    package_format = vice.package_model_layout(image, validate_size=True)
+    syms = vice.symbols(package / "havoc.elf", args.llvm_nm)
+    package_format = vice.package_model_layout(image, validate_size=True, symbols=syms)
+    model_base = vice.model_bank_offset(image)
     space = package_format["space"]
     if (not package_format["campaign"]
             or image[0x100:0x104] != (b"OVL7" if space else b"OVL6")):
@@ -79,7 +81,7 @@ def main():
         ("resident-pair", 0x118, "PRG AND REU DO NOT MATCH"),
         ("directory-profile", 0x120, "PRG AND REU DO NOT MATCH"),
         ("model-directory", 0x40, "INVALID MODEL DIRECTORY"),
-        ("model-hp-sentinel", 0xb0000 + 2*2048 + 88, "INVALID LEVEL MODEL BANK"),
+        ("model-hp-sentinel", model_base + 2*2048 + 88, "INVALID LEVEL MODEL BANK"),
         ("sim-helpers-second-chunk", overlay_offsets[23] + 1024, "REU CODE CHECKSUM FAILED"),
         ("transport-directory-size", 0x14c, "INVALID REU CODE SIZE"),
         ("sim-helpers-directory-size", 0x154, "INVALID REU CODE SIZE"),
@@ -110,9 +112,12 @@ def main():
     # The split PIXELS image authenticates its unused gap as well as its
     # separately loaded helper tail. Neither region enters the main PRG.
     if int.from_bytes(image[0x10a:0x10c], "little") > 0x3f20:
+        gap = syms["__phase_pixels_prefix_size"]
+        if gap >= 0x3f20:
+            parser.error("split PIXELS image has no raster gap to corrupt")
         cases += [
-            ("pixels-raster-gap", 0x43000, "REU CODE CHECKSUM FAILED"),
-            ("pixels-helper-code", 0x43f20, "REU CODE CHECKSUM FAILED"),
+            ("pixels-raster-gap", overlay_offsets[4] + gap, "REU CODE CHECKSUM FAILED"),
+            ("pixels-helper-code", overlay_offsets[4] + 0x3f20, "REU CODE CHECKSUM FAILED"),
         ]
     for name, page, directory_offset in overlays:
         size_at = 0x100 + directory_offset
@@ -123,7 +128,7 @@ def main():
         # Boot authenticates complete padded images, including inactive tails.
         cases.append((f"{name}-tail", overlay_offsets[page] + size - 1, "REU CODE CHECKSUM FAILED"))
     for level in range(package_format["count"]):
-        cases.append((f"level-{level}-models", 0xb0000 + level*2048 + 200, "INVALID LEVEL MODEL BANK"))
+        cases.append((f"level-{level}-models", model_base + level*2048 + 200, "INVALID LEVEL MODEL BANK"))
         cases.append((f"level-{level}-encounters", 0x2000 + level*2048 + 20, "INVALID MISSION SEGMENT"))
     metadata = {
         "enemy-profile": (8, 4), "music-cue": (9, cue_count),
@@ -166,7 +171,7 @@ def main():
             # HP 255 belongs to indestructible scenery, never an enemy. Repair
             # both checksums so only structural model validation can reject it.
             damaged[offset] = 255
-            model_start = 0xb0000 + 2*2048
+            model_start = model_base + 2*2048
             damaged[0x50:0x52] = checksum(damaged[model_start:model_start+2048]).to_bytes(2, "little")
             damaged[0x7e:0x80] = checksum(damaged[0x40:0x7e]).to_bytes(2, "little")
         if name == "old-code-directory":

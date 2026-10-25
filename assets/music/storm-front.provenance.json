@@ -39,7 +39,7 @@
     "sample_count": 1426136,
     "sample_count_unit": "frames",
     "codebook_entries": 8,
-    "codebook_count": 2984,
+    "codebook_count": 4261,
     "lloyd_iterations": 20,
     "closed_loop_training_passes": 3,
     "encoder_beam_width": 32,
@@ -66,8 +66,8 @@
     },
     "encoder_binary_sha256": "087bdd1549f0afaae8f6cd018f1b7aa2940dda7f0839ecf336f6dae27ce13852",
     "codebook_entry_bytes": 2,
-    "samples_per_segment": 472,
-    "long_segment_count": 2211,
+    "samples_per_segment": 328,
+    "long_segment_count": 3566,
     "codebooks": "Little-endian signed-16 deltas; eight entries per channel"
   },
   "tool_source": {
@@ -81,8 +81,8 @@
     },
     "note": "Original source hashes identify the imported Second Reality algorithms. The local encoder adds DLT5 compact signed-16 books, balanced segments, closed-loop retraining, beam search, floating-point mono downmix, rounded output and loop-aware peak validation; conversion.encoder_files_sha256 identifies this implementation."
   },
-  "asset_sha256": "9d3876e40ac4468d41312c012a5c586aaeb8cb77eaa4810e874e0d31e931e0e8",
-  "decoded_pcm_sha256": "39e19cc452dcbc9af59189db7a025f2a1102815f7aa90fbbd0fa91db9e401316",
+  "asset_sha256": "019f2cb1de8ec957ca9abf5e161f285d0ff45fff91e80a2a1822a6d579d8c963",
+  "decoded_pcm_sha256": "f5882e3f32a28cb7fbc3bce3e26ab965da284519021ae518eba036c93f14e32c",
   "reference_pcm_sha256": "7572e581698150c7571eb6abb09cf0427cfdfa664e16a5bf804ec72291560963",
   "generated_metadata": "storm-front.json",
   "temporary_gameplay_fixture": false,
@@ -94,6 +94,6 @@
   },
   "reproduction_commands": {
     "intermediate": "ffmpeg -v error -y -i \"assets/music/source/Storm Front.m4a\" -map 0:a:0 -vn -sample_fmt s16 -c:a flac -threads 1 target/digital-music/storm-front-source.flac",
-    "encode": "cargo run --release --manifest-path tools/encode-digital-music/Cargo.toml --target-dir target/digital-music/tool-build -- --profile mono16k3 --codebooks 2984 target/digital-music/storm-front-source.flac assets/music/storm-front.dlt target/digital-music/storm-front-dlt5.wav"
+    "encode": "cargo run --release --manifest-path tools/encode-digital-music/Cargo.toml --target-dir target/digital-music/tool-build -- --profile mono16k3 --codebooks 4261 target/digital-music/storm-front-source.flac assets/music/storm-front.dlt target/digital-music/storm-front-dlt5.wav"
   }
 }

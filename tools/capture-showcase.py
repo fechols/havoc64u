@@ -283,7 +283,7 @@ def showcase_input(state, package, previous=None, target=None, controller=None):
         if kind in (6, 7):
             radius, depth = (18, 16) if small else (36, 32)
         else:
-            descriptor = 0xb0000 + state["stage_id"] * 2048 + 88 + (kind - 1) * 8
+            descriptor = vice.model_bank_offset(package) + state["stage_id"] * 2048 + 88 + (kind - 1) * 8
             radius, depth = package[descriptor + 3], 48  # enemy_scaled(32)
         vx = vy = 0
         if index < len(old_actors):
@@ -420,7 +420,7 @@ class Capture:
         return self.scene.get("pilot_target", SCENIC_TARGETS.get(self.scene["name"], (0, -10)))
 
     def boot(self):
-        package_layout = vice.package_model_layout(self.package, validate_size=True)
+        package_layout = vice.package_model_layout(self.package, validate_size=True, symbols=self.syms)
         with socket.socket() as probe:
             probe.bind(("127.0.0.1", 0))
             port = probe.getsockname()[1]

@@ -45,6 +45,33 @@ def layout(space):
 
 
 class CampaignTools(unittest.TestCase):
+    def test_compact_package_uses_model_directory_and_linked_overlay_addresses(self):
+        from reu_layout import CODE_IMAGES, OFFSETS
+        image = package(True, 0x534d1100)
+        image.extend(bytes(0x20000 - len(image)))
+        image[0x40:0x44] = b"MDL2"
+        image[0x48:0x4c] = (0xb000).to_bytes(4, "little")
+        syms = {f"__reu_{symbol}": OFFSETS[name] for name, symbol, _ in CODE_IMAGES}
+        current = vice.package_model_layout(image, symbols=syms)
+        self.assertEqual(current["model_offset"], 0xb000)
+        self.assertEqual(current["music_offset"], 0x80000)
+        self.assertEqual(current["overlay_offsets"],
+                         {page: OFFSETS[name] for name, _, page in CODE_IMAGES})
+        self.assertEqual(vice.package_model_layout(image)["overlay_offsets"], {})
+        syms["__reu_pixels"] += 2048
+        self.assertEqual(vice.package_model_layout(image, symbols=syms)["overlay_offsets"][4],
+                         syms["__reu_pixels"])
+        image[0x48:0x4c] = (0x14000).to_bytes(4, "little")
+        self.assertEqual(vice.model_bank_offset(image), 0x14000)
+        del syms["__reu_pixels"]
+        with self.assertRaisesRegex(RuntimeError, "Missing linked compact"):
+            vice.package_model_layout(image, symbols=syms)
+        image[0x40] ^= 1
+        with self.assertRaisesRegex(RuntimeError, "MDL2"):
+            vice.model_bank_offset(image)
+        # Native corruption tests must reach the game's boot diagnostic.
+        self.assertIsNone(vice.package_model_layout(image)["model_offset"])
+
     def test_encounter_cache_reads_follow_linked_addresses(self):
         for first in (0x0600, 0x2e00):
             symbols = dict(__segment0_start=first, __segment0_end=first + 512,
@@ -418,7 +445,8 @@ class CampaignTools(unittest.TestCase):
             self.assertEqual(values["stage_id"], fixture["section"], fixture["name"])
 
     def test_pixels_dma_rejects_gap_writes_wrong_addresses_and_missing_reload(self):
-        symbols = {"__phase_pixels_prefix_size": 12180, "__phase_pixels_aux_size": 643,
+        symbols = {"__reu_pixels": 0x40000,
+                   "__phase_pixels_prefix_size": 12180, "__phase_pixels_aux_size": 643,
                    "__phase_pixels_aux_load": 0x43f20, "__phase_pixels_aux_start": 0x6f20}
         transfers = [{"reu": 0x40000 + offset, "cpu": 0x3000 + offset,
                       "bytes": min(1024, 12180 - offset), "phase_marker": 3}
@@ -435,6 +463,25 @@ class CampaignTools(unittest.TestCase):
                     transfers + [{"reu": 0x43000, "cpu": 0x6000, "bytes": 1024, "phase_marker": 7}]):
             with self.assertRaisesRegex(RuntimeError, "PIXELS split DMA"):
                 bench.validate_pixels_transfers(bad, symbols)
+
+    def test_pixels_dma_follows_relocated_range_in_a_shared_bank(self):
+        # This prefix crosses a bank boundary; unrelated code shares both banks.
+        base, prefix, helper = 0x3f800, 12180, 643
+        symbols = {"__reu_pixels": base, "__phase_pixels_prefix_size": prefix,
+                   "__phase_pixels_aux_size": helper, "__phase_pixels_aux_load": base + 0x3f20,
+                   "__phase_pixels_aux_start": 0x6f20}
+        transfers = [{"reu": base + offset, "cpu": 0x3000 + offset,
+                      "bytes": min(1024, prefix - offset), "phase_marker": 3}
+                     for offset in range(0, prefix, 1024)]
+        transfers.append({"reu": base + 0x3f20, "cpu": 0x6f20,
+                          "bytes": helper, "phase_marker": 7})
+        adjacent = {"reu": base + 0x4800, "cpu": 0x3000, "bytes": 1024, "phase_marker": 1}
+        self.assertTrue(bench.validate_pixels_transfers(transfers + [adjacent], symbols)["gap_skipped"])
+        for invalid in (dict(adjacent, phase_marker=3),
+                        dict(adjacent, reu=base - 512),
+                        dict(adjacent, reu=base + 0x3f20 + helper - 1)):
+            with self.assertRaisesRegex(RuntimeError, "PIXELS split DMA"):
+                bench.validate_pixels_transfers(transfers + [invalid], symbols)
 
     def test_native_pitch_audit_combines_bytes_and_ignores_effect_lanes(self):
         def frequency(note):

@@ -797,15 +797,15 @@ fn actual_backend_loops_all_profiles_through_shared_scratch_reuse() {
                     (start + ((book % books) * per) as u32, per)
                 );
             }
-            if matches!(
-                track,
-                asset::Track::GalacticDash | asset::Track::HammondRocker
-            ) {
-                assert!(books * per > 65536, "exercise wide book offsets");
-                assert!(book_fetches
-                    .iter()
-                    .any(|&(address, _)| address >= start + 65536));
-            }
+            // The expanded allocation puts every mono and stereo table beyond
+            // 64 KiB. Check the exact boundary fetch in addition to the full
+            // sequence above, including the final book and loop reset.
+            assert!(books * per > 65536, "{track:?}: exercise wide book offsets");
+            assert_eq!(
+                book_fetches[65536 / per],
+                (start + 65536, per),
+                "{track:?}: codebook address must not wrap at 64 KiB"
+            );
         }
         HARDWARE = None;
     }

@@ -11,6 +11,7 @@ import re
 import tempfile
 import tomllib
 import zipfile
+from reu_layout import PACKAGE_ID
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -63,8 +64,8 @@ def release_contents(package_dir, root=ROOT):
     if len(prg) <= 2 or prg[:2] != b"\x01\x08":
         raise ValueError("Expected a native PRG loading at $0801")
     if (len(reu) != 16 * 1024 * 1024 or reu[:4] != b"SM64" or reu[17] != 4
-            or int.from_bytes(reu[4:8], "little") != 0x534d1000):
-        raise ValueError("Expected a v16 16 MiB four-SID REU package")
+            or int.from_bytes(reu[4:8], "little") != PACKAGE_ID):
+        raise ValueError("Expected a v17 16 MiB four-SID REU package")
     return contents
 
 

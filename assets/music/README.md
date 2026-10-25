@@ -47,15 +47,24 @@ alignment byte in its budget. Reallocate and regenerate the soundtrack with:
 ```text
 python3 tools/digital_format.py --allocate-codebooks
 cargo build --release --manifest-path tools/encode-digital-music/Cargo.toml --target-dir target/digital-music/tool-build
-python3 tools/regenerate-digital-music.py --encoder target/digital-music/tool-build/release/encode-digital-music --jobs 4 --install
+python3 tools/regenerate-digital-music.py --encoder target/digital-music/tool-build/release/encode-digital-music --jobs 4 --work-dir target/digital-music/dlt5-512k --baseline target/digital-music/dlt5-512k-baseline --install
 ```
 
 On Windows, append `.exe` to the encoder path. Regeneration stages all assets,
 checks original/intermediate hashes, validates the complete catalog, and rejects
 per-channel SNR regressions or decoded peaks above -1 dB before installing. The
-previous assets remain in `target/digital-music/dlt5-baseline`; previews and the
-quality report are under `target/digital-music/dlt5`. Physical listening remains
-a separate check. Normal builds validate existing assets without re-encoding.
+previous DLT5 assets and authenticated listening previews remain in
+`target/digital-music/dlt5-512k-baseline`; new previews and the quality report are
+under `target/digital-music/dlt5-512k`. Use a fresh baseline directory for each
+subsequent encoding revision so quality gates compare against the current
+soundtrack. The older `dlt5-baseline` preserves DLT4 and is not the baseline for
+this allocation. Physical listening remains a separate check. Normal builds
+validate existing assets without re-encoding.
+The 512 KiB expansion improves every channel's SNR against the preceding DLT5
+encoding by 0.100–0.219 dB (mean 0.151 dB). Rescaling both decodes to the same
+preserved reference gain confirms the improvement; the fixed-reference report
+and authenticated A/B excerpts are in `target/digital-music/dlt5-512k`.
+These are coding-error measurements, not a listening verdict.
 Container-only metadata edits are accepted only after checking the original
 sample rate, channel count and decoded PCM against an authenticated intermediate
 or recorded PCM hash. Provenance retains the original container hash and tags,
@@ -74,7 +83,7 @@ Normal builds verify this generated file. Host baking and package validation
 reject mismatched assets, changed directory bytes, nonzero padding, and extents
 beyond the soundtrack region.
 
-The DMC1 directory starts at REU `$100000`. Its 16-byte header contains magic
+The DMC1 directory starts at REU `$080000`. Its 16-byte header contains magic
 at bytes 0-3, version 2 at byte 4, track count at byte 5, cue count at byte 6,
 entry size 16 at byte 7, little-endian directory length at bytes 8-9, stage
 count 18 at byte 10, three reserved zero bytes at 11-13, and a Fletcher checksum
@@ -90,10 +99,11 @@ must be zero. `$FE0000–$FFFFFF` is mutable playback memory and is excluded fro
 immutable soundtrack validation.
 
 The complete directory, encoded assets, checksums and alignment must fit
-15,597,568 bytes. The twenty-one stored assets occupy 15,597,564 bytes, including
-the directory and alignment, leaving four bytes free. Codebooks occupy 1,225,632
-bytes, with average adaptation intervals of 29.861–29.870 ms. Galactic Dash uses
-5,142 books, Hammond Rocker 7,029, and the other tracks 2,971–3,322. The
+16,121,856 bytes. The twenty-one stored assets occupy 16,121,852 bytes, including
+the directory and alignment, leaving four bytes free. Compacting the preceding
+REU code and model region adds 524,288 bytes of codebooks. Codebooks occupy
+1,749,920 bytes, with average adaptation intervals of 20.915–20.920 ms. Galactic
+Dash uses 7,341 books, Hammond Rocker 10,036, and the other tracks 4,242–4,743. The
 eighteen stage recordings total 27:04.963; all twenty-one unique recordings
 total 34:37.8835. The twenty mono recordings total 31:07.950. The capacity check
 uses actual encoded extents, including codebooks, CRC checkpoints, stage

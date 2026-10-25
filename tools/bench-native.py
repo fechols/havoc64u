@@ -501,13 +501,17 @@ def validate_pixels_transfers(transfers, symbols):
         return None  # Preserve measurements of the earlier contiguous image.
     prefix = symbols["__phase_pixels_prefix_size"]
     helper = symbols["__phase_pixels_aux_size"]
+    base = symbols["__reu_pixels"]
+    end = symbols["__phase_pixels_aux_load"] + helper
     # geometry_complete marks the subsequent PIXELS transfer as phase 3.
-    expected = [(0x40000 + offset, 0x3000 + offset, min(1024, prefix - offset), 3)
+    expected = [(base + offset, 0x3000 + offset, min(1024, prefix - offset), 3)
                 for offset in range(0, prefix, 1024)]
     expected.append((symbols["__phase_pixels_aux_load"],
                      symbols["__phase_pixels_aux_start"], helper, 7))
     actual = [(item["reu"], item["cpu"], item["bytes"], item["phase_marker"])
-              for item in transfers if item["reu"] >> 16 == 4]
+              for item in transfers
+              if (item["phase_marker"] in (3, 7)
+                  or item["reu"] < end and item["reu"] + item["bytes"] > base)]
     if actual != expected:
         raise RuntimeError(f"PIXELS split DMA differs from linked prefix/helper ranges: {actual} != {expected}")
     return {"prefix_bytes": prefix, "helper_bytes": helper, "gap_skipped": True}
@@ -655,7 +659,8 @@ def main():
     output, package = args.out_dir.resolve(), args.package_dir.resolve()
     output.mkdir(parents=True, exist_ok=True)
     package_image = (package/"havoc.reu").read_bytes()
-    package_format = vice.package_model_layout(package_image, validate_size=True)
+    syms = vice.symbols(package / "havoc.elf", args.llvm_nm)
+    package_format = vice.package_model_layout(package_image, validate_size=True, symbols=syms)
     if package_format["digital"] and args.audio_backend == "native":
         parser.error("digital-package benchmark fixtures require --audio-backend sfx; "
                      "their EffectsEngine snapshots cannot restore DAC state")
@@ -692,7 +697,6 @@ def main():
                       smoke_tool_sha256=digest((ROOT/"tools/vice-smoke.py").read_bytes()),
                       fixture_sha256=semantic_hash(chosen), samples=3 if args.sustained_seconds else args.samples,
                       command=sys.argv, **checkout_metadata())
-        syms = vice.symbols(elf, args.llvm_nm)
         has_sprite_hud = "HUD_COMMITS" in syms
         report["sprite_hud_setup"] = "matching-fixture-warmup-v1" if has_sprite_hud else "bitmap-only"
         for name in ("BENCH_TICKS", "BENCH_RUNTIME", "benchmark_frame_begin", "benchmark_frame_ready", "geometry_complete"):
@@ -891,7 +895,7 @@ def main():
                 for index in range(12):
                     kind = fixture["patch"].get(f"actors[{index}].kind", 0)
                     if 1 <= kind <= 3:
-                        descriptor = 0xb0000 + fixture["section"]*2048 + package_format["descriptors"] + (kind-1)*8
+                        descriptor = package_format["model_offset"] + fixture["section"]*2048 + package_format["descriptors"] + (kind-1)*8
                         layouts.patch(game, "Game", f"actors[{index}].approach_speed", segment_image[descriptor+6])
             write(game_address, game)
             if not continuous:
@@ -911,7 +915,8 @@ def main():
                 else:
                     code_profile = 4 if package_format["medal"] and fixture["patch"]["mode"] in (3, 4) else profile
                 layouts.patch(runtime, "Runtime", "profile", code_profile)
-                write(0x8400, segment_image[0xb0000+profile*2048:0xb0000+(profile+1)*2048])
+                model_base = package_format["model_offset"]
+                write(0x8400, segment_image[model_base+profile*2048:model_base+(profile+1)*2048])
                 word(syms["ENEMY_MODEL_PROFILE"], profile, 1)
                 word(syms["ENEMY_CODE_PROFILE"], code_profile, 1)
             write(runtime_address, runtime)

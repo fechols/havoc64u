@@ -45,7 +45,7 @@
     "sample_count": 2457176,
     "sample_count_unit": "frames",
     "codebook_entries": 8,
-    "codebook_count": 5142,
+    "codebook_count": 7341,
     "lloyd_iterations": 20,
     "closed_loop_training_passes": 3,
     "encoder_beam_width": 32,
@@ -54,7 +54,7 @@
     "channel_processing": "Average (L+R)/2 in floating point before resampling; retain fractional samples",
     "resampler": "Sequential 512-phase 100 dB Kaiser-windowed sinc; floating-point output retained until normalization",
     "normalization": "One track-wide gain; validate final rounded 8-bit PCM sample and true peaks <= -1 dBTP including loop seam; reduce excess plus 0.1 dB and re-encode, at most five attempts",
-    "normalization_gain_db": 4.910253,
+    "normalization_gain_db": 4.722973,
     "normalization_attempts": 2,
     "true_peak_meter": "FFmpeg EBU R128; loop seam included; upper bounds include 0.0005 linear metadata rounding margin",
     "packing": "Continuous LSB-first three-bit codes; stereo alternates left/right; balanced ceil(frame_count/alignment) groups, first remainder books one group longer; final segment clipped; zero final padding",
@@ -72,8 +72,8 @@
     },
     "encoder_binary_sha256": "087bdd1549f0afaae8f6cd018f1b7aa2940dda7f0839ecf336f6dae27ce13852",
     "codebook_entry_bytes": 2,
-    "samples_per_segment": 472,
-    "long_segment_count": 3769,
+    "samples_per_segment": 328,
+    "long_segment_count": 6166,
     "codebooks": "Little-endian signed-16 deltas; eight entries per channel"
   },
   "tool_source": {
@@ -87,13 +87,13 @@
     },
     "note": "Original source hashes identify the imported Second Reality algorithms. The local encoder adds DLT5 compact signed-16 books, balanced segments, closed-loop retraining, beam search, floating-point mono downmix, rounded output and loop-aware peak validation; conversion.encoder_files_sha256 identifies this implementation."
   },
-  "asset_sha256": "c7f0d1fcf1ce465dff33d957b8ffe97e7880abf9e9501c715befee9800ae145b",
-  "decoded_pcm_sha256": "798648491c028e0c27cd66950545e39715f8ddc9d6c62a9cd432002b8e822eb3",
-  "reference_pcm_sha256": "eb4c9e75718f1600c4fa2a4ee57a665076c88e4e043e7a97a41843937a4bbbd4",
+  "asset_sha256": "689228a7a13f45a4bbebcb6aadc9d07232f59c67171095f7ae7c58ea4806022c",
+  "decoded_pcm_sha256": "52793d6fe1669efe9e1942c52a11ec6547e37a79efac6f808722f46327783c5d",
+  "reference_pcm_sha256": "6cde7fea682b485fc8bcb9ed5f8aa16c1d20b7e9210dbd3d86547d461ca78281",
   "generated_metadata": "galactic-dash.json",
   "temporary_gameplay_fixture": false,
   "reproduction_commands": {
     "intermediate": "ffmpeg -v error -y -i \"assets/music/source/Galactic Dash.m4a\" -map 0:a:0 -vn -sample_fmt s16 -c:a flac -threads 1 target/digital-music/galactic-dash-source.flac",
-    "encode": "cargo run --release --manifest-path tools/encode-digital-music/Cargo.toml --target-dir target/digital-music/tool-build -- --profile mono16k3 --codebooks 5142 target/digital-music/galactic-dash-source.flac assets/music/galactic-dash.dlt target/digital-music/galactic-dash-dlt5.wav"
+    "encode": "cargo run --release --manifest-path tools/encode-digital-music/Cargo.toml --target-dir target/digital-music/tool-build -- --profile mono16k3 --codebooks 7341 target/digital-music/galactic-dash-source.flac assets/music/galactic-dash.dlt target/digital-music/galactic-dash-dlt5.wav"
   }
 }

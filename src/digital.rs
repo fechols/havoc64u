@@ -2,7 +2,7 @@
 //! The checked manifest generates descriptors and the DMC1 directory together.
 
 pub const REU_SIZE: u32 = 0x1000000;
-pub const MUSIC_OFFSET: u32 = 0x100000;
+pub const MUSIC_OFFSET: u32 = 0x80000;
 pub const RING_OFFSET: u32 = 0xfe0000;
 pub const RING_BYTES: u32 = 0x20000;
 pub const MUSIC_CAPACITY: u32 = RING_OFFSET - MUSIC_OFFSET;

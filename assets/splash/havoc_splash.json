@@ -1,0 +1,76 @@
+{
+  "format": "havoc-splash-v1",
+  "source": "havoc_splash.png",
+  "source_sha256": "14b8a5790786ca20e66c369b18986714899ff7d4845116f6bf5bb35782733514",
+  "source_size": [
+    1448,
+    1086
+  ],
+  "payload": "havoc_splash.bin",
+  "payload_sha256": "6421afacd6fa3ede89b78b2abb6d8fbcb8f904836f13b407f0a264b4bf2cd05f",
+  "layout": {
+    "bitmap_bytes": 8000,
+    "screen_bytes": 1000,
+    "color_bytes": 1000,
+    "background_bytes": 1
+  },
+  "logical_size": [
+    160,
+    200
+  ],
+  "preview_size": [
+    640,
+    480
+  ],
+  "background_index": 6,
+  "palette": {
+    "name": "ultimate-default",
+    "rgb_hex": [
+      "000000",
+      "f7f7f7",
+      "8d2f34",
+      "6ad4cd",
+      "9835a4",
+      "4cb442",
+      "2c29b1",
+      "efef5d",
+      "984e20",
+      "5b3800",
+      "d1676d",
+      "4a4a4a",
+      "7b7b7b",
+      "9fef93",
+      "6d6aef",
+      "b2b2b2"
+    ],
+    "source": "https://github.com/GideonZ/1541ultimate/blob/master/software/u64/u64_config.cc"
+  },
+  "resample": "linear-sRGB Lanczos3; full composition; no tone or saturation adjustment",
+  "quantization": {
+    "local_triples": 455,
+    "metric": "squared Oklab",
+    "metric_weights": [
+      2.0,
+      1.0,
+      1.0
+    ],
+    "edge_weight": "1 + min(3, 12 * max four-neighbor Oklab distance)",
+    "tie_break": "lowest lexicographic palette indices"
+  },
+  "dither": {
+    "method": "serpentine Floyd-Steinberg",
+    "strength": 1.0,
+    "space": "linear sRGB",
+    "edge_scale": 0.12,
+    "attenuation": "exp(-squared source Oklab distance / edge_scale^2)",
+    "renormalize": false,
+    "gamut": "clip adjusted linear RGB to [0,1] for selection; retain unclipped residual"
+  },
+  "generator": {
+    "script": "tools/encode-splash.py",
+    "script_sha256": "3639ad7e7651ad72ae7a91d4aad8c92f16ac7488db30827735ce0a64d8190304",
+    "script_hash_newlines": "LF",
+    "numpy": "2.5.1",
+    "pillow": "12.3.0"
+  }
+}

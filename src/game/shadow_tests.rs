@@ -290,7 +290,7 @@ fn disabled_shadows_match_ordinary_scene_pixels_and_reset_prior_frame_state() {
 }
 
 #[test]
-fn space_carrier_retains_visible_player_shadows_and_parked_hull_casters() {
+fn space_carrier_retains_visible_player_shadows_without_parked_hull_casters() {
     use crate::render::{Renderer, BAND_PIXELS};
     let mut game = populated(16);
     game.boss_started = false;
@@ -310,8 +310,8 @@ fn space_carrier_retains_visible_player_shadows_and_parked_hull_casters() {
     let segment_bytes = baked::segment_bank(16);
     let segment = Segment::new(&segment_bytes).unwrap();
     let mut darkened = 0;
-    // Sample both deck shades instead of depending on one row's initial ink.
-    for phase in [0, 16, 32, 48] {
+    // Sample both deck shades and both alternating hull sides across their scroll cycle.
+    for phase in 0..256 {
         game.stage_ticks = phase;
         let mut ordinary = Renderer::new();
         game.render(&mut ordinary, &bank, &segment);
@@ -319,7 +319,7 @@ fn space_carrier_retains_visible_player_shadows_and_parked_hull_casters() {
         let mut shaded = Renderer::new();
         let mut frame = ShadowFrame::new();
         game.render_with_shadows(&mut shaded, &mut frame, &bank, &segment);
-        assert!(frame.caster_count() > 1, "player and parked hulls");
+        assert_eq!(frame.caster_count(), 1, "only the player: phase {phase}");
         assert!(frame.shadow_commands() > 0);
         assert!(frame.rendered_casters() > 0);
         for band in 0..25 {
