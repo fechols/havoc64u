@@ -1,6 +1,6 @@
 # H.A.V.O.C. hardware and build notes
 
-H.A.V.O.C. (Heavy Assault Vessel: Orbital Combat) targets the C64 Ultimate at 64 MHz with its built-in REU configured to 16 MB (16 MiB). The v0.1.3 package uses Ultimate Audio for digital music and built-in UltiSIDs for combat effects; the SID soundtrack has been removed. All twelve oscillators and four filters are dedicated to effects. All eighteen stages have their own recordings, and Mission Failed plays after losing all lives. No physical SID chips are required. Import `havoc.cfg`, load `havoc.reu` at REU address zero, then run `havoc.prg`. Keep all three files from the same build together. Historical 1 MiB, 8 MiB and v0.1.2 packages retain their original memory and soundtrack behavior when reproducing older results.
+H.A.V.O.C. (Heavy Assault Vessel: Orbital Combat) targets the C64 Ultimate at 64 MHz with its built-in REU configured to 16 MB (16 MiB). The v0.1.4 package uses Ultimate Audio for digital music and built-in UltiSIDs for combat effects; the SID soundtrack has been removed. All twelve oscillators and four filters are dedicated to effects. All eighteen stages have their own recordings, and Mission Failed plays after losing all lives. No physical SID chips are required. Import `havoc.cfg`, load `havoc.reu` at REU address zero, then run `havoc.prg`. Keep all three files from the same build together. Historical 1 MiB, 8 MiB and v0.1.2 packages retain their original memory and soundtrack behavior when reproducing older results.
 
 The configuration selects the C64U turbo registers, 64 MHz CPU speed, disabled badline timing, and quiet bus operation. The runtime programs the turbo register at startup and checks that the setting is available. An ordinary 1 MHz C64 is not a supported execution target.
 
@@ -450,6 +450,38 @@ reports, host tests, audits and package hashes. These monitor-assisted checks ar
 not continuous campaign playthroughs or physical-machine measurements; four-UltiSID
 listening and shared mixer balance still need physical-hardware confirmation.
 
+## v0.1.4 release validation (2026-10-24)
+
+The release build includes the afterburner, multi-phase Gate Guardian, expanded
+orbital scenery, and single-pixel reticle with exact ship and exhaust clipping.
+The full build ran through `scripts/build.sh` in the configured Ubuntu-24.04 WSL
+environment and retained 84 bytes of resident headroom.
+
+- **513 host tests passed**, with 2 fixture-export tests ignored. All 10 packaging, 4 SFX-profile, 23 SFX benchmark-tool, 5 catalog, and 24 encoder tests passed, alongside production memory, overlay, IRQ-frame, and REU audits.
+- **PAL/NTSC digital audio:** 160 assembly decoder cases, all 21 songs and 24 handoffs per standard, plus corruption and fatal-muting checks passed against the release binaries.
+- **Native effects:** 6,932 exact state/register/write comparisons passed per standard.
+- **Native gameplay and display:** 244,330 flight steps, 19,023 missile scenes, 1,659 input calls, 235 keyboard fixtures, and 3,964 reticle cases plus 10 emulator scene samples passed. HUD publication, scrolling, sprite multiplexing and IRQ checks passed, with 162 layout and 89 overlay rejection fixtures.
+- **PAL/NTSC emulator gameplay:** controls, afterburner, pause, weapons, multi-phase bosses, HUD/reticle clipping, stage transitions, checkpoints, victory/restarts, attract mode, and Normal/Story lifecycle passed. All four emulator runs finished with zero reticle interrupt misses.
+- **Release ZIP:** all six entries pass integrity checks and match the validated runtime files, instructions, and licenses byte for byte.
+
+Fresh logs, package identities and reports are retained under
+`target/release-v0.1.4-publish/`. Its `validation-summary.json` verifies the native
+and emulator reports against the frozen package hashes, confirms unchanged
+runtime files after testing, and checks every ZIP entry against its source.
+The ZIP is 14,211,468 bytes; the REU is 16 MiB.
+
+Native audio results are instruction-model checks; VICE uses the explicit
+effects-only backend. These results do not establish physical Ultimate playback
+timing, controller wiring, or listening quality.
+
+| Release artifact | SHA-256 |
+| --- | --- |
+| `havoc.cfg` | `c97d40c3f588049037631716fa4b4c8648214cfc0dc037b7e468aa234ca9c037` |
+| `havoc.prg` | `cab167fabd141d69f11e03250d8d3ed9d1a3b099d74d82111c1f8d1c0e148221` |
+| `havoc.reu` | `d0a43a1fc4ebba6afa7367745170dcf8831664d8e4cfce9be7a1b5c62016a227` |
+| `havoc.elf` | `753ad04b81d3b6b233a755f43a2b32cd6ebfc72a1ea93879e14c50d751a2d5a4` |
+| `havoc-v0.1.4.zip` | `3cb372226cee0d0204d8989b76e77a71e0dd54344cdb85446b3e1940d452145f` |
+
 ## v0.1.3 release validation (2026-10-24)
 
 The release was rebuilt with `bash scripts/build.sh` in the configured Ubuntu-24.04
@@ -537,7 +569,7 @@ Or from Linux/WSL:
 bash scripts/build.sh
 ```
 
-The complete build runs host and package tests, bakes assets, links one C64 program, audits memory and overlays, and produces matching `havoc.prg`, `havoc.reu`, and `havoc.cfg` files in `dist/`. It also creates `havoc-v0.1.3.zip` with the three runtime files, launch instructions, and game/music licenses. The native build uses `target-c64/target`. Generated packages are ignored by Git; cloning the repository does not supply `dist/`.
+The complete build runs host and package tests, bakes assets, links one C64 program, audits memory and overlays, and produces matching `havoc.prg`, `havoc.reu`, and `havoc.cfg` files in `dist/`. It also creates `havoc-v0.1.4.zip` with the three runtime files, launch instructions, and game/music licenses. The native build uses `target-c64/target`. Generated packages are ignored by Git; cloning the repository does not supply `dist/`.
 
 After changing assets, bake with `cargo +stable run --release -- bake dist`, then run `bash scripts/build-target.sh`. The bake step alone does not produce executable overlays. Use the full build script to run checks and produce the release ZIP. On Windows, `scripts/build-windows.ps1` runs the same build through WSL; its optional output directory receives the single package and ZIP. SID-profile arguments and the `four-sid` Cargo feature have been removed.
 

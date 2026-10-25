@@ -1,4 +1,4 @@
-H.A.V.O.C. v0.1.3 - Heavy Assault Vessel: Orbital Combat
+H.A.V.O.C. v0.1.4 - Heavy Assault Vessel: Orbital Combat
 
 Requires a C64 Ultimate at 64 MHz with 16 MiB of REU memory and a joystick
 connected to port 2. The supplied configuration enables the four built-in SIDs
