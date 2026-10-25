@@ -75,6 +75,8 @@ pub static mut DIGITAL_MINIMUM_LEAD: u16 = 0;
 static mut REQUESTED_CUE: MusicState = MusicState::Title;
 #[no_mangle]
 static mut REQUESTED_STAGE: u8 = 255;
+#[no_mangle]
+static mut REQUESTED_MENU_TRACK: u8 = 255;
 static mut DIGITAL_CALIBRATION: digital::Calibration = digital::Calibration::new();
 #[no_mangle]
 static mut AUDIO_READY: bool = false;
@@ -756,6 +758,7 @@ unsafe fn send_audio(game: &mut Game) {
     disable_irq();
     REQUESTED_CUE = game.music_state();
     REQUESTED_STAGE = game.segment_index();
+    REQUESTED_MENU_TRACK = game.menu_music_override();
     if EMULATOR_SFX_ONLY != 0 { MUSIC_CUE = REQUESTED_CUE as u8; }
     while let Some(e) = game.pop_audio() {
         if AUDIO_READY {
@@ -781,7 +784,8 @@ unsafe fn service_audio() {
         AUDIO_READY = true;
         return;
     }
-    let track = havoc::digital::track_for_scene(REQUESTED_CUE, REQUESTED_STAGE);
+    let track = havoc::digital::Track::from_id(REQUESTED_MENU_TRACK)
+        .unwrap_or_else(|| havoc::digital::track_for_scene(REQUESTED_CUE, REQUESTED_STAGE));
     let state = AUDIO.as_mut_ptr();
     if MUSIC_BACKEND != BACKEND_DAC {
         digital::clear(state);

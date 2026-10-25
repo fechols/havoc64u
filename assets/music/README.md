@@ -1,6 +1,6 @@
 # Digital soundtrack catalog
 
-`catalog.json` is the version 2 authoring source for the DLT4 soundtrack, its
+`catalog.json` is the version 2 authoring source for the DLT5 soundtrack, its
 order, semantic music cues, and stage overrides. Append new tracks to preserve
 numeric track IDs. Galactic Dash and Hammond Rocker remain at IDs 0 and 1.
 Mission Failed uses retired fixture slot 2; existing stage recordings retain
@@ -38,7 +38,30 @@ stage recordings use mono decoding with the right output delayed by 160 samples
 (10 ms at 16 kHz). Songs retain their full lengths and loop until the selected
 track changes.
 
-After encoding or changing the manifest, run:
+Each track's `codebook_count` is an explicit encoding input. DLT5 stores eight
+little-endian signed-16 deltas per channel and balances packing groups across
+segments, retaining predictor continuity. The catalog allocator gives tracks
+approximately equal adaptation intervals and includes every header, CRC and
+alignment byte in its budget. Reallocate and regenerate the soundtrack with:
+
+```text
+python3 tools/digital_format.py --allocate-codebooks
+cargo build --release --manifest-path tools/encode-digital-music/Cargo.toml --target-dir target/digital-music/tool-build
+python3 tools/regenerate-digital-music.py --encoder target/digital-music/tool-build/release/encode-digital-music --jobs 4 --install
+```
+
+On Windows, append `.exe` to the encoder path. Regeneration stages all assets,
+checks original/intermediate hashes, validates the complete catalog, and rejects
+per-channel SNR regressions or decoded peaks above -1 dB before installing. The
+previous assets remain in `target/digital-music/dlt5-baseline`; previews and the
+quality report are under `target/digital-music/dlt5`. Physical listening remains
+a separate check. Normal builds validate existing assets without re-encoding.
+Container-only metadata edits are accepted only after checking the original
+sample rate, channel count and decoded PCM against an authenticated intermediate
+or recorded PCM hash. Provenance retains the original container hash and tags,
+and records the current container hash and tags separately.
+
+After independently encoding or changing the manifest, run:
 
 ```text
 python3 tools/digital_format.py --write-rust
@@ -67,8 +90,10 @@ must be zero. `$FE0000–$FFFFFF` is mutable playback memory and is excluded fro
 immutable soundtrack validation.
 
 The complete directory, encoded assets, checksums and alignment must fit
-15,597,568 bytes. The twenty-one stored assets occupy 14,647,076 bytes, including
-the directory and alignment, leaving 950,492 bytes free (about 928 KiB). The
+15,597,568 bytes. The twenty-one stored assets occupy 15,597,564 bytes, including
+the directory and alignment, leaving four bytes free. Codebooks occupy 1,225,632
+bytes, with average adaptation intervals of 29.861–29.870 ms. Galactic Dash uses
+5,142 books, Hammond Rocker 7,029, and the other tracks 2,971–3,322. The
 eighteen stage recordings total 27:04.963; all twenty-one unique recordings
 total 34:37.8835. The twenty mono recordings total 31:07.950. The capacity check
 uses actual encoded extents, including codebooks, CRC checkpoints, stage

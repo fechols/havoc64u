@@ -1,4 +1,4 @@
-//! DLT4 descriptors shared by the host packer and bounded foreground decoder.
+//! DLT5 descriptors shared by the host packer and bounded foreground decoder.
 //! The checked manifest generates descriptors and the DMC1 directory together.
 
 pub const REU_SIZE: u32 = 0x1000000;
@@ -9,7 +9,7 @@ pub const MUSIC_CAPACITY: u32 = RING_OFFSET - MUSIC_OFFSET;
 pub const HEADER_SIZE: usize = 32;
 pub const BITS_PER_SAMPLE: u8 = 3;
 pub const CODEBOOK_ENTRIES: usize = 8;
-pub const CODEBOOK_BYTES: usize = CODEBOOK_ENTRIES * 3 * CHANNELS as usize;
+pub const CODEBOOK_BYTES: usize = CODEBOOK_ENTRIES * 2 * CHANNELS as usize;
 pub const CRC_CHUNK_BYTES: usize = 1024;
 /// Compatibility alias for the Galactic Dash asset, not the directory base.
 pub const ASSET_OFFSET: u32 = GALACTIC_OFFSET;
@@ -26,6 +26,8 @@ pub struct Metadata {
     pub crc_offset: u32,
     pub codebook_count: u16,
     pub sample_rate: u16,
+    /// The first books receive one extra packing group of frames.
+    pub long_segment_count: u16,
     pub channels: u8,
 }
 impl Metadata {
@@ -37,6 +39,7 @@ impl Metadata {
         crc_offset: 0,
         codebook_count: 0,
         sample_rate: 20_000,
+        long_segment_count: 0,
         channels: 2,
     };
 }
@@ -74,7 +77,7 @@ pub fn parse_header(bytes: &[u8], track: Track) -> Result<Metadata, DigitalError
     if bytes.len() < HEADER_SIZE {
         return Err(DigitalError::Truncated);
     }
-    if &bytes[..4] != b"DLT4" {
+    if &bytes[..4] != b"DLT5" {
         return Err(DigitalError::Signature);
     }
     if u32_at(bytes, 4) != metadata.sample_rate as u32
@@ -126,19 +129,10 @@ pub fn crc_byte(crc: u8, byte: u8) -> u8 {
     CRC8[(crc ^ byte) as usize]
 }
 
-/// The source stores a full u16 magnitude, then clips to the target's i16.
+/// Stored deltas already have the predictor's signed-16 precision.
 #[inline(always)]
-pub fn decode_delta_entry(bytes: [u8; 3]) -> i16 {
-    let magnitude = u16::from_le_bytes([bytes[0], bytes[1]]);
-    if bytes[2] != 0 {
-        if magnitude >= 0x8000 {
-            i16::MIN
-        } else {
-            -(magnitude as i16)
-        }
-    } else {
-        magnitude.min(i16::MAX as u16) as i16
-    }
+pub fn decode_delta_entry(bytes: [u8; 2]) -> i16 {
+    i16::from_le_bytes(bytes)
 }
 
 /// Host validates the entire stored asset before baking or accepting a package.

@@ -167,22 +167,18 @@ pub fn encode(pcm: &[Vec<i16>], profile: Profile, requested_books: u16) -> Resul
     if pcm.len() != channels || pcm[0].is_empty() || pcm.iter().any(|c| c.len() != pcm[0].len()) {
         bail!("profile requires nonempty, equal-length channels");
     }
-    if !(1..=1024).contains(&requested_books) {
-        bail!("codebook count must be 1..=1024");
+    if requested_books == 0 {
+        bail!("codebook count must be 1..=65535");
     }
     let frames: u32 = pcm[0].len().try_into()?;
-    let books = profile_codebook_count(frames, requested_books, 3, channels as u8);
-    let stride = profile_samples_per_segment(frames, books, 3, channels as u8) as usize;
+    let segments = BalancedSegments::new(frames, requested_books, channels as u8);
+    let books = segments.books;
     let mut predictors = [0i16; 2];
     let mut codes = vec![0u8; pcm[0].len() * channels];
-    let mut codebook_bytes = Vec::with_capacity(books as usize * channels * 24);
+    let mut codebook_bytes = Vec::with_capacity(books as usize * channels * 8 * COMPACT_ENTRY_SIZE);
     for segment in 0..books as usize {
-        let start = segment * stride;
-        let end = if segment + 1 == books as usize {
-            frames as usize
-        } else {
-            start + stride
-        };
+        let range = segments.range(segment as u16);
+        let (start, end) = (range.start, range.end);
         for channel in 0..channels {
             let source = &pcm[channel][start..end];
             let mut source_previous = if start == 0 {
@@ -216,7 +212,7 @@ pub fn encode(pcm: &[Vec<i16>], profile: Profile, requested_books: u16) -> Resul
                 best = searched;
             }
             for &delta in &book {
-                codebook_bytes.extend_from_slice(&encode_delta_entry(i32::from(delta)));
+                codebook_bytes.extend_from_slice(&delta.to_le_bytes());
             }
             for (index, &code) in best.codes.iter().enumerate() {
                 codes[(start + index) * channels + channel] = code;
@@ -226,6 +222,7 @@ pub fn encode(pcm: &[Vec<i16>], profile: Profile, requested_books: u16) -> Resul
     }
     let stream = pack_codes(&codes, 3);
     Ok(DeltaBlob {
+        compact_entries: true,
         header: DeltaQuantHeader {
             rate_hz: profile.rate(),
             n_samples: frames,
@@ -246,7 +243,13 @@ fn interleave(pcm: &[Vec<i16>]) -> Vec<i16> {
         .collect()
 }
 
-pub fn run(profile: Profile, input: &Path, output: &Path, preview: &Path) -> Result<()> {
+pub fn run(
+    profile: Profile,
+    requested_books: u16,
+    input: &Path,
+    output: &Path,
+    preview: &Path,
+) -> Result<()> {
     let (source, source_rate) = crate::read_source(input)?;
     let pcm = prepare(&source, source_rate, profile);
     let channels = profile.channels();
@@ -275,7 +278,7 @@ pub fn run(profile: Profile, input: &Path, output: &Path, preview: &Path) -> Res
                     .collect()
             })
             .collect();
-        let encoded = encode(&reference, profile, 521)?;
+        let encoded = encode(&reference, profile, requested_books)?;
         let decoded: Vec<_> = encoded.decode().into_iter().map(rounded_output).collect();
         // Include a real loop boundary, not only the final transition to silence.
         let mut meter_pcm = decoded.clone();
@@ -346,10 +349,10 @@ pub fn run(profile: Profile, input: &Path, output: &Path, preview: &Path) -> Res
             .collect();
     let reference = interleave(&reference);
     let metadata = format!(concat!(
-        "{{\n  \"format\": \"DLT4 with cumulative CRC-8 per 1024 stream bytes\",\n",
+        "{{\n  \"format\": \"DLT5 with cumulative CRC-8 per 1024 stream bytes\",\n",
         "  \"profile\": \"{}\",\n  \"sample_rate\": {},\n  \"sample_count\": {},\n",
         "  \"channels\": {},\n  \"bits_per_sample\": 3,\n  \"output_bits_per_sample\": 8,\n",
-        "  \"codebook_entries\": 8,\n  \"codebook_count\": {},\n  \"samples_per_segment\": {},\n",
+        "  \"codebook_entries\": 8,\n  \"codebook_count\": {},\n  \"samples_per_segment\": {},\n  \"long_segment_count\": {},\n  \"codebook_entry_bytes\": 2,\n",
         "  \"header_bytes\": 32,\n  \"codebook_bytes\": {},\n  \"stream_offset\": {},\n",
         "  \"stream_bytes\": {},\n  \"crc_offset\": {},\n  \"crc_count\": {},\n  \"asset_bytes\": {},\n",
         "  \"header_checksum\": {},\n  \"codebook_checksum\": {},\n  \"crc_table_checksum\": {},\n",
@@ -362,7 +365,8 @@ pub fn run(profile: Profile, input: &Path, output: &Path, preview: &Path) -> Res
         "  \"true_peak_meter\": \"FFmpeg EBU R128; loop seam included; upper bounds include 0.0005 linear metadata rounding margin\",\n",
         "  \"channel_metrics\": [\n{}\n  ]\n}}\n"),
         profile.name(), profile.rate(), encoded.header.n_samples, channels, encoded.header.num_codebooks,
-        profile_samples_per_segment(encoded.header.n_samples, encoded.header.num_codebooks, 3, channels as u8),
+        BalancedSegments::new(encoded.header.n_samples, encoded.header.num_codebooks, channels as u8).samples_per_segment,
+        BalancedSegments::new(encoded.header.n_samples, encoded.header.num_codebooks, channels as u8).long_segment_count,
         encoded.codebook_bytes.len(), stream_offset, encoded.stream.len(), crc_offset, bytes.len() - crc_offset, bytes.len(),
         checksum(&bytes[..32]), checksum(&encoded.codebook_bytes), checksum(&bytes[crc_offset..]), checksum(&bytes),
         crate::hash(&bytes), crate::hash(&fs::read(input)?), crate::hash(&crate::pcm_bytes(&reference)), crate::hash(&crate::pcm_bytes(&decoded)),
@@ -446,14 +450,19 @@ mod tests {
                 let blob = encode(&pcm, profile, 3).unwrap();
                 let mut accum = [0i16; 2];
                 let mut expected = Vec::new();
-                let stride = profile_samples_per_segment(
-                    frames as u32,
-                    blob.header.num_codebooks,
-                    3,
-                    profile.channels() as u8,
-                ) as usize;
+                // Independent partition oracle: distribute complete packing groups,
+                // then clip only the final group to the exact source length.
+                let alignment = 8 / profile.channels();
+                let groups = frames.div_ceil(alignment);
+                let books = blob.header.num_codebooks as usize;
+                let mut boundaries = Vec::with_capacity(books);
+                let mut boundary = 0;
+                for book in 0..books {
+                    boundary += (groups / books + usize::from(book < groups % books)) * alignment;
+                    boundaries.push(boundary.min(frames));
+                }
                 for frame in 0..frames {
-                    let segment = (frame / stride).min(blob.header.num_codebooks as usize - 1);
+                    let segment = boundaries.iter().position(|&end| frame < end).unwrap();
                     for channel in 0..profile.channels() {
                         let bit = (frame * profile.channels() + channel) * 3;
                         let code = (0..3).fold(0usize, |code, shift| {
@@ -461,23 +470,19 @@ mod tests {
                                 as usize)
                                 << shift
                         });
-                        let at = ((segment * profile.channels() + channel) * 8 + code) * 3;
-                        let magnitude = u16::from_le_bytes([
+                        let at = ((segment * profile.channels() + channel) * 8 + code) * 2;
+                        let delta = i16::from_le_bytes([
                             blob.codebook_bytes[at],
                             blob.codebook_bytes[at + 1],
                         ]) as i32;
-                        let delta = if blob.codebook_bytes[at + 2] == 0 {
-                            magnitude
-                        } else {
-                            -magnitude
-                        };
-                        accum[channel] = (i32::from(accum[channel]) + delta.clamp(-32768, 32767))
-                            .clamp(-32768, 32767) as i16;
+                        accum[channel] =
+                            (i32::from(accum[channel]) + delta).clamp(-32768, 32767) as i16;
                         expected.push(accum[channel]);
                     }
                 }
                 assert_eq!(blob.decode(), expected);
-                assert_eq!(&blob.to_bytes()[..4], b"DLT4");
+                assert_eq!(&blob.to_bytes()[..4], b"DLT5");
+                assert_eq!(blob.codebook_bytes.len(), books * profile.channels() * 16);
                 assert_eq!(
                     blob.stream.len(),
                     (frames * profile.channels() * 3).div_ceil(8)
@@ -488,5 +493,21 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn accepts_more_than_1024_books_and_caps_at_partial_packing_groups() {
+        let pcm = vec![vec![0; 8193]];
+        let blob = encode(&pcm, Profile::Mono16k3, u16::MAX).unwrap();
+        assert_eq!(blob.header.num_codebooks, 1025);
+        assert_eq!(blob.codebook_bytes.len(), 1025 * 16);
+        assert_eq!(blob.decode(), vec![0; 8193]);
+        assert!(encode(&pcm, Profile::Mono16k3, 0).is_err());
+        assert_eq!(
+            blob.to_bytes(),
+            encode(&pcm, Profile::Mono16k3, u16::MAX)
+                .unwrap()
+                .to_bytes()
+        );
     }
 }

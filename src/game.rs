@@ -403,7 +403,7 @@ pub struct Game {
     menu_ticks: u16,
     menu_activity: bool,
     /// Menu track selection survives scene resets; victory selects Galactic.
-    menu_music_galactic: bool,
+    menu_music_track: u8,
     /// Title selection persists until the program restarts.
     story_mode: bool,
     audio_head: u8,
@@ -476,7 +476,7 @@ impl Game {
             ticks: 0,
             menu_ticks: 0,
             menu_activity: false,
-            menu_music_galactic: false,
+            menu_music_track: crate::digital::Track::HammondRocker as u8,
             story_mode: false,
             actors: [Actor::EMPTY; ACTORS],
             shots: [Shot::EMPTY; SHOTS],
@@ -791,7 +791,19 @@ impl Game {
     #[inline(always)]
     pub fn toggle_menu_music(&mut self) {
         if matches!(self.mode, Mode::Title | Mode::Attract) {
-            self.menu_music_galactic = !self.menu_music_galactic;
+            self.menu_music_track += 1;
+            if self.menu_music_track as usize == crate::digital::Track::ALL.len() {
+                self.menu_music_track = 0;
+            }
+        }
+    }
+    /// Menus preview recordings directly; gameplay retains its scene mapping.
+    #[inline(always)]
+    pub fn menu_music_override(&self) -> u8 {
+        if matches!(self.mode, Mode::Title | Mode::Attract) {
+            self.menu_music_track
+        } else {
+            255
         }
     }
     /// Change the next run's life allowance from the title screen only.
@@ -809,7 +821,7 @@ impl Game {
         match self.mode {
             // The title and complete attract tour share one uninterrupted track.
             Mode::Title | Mode::Attract => {
-                if self.menu_music_galactic {
+                if self.menu_music_track == crate::digital::Track::GalacticDash as u8 {
                     MusicState::Victory
                 } else {
                     MusicState::Title
@@ -899,11 +911,11 @@ impl Game {
     fn reset_scene(&mut self, mode: Mode, stage_id: u8, stage_ticks: u16) {
         let bits = self.controls.bits;
         let now = self.controls.now;
-        let menu_music_galactic = self.menu_music_galactic;
+        let menu_music_track = self.menu_music_track;
         let story_mode = self.story_mode;
         let encounter_seed = self.encounter_seed;
         self.reset_in_place();
-        self.menu_music_galactic = menu_music_galactic;
+        self.menu_music_track = menu_music_track;
         self.story_mode = story_mode;
         self.lives = if story_mode { 99 } else { 3 };
         self.encounter_seed = encounter_seed;
@@ -940,6 +952,7 @@ impl Game {
             }
         }
         self.player.z = PLAYER_Z;
+        self.menu_music_track = crate::digital::Track::HammondRocker as u8;
         self.shield = 100;
         self.bombs = 3;
         self.lives = 3;
@@ -1079,7 +1092,7 @@ impl Game {
             self.mode = Mode::Victory;
             self.boost_cycle = 0;
             self.controls.flags &= !BOOST_ACTIVE;
-            self.menu_music_galactic = true;
+            self.menu_music_track = crate::digital::Track::GalacticDash as u8;
             self.menu_ticks = 0;
             self.shots = [Shot::EMPTY; SHOTS];
             self.missile_targets = [0; SHOTS];

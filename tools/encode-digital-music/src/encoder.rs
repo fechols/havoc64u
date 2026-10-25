@@ -38,6 +38,7 @@ pub fn encode_stereo(pcm: &[Vec<i16>; 2], rate: u32) -> Result<EncodedDeltaQuant
         rate_actual: rate,
         n_samples: left.n_samples,
         blob: DeltaBlob {
+            compact_entries: false,
             header: DeltaQuantHeader {
                 stream_bytes: stream.len() as u32,
                 channels: 2,
@@ -234,6 +235,7 @@ pub fn encode_pcm_to_delta_quant(
         rate_actual: rate,
         n_samples,
         blob: DeltaBlob {
+            compact_entries: false,
             header,
             codebook_bytes,
             stream,

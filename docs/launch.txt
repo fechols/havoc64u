@@ -45,11 +45,11 @@ Hammond Rocker plays continuously on the title and throughout the attract tour.
 The final gold-medal reveal starts Galactic Dash. Release fire, then press it
 to return to the title with Galactic Dash still playing.
 Losing all lives starts Mission Failed, which loops until you start a new run.
-Secret preview: CTRL + C= (Commodore) + DEL switches between Hammond Rocker
-and Galactic Dash on the title or in attract mode, even before winning.
-Hold CTRL and C= and tap DEL again to switch back. Each song starts from the
-beginning; the selection stays until you switch again, complete the campaign,
-or reload the game.
+Secret preview: CTRL + C= (Commodore) + DEL cycles through all 21 soundtrack
+songs on the title or in attract mode, even before winning. Hold CTRL and C=
+and tap DEL again for the next song; the selection wraps after the last track.
+Each song starts from the beginning; the selection stays until you switch
+again, complete the campaign, or reload the game.
 All four SIDs are dedicated to layered effects with resonant filter sweeps.
 Each effect uses one SID or a stereo pair, leaving chips free for overlapping
 sounds. Player lasers have a bright energy-cannon tone; hull impacts combine

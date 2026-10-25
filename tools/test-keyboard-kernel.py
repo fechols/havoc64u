@@ -19,7 +19,8 @@ KERNEL = runpy.run_path(str(ROOT / "tools/native_cpu.py"))
 SMOKE = runpy.run_path(str(ROOT / "tools/vice-smoke.py"))
 Cpu, KernelError, load_elf = (KERNEL[name] for name in ("Cpu", "KernelError", "load_elf"))
 IRQ_MASK, UNUSED, SENTINEL = 4, 32, 0xffff
-SELECTOR = "menu_music_galactic"
+SELECTOR = "menu_music_track"
+TRACK_COUNT = len(json.loads((ROOT / "assets/music/catalog.json").read_text())["tracks"])
 STORY = "story_mode"
 # Standard C64 matrix: CTRL and C= share row 7; DEL is row 0, column 0.
 KEYS = {"ctrl": (7, 2), "cbm": (7, 5), "del": (0, 0),
@@ -67,6 +68,7 @@ class Machine(Cpu):
         # Only mode and the menu selection/activity fields are used here. Their
         # offsets and valid discriminants come from this exact native build.
         self.mem[self.game_start:self.game_end] = bytes(self.game_end - self.game_start)
+        self.mem[self.selector] = 1  # Cold-start Hammond Rocker.
         self.p = UNUSED  # The caller enters with interrupts enabled.
         self.keys = frozenset()
         self.joy1 = self.joy2 = 0
@@ -135,11 +137,12 @@ class Machine(Cpu):
         after = bytes(self.mem[self.game_start:self.game_end])
         offset = self.selector - self.game_start
         want = bytearray(before)
-        want[offset] ^= int(expected)
+        if expected:
+            want[offset] = (want[offset] + 1) % TRACK_COUNT
         want[self.story - self.game_start] ^= int(story)
         if story:
             want[self.activity - self.game_start] = 1
-        require(after == want, f"{label}: wrong menu toggle/activity or unrelated Game mutation")
+        require(after == want, f"{label}: wrong menu selection/activity or unrelated Game mutation")
         require(self.flag("PAUSED") == paused ^ int(pause), f"{label}: wrong pause edge")
         require(self.flag("FPS_SHOWN") == shown ^ int(fps), f"{label}: wrong FPS edge")
         self.calls += 1
@@ -169,14 +172,24 @@ def exercise(elf, symbols, layout, budget):
                 cpu.scan(down, mode, expected=down == CHORD, label=f"{mode}: order {order}")
             for _ in range(3):
                 cpu.scan(CHORD, mode, label=f"{mode}: held chord")
-            # Releasing any member rearms the complete chord, in either song.
+            # Releasing any member rearms the complete chord.
             for key in CHORD_KEYS:
                 cpu.scan(CHORD - {key}, mode, label=f"{mode}: release {key}")
                 cpu.scan(CHORD, mode, expected=True, label=f"{mode}: repress {key}")
     scenarios.append("partial chords, all press orders, held chord and individual-key rearming in Title/Attract")
 
+    cpu = fresh()
+    visited = []
+    for index in range(TRACK_COUNT):
+        cpu.scan(CHORD, expected=True, label=f"full catalog cycle {index}")
+        visited.append(cpu.mem[cpu.selector])
+        cpu.scan(CHORD, label=f"full catalog held {index}")
+        cpu.scan((), label=f"full catalog release {index}")
+    require(visited == [*range(2, TRACK_COUNT), 0, 1], "catalog cycle skipped or repeated a song")
+    scenarios.append("physical chord edges visit every catalog song once and wrap back to Hammond Rocker")
+
     for mode in layout["modes"]:
-        for selected in (0, 1):
+        for selected in (0, 1, TRACK_COUNT - 1):
             cpu = fresh()
             cpu.mem[cpu.selector] = selected
             cpu.scan(CHORD, mode, expected=mode in ("Title", "Attract"), label=f"mode {mode}, song {selected}")
@@ -315,9 +328,9 @@ def main():
     elf, symbols = load_elf(args.elf)
     raw_symbols = {symbol.name: symbol.address for symbol in elf.symbols}
     layout = SMOKE["dwarf_game_layout"](args.elf, args.llvm_dwarfdump, raw_symbols, args.report.parent)
-    for name in (SELECTOR, STORY, "menu_activity"):
+    for name, kind in ((SELECTOR, "u8"), (STORY, "bool"), ("menu_activity", "bool")):
         field = layout["fields"].get(name)
-        require(field is not None and field["type"] == "bool", f"missing native Game::{name} bool")
+        require(field is not None and field["type"] == kind, f"missing native Game::{name} {kind}")
         require(layout["address"] + field["offset"] < symbols["__game_state_end"].address,
                 f"menu field {name} exceeds native Game storage")
     report = {"elf_sha256": hashlib.sha256(args.elf.read_bytes()).hexdigest(),

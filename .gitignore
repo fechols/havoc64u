@@ -3,5 +3,6 @@
 /target-c64/target-*
 /tools/hwprobe/target
 /dist
+/press-kit-private/
 /__pycache__
 /tools/__pycache__

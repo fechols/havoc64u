@@ -28,7 +28,7 @@ fn title_story_toggle_changes_only_selection_and_menu_activity() {
     fn title() -> Game {
         let mut game = Game::new();
         game.menu_ticks = ATTRACT_TICKS - 1;
-        game.menu_music_galactic = true;
+        game.menu_music_track = crate::digital::Track::GalacticDash as u8;
         game.controls.now = 12_345;
         game.controls.flags |= FIRE_ARMED;
         game.player.x = 37;

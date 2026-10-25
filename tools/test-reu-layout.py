@@ -31,17 +31,24 @@ class ReuLayout(unittest.TestCase):
         root = Path(__file__).resolve().parents[1]
         reu = bytearray(0x1000000)
         catalog = pack_catalog(reu)
+        self.assertEqual(catalog['end'], 0xfe0000 - 4)
+        self.assertEqual(reu[catalog['end']:0xfe0000], bytes(4))
         tracks = [(entry['name'], entry['offset']) for entry in catalog['tracks']]
         result = packer.validate_digital_payload(reu)
         self.assertEqual(set(result), {name for name, _ in tracks})
         for name, start in tracks:
             metadata = result[name]
-            for offset in (0, 4, 21, 22, 32, 80, metadata['stream_offset'], metadata['crc_offset']):
+            for offset in (0, 4, 21, 22, 32, 80, metadata['stream_offset'] - 1,
+                           metadata['stream_offset'], metadata['crc_offset']):
                 with self.subTest(track=name, offset=offset):
                     reu[start + offset] ^= 1
                     with self.assertRaises(AssertionError):
                         packer.validate_digital_payload(reu)
                     reu[start + offset] ^= 1
+        reu[catalog['end']] = 1
+        with self.assertRaisesRegex(AssertionError, 'trailing padding'):
+            packer.validate_digital_payload(reu)
+        reu[catalog['end']] = 0
         reu[0xfe0000] = 127
         reu[0xffffff] = 127
         with self.assertRaisesRegex(AssertionError, 'PCM ring'):

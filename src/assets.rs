@@ -10,7 +10,7 @@ pub const MAX_SEGMENT_SPAWNS: u8 = 62;
 pub const SEGMENT_COUNT: u8 = 18;
 pub const SEGMENT_DISTANCE: u32 = 30_000;
 pub const REU_SIZE: u32 = crate::digital::REU_SIZE;
-/// DMC1 directory and contiguous DLT4 soundtrack follow the unchanged first MiB.
+/// DMC1 directory and contiguous DLT5 soundtrack follow the unchanged first MiB.
 pub const DIGITAL_MUSIC_OFFSET: u32 = crate::digital::MUSIC_OFFSET;
 /// Compatibility asset address; individual tracks no longer own fixed slots.
 pub const DIGITAL_VICTORY_OFFSET: u32 = crate::digital::HAMMOND_OFFSET;

@@ -12,7 +12,7 @@ fn shipped_tracks_have_exact_profile_bounds_and_all_stream_checksums() {
         let metadata = validate_asset(bytes, track).unwrap();
         assert_eq!(metadata, descriptor.metadata);
         assert_eq!(bytes.len() as u32, descriptor.asset_bytes);
-        assert_eq!(&bytes[..4], b"DLT4");
+        assert_eq!(&bytes[..4], b"DLT5");
         assert!(matches!(
             (metadata.sample_rate, metadata.channels),
             (20_000, 2) | (16_000, 1)
@@ -21,17 +21,42 @@ fn shipped_tracks_have_exact_profile_bounds_and_all_stream_checksums() {
         assert_eq!(bytes[21], metadata.channels);
         assert_eq!(
             metadata.stream_offset,
-            32 + metadata.codebook_count as u32 * 8 * 3 * metadata.channels as u32
+            32 + metadata.codebook_count as u32 * 8 * 2 * metadata.channels as u32
         );
         assert_eq!(
             metadata.stream_bytes,
             (metadata.total_samples * metadata.channels as u32 * 3).div_ceil(8)
         );
         let alignment = 8 / metadata.channels as u32;
+        let groups = metadata.total_samples.div_ceil(alignment);
         assert_eq!(
             metadata.samples_per_segment,
-            metadata.total_samples / metadata.codebook_count as u32 / alignment * alignment
+            groups / metadata.codebook_count as u32 * alignment
         );
+        assert_eq!(
+            metadata.long_segment_count as u32,
+            groups % metadata.codebook_count as u32
+        );
+        let mut frame = 0;
+        for book in 0..metadata.codebook_count {
+            let nominal = metadata.samples_per_segment
+                + if book < metadata.long_segment_count {
+                    alignment
+                } else {
+                    0
+                };
+            assert!(
+                frame < metadata.total_samples,
+                "empty {track:?} book {book}"
+            );
+            let end = (frame + nominal).min(metadata.total_samples);
+            if book + 1 < metadata.codebook_count {
+                assert_eq!(end % alignment, 0);
+                assert_eq!(end - frame, nominal);
+            }
+            frame = end;
+        }
+        assert_eq!(frame, metadata.total_samples);
         assert_eq!(
             metadata.crc_offset,
             metadata.stream_offset + metadata.stream_bytes
@@ -50,7 +75,7 @@ fn shipped_tracks_have_exact_profile_bounds_and_all_stream_checksums() {
     assert_eq!(RING_OFFSET + RING_BYTES, REU_SIZE);
     assert_eq!(Track::ALL.len(), 21);
     assert_eq!(DIRECTORY_BYTES, 400);
-    assert_eq!((SAMPLE_RATE, CHANNELS, CODEBOOK_BYTES), (16_000, 1, 24));
+    assert_eq!((SAMPLE_RATE, CHANNELS, CODEBOOK_BYTES), (16_000, 1, 16));
     assert_eq!(
         CODEBOOK_COUNT,
         Track::GalacticDash.descriptor().metadata.codebook_count
@@ -173,9 +198,11 @@ fn malformed_or_different_track_headers_are_rejected_before_dma() {
                 "accepted changed {track:?} header byte {index}"
             );
         }
-        let mut legacy = bytes[..HEADER_SIZE].to_vec();
-        legacy[3] = b'2';
-        assert_eq!(parse_header(&legacy, track), Err(DigitalError::Signature));
+        for version in b'2'..=b'4' {
+            let mut legacy = bytes[..HEADER_SIZE].to_vec();
+            legacy[3] = version;
+            assert_eq!(parse_header(&legacy, track), Err(DigitalError::Signature));
+        }
     }
     assert_eq!(
         parse_header(ASSET, Track::HammondRocker),
@@ -240,7 +267,7 @@ fn corrupt_codebook_stream_crc_and_extent_are_rejected() {
 }
 
 #[test]
-fn nibble_crc_matches_bit_reference_and_signed_deltas_saturate() {
+fn crc_matches_bit_reference_and_signed_words_cover_every_delta() {
     for previous in 0..=255u8 {
         for byte in 0..=255u8 {
             let mut reference = previous ^ byte;
@@ -250,18 +277,16 @@ fn nibble_crc_matches_bit_reference_and_signed_deltas_saturate() {
             assert_eq!(crc_byte(previous, byte), reference);
         }
     }
-    for magnitude in 0..=u16::MAX {
-        for sign in [0u8, 1] {
-            let signed = if sign == 0 {
-                magnitude as i32
-            } else {
-                -(magnitude as i32)
-            };
-            assert_eq!(
-                decode_delta_entry([magnitude as u8, (magnitude >> 8) as u8, sign]),
-                signed.clamp(i16::MIN as i32, i16::MAX as i32) as i16
-            );
-        }
+    for word in 0..=u16::MAX {
+        let signed = if word & 0x8000 == 0 {
+            word as i32
+        } else {
+            word as i32 - 65536
+        };
+        assert_eq!(
+            decode_delta_entry([word as u8, (word >> 8) as u8]),
+            signed as i16
+        );
     }
 }
 

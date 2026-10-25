@@ -1,7 +1,7 @@
 {
   "source": {
     "filename": "Storm Front.m4a",
-    "sha256": "3c3c2c6427711460dcd653836868e374c503570088f36490d40475779fb06078",
+    "sha256": "d14e8265dc471b029fd0ee4cef8bd51e68bcd7e63c0a19f849e15c50b79d1ad7",
     "sample_rate": 48000,
     "channels": 2,
     "duration_seconds": 89.1335,
@@ -14,12 +14,24 @@
       "compatible_brands": "isomiso2mp41",
       "encoder": "Lavf60.16.100",
       "comment": "made with suno; created=2026-10-24T17:13:35Z; id=cd869d92-a858-4d13-a624-e7d1eaa8a31e"
+    },
+    "original_container_sha256": "3c3c2c6427711460dcd653836868e374c503570088f36490d40475779fb06078",
+    "pcm_sha256": "4832feb6108363c0c654637cf78aa6026259d50a30cadfcf3300f80e2263022e",
+    "current_container_metadata": {
+      "major_brand": "isom",
+      "minor_version": "512",
+      "compatible_brands": "isomiso2mp41",
+      "artist": "William Echols",
+      "album": "H.A.V.O.C. OST",
+      "encoder": "Lavf62.12.101",
+      "comment": "made with suno; created=2026-10-24T17:13:35Z; id=cd869d92-a858-4d13-a624-e7d1eaa8a31e",
+      "track": "9"
     }
   },
   "conversion": {
     "ffmpeg_version": "ffmpeg version n8.1.1-20260506 Copyright (c) 2000-2026 the FFmpeg developers",
     "intermediate": "16-bit FLAC at original source rate and channels",
-    "format": "DLT4",
+    "format": "DLT5",
     "profile": "mono16k3",
     "output_rate": 16000,
     "channels": 1,
@@ -27,7 +39,7 @@
     "sample_count": 1426136,
     "sample_count_unit": "frames",
     "codebook_entries": 8,
-    "codebook_count": 521,
+    "codebook_count": 2984,
     "lloyd_iterations": 20,
     "closed_loop_training_passes": 3,
     "encoder_beam_width": 32,
@@ -39,20 +51,24 @@
     "normalization_gain_db": 4.32867,
     "normalization_attempts": 1,
     "true_peak_meter": "FFmpeg EBU R128; loop seam included; upper bounds include 0.0005 linear metadata rounding margin",
-    "packing": "Continuous LSB-first three-bit codes; stereo alternates left/right; regular segments aligned to eight mono or four stereo frames; zero final padding",
+    "packing": "Continuous LSB-first three-bit codes; stereo alternates left/right; balanced ceil(frame_count/alignment) groups, first remainder books one group longer; final segment clipped; zero final padding",
     "reconstruction": "Independent signed-16 saturating predictors retained across segments; output clamp(floor(sample/256+0.5),-128,127); predictors reset at exact loop length",
     "crc": "CRC-8 polynomial 0x07, initial zero, cumulative per 1024 packed bytes including final short chunk",
     "flac_sha256": "98fc5d1817689e7f58820f58a1000156b7c53da5e6e87ef6e33ed4d2f73e57aa",
     "encoder_files_sha256": {
-      "dlt4.rs": "e3b42b30acd7ea690cf50ef4560c9dc34b0a70d534ba271d24796f86e8719259",
-      "encoder.rs": "e4b9df9a7ad4d73523a3c70af2c8259ae373226576cbd7128bc50c59d67a6d31",
-      "format.rs": "8dc6ab278db12afb452448cb63389bdd7db8825db38925fe190583b1271a56b4",
+      "dlt4.rs": "ffceb603711151bf6b00c3ed63ec89abed347b3d1438a8e072a4f6d5fa3daf71",
+      "encoder.rs": "335fdd3296b6662193cb72292c254eb44d58e08d411d9d1d6e240662ae1382c0",
+      "format.rs": "50fa306edc25382d2b445ca6cf0a2a2a377029534c30a4d6efebc6d05a627c67",
       "lloyd.rs": "4421d54add65d69ef1063204481caa312ed11377e7d8eb34aca7b7e65a3547d5",
-      "main.rs": "54ff87de723426c0008df506bea51fa06cf348674adf4c6ffb4e946b039d3de4",
+      "main.rs": "9d99b3e1ccbc7a4ef5c42f67e65c302ac63a667a7c1db3bd749d3ae7547a10dd",
       "normalize.rs": "943300775b7e4826e969ee38a29d3c4dde2f47368060d5b44cfb1e696c316caf",
       "resample.rs": "9c4d2215feafa4846f244070cd9af035f72570bd89f6395a9ef35da960f3e482"
     },
-    "encoder_binary_sha256": "778ba2a2ffe8a9bc70168a1bd71c4c24d66340b69d090a4eb89c3dd48caacb26"
+    "encoder_binary_sha256": "087bdd1549f0afaae8f6cd018f1b7aa2940dda7f0839ecf336f6dae27ce13852",
+    "codebook_entry_bytes": 2,
+    "samples_per_segment": 472,
+    "long_segment_count": 2211,
+    "codebooks": "Little-endian signed-16 deltas; eight entries per channel"
   },
   "tool_source": {
     "project": "secondreality-opt",
@@ -63,10 +79,10 @@
       "src/audio/lloyd.rs": "4421d54add65d69ef1063204481caa312ed11377e7d8eb34aca7b7e65a3547d5",
       "target-c64/s64-adpcm-music/src/lib.rs": "b17cc8771c8c2a4fdd433ee5d2cdbdfa14b2b7fc0ba4b96f0e4265f2f5fb561e"
     },
-    "note": "Original source hashes identify the imported Second Reality algorithms. The local encoder adds DLT4 profiles, closed-loop retraining, beam search, floating-point mono downmix, rounded output and loop-aware peak validation; conversion.encoder_files_sha256 identifies this implementation."
+    "note": "Original source hashes identify the imported Second Reality algorithms. The local encoder adds DLT5 compact signed-16 books, balanced segments, closed-loop retraining, beam search, floating-point mono downmix, rounded output and loop-aware peak validation; conversion.encoder_files_sha256 identifies this implementation."
   },
-  "asset_sha256": "a885261400a2337704fa808495b0161205d005737be3ca1b961757a4f41c6d48",
-  "decoded_pcm_sha256": "96a2dbf351db5c7a60c52d8716cc1079237285ce7b7c849390ffcab24c0ecdb8",
+  "asset_sha256": "9d3876e40ac4468d41312c012a5c586aaeb8cb77eaa4810e874e0d31e931e0e8",
+  "decoded_pcm_sha256": "39e19cc452dcbc9af59189db7a025f2a1102815f7aa90fbbd0fa91db9e401316",
   "reference_pcm_sha256": "7572e581698150c7571eb6abb09cf0427cfdfa664e16a5bf804ec72291560963",
   "generated_metadata": "storm-front.json",
   "temporary_gameplay_fixture": false,
@@ -78,6 +94,6 @@
   },
   "reproduction_commands": {
     "intermediate": "ffmpeg -v error -y -i \"assets/music/source/Storm Front.m4a\" -map 0:a:0 -vn -sample_fmt s16 -c:a flac -threads 1 target/digital-music/storm-front-source.flac",
-    "encode": "cargo run --release --manifest-path tools/encode-digital-music/Cargo.toml --target-dir target/digital-music/tool-build -- --profile mono16k3 target/digital-music/storm-front-source.flac assets/music/storm-front.dlt target/digital-music/storm-front-dlt4.wav"
+    "encode": "cargo run --release --manifest-path tools/encode-digital-music/Cargo.toml --target-dir target/digital-music/tool-build -- --profile mono16k3 --codebooks 2984 target/digital-music/storm-front-source.flac assets/music/storm-front.dlt target/digital-music/storm-front-dlt5.wav"
   }
 }

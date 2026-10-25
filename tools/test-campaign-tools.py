@@ -215,6 +215,26 @@ class CampaignTools(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "title or victory"):
             vice.menu_music_fixture(digital, fields, 20)
 
+    def test_catalog_menu_fixtures_keep_track_identity_separate_from_cues(self):
+        digital = vice.package_model_layout(package(True, 0x534d0a00))
+        fields = {"menu_music_track": {"type": "u8", "offset": 10}}
+        self.assertEqual(vice.menu_music_fixture(digital, fields, 0), {"menu_music_track": 1})
+        self.assertEqual(vice.menu_music_fixture(digital, fields, 5), {"menu_music_track": 0})
+        self.assertEqual(fields["menu_music_track"]["size"], 1)
+        for track in range(21):
+            game = {"menu_music_track": track}
+            cue = 5 if track == 0 else 0
+            self.assertEqual(vice.menu_music_track(game), track)
+            self.assertEqual(vice.menu_music_cue(game), cue)
+            frame = {"music_cue": cue, "requested_menu_track": track}
+            self.assertEqual(vice.check_menu_music(frame, cue, track=track), (cue, 0))
+            with self.assertRaisesRegex(RuntimeError, "wrong catalog track"):
+                vice.check_menu_music(frame, cue, track=(track + 1) % 21)
+        for old, track in ((False, 1), (True, 0)):
+            self.assertEqual(vice.menu_music_track({"menu_music_galactic": old}), track)
+        with self.assertRaisesRegex(RuntimeError, "menu_music_track u8"):
+            vice.menu_music_fixture(digital, {"menu_music_track": {"type": "bool"}}, 0)
+
     def test_menu_page_checks_allow_cue_handoff_and_loop_but_reject_restarts(self):
         def frame(cue, page, active=None):
             return {"music_cue": cue, "music_active_cue": cue if active is None else active,

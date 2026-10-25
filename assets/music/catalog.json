@@ -1,30 +1,139 @@
 {
   "version": 2,
   "tracks": [
-    { "name": "galactic-dash", "rust_name": "GalacticDash", "profile": "mono16k3" },
-    { "name": "hammond-rocker", "rust_name": "HammondRocker", "profile": "stereo20k3" },
-    { "name": "mission-failed", "rust_name": "MissionFailed", "profile": "mono16k3" },
-    { "name": "lowland-approach", "rust_name": "LowlandApproach", "profile": "mono16k3" },
-    { "name": "crystal-cave", "rust_name": "CrystalCave", "profile": "mono16k3" },
-    { "name": "iron-canyon", "rust_name": "IronCanyon", "profile": "mono16k3" },
-    { "name": "canyon-gate", "rust_name": "CanyonGate", "profile": "mono16k3" },
-    { "name": "ashen-wastes", "rust_name": "AshenWastes", "profile": "mono16k3" },
-    { "name": "foundry-belt", "rust_name": "FoundryBelt", "profile": "mono16k3" },
-    { "name": "fortress-run", "rust_name": "FortressRun", "profile": "mono16k3" },
-    { "name": "storm-front", "rust_name": "StormFront", "profile": "mono16k3" },
-    { "name": "meteor-reach", "rust_name": "MeteorReach", "profile": "mono16k3" },
-    { "name": "carrier-coast", "rust_name": "CarrierCoast", "profile": "mono16k3" },
-    { "name": "carrier-assault", "rust_name": "CarrierAssault", "profile": "mono16k3" },
-    { "name": "asteroid-belt", "rust_name": "AsteroidBelt", "profile": "mono16k3" },
-    { "name": "lunar-awe", "rust_name": "LunarAwe", "profile": "mono16k3" },
-    { "name": "ship-graveyard", "rust_name": "ShipGraveyard", "profile": "mono16k3" },
-    { "name": "citadel-core", "rust_name": "CitadelCore", "profile": "mono16k3" },
-    { "name": "orbital-shipyard", "rust_name": "OrbitalShipyard", "profile": "mono16k3" },
-    { "name": "space-carrier", "rust_name": "SpaceCarrier", "profile": "mono16k3" },
-    { "name": "jump-gate", "rust_name": "JumpGate", "profile": "mono16k3" }
+    {
+      "name": "galactic-dash",
+      "rust_name": "GalacticDash",
+      "profile": "mono16k3",
+      "codebook_count": 5142
+    },
+    {
+      "name": "hammond-rocker",
+      "rust_name": "HammondRocker",
+      "profile": "stereo20k3",
+      "codebook_count": 7029
+    },
+    {
+      "name": "mission-failed",
+      "rust_name": "MissionFailed",
+      "profile": "mono16k3",
+      "codebook_count": 2994
+    },
+    {
+      "name": "lowland-approach",
+      "rust_name": "LowlandApproach",
+      "profile": "mono16k3",
+      "codebook_count": 2971
+    },
+    {
+      "name": "crystal-cave",
+      "rust_name": "CrystalCave",
+      "profile": "mono16k3",
+      "codebook_count": 3001
+    },
+    {
+      "name": "iron-canyon",
+      "rust_name": "IronCanyon",
+      "profile": "mono16k3",
+      "codebook_count": 3014
+    },
+    {
+      "name": "canyon-gate",
+      "rust_name": "CanyonGate",
+      "profile": "mono16k3",
+      "codebook_count": 2972
+    },
+    {
+      "name": "ashen-wastes",
+      "rust_name": "AshenWastes",
+      "profile": "mono16k3",
+      "codebook_count": 3054
+    },
+    {
+      "name": "foundry-belt",
+      "rust_name": "FoundryBelt",
+      "profile": "mono16k3",
+      "codebook_count": 3014
+    },
+    {
+      "name": "fortress-run",
+      "rust_name": "FortressRun",
+      "profile": "mono16k3",
+      "codebook_count": 2974
+    },
+    {
+      "name": "storm-front",
+      "rust_name": "StormFront",
+      "profile": "mono16k3",
+      "codebook_count": 2984
+    },
+    {
+      "name": "meteor-reach",
+      "rust_name": "MeteorReach",
+      "profile": "mono16k3",
+      "codebook_count": 2999
+    },
+    {
+      "name": "carrier-coast",
+      "rust_name": "CarrierCoast",
+      "profile": "mono16k3",
+      "codebook_count": 2972
+    },
+    {
+      "name": "carrier-assault",
+      "rust_name": "CarrierAssault",
+      "profile": "mono16k3",
+      "codebook_count": 3013
+    },
+    {
+      "name": "asteroid-belt",
+      "rust_name": "AsteroidBelt",
+      "profile": "mono16k3",
+      "codebook_count": 3062
+    },
+    {
+      "name": "lunar-awe",
+      "rust_name": "LunarAwe",
+      "profile": "mono16k3",
+      "codebook_count": 3322
+    },
+    {
+      "name": "ship-graveyard",
+      "rust_name": "ShipGraveyard",
+      "profile": "mono16k3",
+      "codebook_count": 3058
+    },
+    {
+      "name": "citadel-core",
+      "rust_name": "CitadelCore",
+      "profile": "mono16k3",
+      "codebook_count": 3011
+    },
+    {
+      "name": "orbital-shipyard",
+      "rust_name": "OrbitalShipyard",
+      "profile": "mono16k3",
+      "codebook_count": 2999
+    },
+    {
+      "name": "space-carrier",
+      "rust_name": "SpaceCarrier",
+      "profile": "mono16k3",
+      "codebook_count": 3001
+    },
+    {
+      "name": "jump-gate",
+      "rust_name": "JumpGate",
+      "profile": "mono16k3",
+      "codebook_count": 2987
+    }
   ],
   "default_gameplay": "galactic-dash",
-  "cues": { "Title": "hammond-rocker", "Victory": "galactic-dash", "Defeat": "mission-failed" },
+  "cues": {
+    "Title": "hammond-rocker",
+    "Victory": "galactic-dash",
+    "Defeat": "mission-failed"
+  },
   "stages": [
     "lowland-approach",
     "crystal-cave",

@@ -573,7 +573,8 @@ fn music_follows_stage_boss_crossing_and_result_identity() {
 }
 
 #[test]
-fn menu_music_toggle_changes_only_the_track_and_toggles_back() {
+fn menu_music_cycles_every_recording_without_changing_the_scene() {
+    use crate::digital::Track;
     fn scene(mode: Mode) -> Game {
         let mut game = Game::new();
         game.reset_scene(mode, 6, 300);
@@ -589,14 +590,27 @@ fn menu_music_toggle_changes_only_the_track_and_toggles_back() {
         let mut game = scene(mode);
         let mut expected = scene(mode);
         assert_eq!(game.music_state(), MusicState::Title);
-        game.toggle_menu_music();
-        assert_eq!(game.music_state(), MusicState::Victory);
-        expected.menu_music_galactic = true;
-        assert_eq!(game, expected, "toggling must preserve the entire scene");
-        game.toggle_menu_music();
+        assert_eq!(game.menu_music_override(), Track::HammondRocker as u8);
+        let mut visited = Vec::new();
+        for track in Track::ALL.iter().cycle().skip(2).take(Track::ALL.len()) {
+            game.toggle_menu_music();
+            assert_eq!(game.menu_music_override(), *track as u8);
+            assert_eq!(
+                game.music_state(),
+                if *track == Track::GalacticDash {
+                    MusicState::Victory
+                } else {
+                    MusicState::Title
+                }
+            );
+            expected.menu_music_track = *track as u8;
+            assert_eq!(game, expected, "cycling must preserve the entire scene");
+            assert!(!visited.contains(track), "repeated a track before wrapping");
+            visited.push(*track);
+        }
+        assert_eq!(visited.len(), Track::ALL.len());
+        assert_eq!(game.menu_music_override(), Track::HammondRocker as u8);
         assert_eq!(game.music_state(), MusicState::Title);
-        expected.menu_music_galactic = false;
-        assert_eq!(game, expected, "toggling back must preserve the scene");
     }
 }
 
@@ -609,18 +623,20 @@ fn menu_music_toggle_is_ignored_outside_title_and_attract() {
         Mode::Victory,
         Mode::GameOver,
     ] {
-        for galactic in [false, true] {
+        for track in crate::digital::Track::ALL {
             let mut game = Game::new();
             game.mode = mode;
             game.menu_ticks = crate::victory::FADE_TICKS;
-            game.menu_music_galactic = galactic;
+            game.menu_music_track = track as u8;
             let mut expected = Game::new();
             expected.mode = mode;
             expected.menu_ticks = crate::victory::FADE_TICKS;
-            expected.menu_music_galactic = galactic;
+            expected.menu_music_track = track as u8;
             let cue = game.music_state();
+            assert_eq!(game.menu_music_override(), 255);
             game.toggle_menu_music();
             assert_eq!(game.music_state(), cue);
+            assert_eq!(game.menu_music_override(), 255);
             assert_eq!(game, expected, "ignored toggle changed {mode:?}");
         }
     }
@@ -628,22 +644,29 @@ fn menu_music_toggle_is_ignored_outside_title_and_attract() {
 
 #[test]
 fn menu_music_selection_survives_scene_and_run_resets_until_reload() {
+    use crate::digital::Track;
     let mut game = Game::new();
-    for cue in [MusicState::Victory, MusicState::Title] {
+    for track in Track::ALL.iter().cycle().skip(2).take(Track::ALL.len()) {
         game.toggle_menu_music();
-        assert_eq!(game.music_state(), cue);
+        assert_eq!(game.menu_music_override(), *track as u8);
+        let cue = game.music_state();
         for stage in [0, 1, 6, 10, 12, 14, 16] {
             game.reset_scene(Mode::Attract, stage, 0);
             assert_eq!(game.music_state(), cue);
+            assert_eq!(game.menu_music_override(), *track as u8);
         }
         game.reset_run();
         assert_eq!(game.music_state(), MusicState::Lowlands);
+        assert_eq!(game.menu_music_override(), 255);
         game.mode = Mode::GameOver;
         assert_eq!(game.music_state(), MusicState::Defeat);
+        assert_eq!(game.menu_music_override(), 255);
         game.reset_run();
         game.reset_scene(Mode::Title, 0, 0);
         assert_eq!(game.music_state(), cue);
+        assert_eq!(game.menu_music_override(), *track as u8);
         assert_eq!(Game::new().music_state(), MusicState::Title);
+        assert_eq!(Game::new().menu_music_override(), Track::HammondRocker as u8);
     }
 }
 
@@ -2265,7 +2288,7 @@ fn victory_freezes_the_run_and_consumes_inputs_through_all_four_hundred_ticks() 
     let mut game = Game::new();
     // A prior victory can be manually switched back to Hammond; winning a
     // subsequent run must select Galactic again for the reveal and menus.
-    game.menu_music_galactic = true;
+    game.menu_music_track = crate::digital::Track::GalacticDash as u8;
     game.toggle_menu_music();
     assert_eq!(game.music_state(), MusicState::Title);
     game.reset_run();
@@ -2285,6 +2308,8 @@ fn victory_freezes_the_run_and_consumes_inputs_through_all_four_hundred_ticks() 
     game.menu_ticks = 749;
     game.tick(&segment, &bank);
     assert_eq!(game.mode, Mode::Victory);
+    assert_eq!(game.menu_music_track, crate::digital::Track::GalacticDash as u8);
+    assert_eq!(game.menu_music_override(), 255);
     assert_eq!(game.victory_ticks(), 0);
     assert_eq!(
         (game.simulation_profile(), game.segment_index()),

@@ -227,15 +227,32 @@ fn snr(reference: &[i16], decoded: &[i16]) -> f64 {
 fn main() -> Result<()> {
     let arguments: Vec<_> = env::args_os().collect();
     if arguments.get(1).is_some_and(|arg| arg == "--profile") {
-        if arguments.len() != 6 {
-            bail!("usage: encode-digital-music --profile stereo20k3|mono16k3 input.flac output.dlt preview.wav");
+        let usage = "usage: encode-digital-music --profile stereo20k3|mono16k3 [--codebooks COUNT] input.flac output.dlt preview.wav";
+        if arguments.len() != 6 && arguments.len() != 8 {
+            bail!("{usage}");
         }
         let profile = dlt4::Profile::parse(&arguments[2].to_string_lossy())?;
+        let (books, first_path) = if arguments.len() == 8 {
+            if arguments[3] != "--codebooks" {
+                bail!("{usage}");
+            }
+            let books = arguments[4]
+                .to_string_lossy()
+                .parse::<u16>()
+                .context("codebook count must be 1..=65535")?;
+            if books == 0 {
+                bail!("codebook count must be 1..=65535");
+            }
+            (books, 5)
+        } else {
+            (521, 3)
+        };
         return dlt4::run(
             profile,
-            Path::new(&arguments[3]),
-            Path::new(&arguments[4]),
-            Path::new(&arguments[5]),
+            books,
+            Path::new(&arguments[first_path]),
+            Path::new(&arguments[first_path + 1]),
+            Path::new(&arguments[first_path + 2]),
         );
     }
     if arguments.len() != 4 {

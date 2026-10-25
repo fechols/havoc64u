@@ -1,7 +1,7 @@
 {
   "source": {
     "filename": "Carrier Assault.m4a",
-    "sha256": "1abbe029f67a8be2d50b971ea1d06b18c2d88d1453bda4c1da3564098eb5a174",
+    "sha256": "2e7a2530e4c6b6bf6aa300ead3138e6bd38f7c1e3bd77e08ba2e37ce40d6f4f7",
     "sample_rate": 48000,
     "channels": 2,
     "duration_seconds": 89.9735,
@@ -14,12 +14,24 @@
       "compatible_brands": "isomiso2mp41",
       "encoder": "Lavf60.16.100",
       "comment": "made with suno; created=2026-10-24T17:44:43Z; id=5a8d5502-94c7-4f2a-b9e7-ab590a80a2c7"
+    },
+    "original_container_sha256": "1abbe029f67a8be2d50b971ea1d06b18c2d88d1453bda4c1da3564098eb5a174",
+    "pcm_sha256": "490329b16b1862ce77d62b2917a7685ab744fbdd12a61736811055fc30b4d96c",
+    "current_container_metadata": {
+      "major_brand": "isom",
+      "minor_version": "512",
+      "compatible_brands": "isomiso2mp41",
+      "artist": "William Echols",
+      "album": "H.A.V.O.C. OST",
+      "encoder": "Lavf62.12.101",
+      "comment": "made with suno; created=2026-10-24T17:44:43Z; id=5a8d5502-94c7-4f2a-b9e7-ab590a80a2c7",
+      "track": "12"
     }
   },
   "conversion": {
     "ffmpeg_version": "ffmpeg version n8.1.1-20260506 Copyright (c) 2000-2026 the FFmpeg developers",
     "intermediate": "16-bit FLAC at original source rate and channels",
-    "format": "DLT4",
+    "format": "DLT5",
     "profile": "mono16k3",
     "output_rate": 16000,
     "channels": 1,
@@ -27,7 +39,7 @@
     "sample_count": 1439576,
     "sample_count_unit": "frames",
     "codebook_entries": 8,
-    "codebook_count": 521,
+    "codebook_count": 3013,
     "lloyd_iterations": 20,
     "closed_loop_training_passes": 3,
     "encoder_beam_width": 32,
@@ -36,23 +48,27 @@
     "channel_processing": "Average (L+R)/2 in floating point before resampling; retain fractional samples",
     "resampler": "Sequential 512-phase 100 dB Kaiser-windowed sinc; floating-point output retained until normalization",
     "normalization": "One track-wide gain; validate final rounded 8-bit PCM sample and true peaks <= -1 dBTP including loop seam; reduce excess plus 0.1 dB and re-encode, at most five attempts",
-    "normalization_gain_db": 4.399802,
-    "normalization_attempts": 1,
+    "normalization_gain_db": 4.17163,
+    "normalization_attempts": 2,
     "true_peak_meter": "FFmpeg EBU R128; loop seam included; upper bounds include 0.0005 linear metadata rounding margin",
-    "packing": "Continuous LSB-first three-bit codes; stereo alternates left/right; regular segments aligned to eight mono or four stereo frames; zero final padding",
+    "packing": "Continuous LSB-first three-bit codes; stereo alternates left/right; balanced ceil(frame_count/alignment) groups, first remainder books one group longer; final segment clipped; zero final padding",
     "reconstruction": "Independent signed-16 saturating predictors retained across segments; output clamp(floor(sample/256+0.5),-128,127); predictors reset at exact loop length",
     "crc": "CRC-8 polynomial 0x07, initial zero, cumulative per 1024 packed bytes including final short chunk",
     "flac_sha256": "b02e0594e4ae818388196427ca3a0befe7ca85f501ec6eebd77ad73e70940996",
     "encoder_files_sha256": {
-      "dlt4.rs": "e3b42b30acd7ea690cf50ef4560c9dc34b0a70d534ba271d24796f86e8719259",
-      "encoder.rs": "e4b9df9a7ad4d73523a3c70af2c8259ae373226576cbd7128bc50c59d67a6d31",
-      "format.rs": "8dc6ab278db12afb452448cb63389bdd7db8825db38925fe190583b1271a56b4",
+      "dlt4.rs": "ffceb603711151bf6b00c3ed63ec89abed347b3d1438a8e072a4f6d5fa3daf71",
+      "encoder.rs": "335fdd3296b6662193cb72292c254eb44d58e08d411d9d1d6e240662ae1382c0",
+      "format.rs": "50fa306edc25382d2b445ca6cf0a2a2a377029534c30a4d6efebc6d05a627c67",
       "lloyd.rs": "4421d54add65d69ef1063204481caa312ed11377e7d8eb34aca7b7e65a3547d5",
-      "main.rs": "54ff87de723426c0008df506bea51fa06cf348674adf4c6ffb4e946b039d3de4",
+      "main.rs": "9d99b3e1ccbc7a4ef5c42f67e65c302ac63a667a7c1db3bd749d3ae7547a10dd",
       "normalize.rs": "943300775b7e4826e969ee38a29d3c4dde2f47368060d5b44cfb1e696c316caf",
       "resample.rs": "9c4d2215feafa4846f244070cd9af035f72570bd89f6395a9ef35da960f3e482"
     },
-    "encoder_binary_sha256": "778ba2a2ffe8a9bc70168a1bd71c4c24d66340b69d090a4eb89c3dd48caacb26"
+    "encoder_binary_sha256": "087bdd1549f0afaae8f6cd018f1b7aa2940dda7f0839ecf336f6dae27ce13852",
+    "codebook_entry_bytes": 2,
+    "samples_per_segment": 472,
+    "long_segment_count": 2180,
+    "codebooks": "Little-endian signed-16 deltas; eight entries per channel"
   },
   "tool_source": {
     "project": "secondreality-opt",
@@ -63,11 +79,11 @@
       "src/audio/lloyd.rs": "4421d54add65d69ef1063204481caa312ed11377e7d8eb34aca7b7e65a3547d5",
       "target-c64/s64-adpcm-music/src/lib.rs": "b17cc8771c8c2a4fdd433ee5d2cdbdfa14b2b7fc0ba4b96f0e4265f2f5fb561e"
     },
-    "note": "Original source hashes identify the imported Second Reality algorithms. The local encoder adds DLT4 profiles, closed-loop retraining, beam search, floating-point mono downmix, rounded output and loop-aware peak validation; conversion.encoder_files_sha256 identifies this implementation."
+    "note": "Original source hashes identify the imported Second Reality algorithms. The local encoder adds DLT5 compact signed-16 books, balanced segments, closed-loop retraining, beam search, floating-point mono downmix, rounded output and loop-aware peak validation; conversion.encoder_files_sha256 identifies this implementation."
   },
-  "asset_sha256": "d20a50e106b57d611ddb8a0d012b0710abd73191cb742b16bebf893044b49213",
-  "decoded_pcm_sha256": "187f5fc3201d18f1c2c5edde3aa48779de559553daaf4955d875e6cc9f3fb634",
-  "reference_pcm_sha256": "96b3363b193c2ad6e14e9c4f33fda382562a2be7d37eda8daf77e312e3d4df24",
+  "asset_sha256": "03ed6bd846c341bf608f68964fb017c793260b6276e2beef0cdb4b37f34f9123",
+  "decoded_pcm_sha256": "2a4097089d4d9b3df32133ab10eb059ca74cebbed4147fd24b1bf7254e7e117b",
+  "reference_pcm_sha256": "0c6e4ccfba057e9701a49b136754838b59ae5b032936c4ebd18d5b19ed83c5c1",
   "generated_metadata": "carrier-assault.json",
   "temporary_gameplay_fixture": false,
   "attribution": {
@@ -78,6 +94,6 @@
   },
   "reproduction_commands": {
     "intermediate": "ffmpeg -v error -y -i \"assets/music/source/Carrier Assault.m4a\" -map 0:a:0 -vn -sample_fmt s16 -c:a flac -threads 1 target/digital-music/carrier-assault-source.flac",
-    "encode": "cargo run --release --manifest-path tools/encode-digital-music/Cargo.toml --target-dir target/digital-music/tool-build -- --profile mono16k3 target/digital-music/carrier-assault-source.flac assets/music/carrier-assault.dlt target/digital-music/carrier-assault-dlt4.wav"
+    "encode": "cargo run --release --manifest-path tools/encode-digital-music/Cargo.toml --target-dir target/digital-music/tool-build -- --profile mono16k3 --codebooks 3013 target/digital-music/carrier-assault-source.flac assets/music/carrier-assault.dlt target/digital-music/carrier-assault-dlt5.wav"
   }
 }

@@ -1,9 +1,8 @@
-//! Foreground DLT4 player. IRQs own effects, never these decoder contexts or REU.
+//! Foreground DLT5 player. IRQs own effects, never these decoder contexts or REU.
 use havoc::digital::{self as asset, Metadata, Track};
 use havoc::digital_clock::{self as timing, SampleClock, RING_SAMPLES};
 
 const STAGING: u16 = 0x8e00;
-const BOOK_STAGING: u16 = STAGING + 768;
 const CHECK_STAGING: u16 = STAGING + 1023;
 const MAX_BATCH: u16 = 128;
 // Nominal decoded audio duration, shared by both slots on each AUDIO visit.
@@ -507,22 +506,34 @@ unsafe fn calibrate(channels: u8, pal: bool) -> Result<Rate, Fault> {
 #[inline(never)]
 #[link_section = ".phase.audio"]
 unsafe fn load_book(d: &mut Decoder) {
-    let per = if d.kernel.channels == 2 { 48u32 } else { 24 };
-    // At most 1024 books: the complete offset fits the native sixteen-bit word.
-    let offset = d.segment * 24u16;
+    let per = if d.kernel.channels == 2 { 32u16 } else { 16 };
+    // Large book tables cross REU banks: widen before computing their offset.
+    let offset = (d.segment as u32) << 4;
     let offset = if d.kernel.channels == 2 {
         offset << 1
     } else {
         offset
     };
-    super::dma(
-        d.asset_offset + 32 + offset as u32,
-        BOOK_STAGING,
-        per as u16,
-    );
-    for i in 0..(d.kernel.channels as usize * 8) {
-        let a = BOOK_STAGING + i as u16 * 3;
-        d.kernel.book[i] = asset::decode_delta_entry([peek(a), peek(a + 1), peek(a + 2)]);
+    let source = d.asset_offset + 32 + offset;
+    // The MOS kernel and compact asset both use little-endian signed words.
+    #[cfg(not(test))]
+    super::dma(source, d.kernel.book.as_mut_ptr() as u16, per);
+    #[cfg(test)]
+    {
+        let mut bytes = [0; 32];
+        super::digital_test_fetch(source, &mut bytes[..per as usize]);
+        for (entry, pair) in d
+            .kernel
+            .book
+            .iter_mut()
+            .zip(bytes[..per as usize].chunks_exact(2))
+        {
+            *entry = asset::decode_delta_entry([pair[0], pair[1]]);
+        }
+    }
+    d.segment_left = d.metadata.samples_per_segment;
+    if d.segment < d.metadata.long_segment_count {
+        d.segment_left += if d.kernel.channels == 2 { 4 } else { 8 };
     }
 }
 #[inline(never)]
@@ -537,7 +548,6 @@ unsafe fn reset_decoder(d: &mut Decoder) {
     d.kernel.reservoir = 0;
     d.kernel.bits = 0;
     d.segment = 0;
-    d.segment_left = d.metadata.samples_per_segment;
     load_book(d);
 }
 #[inline(never)]
@@ -618,7 +628,6 @@ unsafe fn decode(d: &mut Decoder, frames: u16) -> Result<(), Fault> {
         }
         if d.segment_left == 0 && d.segment + 1 < d.metadata.codebook_count {
             d.segment += 1;
-            d.segment_left = d.metadata.samples_per_segment;
             load_book(d);
         }
         // A final frame can reside entirely in the bit reservoir after consuming
@@ -849,7 +858,11 @@ pub unsafe fn request(state: &mut State, track: Track) {
         return;
     }
     if state.transport == Transport::Priming {
-        prepare(&mut state.decoders[state.active as usize], state.active, track);
+        prepare(
+            &mut state.decoders[state.active as usize],
+            state.active,
+            track,
+        );
         state.track = track;
         state.pending = NONE;
         return;

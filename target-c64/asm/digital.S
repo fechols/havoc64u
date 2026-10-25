@@ -1,4 +1,4 @@
-; DLT4 block decoder. MOS C ABI: frame count in A, Kernel in rc2/3,
+; DLT5 block decoder. MOS C ABI: frame count in A, Kernel in rc2/3,
 ; source in rc4/5, output in rc6/7; return compressed bytes consumed in A.
 ; rc16..19 cache the signed16 predictors and are saved/restored on the stack.
 ; Aligned groups consume three bytes and publish eight samples (four stereo

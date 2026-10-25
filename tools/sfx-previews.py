@@ -126,8 +126,8 @@ def wav_metrics(path, seconds, schedule, *, lead_seconds=LEAD_TICKS / 50):
 def music_excerpt(path, offset_seconds, seconds=8, rate=44100):
     """Decode the shipped DLT PCM, retaining the game's 10 ms mono delay."""
     blob = path.read_bytes()
-    if blob[:4] != b"DLT4" or blob[21] not in (1, 2):
-        raise RuntimeError("Offline music audition requires a DLT4 mono/stereo asset")
+    if blob[:4] != b"DLT5" or blob[20] != 3 or blob[21] not in (1, 2):
+        raise RuntimeError("Offline music audition requires a DLT5 mono/stereo asset")
     source_rate, channels = int.from_bytes(blob[4:8], "little"), blob[21]
     start = round(offset_seconds * source_rate)
     delay = 160 if channels == 1 else 0

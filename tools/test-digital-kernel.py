@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Execute linked DLT4 decoding, BOOT, and AUDIO against independent models.
+"""Execute linked DLT5 decoding, BOOT, and AUDIO against independent models.
 
 This is modeled NMOS6502 execution at 64x PAL/NTSC bus speed, with DMA charged
 one bus tick/byte. The sampler clock is 6.25MHz/(divider+2); the extra two ticks
@@ -78,26 +78,27 @@ def steady_aggregates(calls, bus_hz):
 
 
 def pcm_reference(blob):
-    """Independent bit-at-a-time DLT4 decoder yielding signed8 frame tuples."""
+    """Independent bit-at-a-time DLT5 decoder yielding signed8 frame tuples."""
     samples = int.from_bytes(blob[8:12], "little")
     books = int.from_bytes(blob[18:20], "little")
     channels = blob[21]
-    require(blob[:4] == b"DLT4" and blob[20] == 3 and channels in (1, 2), "DLT4 profile")
+    require(blob[:4] == b"DLT5" and blob[20] == 3 and channels in (1, 2), "DLT5 profile")
     alignment = 8 // channels
-    segment = samples if books == 1 else samples // books // alignment * alignment
-    stream = 32 + books * 24 * channels
+    groups = (samples + alignment - 1) // alignment
+    short, long = groups // books * alignment, groups % books
+    long_end = long * (short + alignment)
+    stream = 32 + books * 16 * channels
     while True:
         accumulator = [0] * channels
         for frame in range(samples):
-            book = min(frame // segment, books - 1)
+            book = frame // (short + alignment) if frame < long_end else long + (frame - long_end) // short
             output = []
             for channel in range(channels):
                 bit = (frame * channels + channel) * 3
                 code = sum(((blob[stream + (bit + shift) // 8] >> ((bit + shift) % 8)) & 1) << shift
                            for shift in range(3))
-                entry = 32 + (book * channels * 8 + channel * 8 + code) * 3
-                magnitude = int.from_bytes(blob[entry:entry + 2], "little")
-                delta = -min(magnitude, 32768) if blob[entry + 2] else min(magnitude, 32767)
+                entry = 32 + (book * channels * 8 + channel * 8 + code) * 2
+                delta = int.from_bytes(blob[entry:entry + 2], "little", signed=True)
                 accumulator[channel] = min(32767, max(-32768, accumulator[channel] + delta))
                 output.append(min(127, max(-128, (accumulator[channel] + 128) // 256)))
             yield tuple(output)
@@ -228,6 +229,7 @@ class Machine(Cpu):
         self.allow_corrupt_pcm = False
         self.put("MUSIC_BACKEND", 2)
         self.put("havoc_c64::REQUESTED_CUE", 0)
+        self.put("havoc_c64::REQUESTED_MENU_TRACK", 255)
         self.put("havoc_c64::AUDIO_READY", 0)
         self.put("havoc_c64::CLOCK_KHZ", 985 if standard == "pal" else 1023, 2)
         self.stack_bottom = symbols["__stack_bottom"].address
@@ -286,6 +288,9 @@ class Machine(Cpu):
             self.mem[address:address + 4] = value.to_bytes(4, "little")
 
     def requested_track(self):
+        menu = self.get("havoc_c64::REQUESTED_MENU_TRACK")
+        if menu < len(self.references):
+            return self.references[menu]["name"]
         cue = self.get("havoc_c64::REQUESTED_CUE")
         stage = self.get("havoc_c64::REQUESTED_STAGE")
         # Independent scene oracle: menu/result/ascent cues always win. The
@@ -678,11 +683,12 @@ def exercise(elf, symbols, image, standard, budget):
             pairs.append(left)
         return pairs
 
-    def select(cue, stage, expected, cadence=0.1):
+    def select(cue, stage, expected, cadence=0.1, menu_track=255):
         old_name, starts = cpu.active_name(), cpu.starts.copy()
         effects = cpu.queue_death_effect(budget)
         cpu.put("havoc_c64::REQUESTED_CUE", cue)
         cpu.put("havoc_c64::REQUESTED_STAGE", stage)
+        cpu.put("havoc_c64::REQUESTED_MENU_TRACK", menu_track)
         require(cpu.requested_track() == expected, "fixture scene-to-track mapping")
         history = len(cpu.volume_writes)
         voice_history = len(cpu.voice_starts)
@@ -740,6 +746,29 @@ def exercise(elf, symbols, image, standard, budget):
         require(cpu.effects_remaining() == [cpu.death_remaining - 5 - visit] * 2,
                 "effects did not continue after handoff")
         print(f"{standard}: switched {old_name} -> {expected} in {visit + 1} visits", flush=True)
+
+    menu_tracks_checked = []
+
+    def select_menu(expected, scene_cue, scene_stage):
+        track_id = next(index for index, entry in enumerate(cpu.references) if entry["name"] == expected)
+        select(0, 17, expected, menu_track=track_id)
+        starts = cpu.starts.copy()
+        # The menu override must win over both special cues and every attract
+        # map's changing stage. These visits must retain this same PCM stream.
+        for cue, stage in ((5, 0), (0, 7), (5, 16)):
+            cpu.put("havoc_c64::REQUESTED_CUE", cue)
+            cpu.put("havoc_c64::REQUESTED_STAGE", stage)
+            play(1)
+            require(cpu.active_name() == expected and cpu.starts == starts,
+                    f"menu override lost {expected} to cue {cue}, stage {stage}")
+        cpu.put("havoc_c64::REQUESTED_MENU_TRACK", 255)
+        cpu.put("havoc_c64::REQUESTED_CUE", scene_cue)
+        cpu.put("havoc_c64::REQUESTED_STAGE", scene_stage)
+        play(1)
+        require(cpu.active_name() == expected and cpu.starts == starts
+                and cpu.state_value("pending") == 255,
+                f"clearing menu override did not restore scene mapping for {expected}")
+        menu_tracks_checked.append(track_id)
 
     play(9)
     # Repeated requests preserve bounded prime progress at full old-track gain.
@@ -833,7 +862,7 @@ def exercise(elf, symbols, image, standard, budget):
                                  (16, 15, "orbital-shipyard"),
                                  (17, 16, "space-carrier"),
                                  (18, 17, "jump-gate")):
-        select(cue, stage, expected)
+        select_menu(expected, cue, stage)
         boss_cue = {3: 10, 7: 11, 11: 12, 16: 12, 17: 20}.get(stage)
         if boss_cue is not None:
             starts = cpu.starts.copy()
@@ -843,7 +872,7 @@ def exercise(elf, symbols, image, standard, budget):
             require(cpu.active_name() == expected and cpu.starts == starts,
                     f"{expected} restarted at boss entrance")
     # Victory replaces the final boss track and remains independent of stage.
-    select(5, 17, "galactic-dash")
+    select_menu("galactic-dash", 5, 17)
     starts = cpu.starts.copy()
     for stage in (0, 7):
         cpu.put("havoc_c64::REQUESTED_STAGE", stage)
@@ -857,7 +886,7 @@ def exercise(elf, symbols, image, standard, budget):
         require(cpu.starts == starts and cpu.active_name() == "galactic-dash",
                 "invalid stage did not retain cue fallback")
     # Defeat has its own song; restarting returns to the first stage recording.
-    select(6, 0, "mission-failed")
+    select_menu("mission-failed", 6, 0)
     starts = cpu.starts.copy()
     for stage in (7, 17, 255):
         cpu.put("havoc_c64::REQUESTED_STAGE", stage)
@@ -872,7 +901,9 @@ def exercise(elf, symbols, image, standard, budget):
         play(1)
         require(cpu.starts == starts and cpu.active_name() == "galactic-dash",
                 "ascent cue was overridden by stale gameplay stage")
-    select(0, 5, "hammond-rocker")
+    select_menu("hammond-rocker", 0, 5)
+    require(sorted(menu_tracks_checked) == list(range(len(cpu.references))),
+            "menu override did not exercise every catalog song exactly once")
     starts = cpu.starts.copy()
     cpu.put("havoc_c64::REQUESTED_STAGE", 17)
     play(1)
@@ -896,6 +927,7 @@ def exercise(elf, symbols, image, standard, budget):
     mono_prime_visits = mono.prime(budget)
     require(mono_prime_visits == 9, "mono startup must take nine bounded visits")
     return dict(pcm_samples_checked=cpu.pcm_samples, starts=cpu.starts,
+                menu_track_overrides_checked=menu_tracks_checked,
                 initial_prime_visits=dict(stereo=stereo_prime_visits, mono=mono_prime_visits),
                 mono_initial_prime_calls=[call for call in mono.calls if call["entry"].endswith("service_audio")],
                 sampler_channel_frames_checked=cpu.playback_checked, calibration_shots=cpu.calibrations,
@@ -995,6 +1027,42 @@ def exercise_emulator_sfx_only(elf, symbols, image, standard, budget):
     return dict(strict_production_fault=1, cues=cues, passed=True)
 
 
+def exercise_menu_routing(elf, symbols, image, standard, budget):
+    """Decode bounded prefixes for every menu ID through production AUDIO.
+
+    Replace requests during startup priming so this routing check does not
+    repeat the existing full playback/fade/fault suite for every selection.
+    """
+    cpu = Machine(elf, symbols, image, standard)
+    cpu.boot(budget)
+    checked = []
+    for track, entry in enumerate(cpu.references):
+        cpu.put("havoc_c64::REQUESTED_MENU_TRACK", track)
+        for cue, stage in ((0, 0), (5, 7), (0, 16)):
+            cpu.put("havoc_c64::REQUESTED_CUE", cue)
+            cpu.put("havoc_c64::REQUESTED_STAGE", stage)
+            cpu.call("havoc_c64::service_audio", budget)
+            require(cpu.mem[cpu.state_address("track")] == track,
+                    f"menu ID {track} lost to cue {cue}, stage {stage}")
+            require(cpu.active_name() is None, "routing fixture unexpectedly completed startup")
+        # Use a different gameplay recording so a stale override cannot pass.
+        stage = 1 if cpu.catalog["stages"][0] == track else 0
+        expected = cpu.catalog["stages"][stage]
+        cpu.put("havoc_c64::REQUESTED_MENU_TRACK", 255)
+        cpu.put("havoc_c64::REQUESTED_CUE", 1)
+        cpu.put("havoc_c64::REQUESTED_STAGE", stage)
+        cpu.call("havoc_c64::service_audio", budget)
+        require(cpu.mem[cpu.state_address("track")] == expected,
+                f"clearing menu ID {track} did not restore gameplay stage {stage}")
+        checked.append(dict(track=track, name=entry["name"], fallback_stage=stage, fallback_track=expected))
+        print(f"{standard}: menu routing {track} {entry['name']} passed", flush=True)
+    require(all(cpu.pcm_samples[entry["name"]] > 0 for entry in cpu.references),
+            "menu routing did not decode every selected recording")
+    require(cpu.get("DIGITAL_FAULT") == 0, "menu routing caused a digital fault")
+    return dict(passed=True, tracks=checked, pcm_samples_checked=cpu.pcm_samples,
+                scope="Native AUDIO catalog overrides and decoded prefixes; startup requests replaced before playback")
+
+
 def exercise_fatal_shutdown(elf, symbols, image, standard):
     cpu = Machine(elf, symbols, image, standard)
     cpu.volume = [32, 32]
@@ -1019,6 +1087,7 @@ def main():
     parser.add_argument("--standard", choices=("pal", "ntsc", "both"), default="both")
     parser.add_argument("--budget", type=int, default=100000000)
     parser.add_argument("--emulator-only", action="store_true")
+    parser.add_argument("--menu-only", action="store_true", help="only check menu track routing and decoded prefixes")
     parser.add_argument("--kernel-only", action="store_true", help="only execute directed assembly decoder cases")
     parser.add_argument("--llvm-dwarfdump", type=Path,
                         default=Path(os.environ.get("LLVM_MOS", Path.home() / ".local/llvm-mos")) / "bin/llvm-dwarfdump")
@@ -1027,7 +1096,7 @@ def main():
     elf, symbols = load_elf(args.elf)
     report = dict(model="NMOS6502 at64x bus; DMA1byte/bus tick; sampler6.25MHz/(divider+2)",
                   elf_sha256=hashlib.sha256(args.elf.read_bytes()).hexdigest(), standards={})
-    if not args.emulator_only:
+    if not args.emulator_only and not args.menu_only:
         report["assembly_kernel"] = exercise_decode_kernel(elf, symbols)
     if not args.kernel_only:
         preview = runpy.run_path(str(ROOT / "tools/sfx-previews.py"))
@@ -1040,6 +1109,9 @@ def main():
         require(len(image) == symbols["__reu_size"].address, "REU/ELF size mismatch")
         report["reu_sha256"] = hashlib.sha256(image).hexdigest()
         for standard in ("pal", "ntsc") if args.standard == "both" else (args.standard,):
+            if args.menu_only:
+                report["standards"][standard] = exercise_menu_routing(elf, symbols, image, standard, args.budget)
+                continue
             result = {} if args.emulator_only else exercise(elf, symbols, image, standard, args.budget)
             result["emulator_sfx_only"] = exercise_emulator_sfx_only(elf, symbols, image, standard, args.budget)
             if not args.emulator_only:
@@ -1049,7 +1121,7 @@ def main():
     report["passed"] = True
     args.report.parent.mkdir(parents=True, exist_ok=True)
     args.report.write_text(json.dumps(report, indent=2) + "\n")
-    print(f"native DLT4 checks passed; {args.report}")
+    print(f"native DLT5 checks passed; {args.report}")
 
 
 if __name__ == "__main__":

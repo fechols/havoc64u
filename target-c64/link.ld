@@ -43,7 +43,7 @@ REGION_ALIAS("c_writeable", low)
  * 4 KiB-aligned slots. No slot crosses a 64 KiB bank. Bank 4 remains PIXELS-only
  * so its split-transfer audit can distinguish prefix/helper DMA by bank. */
 __reu_size = 0x1000000;
-/* The DMC1 manifest directory and its contiguous DLT4 assets share this region. */
+/* The DMC1 manifest directory and its contiguous DLT5 assets share this region. */
 __reu_digital_music = 0x100000;
 /* Legacy symbol now aliases the manifest region; assets have generated offsets. */
 __reu_digital_victory = __reu_digital_music;

@@ -42,6 +42,18 @@ right-channel delay, loop seam, and transitions to and from the stereo Hammond
 Rocker title song. Mission Failed should loop while Game Over remains on screen;
 returning to the title after victory should keep Galactic Dash playing.
 
+At the title, hold CTRL and Commodore and tap DEL to preview the next song.
+Check all 21 selections and the wrap back to Hammond Rocker. Holding DEL must
+advance only once. Let attract mode begin, confirm the selected song continues,
+then start a run and confirm normal stage music returns.
+
+DLT5 changes books roughly every 30 ms. Compare its previews under
+target/digital-music/dlt5 with the previous recordings at matched listening
+levels, focusing on attacks, cymbals, sustained tones, quiet passages, and
+segment/loop seams. Confirm that the more frequent book loads do not introduce
+dropouts during combat or song changes. The quality report records coding-error
+and peak measurements; those measurements do not replace this listening check.
+
 The F readout averages frames over roughly one second; it cannot identify
 every individual frame stall. Emulator SFX benchmarks and native DAC models
 are separate measurements. This check includes real rendering, DAC music,

@@ -1,7 +1,7 @@
 {
   "source": {
     "filename": "Iron Canyon.m4a",
-    "sha256": "9469763a5e52b73792157386457dbbf91a42737984cd9c43f137223bc9efbc0e",
+    "sha256": "e01b60b78c1af7eaed1ccb5c2a4bac764bdd9c8c399632c87df71b24017c89fb",
     "sample_rate": 48000,
     "channels": 2,
     "duration_seconds": 90.0135,
@@ -14,12 +14,24 @@
       "compatible_brands": "isomiso2mp41",
       "encoder": "Lavf60.16.100",
       "comment": "made with suno; created=2026-10-23T16:26:57Z; id=b7a26662-c84a-45fa-8a79-37ddec851b1d"
+    },
+    "original_container_sha256": "9469763a5e52b73792157386457dbbf91a42737984cd9c43f137223bc9efbc0e",
+    "pcm_sha256": "8dafcf3771d74b3b8c4689446073257bfc8e346e8b8946618b2be009ec9c1f25",
+    "current_container_metadata": {
+      "major_brand": "isom",
+      "minor_version": "512",
+      "compatible_brands": "isomiso2mp41",
+      "artist": "William Echols",
+      "album": "H.A.V.O.C. OST",
+      "encoder": "Lavf62.12.101",
+      "comment": "made with suno; created=2026-10-23T16:26:57Z; id=b7a26662-c84a-45fa-8a79-37ddec851b1d",
+      "track": "3"
     }
   },
   "conversion": {
     "ffmpeg_version": "ffmpeg version n8.1.1-20260506 Copyright (c) 2000-2026 the FFmpeg developers",
     "intermediate": "16-bit FLAC at original source rate and channels",
-    "format": "DLT4",
+    "format": "DLT5",
     "profile": "mono16k3",
     "output_rate": 16000,
     "channels": 1,
@@ -27,7 +39,7 @@
     "sample_count": 1440216,
     "sample_count_unit": "frames",
     "codebook_entries": 8,
-    "codebook_count": 521,
+    "codebook_count": 3014,
     "lloyd_iterations": 20,
     "closed_loop_training_passes": 3,
     "encoder_beam_width": 32,
@@ -36,23 +48,27 @@
     "channel_processing": "Average (L+R)/2 in floating point before resampling; retain fractional samples",
     "resampler": "Sequential 512-phase 100 dB Kaiser-windowed sinc; floating-point output retained until normalization",
     "normalization": "One track-wide gain; validate final rounded 8-bit PCM sample and true peaks <= -1 dBTP including loop seam; reduce excess plus 0.1 dB and re-encode, at most five attempts",
-    "normalization_gain_db": 4.957291,
+    "normalization_gain_db": 5.069792,
     "normalization_attempts": 2,
     "true_peak_meter": "FFmpeg EBU R128; loop seam included; upper bounds include 0.0005 linear metadata rounding margin",
-    "packing": "Continuous LSB-first three-bit codes; stereo alternates left/right; regular segments aligned to eight mono or four stereo frames; zero final padding",
+    "packing": "Continuous LSB-first three-bit codes; stereo alternates left/right; balanced ceil(frame_count/alignment) groups, first remainder books one group longer; final segment clipped; zero final padding",
     "reconstruction": "Independent signed-16 saturating predictors retained across segments; output clamp(floor(sample/256+0.5),-128,127); predictors reset at exact loop length",
     "crc": "CRC-8 polynomial 0x07, initial zero, cumulative per 1024 packed bytes including final short chunk",
     "flac_sha256": "b99859deb5ed69be1fd1c7b9151c643294772e0f066a95dcdca79c417f32bb66",
     "encoder_files_sha256": {
-      "dlt4.rs": "e3b42b30acd7ea690cf50ef4560c9dc34b0a70d534ba271d24796f86e8719259",
-      "encoder.rs": "e4b9df9a7ad4d73523a3c70af2c8259ae373226576cbd7128bc50c59d67a6d31",
-      "format.rs": "8dc6ab278db12afb452448cb63389bdd7db8825db38925fe190583b1271a56b4",
+      "dlt4.rs": "ffceb603711151bf6b00c3ed63ec89abed347b3d1438a8e072a4f6d5fa3daf71",
+      "encoder.rs": "335fdd3296b6662193cb72292c254eb44d58e08d411d9d1d6e240662ae1382c0",
+      "format.rs": "50fa306edc25382d2b445ca6cf0a2a2a377029534c30a4d6efebc6d05a627c67",
       "lloyd.rs": "4421d54add65d69ef1063204481caa312ed11377e7d8eb34aca7b7e65a3547d5",
-      "main.rs": "54ff87de723426c0008df506bea51fa06cf348674adf4c6ffb4e946b039d3de4",
+      "main.rs": "9d99b3e1ccbc7a4ef5c42f67e65c302ac63a667a7c1db3bd749d3ae7547a10dd",
       "normalize.rs": "943300775b7e4826e969ee38a29d3c4dde2f47368060d5b44cfb1e696c316caf",
       "resample.rs": "9c4d2215feafa4846f244070cd9af035f72570bd89f6395a9ef35da960f3e482"
     },
-    "encoder_binary_sha256": "778ba2a2ffe8a9bc70168a1bd71c4c24d66340b69d090a4eb89c3dd48caacb26"
+    "encoder_binary_sha256": "087bdd1549f0afaae8f6cd018f1b7aa2940dda7f0839ecf336f6dae27ce13852",
+    "codebook_entry_bytes": 2,
+    "samples_per_segment": 472,
+    "long_segment_count": 2201,
+    "codebooks": "Little-endian signed-16 deltas; eight entries per channel"
   },
   "tool_source": {
     "project": "secondreality-opt",
@@ -63,11 +79,11 @@
       "src/audio/lloyd.rs": "4421d54add65d69ef1063204481caa312ed11377e7d8eb34aca7b7e65a3547d5",
       "target-c64/s64-adpcm-music/src/lib.rs": "b17cc8771c8c2a4fdd433ee5d2cdbdfa14b2b7fc0ba4b96f0e4265f2f5fb561e"
     },
-    "note": "Original source hashes identify the imported Second Reality algorithms. The local encoder adds DLT4 profiles, closed-loop retraining, beam search, floating-point mono downmix, rounded output and loop-aware peak validation; conversion.encoder_files_sha256 identifies this implementation."
+    "note": "Original source hashes identify the imported Second Reality algorithms. The local encoder adds DLT5 compact signed-16 books, balanced segments, closed-loop retraining, beam search, floating-point mono downmix, rounded output and loop-aware peak validation; conversion.encoder_files_sha256 identifies this implementation."
   },
-  "asset_sha256": "311bf1219409b59a204875d30b1877650bee6cc5e49163bb8a72148104af58f6",
-  "decoded_pcm_sha256": "58e8cd63891d72721f63a4b343d4e17fef66ec469544fe7f389385b1ee8b1251",
-  "reference_pcm_sha256": "affab2430fd18d7de12e5c842b7b373acd1eb6700ea06cf5742b8fd6c34bea2a",
+  "asset_sha256": "6699337bb2781ac59dbd580c3bc4248940c9622ab1f0a3e5147d12e2491b1842",
+  "decoded_pcm_sha256": "2922290832c2a855a7caec8a23c5c29f097fb6ee44896afb126c3adeda2d53aa",
+  "reference_pcm_sha256": "72ff761d1bccb451286464a7146c098653700e9a74f975034c63b7aecdda1a2c",
   "generated_metadata": "iron-canyon.json",
   "temporary_gameplay_fixture": false,
   "attribution": {
@@ -78,6 +94,6 @@
   },
   "reproduction_commands": {
     "intermediate": "ffmpeg -v error -y -i \"C:/Work/Projects/GitHub/sueme64/assets/music/source/Iron Canyon.m4a\" -map 0:a:0 -vn -sample_fmt s16 -c:a flac -threads 1 C:/Work/Projects/GitHub/sueme64/target/digital-music/iron-canyon-source.flac",
-    "encode": "target/digital-music/tool-build/release/encode-digital-music.exe --profile mono16k3 C:/Work/Projects/GitHub/sueme64/target/digital-music/iron-canyon-source.flac C:/Work/Projects/GitHub/sueme64/assets/music/iron-canyon.dlt C:/Work/Projects/GitHub/sueme64/target/digital-music/iron-canyon-dlt4.wav"
+    "encode": "cargo run --release --manifest-path tools/encode-digital-music/Cargo.toml --target-dir target/digital-music/tool-build -- --profile mono16k3 --codebooks 3014 target/digital-music/iron-canyon-source.flac assets/music/iron-canyon.dlt target/digital-music/iron-canyon-dlt5.wav"
   }
 }

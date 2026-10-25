@@ -1,7 +1,9 @@
-"""Validate DLT4 and generate manifest-owned DMC1 soundtrack bindings.
+"""Validate DLT5 and generate manifest-owned DMC1 soundtrack bindings.
 
 Run with --write-rust after encoding assets or editing catalog.json. Normal
 builds check the generated Rust rather than silently changing tracked files.
+Use --allocate-codebooks before encoding to distribute the exact music budget
+across tracks with approximately equal adaptation intervals.
 """
 import argparse
 import hashlib
@@ -42,24 +44,92 @@ def _crc_entry(value):
 CRC_TABLE = tuple(map(_crc_entry, range(256)))
 
 
+def segment_layout(frames, books, channels):
+    """Balance whole packing groups; only the final segment clips its tail."""
+    alignment = 8 // channels
+    groups = (frames + alignment - 1) // alignment
+    assert 1 <= books <= min(65535, groups), "invalid digital codebook count"
+    base, longer = divmod(groups, books)
+    return base * alignment, longer
+
+
+def allocate_codebooks(tracks, *, capacity=MUSIC_CAPACITY, directory_bytes=None):
+    """Allocate one compact book at a time to the longest average interval.
+
+    Book tables are multiples of sixteen bytes, so they never change asset
+    alignment padding. Integer ratio comparisons keep ties reproducible.
+    Inputs need only sample_count, sample_rate and channels; existing DLT4
+    metadata can therefore bootstrap the first DLT5 allocation.
+    """
+    assert 1 <= len(tracks) <= 255, "invalid soundtrack track count"
+    if directory_bytes is None:
+        directory_bytes = (16 + 16 * len(tracks) + len(CUES) + STAGE_COUNT + 15) & ~15
+    fixed = directory_bytes
+    limits, costs = [], []
+    for track in tracks:
+        frames, rate, channels = (track[key] for key in ('sample_count', 'sample_rate', 'channels'))
+        assert isinstance(frames, int) and 0 < frames <= 0xffffffff, "invalid digital frame count"
+        assert (rate, channels) in PROFILES.values(), "invalid digital music profile"
+        stream = (frames * channels * 3 + 7) // 8
+        fixed = (fixed + 15) & ~15
+        fixed += 32 + stream + (stream + 1023) // 1024
+        alignment = 8 // channels
+        limits.append(min(65535, (frames + alignment - 1) // alignment))
+        costs.append(16 * channels)
+    counts = [1] * len(tracks)
+    remaining = capacity - fixed - sum(costs)
+    assert remaining >= 0, "soundtrack exceeds music budget with one book per track"
+    while True:
+        best = None
+        for index, track in enumerate(tracks):
+            if counts[index] >= limits[index] or costs[index] > remaining:
+                continue
+            if best is None or (track['sample_count'] * tracks[best]['sample_rate'] * counts[best]
+                               > tracks[best]['sample_count'] * track['sample_rate'] * counts[index]):
+                best = index
+        if best is None:
+            break
+        counts[best] += 1
+        remaining -= costs[best]
+    return dict(counts=counts, used_bytes=capacity - remaining,
+                free_bytes=remaining, fixed_bytes=fixed)
+
+
+def allocate_catalog(root=ROOT):
+    """Write requested counts without accepting or regenerating encoded assets."""
+    path = root / 'assets/music/catalog.json'
+    manifest = json.loads(path.read_text())
+    assert manifest['version'] == 2, "unsupported soundtrack manifest"
+    tracks = []
+    for entry in manifest['tracks']:
+        metadata = json.loads((root / f"assets/music/{entry['name']}.json").read_text())
+        rate, channels = PROFILES[entry['profile']]
+        assert (metadata['sample_rate'], metadata['channels']) == (rate, channels), "invalid digital music profile"
+        tracks.append(metadata)
+    result = allocate_codebooks(tracks)
+    for entry, count in zip(manifest['tracks'], result['counts']):
+        entry['codebook_count'] = count
+    path.write_text(json.dumps(manifest, indent=2) + '\n', encoding='utf-8', newline='\n')
+    return result
+
+
 def validate_blob(blob, metadata, profile):
     """Check actual extents before indexing, then independently verify integrity."""
-    assert len(blob) >= 32 and blob[:4] == b"DLT4", "invalid digital music magic"
+    assert len(blob) >= 32 and blob[:4] == b"DLT5", "invalid digital music magic"
     rate, frames, stream_bytes, entries, books, bits, channels = struct.unpack_from("<IIIHHBB", blob, 4)
     assert (rate, channels) == PROFILES[profile], "invalid digital music profile"
     assert entries == 8 and bits == 3 and frames > 0, "invalid digital music quantizer"
-    alignment = 8 // channels
-    assert 1 <= books <= min(1024, max(1, frames // alignment)), "invalid digital codebook count"
+    segment, longer = segment_layout(frames, books, channels)
     assert not any(blob[22:32]), "digital header reserved bytes must be zero"
-    stream_offset = 32 + books * entries * 3 * channels
+    stream_offset = 32 + books * entries * 2 * channels
     assert stream_bytes == (frames * channels * 3 + 7) // 8, "invalid compressed frame count"
     crc_offset = stream_offset + stream_bytes
     crc_count = (stream_bytes + 1023) // 1024
     assert len(blob) == crc_offset + crc_count, "invalid digital payload extent"
-    segment = frames if books == 1 else frames // books // alignment * alignment
     expected = dict(sample_rate=rate, sample_count=frames, channels=channels,
                     bits_per_sample=bits, codebook_entries=entries, codebook_count=books,
-                    samples_per_segment=segment, stream_bytes=stream_bytes,
+                    samples_per_segment=segment, long_segment_count=longer,
+                    header_bytes=32, codebook_bytes=stream_offset - 32, stream_bytes=stream_bytes,
                     stream_offset=stream_offset, crc_offset=crc_offset,
                     crc_count=crc_count, asset_bytes=len(blob))
     for key, value in expected.items():
@@ -103,6 +173,7 @@ def load_catalog(root=ROOT, *, validate=True):
         blob = (root / f"assets/music/{name}.dlt").read_bytes()
         if validate:
             validate_blob(blob, metadata, profile)
+            assert entry.get('codebook_count') == metadata['codebook_count'], "soundtrack codebook count differs from allocation"
         length = metadata["asset_bytes"]
         assert isinstance(length, int) and 32 < length <= MUSIC_CAPACITY, "invalid soundtrack asset extent"
         offset = (offset + 15) & ~15
@@ -192,6 +263,7 @@ def rust_catalog(catalog):
     lines.append("// Compatibility constants describe the canonical Galactic Dash asset.")
     for name, key, typ in (("SAMPLE_RATE", "sample_rate", "u32"), ("CHANNELS", "channels", "u8"),
                            ("CODEBOOK_COUNT", "codebook_count", "u16"),
+                           ("LONG_SEGMENT_COUNT", "long_segment_count", "u16"),
                            ("SAMPLE_COUNT", "sample_count", "u32"), ("SAMPLES_PER_SEGMENT", "samples_per_segment", "u32"),
                            ("STREAM_BYTES", "stream_bytes", "u32"), ("STREAM_OFFSET", "stream_offset", "u32"),
                            ("CRC_OFFSET", "crc_offset", "u32"), ("CRC_COUNT", "crc_count", "usize"),
@@ -212,7 +284,8 @@ def rust_catalog(catalog):
         for field, key in (("total_samples", "sample_count"), ("stream_bytes", "stream_bytes"),
                            ("samples_per_segment", "samples_per_segment"), ("stream_offset", "stream_offset"),
                            ("crc_offset", "crc_offset"), ("codebook_count", "codebook_count"),
-                           ("sample_rate", "sample_rate"), ("channels", "channels")):
+                           ("sample_rate", "sample_rate"), ("long_segment_count", "long_segment_count"),
+                           ("channels", "channels")):
             lines.append(f"            {field}: {m[key]},")
         lines += ["        },", "    },"]
     lines += ["];", '#[cfg_attr(target_arch = "mos", link_section = ".phase.audio.data")]',
@@ -247,8 +320,14 @@ def rust_catalog(catalog):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--write-rust", action="store_true")
+    action = parser.add_mutually_exclusive_group()
+    action.add_argument("--write-rust", action="store_true")
+    action.add_argument("--allocate-codebooks", action="store_true")
     args = parser.parse_args()
+    if args.allocate_codebooks:
+        result = allocate_catalog()
+        print(f'DLT5 allocation: {len(result["counts"])} tracks; {result["used_bytes"]:,} / {MUSIC_CAPACITY:,} bytes; {result["free_bytes"]:,} bytes free')
+        return
     catalog = load_catalog()
     generated = rust_catalog(catalog)
     path = ROOT / "src/digital_catalog.rs"
@@ -256,7 +335,7 @@ def main():
         path.write_text(generated, encoding="utf-8", newline="\n")
     else:
         assert path.read_text(encoding="utf-8") == generated, "stale digital catalog; run tools/digital_format.py --write-rust"
-    print(f'DLT4 catalog: {len(catalog["tracks"])} tracks; {catalog["used_bytes"]:,} / {MUSIC_CAPACITY:,} bytes')
+    print(f'DLT5 catalog: {len(catalog["tracks"])} tracks; {catalog["used_bytes"]:,} / {MUSIC_CAPACITY:,} bytes')
 
 
 if __name__ == "__main__":

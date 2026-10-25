@@ -1,4 +1,4 @@
-//! Production DLT4 decoder against independent REU/sampler models.
+//! Production DLT5 decoder against independent REU/sampler models.
 //! These are transport/PCM checks, not physical timing measurements.
 #![allow(static_mut_refs)]
 use havoc::digital as asset;
@@ -81,6 +81,7 @@ struct Hardware {
     ring_banks_written: [bool; 2],
     final_reu_byte_read: bool,
     sampler_writes: Vec<(u64, u16, u8)>,
+    decoder_fetches: Vec<(u32, usize)>,
 }
 impl Hardware {
     fn new() -> Self {
@@ -108,6 +109,7 @@ impl Hardware {
             ring_banks_written: [false; 2],
             final_reu_byte_read: false,
             sampler_writes: Vec::new(),
+            decoder_fetches: Vec::new(),
         }
     }
     fn be24(&self, a: usize) -> u32 {
@@ -143,7 +145,8 @@ impl Hardware {
                 continue;
             }
             // Synthetic backend delay intentionally exercises the correction.
-            let frames = (self.ticks - v.playback_start) * 6_250_000 / ((divider + 2) * self.bus_hz);
+            let frames =
+                (self.ticks - v.playback_start) * 6_250_000 / ((divider + 2) * self.bus_hz);
             while v.played < frames {
                 if v.position == repeat_b && control & 2 != 0 {
                     v.position = repeat_a;
@@ -214,7 +217,8 @@ impl Hardware {
                 if channel == 0 {
                     self.calibration_starts += 1;
                 }
-                v.completion = self.ticks + (frames * (divider + 2) * self.bus_hz).div_ceil(6_250_000);
+                v.completion =
+                    self.ticks + (frames * (divider + 2) * self.bus_hz).div_ceil(6_250_000);
             }
             if v.playing {
                 assert!(value == 0x43 || value == 0x03, "8-bit playback mode");
@@ -367,6 +371,7 @@ unsafe fn dma(source: u32, destination: u16, count: u16) {
 unsafe fn digital_test_fetch(source: u32, destination: &mut [u8]) {
     let hw = hardware();
     assert!(destination.len() <= 32);
+    hw.decoder_fetches.push((source, destination.len()));
     destination.copy_from_slice(&hw.reu[source as usize..source as usize + destination.len()]);
     hw.ticks += destination.len() as u64;
 }
@@ -452,35 +457,32 @@ unsafe fn prime(state: &mut backend::State) -> usize {
 /// Intentionally does not call production header, delta, bit or rounding helpers.
 fn reference(track: asset::Track) -> Vec<[i16; 2]> {
     let bytes = read_track(track);
-    assert_eq!(&bytes[..4], b"DLT4");
+    assert_eq!(&bytes[..4], b"DLT5");
     let samples = u32::from_le_bytes(bytes[8..12].try_into().unwrap()) as usize;
     let books = u16::from_le_bytes(bytes[18..20].try_into().unwrap()) as usize;
     let channels = bytes[21] as usize;
     let group = if channels == 1 { 8 } else { 4 };
-    let segment = if books == 1 {
-        samples
-    } else {
-        samples / books / group * group
-    };
-    let stream = 32 + books * 8 * 3 * channels;
+    let groups = samples.div_ceil(group);
+    let short = groups / books * group;
+    let long = groups % books;
+    let long_end = long * (short + group);
+    let stream = 32 + books * 8 * 2 * channels;
     let mut out = Vec::with_capacity(samples);
     let mut previous = [0i32; 2];
     for frame in 0..samples {
-        let book = (frame / segment).min(books - 1);
+        let book = if frame < long_end {
+            frame / (short + group)
+        } else {
+            long + (frame - long_end) / short
+        };
         let mut emitted = [0; 2];
         for channel in 0..channels {
             let bit = (frame * channels + channel) * 3;
             let code = (0..3)
                 .map(|b| (((bytes[stream + (bit + b) / 8] >> ((bit + b) % 8)) & 1) as usize) << b)
                 .sum::<usize>();
-            let at = 32 + ((book * channels + channel) * 8 + code) * 3;
-            let magnitude = u16::from_le_bytes([bytes[at], bytes[at + 1]]) as i32;
-            let delta = (if bytes[at + 2] != 0 {
-                -magnitude
-            } else {
-                magnitude
-            })
-            .clamp(-32768, 32767);
+            let at = 32 + ((book * channels + channel) * 8 + code) * 2;
+            let delta = i16::from_le_bytes([bytes[at], bytes[at + 1]]) as i32;
             previous[channel] = (previous[channel] + delta).clamp(-32768, 32767);
             emitted[channel] =
                 ((previous[channel] + 128).div_euclid(256).clamp(-128, 127) * 256) as i16;
@@ -700,7 +702,11 @@ fn mixed_rate_handoffs_share_the_quarter_second_budget() {
                     .filter(|w| w.channels == 2)
                     .map(|w| w.frames)
                     .sum();
-                pending_frames += if track.descriptor().metadata.channels == 1 { mono } else { stereo };
+                pending_frames += if track.descriptor().metadata.channels == 1 {
+                    mono
+                } else {
+                    stereo
+                };
                 assert!(pending_frames <= 32768);
                 if mono != 0 && stereo != 0 {
                     mixed_visits += 1;
@@ -741,6 +747,7 @@ fn actual_backend_loops_all_profiles_through_shared_scratch_reuse() {
         let mut count = 0;
         for track in asset::Track::ALL {
             let expected = reference(track);
+            hardware().decoder_fetches.clear();
             let mut state = backend::State::new();
             init(&mut state, &mut calibration, true, track).unwrap();
             if count == 0 {
@@ -769,6 +776,36 @@ fn actual_backend_loops_all_profiles_through_shared_scratch_reuse() {
                 assert!(expected.iter().any(|p| p[0] != p[1]));
             }
             assert_playback(track, epoch, &expected);
+            let descriptor = track.descriptor();
+            let start = descriptor.asset_offset + 32;
+            let stream = descriptor.asset_offset + descriptor.metadata.stream_offset;
+            let per = 16 * descriptor.metadata.channels as usize;
+            let book_fetches: Vec<_> = hardware()
+                .decoder_fetches
+                .iter()
+                .copied()
+                .filter(|(address, _)| start <= *address && *address < stream)
+                .collect();
+            let books = descriptor.metadata.codebook_count as usize;
+            assert!(
+                book_fetches.len() > books,
+                "loop must reload the first book"
+            );
+            for (book, &(address, count)) in book_fetches.iter().enumerate() {
+                assert_eq!(
+                    (address, count),
+                    (start + ((book % books) * per) as u32, per)
+                );
+            }
+            if matches!(
+                track,
+                asset::Track::GalacticDash | asset::Track::HammondRocker
+            ) {
+                assert!(books * per > 65536, "exercise wide book offsets");
+                assert!(book_fetches
+                    .iter()
+                    .any(|&(address, _)| address >= start + 65536));
+            }
         }
         HARDWARE = None;
     }
@@ -846,14 +883,19 @@ fn pending_requests_cancel_replace_and_handoff_without_recalibration() {
 }
 
 unsafe fn prepare_pending(state: &mut backend::State, track: asset::Track) -> u64 {
-    let pending_slot = (((hardware().voices[0].starts.last().unwrap().start - asset::RING_OFFSET) >> 16) as usize) ^ 1;
+    let pending_slot = (((hardware().voices[0].starts.last().unwrap().start - asset::RING_OFFSET)
+        >> 16) as usize)
+        ^ 1;
     let mut frames = 0;
     for _ in 0..100 {
         request(state, track);
         let before = hardware().pcm_writes.len();
         service(state).unwrap();
-        frames += hardware().pcm_writes[before..].iter()
-            .filter(|write| write.slot == pending_slot).map(|write| write.frames).sum::<usize>();
+        frames += hardware().pcm_writes[before..]
+            .iter()
+            .filter(|write| write.slot == pending_slot)
+            .map(|write| write.frames)
+            .sum::<usize>();
         if frames == 32768 {
             return hardware().ticks;
         }

@@ -683,6 +683,8 @@ def counters(mon, syms):
                         ("RETICLE_MISSES", 2)):
         if name in syms:
             result[name.lower()] = mon.integer(syms[name], width)
+    if any("REQUESTED_MENU_TRACK" in name for name in syms):
+        result["requested_menu_track"] = mon.integer(resident_symbol(syms, "REQUESTED_MENU_TRACK")[1], 1)
     mon.command("bank io")
     result["joystick_port2"] = mon.integer(0xdc00, 1) & 31
     result["turbo_register"] = mon.integer(0xd031, 1)
@@ -1243,23 +1245,44 @@ def results_restart_modes(package_format, mode_name):
     return ("Title", "Playing") if package_format["digital"] and mode_name == "Victory" else ("Playing",)
 
 
+def menu_music_field(fields):
+    """Keep historic boolean-selector binaries usable by the smoke harness."""
+    for name, kind in (("menu_music_track", "u8"), ("menu_music_galactic", "bool")):
+        if name in fields:
+            if fields[name].get("type") != kind:
+                raise RuntimeError(f"Digital menu fixtures require Game::{name} {kind}")
+            fields[name]["size"] = 1
+            return name
+    raise RuntimeError("Digital menu fixtures require Game::menu_music_track or menu_music_galactic")
+
+
+def menu_music_track(game):
+    """Return catalog identity independently of the coarser SID cue telemetry."""
+    if "menu_music_track" in game:
+        return game["menu_music_track"]
+    return 0 if game["menu_music_galactic"] else 1
+
+
+def menu_music_cue(game):
+    return 5 if menu_music_track(game) == 0 else 0
+
+
 def menu_music_fixture(package_format, fields, cue):
     """Select a menu tune explicitly without assuming a prior scenario's state."""
     if not package_format["digital"]:
         return {}
-    field = fields.get("menu_music_galactic", {})
-    if field.get("type") != "bool":
-        raise RuntimeError("Digital menu fixtures require Game::menu_music_galactic")
+    name = menu_music_field(fields)
     if cue not in (0, 5):
         raise RuntimeError("Menu music must select title or victory")
-    field["size"] = 1
-    return {"menu_music_galactic": int(cue == 5)}
+    return {name: (0 if cue == 5 else 1) if name == "menu_music_track" else int(cue == 5)}
 
 
-def check_menu_music(frame, cue, previous=None, pages=None):
+def check_menu_music(frame, cue, previous=None, pages=None, *, track=None):
     """Audit SID cue/page continuity; this does not validate DAC playback."""
     if frame.get("music_cue") != cue or frame.get("music_active_cue", cue) != cue:
         raise RuntimeError(f"Menu/reveal music selected the wrong cue; expected {cue}: {frame}")
+    if track is not None and frame.get("requested_menu_track") != track:
+        raise RuntimeError(f"Menu selected the wrong catalog track; expected {track}: {frame}")
     page = frame.get("music_page", 0)
     if previous is not None and previous[0] == cue:
         old_page = previous[1]
@@ -1353,7 +1376,7 @@ def streaming_checks(mon, syms, failures, elf, reu, dwarf_tool, output, result):
         if "stage_id" in layout["fields"]:
             observed += ["stage_id"]
         if format["digital"]:
-            observed += ["menu_music_galactic"]
+            observed += [menu_music_field(layout["fields"])]
         frame["game"] = read_game_state(mon, layout, observed)
         frame["stack_guards"] = {name: mon.integer(syms[name], 1) for name in ("__stack_bottom", "__irq_stack_bottom")}
         mon.command("bank cpu")
@@ -1403,21 +1426,22 @@ def streaming_checks(mon, syms, failures, elf, reu, dwarf_tool, output, result):
         mon.command("jpdb 1 $0f")
         frame = wait_ready(scenario, layout["modes"][route[0]], 0, 1)
         if route[0] == "Title":
-            previous = check_menu_music(frame, 5, previous, pages)
-            if not frame["game"]["menu_music_galactic"]:
+            track = 0 if "menu_music_track" in frame["game"] else None
+            previous = check_menu_music(frame, 5, previous, pages, track=track)
+            if menu_music_track(frame["game"]) != 0:
                 raise RuntimeError("Victory did not retain Galactic Dash for the title")
             for _ in range(3):
                 held = observe(scenario)
                 if held["game_mode"] != layout["modes"]["Title"] or held["game"]["menu_ticks"] != 0:
                     raise RuntimeError("Held victory-dismissal FIRE escaped title or advanced its idle timer")
-                previous = check_menu_music(held, 5, previous, pages)
+                previous = check_menu_music(held, 5, previous, pages, track=track)
             scenario["reward_title_capture"] = capture(mon, syms, output, f"{scenario['name']}-reward-title")
             mon.command("jpdb 1 $1f")
-            previous = check_menu_music(observe(scenario), 5, previous, pages)
+            previous = check_menu_music(observe(scenario), 5, previous, pages, track=track)
             released = observe(scenario)
             if released["game_mode"] != layout["modes"]["Title"] or released["joystick_port2"] != 31:
                 raise RuntimeError("Releasing victory-dismissal FIRE started gameplay")
-            check_menu_music(released, 5, previous, pages)
+            check_menu_music(released, 5, previous, pages, track=track)
             mon.command("jpdb 1 $0f")
             frame = wait_ready(scenario, layout["modes"]["Playing"], 0, 1)
             scenario["fresh_fire_returned_to_title"] = True
@@ -1693,11 +1717,12 @@ def attract_checks(mon, syms, failures, elf, reu, dwarf_tool, output, result):
     format = package_model_layout(data)
     if format["digital"]:
         menu_music_fixture(format, fields, 0)
-        observed += ("menu_music_galactic",)
+        observed += (menu_music_field(fields),)
         result["scope"] += (" Selected menu cue remains continuous across the tour with DAC disabled; no DAC playback is validated."
                             if format.get("quad_sfx") else
                             " Selected menu cue and SID score pages remain continuous across the tour; emulator SID substitution does not validate DAC playback.")
     expected_menu_cue = None
+    expected_menu_track = None
     previous_menu_music = None
     tour = (0, 1, 6, 10, 12, 14, 16) if format["space"] else (0, 1, 6, 10) if format["campaign"] else (0, 1, 2, 3)
     segment_base = int.from_bytes(data[12:16], "little")
@@ -1792,13 +1817,17 @@ def attract_checks(mon, syms, failures, elf, reu, dwarf_tool, output, result):
                 or section not in frame["cache_sections"]):
             raise RuntimeError("Attract rendered a stale section or exported an inconsistent mode")
         if format["digital"] and frame["game_mode"] in (modes["Title"], modes["Attract"]):
-            cue = 5 if frame["game"]["menu_music_galactic"] else 0
+            track = menu_music_track(frame["game"])
+            cue = menu_music_cue(frame["game"])
             if expected_menu_cue is not None and cue != expected_menu_cue:
                 raise RuntimeError("Menu tune selection changed during the attract tour or a scene reset")
+            if expected_menu_track is not None and track != expected_menu_track:
+                raise RuntimeError("Menu catalog track changed during the attract tour or a scene reset")
             pages = None if format.get("quad_sfx") else data[format["music_offset"] + 16 + cue * 8 + 4]
             if pages == 0:
                 raise RuntimeError("Selected menu score has no pages")
-            previous_menu_music = check_menu_music(frame, cue, previous_menu_music, pages)
+            previous_menu_music = check_menu_music(frame, cue, previous_menu_music, pages,
+                track=track if "menu_music_track" in frame["game"] else None)
         else:
             previous_menu_music = None
         return frame
@@ -1830,8 +1859,11 @@ def attract_checks(mon, syms, failures, elf, reu, dwarf_tool, output, result):
     observe(setup)
     seed(setup, {"menu_ticks": 0, "menu_activity": 0})
     if format["digital"]:
-        expected_menu_cue = 5 if read_game()["menu_music_galactic"] else 0
+        selected = read_game()
+        expected_menu_cue = menu_music_cue(selected)
+        expected_menu_track = menu_music_track(selected)
         result["selected_menu_cue"] = expected_menu_cue
+        result["selected_menu_track"] = expected_menu_track
     finish(setup)
 
     tour_labels = (["Lowland Approach", "Crystal Cave", "Fortress Run", "Carrier Coast"]
