@@ -9,7 +9,9 @@ of Renderer::project_triangle (projection through the cache, area and
 orientation culling, screen-edge rejection, the 256-command capacity with
 saturating drops, the exact depth average and the 16-byte command) over
 pseudo-random triangles at every depth class, degenerate and off-screen cases
-and a full-capacity run. The JSON report stays under target/emit-test.
+and a full-capacity run. Scenery replay also checks ordinary and double-depth
+sky parallax, non-sky modifiers, and stopping/resuming at a clipped record.
+The JSON report stays under target/emit-test.
 """
 import hashlib
 import json
@@ -29,6 +31,7 @@ source = r'''
 #include <string.h>
 struct Vec3 { int16_t x, y, z; };
 extern void fast_emit_triangle(const struct Vec3 points[3], uint8_t color, uint8_t flags);
+extern uint8_t fast_replay_scenery(uint8_t start, uint8_t count, int16_t parallax_x, int16_t parallax_y);
 #define QLO ((uint8_t*)0xc000)
 #define QHI ((uint8_t*)0xc200)
 #define CACHE ((uint8_t*)0x8e00)
@@ -64,7 +67,7 @@ static void reference(uint8_t *r, const struct Vec3 p[3], uint8_t color, uint8_t
   c[12]=(uint8_t)depth; c[13]=(uint8_t)(depth>>8); c[14]=color&15; c[15]=flags&0x62;
   count++; r[0]=(uint8_t)count; r[1]=(uint8_t)(count>>8);
 }
-static uint32_t checks, emitted;
+static uint32_t checks, emitted, replay_checks;
 static int check(struct Vec3 p[3], uint8_t color, uint8_t flags){
   fast_emit_triangle(p,color,flags);
   reference(reference_renderer,p,color,flags);
@@ -84,6 +87,44 @@ static int check(struct Vec3 p[3], uint8_t color, uint8_t flags){
 }
 static void begin_frame(void){ memset(CACHE,0,640); memset(RENDERER,0,sizeof RENDERER); memset(reference_renderer,0,sizeof reference_renderer); }
 static int16_t pick(uint32_t bits, int16_t span){ return (int16_t)((int32_t)(bits%(2*span+1))-span); }
+struct Record { struct Vec3 p[3]; uint8_t color, flags; };
+static int check_replay(int16_t dx, int16_t dy){
+  const uint8_t flags[6]={6,2,4,0,6,2};
+  struct Record *actual=(struct Record*)(RENDERER+6+2176);
+  struct Record *expected=(struct Record*)(reference_renderer+6+2176);
+  begin_frame();
+  for(uint8_t index=0;index<6;index++){
+    struct Record record={{{-800,300,2350},{0,900,2350},{800,300,2350}},14,flags[index]};
+    if(record.flags&4){
+      for(uint8_t corner=0;corner<3;corner++){
+        record.p[corner].x*=2; record.p[corner].y*=2; record.p[corner].z*=2;
+      }
+    }
+    /* Stop before emitting record four, after applying its camera drift. */
+    if(index==4)record.p[0].z=7;
+    actual[index]=expected[index]=record;
+  }
+  for(uint8_t pass=0;pass<2;pass++){
+    uint8_t start=pass?5:0, end=pass?6:5;
+    for(uint8_t index=start;index<end;index++){
+      struct Record *record=&expected[index];
+      if(record->flags&2){
+        int16_t scale=(record->flags&4)?2:1;
+        for(uint8_t corner=0;corner<3;corner++){
+          record->p[corner].x-=dx*scale; record->p[corner].y-=dy*scale;
+        }
+      }
+      if(index!=4)reference(reference_renderer,record->p,record->color,record->flags);
+    }
+    uint8_t next=fast_replay_scenery(start,6,dx,dy);
+    replay_checks++;
+    if(next!=(pass?6:4)||memcmp(RENDERER,reference_renderer,sizeof RENDERER)){
+      printf("FAIL scenery replay pan (%d,%d), pass %u, stopped at %u\n",dx,dy,pass,next);
+      return 1;
+    }
+  }
+  return 0;
+}
 int main(void){
   uint16_t square=0;
   for(uint16_t n=0;n<512;n++){QLO[n]=(uint8_t)square;QHI[n]=(uint8_t)(square>>8);square=(uint16_t)(square+((n+1)>>1));}
@@ -134,7 +175,8 @@ int main(void){
   reference_renderer[2]=0xfe; reference_renderer[3]=0xff; RENDERER[2]=0xfe; RENDERER[3]=0xff;
   for(uint16_t t=0;t<4;t++){ struct Vec3 p[3]={{-40,-30,200},{10,50,220},{60,-30,200}}; if(check(p,7,1))return 1; }
   if(RENDERER[2]!=0xff||RENDERER[3]!=0xff){puts("FAIL drops did not saturate");return 1;}
-  printf("PASS %lu emissions checked, %lu commands written\n",(unsigned long)checks,(unsigned long)emitted);
+  if(check_replay(0,0)||check_replay(100,32)||check_replay(-100,-32)||check_replay(37,-5))return 1;
+  printf("PASS %lu emissions checked, %lu commands written, %lu scenery replays\n",(unsigned long)checks,(unsigned long)emitted,(unsigned long)replay_checks);
   return 0;
 }
 '''
@@ -147,7 +189,7 @@ if result.returncode or "PASS" not in result.stdout:
     raise SystemExit(result.returncode or "native emit check did not finish")
 report = {"passed": True,
           "assembly_sha256": {path.name: hashlib.sha256(path.read_bytes()).hexdigest() for path in assemblies},
-          "reference": "Renderer::project_triangle with the cached projection, transcribed to C",
+          "reference": "Renderer::project_triangle and sky replay with the cached projection, transcribed to C",
           "cpu": "LLVM-MOS mos-sim 6502 instruction simulator",
           "cycles_include_test_harness": True, "simulator_output": result.stdout.strip()+" "+result.stderr.strip()}
 (build/"report.json").write_text(json.dumps(report, indent=2)+"\n", encoding="utf-8")

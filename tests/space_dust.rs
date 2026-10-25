@@ -344,7 +344,7 @@ fn hidden_bands_advance_edges_without_writing_dust_and_none_keeps_old_pixels() {
 }
 
 #[test]
-fn floating_cockpit_leaves_dust_visible_in_the_former_top_strip() {
+fn gui_strip_replaces_dust_with_opaque_level_text() {
     let status = Game::preview_at(12, 0).hud();
     let mut renderer = Renderer::new();
     renderer.begin(0);
@@ -355,12 +355,52 @@ fn floating_cockpit_leaves_dust_visible_in_the_former_top_strip() {
             let mut pixels = [0; BAND_PIXELS];
             renderer.render_band_with_ambient(0, &mut pixels, Some(&dust));
             assert_eq!(pixels[y as usize * 160 + x as usize], COLOR);
-            let before_hud = pixels;
+            let mut expected = [0; BAND_PIXELS];
+            hud::draw(0, &mut expected, &status, 0);
             hud::draw(0, &mut pixels, &status, 0);
-            assert_eq!(pixels, before_hud);
+            assert_eq!(pixels, expected);
+            assert!(!pixels.contains(&COLOR));
             checked = true;
             break;
         }
     }
     assert!(checked);
+}
+
+#[test]
+fn reserved_first_band_advances_geometry_and_preserves_every_lower_scene_row() {
+    let dust = prepared(193);
+    let status = Game::preview_at(12, 1000).hud();
+    let mut renderer = Renderer::new();
+    renderer.begin(6);
+    // Sloped edges cross the reserved band; the second triangle changes its
+    // short edge inside that band, so skipping edge advancement is observable.
+    let v = |x, y| Vec3 { x, y, z: 128 };
+    renderer.triangle(v(-100, -90), v(-30, 110), v(110, -60), 5, 0);
+    renderer.triangle(v(-80, 110), v(100, 92), v(0, -90), 7, 0);
+    renderer.finish();
+    let original = raster(&renderer, Some(&dust));
+    assert!(original[..160].contains(&7));
+    assert_ne!(&original[..160], &original[8 * 160..9 * 160]);
+    let mut pass = renderer.raster_pass().unwrap();
+    for band in 0..25 {
+        let mut pixels = [99; BAND_PIXELS];
+        assert_eq!(
+            pass.next_band_with_ambient(&mut pixels, band != 0, Some(&dust)),
+            Some(band)
+        );
+        if band == 0 {
+            assert_eq!(
+                pixels, [99; BAND_PIXELS],
+                "reserved band never paints the scene"
+            );
+            hud::draw(band, &mut pixels, &status, 0);
+            assert!(pixels.iter().all(|&pixel| pixel == 0 || pixel == 0x81));
+        } else {
+            assert_eq!(
+                &pixels,
+                &original[band as usize * BAND_PIXELS..(band as usize + 1) * BAND_PIXELS]
+            );
+        }
+    }
 }

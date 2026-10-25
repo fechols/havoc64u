@@ -8,13 +8,13 @@
 use crate::game::{Hud, Mode};
 
 /// Origins in the game's 160x200 logical canvas; each corner is 24x21 pixels.
-pub const CORNER_POSITIONS: [(u8, u8); 4] = [(3, 4), (133, 4), (3, 175), (133, 175)];
+pub const CORNER_POSITIONS: [(u8, u8); 4] = [(3, 12), (133, 12), (3, 175), (133, 175)];
 
 const COCKPIT: u8 = 1;
 const SHIELD_LOW: u8 = 2;
+const BOOST_FLASH: u8 = 4;
 const READY: u8 = 8;
 const BLINK: u8 = 16;
-const BOSS: u8 = 32;
 const NO_FPS: u16 = u16::MAX;
 const GREY: u8 = 1;
 const ACCENT: u8 = 2;
@@ -27,9 +27,9 @@ pub struct DisplayState {
     fps: u16,
     shield: u8,
     charge: u8,
+    boost: u8,
     lives: u8,
     bombs: u8,
-    boss: u8,
     flags: u8,
 }
 
@@ -42,9 +42,9 @@ impl DisplayState {
             fps: fps.map_or(NO_FPS, |value| value.min(999)),
             shield: 0,
             charge: 0,
+            boost: 0,
             lives: 0,
             bombs: 0,
-            boss: 0,
             flags: 0,
         };
         if matches!(hud.mode, Mode::Title | Mode::Attract | Mode::Victory) {
@@ -56,6 +56,10 @@ impl DisplayState {
         state.bombs = hud.bombs.min(3);
         state.shield = meter(hud.shield.min(100), 22, 100);
         state.charge = meter(hud.charge, 22, 255);
+        state.boost = meter(hud.boost, 15, 255);
+        if hud.boost_active && frame & 8 != 0 {
+            state.flags |= BOOST_FLASH;
+        }
         if hud.shield <= 25 {
             state.flags |= SHIELD_LOW;
         }
@@ -64,10 +68,6 @@ impl DisplayState {
             if frame & 16 != 0 {
                 state.flags |= BLINK;
             }
-        }
-        if hud.mode == Mode::Playing && hud.boss_shield != 0 {
-            state.flags |= BOSS;
-            state.boss = meter(hud.boss_shield.min(100), 15, 100);
         }
         state
     }
@@ -92,7 +92,7 @@ impl DisplayState {
     pub fn accent(&self, corner: u8) -> u8 {
         match corner {
             0 => 3,
-            // Bomb inventory and the boss meter share this pair's purple accent.
+            // Bomb inventory uses this pair's purple accent.
             1 => 4,
             2 if self.flags & SHIELD_LOW != 0 => 10,
             2 => 13,
@@ -125,14 +125,13 @@ impl DisplayState {
         if cockpit_changed || self.score != old.score || self.fps != old.fps {
             changed |= 1;
         }
-        if self.lives != old.lives
-            || self.bombs != old.bombs
-            || self.boss != old.boss
-            || (self.flags ^ old.flags) & BOSS != 0
-        {
+        if self.lives != old.lives || self.bombs != old.bombs {
             changed |= 2;
         }
-        if self.shield != old.shield || (self.flags ^ old.flags) & SHIELD_LOW != 0 {
+        if self.shield != old.shield
+            || self.boost != old.boost
+            || (self.flags ^ old.flags) & (SHIELD_LOW | BOOST_FLASH) != 0
+        {
             changed |= 4;
         }
         if self.charge != old.charge || (self.flags ^ old.flags) & (READY | BLINK) != 0 {
@@ -183,14 +182,18 @@ pub fn render_corner(corner: u8, state: &DisplayState, output: &mut [u8; 128]) {
                 for bomb in 0..3 {
                     gauge(output, 1 + bomb * 8, 9, 4, if bomb < state.bombs { 4 } else { 0 });
                 }
-                if state.flags & BOSS != 0 {
-                    text(output, 1, 15, &[b'B'], WHITE);
-                    gauge(output, 6, 15, 15, state.boss);
-                }
             }
             2 => {
                 text(output, 0, 2, &LABELS[5..11], WHITE);
                 gauge(output, 0, 9, 22, state.shield);
+                text(
+                    output,
+                    1,
+                    15,
+                    b"B",
+                    if state.flags & BOOST_FLASH != 0 { ACCENT } else { WHITE },
+                );
+                gauge(output, 6, 15, 15, state.boost);
             }
             _ => {
                 let ready = state.flags & READY != 0;

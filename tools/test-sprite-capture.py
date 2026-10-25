@@ -22,7 +22,7 @@ def state():
     registers[0x1c] = 255
     registers[0x26] = 1
     for sprite in range(8):
-        x, y = ((3, 4), (133, 4), (3, 175), (133, 175))[sprite // 2]
+        x, y = ((3, 12), (133, 12), (3, 175), (133, 175))[sprite // 2]
         x = 24 + x * 2 + sprite % 2 * 24
         registers[sprite * 2] = x & 255
         registers[sprite * 2 + 1] = y + 50
@@ -40,9 +40,9 @@ class SpriteCaptureTests(unittest.TestCase):
         image[63] = 255  # Padding byte must never become a visible row.
         sprites["images"][0] = image.hex()
         pixels = vice.composite_pixels(bytes([5]) * 32000, sprites)
-        at = 4 * 320 + 6
+        at = 12 * 320 + 6
         self.assertEqual(pixels[at:at + 8], bytes([5, 5, 0, 0, 3, 3, 1, 1]))
-        self.assertEqual(pixels[25 * 320 + 6], 5)
+        self.assertEqual(pixels[33 * 320 + 6], 5)
 
     def test_odd_horizontal_shake_keeps_opposite_hud_motion_on_hardware_pixels(self):
         sprites = state()
@@ -58,9 +58,9 @@ class SpriteCaptureTests(unittest.TestCase):
         source = bytes(x % 16 for y in range(200) for x in range(160))
         pixels = vice.composite_pixels(source, sprites)
         self.assertEqual(pixels[320:326], bytes([0, 0, 0, 1, 1, 2]))
-        self.assertEqual(pixels[3 * 320 + 5:3 * 320 + 7], bytes([1, 1]))
-        self.assertEqual(pixels[3 * 320 + 7], 3)
-        self.assertEqual(pixels[5 * 320 + 7:5 * 320 + 9], bytes([3, 3]))
+        self.assertEqual(pixels[11 * 320 + 5:11 * 320 + 7], bytes([1, 1]))
+        self.assertEqual(pixels[11 * 320 + 7], 3)
+        self.assertEqual(pixels[13 * 320 + 7:13 * 320 + 9], bytes([3, 3]))
 
     def test_high_x_bit_and_sprite_priority(self):
         sprites = state()
@@ -68,11 +68,11 @@ class SpriteCaptureTests(unittest.TestCase):
         image[0] = 0b10000000
         sprites["images"][2] = image.hex()
         pixels = vice.composite_pixels(bytes([5]) * 32000, sprites)
-        self.assertEqual(pixels[4 * 320 + 266:4 * 320 + 268], bytes([3, 3]))
+        self.assertEqual(pixels[12 * 320 + 266:12 * 320 + 268], bytes([3, 3]))
         sprites["images"][3] = image.hex()
         sprites["registers"][6:8] = sprites["registers"][4:6]
         sprites["registers"][0x2a] = 7
-        self.assertEqual(vice.composite_pixels(bytes([5]) * 32000, sprites)[4 * 320 + 266], 3)
+        self.assertEqual(vice.composite_pixels(bytes([5]) * 32000, sprites)[12 * 320 + 266], 3)
 
     def test_comparison_ignores_raster_and_hidden_image_bytes(self):
         original = state()

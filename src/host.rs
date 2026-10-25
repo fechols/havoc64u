@@ -1021,6 +1021,23 @@ fn customize_stage_models(info: StageInfo, models: &mut [Model]) {
                 }
             }
             models[CARRIER as usize] = gate;
+            // The final stage never spawns crystals. Its spare slot holds a
+            // compact child Guardian, leaving four hulls and every projectile
+            // inside the foreground command budget. Half size supplies the
+            // final phase without another mesh or a new transform interface.
+            let mut child = (Vec::new(), Vec::new());
+            for ring in [outer, inner] {
+                child.0.extend(ring.map(|[x, y]| [x / 2, y / 2, 0]));
+            }
+            for i in 0..8u8 {
+                let next = (i + 1) & 7;
+                let color = [14, 3, 6, 1][i as usize % 4];
+                for [a, b, c] in [[i, next, next + 8], [i, next + 8, i + 8]] {
+                    child.1.push([a, b, c, color]);
+                    child.1.push([a, c, b, color]);
+                }
+            }
+            models[CRYSTAL as usize] = child;
             for (i, face) in models[TURRET as usize].1.iter_mut().enumerate() {
                 face[3] = [4, 14, 3, 1][i % 4];
             }

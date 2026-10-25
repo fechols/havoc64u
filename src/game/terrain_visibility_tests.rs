@@ -314,8 +314,8 @@ mod terrain_visibility {
             game.actors = [Actor::EMPTY; ACTORS];
             game.boss_started = true;
             game.boss_defeated = false;
-            game.boss_left = 1;
-            game.boss_right = 1;
+            game.bosses[0].left = 1;
+            game.bosses[0].right = 1;
             let boss = combat_capture(&game, &bank, 174);
             assert!(boss.0.len() > bank.face_count(assets::CARRIER) as usize);
             let expected = if game.stage_info.boss_kind == 4 {

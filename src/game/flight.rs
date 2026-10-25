@@ -13,6 +13,9 @@ use crate::Vec3;
 pub const V_MAX_X: i16 = 768;
 /// Vertical target speed, Q8 units per tick (2.75; havoc2 135 u/s).
 pub const V_MAX_Y: i16 = 704;
+/// Afterburner steering targets: three halves of the ordinary speeds.
+pub const V_BOOST_X: i16 = 1152;
+pub const V_BOOST_Y: i16 = 1056;
 /// Sideways push while the barrel roll spins (2.5; havoc2 110 u/s).
 pub const V_PUSH: i16 = 640;
 /// Arena half extents, Q8 (the former hard clamps ±100 and ±65).
@@ -46,8 +49,9 @@ impl Flight {
     };
 }
 
-/// One tick: `bits` is the live stick (UP/DOWN/LEFT/RIGHT), `push` the barrel
-/// roll's direction while it spins (else 0). Updates `player.x/y` and `flight`.
+/// One tick: `bits` is the live stick plus BOOST while the afterburner burst is
+/// active; `push` is the barrel roll's direction while it spins (else 0).
+/// Updates `player.x/y` and `flight`.
 #[inline(always)]
 pub fn step(player: &mut Vec3, flight: &mut Flight, bits: u8, push: i8) {
     #[cfg(target_arch = "mos")]
@@ -113,11 +117,12 @@ fn axis(position: &mut i16, frac: &mut u8, velocity: &mut i16, target: i16, edge
 /// Bit-exact host reference of `fast_flight_step`.
 #[cfg(not(target_arch = "mos"))]
 pub fn step_reference(player: &mut Vec3, flight: &mut Flight, bits: u8, push: i8) {
-    use super::{DOWN, LEFT, RIGHT, UP};
+    use super::{BOOST, DOWN, LEFT, RIGHT, UP};
     let dx = (bits & RIGHT != 0) as i16 - (bits & LEFT != 0) as i16;
     let dy = (bits & UP != 0) as i16 - (bits & DOWN != 0) as i16;
-    let target_x = dx * V_MAX_X + push as i16 * V_PUSH;
-    let target_y = dy * V_MAX_Y;
+    let boosting = bits & BOOST != 0;
+    let target_x = dx * if boosting { V_BOOST_X } else { V_MAX_X } + push as i16 * V_PUSH;
+    let target_y = dy * if boosting { V_BOOST_Y } else { V_MAX_Y };
     let dvx = axis(
         &mut player.x,
         &mut flight.frac[0],
@@ -143,7 +148,8 @@ pub fn step_reference(player: &mut Vec3, flight: &mut Flight, bits: u8, push: i8
     flight.bank = flight
         .bank
         .wrapping_add(delta(bank_target.wrapping_sub(flight.bank), 3));
-    let pitch_target = -(target_y << 2);
+    // Extra thrust changes speed without increasing the hull's climb angle.
+    let pitch_target = -((dy * V_MAX_Y) << 2);
     flight.pitch = flight
         .pitch
         .wrapping_add(delta(pitch_target.wrapping_sub(flight.pitch), 3));
@@ -152,7 +158,7 @@ pub fn step_reference(player: &mut Vec3, flight: &mut Flight, bits: u8, push: i8
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::game::{DOWN, LEFT, RIGHT, UP};
+    use crate::game::{BOOST, DOWN, LEFT, RIGHT, UP};
 
     fn fly(player: &mut Vec3, flight: &mut Flight, inputs: impl IntoIterator<Item = (u8, i8)>) {
         for (bits, push) in inputs {
@@ -175,7 +181,7 @@ mod tests {
         let mut flight = Flight::ZERO;
         for _ in 0..40 {
             // Held gestures of random length, including rolls into the walls.
-            let bits = (next() & 15) as u8;
+            let bits = (next() & (15 | BOOST as u32)) as u8;
             let push = [0i8, 1, -1, 0][(next() % 4) as usize];
             let length = 1 + next() % 90;
             fly(&mut player, &mut flight, (0..length).map(|_| (bits, push)));
@@ -235,5 +241,56 @@ mod tests {
         }
         assert!(flight.bank > 8 * 256, "banks the other way while braking");
         assert_eq!(flight.pitch, 0);
+    }
+
+    #[test]
+    fn boost_accelerates_both_axes_and_releasing_it_smoothly_returns_to_cruise() {
+        let mut normal = (Vec3 { x: 0, y: 0, z: 180 }, Flight::ZERO);
+        let mut boosted = normal;
+        for _ in 0..10 {
+            step_reference(&mut normal.0, &mut normal.1, RIGHT | UP, 0);
+            step_reference(&mut boosted.0, &mut boosted.1, RIGHT | UP | BOOST, 0);
+        }
+        for axis in 0..2 {
+            // Fixed-point rounding is tiny compared with the 50% speed gain.
+            assert!((boosted.1.vel[axis] * 2 - normal.1.vel[axis] * 3).abs() <= 16);
+        }
+        assert!(boosted.0.x > normal.0.x && boosted.0.y > normal.0.y);
+        assert_eq!(boosted.1.pitch, normal.1.pitch);
+
+        let mut player = Vec3 {
+            x: -90,
+            y: 0,
+            z: 180,
+        };
+        let mut flight = Flight {
+            vel: [V_BOOST_X, 0],
+            ..Flight::ZERO
+        };
+        step_reference(&mut player, &mut flight, RIGHT, 0);
+        assert!(flight.vel[0] > V_MAX_X && flight.vel[0] < V_BOOST_X);
+        fly(&mut player, &mut flight, (0..200).map(|_| (0, 0)));
+        assert_eq!(flight.vel, [0, 0]);
+    }
+
+    #[test]
+    fn boost_preserves_pitch_limits_and_roll_push_without_a_stick_command() {
+        for bits in [UP, DOWN] {
+            let mut normal = (Vec3 { x: 0, y: 0, z: 180 }, Flight::ZERO);
+            let mut boosted = normal;
+            for _ in 0..200 {
+                fly(&mut normal.0, &mut normal.1, [(bits, 0)]);
+                fly(&mut boosted.0, &mut boosted.1, [(bits | BOOST, 0)]);
+                assert_eq!(boosted.1.pitch, normal.1.pitch);
+            }
+            assert_eq!(boosted.1.pitch.abs(), 11 * 256);
+        }
+        for push in [-1, 0, 1] {
+            let mut normal = (Vec3 { x: 0, y: 0, z: 180 }, Flight::ZERO);
+            let mut boosted = normal;
+            fly(&mut normal.0, &mut normal.1, (0..50).map(|_| (0, push)));
+            fly(&mut boosted.0, &mut boosted.1, (0..50).map(|_| (BOOST, push)));
+            assert_eq!(normal, boosted);
+        }
     }
 }

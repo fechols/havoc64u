@@ -10,7 +10,7 @@ fn populated(stage: u8) -> Game {
     game.reset_scene(Mode::Playing, stage, 0);
     game.player.y = 32;
     game.boss_started = true;
-    game.boss_z = 800;
+    game.bosses[0].pos.z = 800;
     for (i, actor) in game.actors.iter_mut().enumerate() {
         *actor = Actor {
             kind: if i & 1 == 0 {

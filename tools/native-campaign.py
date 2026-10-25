@@ -45,8 +45,23 @@ def pilot_target(state, image, finish_boss=True):
     stage = state["stage_id"]
     target = (0, 0)
     if state["boss_started"] and not state["boss_defeated"]:
-        target = (-100 if state["boss_left"] else 100 if state["boss_right"] or not finish_boss else 0,
-                  30 if state["boss_left"] or state["boss_right"] or not finish_boss else 0)
+        if "bosses" in state:
+            phase = state["boss_phase"]
+            divisor = (1, 4, 8)[phase]
+            for boss in state["bosses"][:1 << phase]:
+                if not boss["core"]:
+                    continue
+                x, y = boss["pos"]["x"], boss["pos"]["y"]
+                if boss["left"]:
+                    target = x - 130 // divisor, y + 30 // divisor
+                elif boss["right"] or not finish_boss:
+                    target = x + 130 // divisor, y + 30 // divisor
+                else:
+                    target = x, y
+                break
+        else:
+            target = (-100 if state["boss_left"] else 100 if state["boss_right"] or not finish_boss else 0,
+                      30 if state["boss_left"] or state["boss_right"] or not finish_boss else 0)
     else:
         targets = [actor for actor in state["actors"]
                    if actor["kind"] and 0 < actor["hp"] < 255
@@ -110,7 +125,8 @@ def campaign(mon, syms, failures, elf, dwarf, output, report):
         report["geometry_frames_checked"] = frame + 1
         stage, mode = state["stage_id"], state["mode"]
         visited.add(stage)
-        checkpoint = (stage, mode, state["lives"], state["boss_defeated"])
+        checkpoint = (stage, mode, state["lives"], state["boss_defeated"],
+                      state.get("boss_phase", 0), bool(state.get("boss_split_ticks", 0)))
         if checkpoint != previous:
             counters = vice.counters(mon, syms)
             if counters["frame_dropped"] or counters["input_overflows"] or counters.get("music_underruns", 0):
@@ -120,6 +136,9 @@ def campaign(mon, syms, failures, elf, dwarf, output, report):
             row = {key: state[key] for key in ("stage_id", "mode", "rail_ticks", "ticks", "lives", "shield", "score",
                                                "boss_started", "boss_defeated", "boss_left", "boss_right", "boss_core")}
             row["frame"] = frame
+            if "bosses" in state:
+                row.update(bosses=state["bosses"], boss_phase=state["boss_phase"],
+                           boss_split_ticks=state["boss_split_ticks"])
             row["stage_ticks"] = state.get("stage_ticks", state["rail_ticks"] - stage * 3750)
             row["counters"] = counters
             report["checkpoints"].append(row)
@@ -145,7 +164,7 @@ def campaign(mon, syms, failures, elf, dwarf, output, report):
                 bits &= ~12
             elif not avoiding and frame % 12 in (1, 3):
                 bits = (bits & ~8) | 4
-            if state["boss_started"] and frame % 48 in (0, 2):
+            if state["boss_started"] and not state.get("boss_split_ticks", 0) and frame % 48 in (0, 2):
                 bits &= ~16
         if bits != last_bits:
             mon.command(f"jpdb 1 ${(31 ^ bits):02x}")

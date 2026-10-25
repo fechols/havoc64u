@@ -138,6 +138,50 @@ class CampaignTools(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "initialized boss health"):
                 vice.full_boss_health(dict(zip(("boss_left", "boss_right", "boss_core"), health)))
 
+    def test_array_boss_reports_and_legacy_fixture_paths_follow_dwarf_offsets(self):
+        fields = {"bosses": {"offset": 50, "type": "havoc::game::BossInstance[4]"}}
+        boss_fields = {"pos": {"offset": 0, "type": "havoc::Vec3"},
+                       **{name: {"offset": 6 + index, "type": "u8"}
+                          for index, name in enumerate(("left", "right", "core", "flash"))}}
+        vec_fields = {name: {"offset": 2 * index, "type": "i16"}
+                      for index, name in enumerate(("x", "y", "z"))}
+        vice.add_boss_layout_fields(fields, boss_fields, vec_fields, 10)
+        self.assertEqual(fields["boss_z"], fields["bosses[0].pos.z"])
+        self.assertEqual(fields["boss_hit_flash_ticks"], fields["bosses[0].flash"])
+        self.assertEqual(fields["bosses[3].core"]["offset"], 88)
+        layouts = bench.Layouts(None, None, None)
+        layouts.structs = {"Game": {"size": 90, "fields": {"bosses": fields["bosses"]}},
+                           "BossInstance": {"size": 10, "fields": boss_fields},
+                           "Vec3": {"size": 6, "fields": vec_fields}}
+        raw = bytearray(90)
+        layouts.patch(raw, "Game", "boss_left", 40)
+        layouts.patch(raw, "Game", "bosses[3].core", 30)
+        self.assertEqual((raw[56], raw[88]), (40, 30))
+        state = dict(bosses=[dict(pos=dict(x=0, y=0, z=680), left=40, right=40, core=120, flash=0)])
+        self.assertEqual(vice.full_boss_health(state), dict(boss_left=40, boss_right=40, boss_core=120))
+        self.assertEqual(vice.logical_game_state(state)["boss_z"], 680)
+
+    def test_split_boss_fixtures_seed_full_waves_and_saturated_shots(self):
+        split = [fixture for fixture in bench.fixtures(True, True, True, split_boss=True)
+                 if "boss_phase" in fixture["patch"]]
+        self.assertEqual(len(split), 4)
+        for fixture in split:
+            patch = fixture["patch"]
+            phase = patch["boss_phase"]
+            count = 1 << phase
+            self.assertEqual(patch["boss_split_ticks"], 0)
+            self.assertEqual(sum(patch[f"bosses[{index}].core"] for index in range(count)), 120)
+            self.assertTrue(all(patch[f"shots[{index}].kind"] in (1, 2) for index in range(24)))
+            self.assertEqual(patch[f"bosses[{count - 1}].pos.z"], 500)
+
+    def test_original_boss_fixture_clears_previous_split_state(self):
+        fields = {"boss_phase": {}, "boss_split_ticks": {}}
+        self.assertEqual(vice.clock_fixture(dict(boss_started=1, boss_z=680), fields, 18),
+                         dict(boss_started=1, boss_z=680, boss_phase=0, boss_split_ticks=0,
+                              **{"bosses[0].pos.x": 0, "bosses[0].pos.y": 0}))
+        split = dict(boss_started=1, boss_phase=2, boss_split_ticks=17)
+        self.assertEqual(vice.clock_fixture(split, fields, 18), split)
+
     def test_music_selection_defaults_to_complete_package_and_rejects_unknown_cues(self):
         self.assertEqual(vice.music_cue_selection(13, None), list(range(13)))
         self.assertEqual(vice.music_cue_selection(21, None), list(range(21)))

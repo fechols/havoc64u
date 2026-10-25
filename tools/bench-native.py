@@ -78,6 +78,8 @@ class Layouts:
         return self.size(array[1]) * int(array[2]) if array else self.load(name)["size"]
 
     def member(self, name, path):
+        if name.rsplit("::", 1)[-1] == "Game" and "bosses" in self.load(name)["fields"]:
+            path = vice.BOSS_FIELD_PATHS.get(path, path)
         offset = 0
         for part in re.findall(r"[a-zA-Z_][a-zA-Z_0-9]*|\d+", path):
             array = self.array(name)
@@ -221,9 +223,9 @@ class SustainedBoundary(Exception):
     """The next IRQ entry is the exact end of the requested tick window."""
 
 
-def selected_fixtures(args, package_format, boss_health=None):
+def selected_fixtures(args, package_format, boss_health=None, split_boss=False):
     available = fixtures(package_format["medal"], package_format["campaign"],
-                         package_format["space"], boss_health)
+                         package_format["space"], boss_health, split_boss)
     if args.sfx_workloads:
         by_name = {fixture["name"]: fixture for fixture in available}
         return [dict(by_name[source], name="sfx-" + name, sfx_schedule=list(schedule))
@@ -245,7 +247,7 @@ def stage_metadata(package, stage):
     return dict(zip(STAGE_FIELDS, package[start:start+8]))
 
 
-def fixtures(include_victory=True, campaign=False, space=False, boss_health=None):
+def fixtures(include_victory=True, campaign=False, space=False, boss_health=None, split_boss=False):
     boss_health = boss_health or dict(boss_left=20, boss_right=20, boss_core=60)
     count = 18 if space else 12 if campaign else 4
     matching = (0, 2, 6, 11) if campaign else (0, 1, 2, 3)
@@ -345,6 +347,28 @@ def fixtures(include_victory=True, campaign=False, space=False, boss_health=None
                          **boss_health)
             result.append({"name": f"boss-{label}", "patch": patch,
                            "section": section, "cache_miss": False, "input_bits": 0})
+        if space and split_boss:
+            for phase in (1, 2):
+                for exposed in (False, True):
+                    patch = dict(result[1]["patch"], rail_ticks=17*3750+3000,
+                                 spawn_segment=17, boss_started=1, boss_defeated=0,
+                                 boss_phase=phase, boss_split_ticks=0)
+                    for index in range(1 << phase):
+                        x = (-74 if index == 0 else 74) if phase == 1 else (-55 if index & 1 == 0 else 55)
+                        y = 0 if phase == 1 else (-40 if index < 2 else 40)
+                        for member, value in {"pos.x": x, "pos.y": y, "pos.z": 500,
+                                              "left": 0 if exposed else 40 >> phase,
+                                              "right": 0 if exposed else 40 >> phase,
+                                              "core": 120 >> phase, "flash": 0}.items():
+                            patch[f"bosses[{index}].{member}"] = value
+                    for index in range(24):
+                        for member, value in {"kind": 1 if index & 1 else 2, "damage": 4,
+                                              "pos.x": (index % 6) * 30 - 75,
+                                              "pos.y": (index // 6) * 25 - 40,
+                                              "pos.z": 250 + index * 4}.items():
+                            patch[f"shots[{index}].{member}"] = value
+                    result.append({"name": f"boss-gate-guardian-phase-{phase+1}-{'exposed' if exposed else 'protected'}",
+                                   "patch": patch, "section": 17, "cache_miss": False, "input_bits": 0})
     if space:
         for section in (12, 14, 15, 16):
             patch = dict(result[1]["patch"], rail_ticks=section*3750+625, spawn_segment=section)
@@ -636,7 +660,7 @@ def main():
         parser.error("digital-package benchmark fixtures require --audio-backend sfx; "
                      "their EffectsEngine snapshots cannot restore DAC state")
     sid_count = package_image[17]
-    chosen = selected_fixtures(args, package_format)
+    chosen = selected_fixtures(args, package_format, split_boss=True)
     ticks_values = list(map(int, args.ticks.split(",")))
     palettes = args.palettes.split(",")
     if not 0 <= args.max_frame_regression < 100:
@@ -740,7 +764,9 @@ def main():
         mon.command("bank cpu")
         report["initial_game"] = layouts.decode("Game", initial_game)
         boss_health = vice.full_boss_health(report["initial_game"])
-        chosen = selected_fixtures(args, package_format, boss_health)
+        chosen = selected_fixtures(args, package_format, boss_health, "bosses" in report["initial_game"])
+        if not chosen:
+            raise RuntimeError("Selected boss-phase fixtures require the four-boss game layout")
         report.update(full_boss_health=boss_health, fixtures=chosen,
                       fixture_sha256=semantic_hash(chosen))
         inspection = BinaryInspection(mon, output / "inspection")

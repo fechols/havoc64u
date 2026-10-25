@@ -5,15 +5,16 @@
 ;   player: x @0, y @2 (i16 world units; the Q8 position's high bytes)
 ;   flight: frac[2] @0 (low bytes), vel[2] @2 (Q8 units/tick), bank @6,
 ;           pitch @8 (Q8 of 256ths of a turn)
-; Per axis: target = stick (RIGHT/LEFT ±768, UP/DOWN ±704) plus push × 640
-; on x; the velocity moves 3/32 of the way to the target (the shifted
+; Per axis: target = stick (RIGHT/LEFT ±768, UP/DOWN ±704, or ±1152/±1056
+; while BOOST bit $20 is set) plus the unchanged push × 640 on x;
+; the velocity moves 3/32 of the way to the target (the shifted
 ; magnitude, at least one unit while any error remains, so it settles
 ; exactly); then the wall: on the near side of the arena (sign of the
 ; position) v <= (EDGE + 7 - q) >> 3 or v >= -((EDGE + 7 + q) >> 3) with
 ; EDGE 25600 (x) / 16640 (y); q += v; player gets the sign-extended high
 ; byte, frac the low byte. The bank target is -dv_x (units of 1/256 turn)
 ; unless |dv_x| <= 1, clamped to ±20, times 256; the pitch target is
-; -(target_y << 2); both angles move 1/8 of their error per tick, with
+; -(unboosted target_y << 2); both angles move 1/8 of their error per tick, with
 ; the same magnitude rule. Only caller-saved rc2..19 and A/X/Y change;
 ; no scratch RAM or stack frame beyond three JSR levels.
 .zeropage __rc2
@@ -47,6 +48,7 @@
 .set FL_NZ, __rc17              ; delta_mag: error nonzero; then dv high
 .set FL_DV, __rc16
 .set FL_AX, __rc18              ; axis index 0 (x) or 1 (y)
+.set FL_BOOST, __rc19           ; table bank offset: normal 0, boosted 4
 
 .section .text.fast_flight_step,"ax",@progbits
 .globl fast_flight_step
@@ -54,10 +56,17 @@
 fast_flight_step:
     sta FL_BITS
     stx FL_PUSH
+    lsr
+    lsr
+    lsr
+    and #4
+    sta FL_BOOST
     ; ---- x target: RIGHT +768, LEFT -768 by stick bits 3:2, plus the push
+    lda FL_BITS
     lsr
     lsr
     and #3
+    ora FL_BOOST
     tax
     ldy FL_PUSH
     iny                         ; -1, 0, 1 -> 0, 1, 2
@@ -112,6 +121,7 @@ fast_flight_step:
     ; ---- y target: UP +704, DOWN -704 by stick bits 1:0
     lda FL_BITS
     and #3
+    ora FL_BOOST
     tax
     lda .Lfl_y_targets_lo,x
     sta FL_T
@@ -121,18 +131,14 @@ fast_flight_step:
     sta FL_AX
     lda #$41                    ; EDGE_Y + 7 = $4107
     sta FL_EDGE_HI
-    jsr .Lfl_axis               ; leaves the y target in FL_T
-    ; ---- pitch target = -(T << 2)
-    asl FL_T
-    rol FL_T+1
-    asl FL_T
-    rol FL_T+1
-    sec
+    jsr .Lfl_axis
+    ; ---- pitch target uses the normal climb command, even while boosting
+    lda FL_BITS
+    and #3
+    tax
     lda #0
-    sbc FL_T
     sta FL_T
-    lda #0
-    sbc FL_T+1
+    lda .Lfl_pitch_targets_hi,x
     sta FL_T+1
     ldy #8
     jmp .Lfl_angle
@@ -356,15 +362,18 @@ fast_flight_step:
     rts
 
 ; stick targets by bits 3:2 (x: none, LEFT, RIGHT, both) and 1:0 (y: none,
-; UP, DOWN, both); the push by direction + 1
+; UP, DOWN, both). The second bank of four entries is the boosted target.
+; The push is indexed by direction + 1 and is never scaled by boost.
 .Lfl_x_targets_lo:
-    .byte $00, $00, $00, $00
+    .byte $00, $00, $00, $00, $00, $80, $80, $00
 .Lfl_x_targets_hi:
-    .byte $00, $fd, $03, $00
+    .byte $00, $fd, $03, $00, $00, $fb, $04, $00
 .Lfl_y_targets_lo:
-    .byte $00, $c0, $40, $00
+    .byte $00, $c0, $40, $00, $00, $20, $e0, $00
 .Lfl_y_targets_hi:
-    .byte $00, $02, $fd, $00
+    .byte $00, $02, $fd, $00, $00, $04, $fb, $00
+.Lfl_pitch_targets_hi:
+    .byte $00, $f5, $0b, $00    ; normal climb command × -4; low byte is zero
 .Lfl_push_lo:
     .byte $80, $00, $80
 .Lfl_push_hi:

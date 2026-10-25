@@ -4,10 +4,11 @@
 Usage: python3 tools/test-flight-kernel.py
 Requires LLVM-MOS's mos-sim-clang and mos-sim. The harness compares
 fast_flight_step (the native body of Game::move_player: the stick's target
-velocity, the 3/32 lag with its exact-settling magnitude rule, the soft
+velocity (including BOOST's 1.5x steering targets), the 3/32 lag with its
+exact-settling magnitude rule, the soft
 arena wall, the Q8 position split over the player coordinate and its
 fraction, the coordinated bank from the lateral velocity change and the
-pitch from the vertical target) with a C transcription of the Rust
+pitch from the unboosted vertical target) with a C transcription of the Rust
 reference (src/game/flight.rs step_reference) in release-mode arithmetic:
 wrapping 16-bit differences, arithmetic shifts, truncating halves.
 Trajectories hold every stick pattern with every push from rest and
@@ -61,12 +62,13 @@ static int16_t clamp20(int16_t v){ return v < -20 ? -20 : (v > 20 ? 20 : v); }
 static void reference(struct Vec3 *p, struct Flight *f, uint8_t bits, int8_t push){
   int16_t dx = (int16_t)(((bits & 8) != 0) - ((bits & 4) != 0));
   int16_t dy = (int16_t)(((bits & 1) != 0) - ((bits & 2) != 0));
-  int16_t tx = w16(dx * 768 + push * 640), ty = w16(dy * 704);
+  int16_t tx = w16(dx * ((bits & 32) ? 1152 : 768) + push * 640);
+  int16_t ty = w16(dy * ((bits & 32) ? 1056 : 704));
   int16_t dvx = axis(&p->x, &f->frac[0], &f->vel[0], tx, 25600);
   axis(&p->y, &f->frac[1], &f->vel[1], ty, 16640);
   int16_t bt = (dvx >= -1 && dvx <= 1) ? 0 : w16((int32_t)clamp20(w16(-(int32_t)dvx)) << 8);
   f->bank = w16((int32_t)f->bank + delta(w16((int32_t)bt - f->bank), 3));
-  int16_t pt = w16(-(int32_t)w16((int32_t)ty << 2));
+  int16_t pt = w16(-(int32_t)w16((int32_t)(dy * 704) << 2));
   f->pitch = w16((int32_t)f->pitch + delta(w16((int32_t)pt - f->pitch), 3));
 }
 static uint32_t state=0x2545F491u;
@@ -104,14 +106,21 @@ static struct Flight random_flight(int wide){
   return f;
 }
 int main(void){
-  /* trajectories: every stick pattern (FIRE set on half of them) with every push, held then released, from rest and from the far corners */
+  /* trajectories: every stick/FIRE/BOOST pattern with every push, held then released, from rest and from the far corners */
   static const int16_t corners[][2]={{0,0},{100,65},{-100,-65},{99,-64},{-1,1}};
-  for(uint8_t corner=0;corner<5;corner++) for(uint8_t bits=0;bits<32;bits++) for(int8_t push=-1;push<=1;push++){
+  for(uint8_t corner=0;corner<5;corner++) for(uint8_t bits=0;bits<64;bits++) for(int8_t push=-1;push<=1;push++){
     struct Vec3 p=rest(); p.x=corners[corner][0]; p.y=corners[corner][1];
     start(p, still());
     for(uint8_t t=0;t<70;t++) if(check(bits,push)) return 1;
     for(uint8_t t=0;t<70;t++) if(check(0,0)) return 1;
     for(uint8_t t=0;t<40;t++) if(check((uint8_t)(bits ^ 15),(int8_t)-push)) return 1;
+  }
+  /* Start/end a full 100-tick burst without releasing the directional stick. */
+  for(uint8_t bits=0;bits<16;bits++) for(int8_t push=-1;push<=1;push++){
+    start(rest(), still());
+    for(uint8_t t=0;t<10;t++) if(check(bits,push)) return 1;
+    for(uint8_t t=0;t<100;t++) if(check(bits | 32,push)) return 1;
+    for(uint8_t t=0;t<100;t++) if(check(bits,push)) return 1;
   }
   /* random single steps from arbitrary states, realistic and wrapping */
   for(uint16_t t=0;t<12000;t++){
@@ -159,7 +168,12 @@ cycles = {}
 def cycle_count(run):
     text = (run.stderr.strip() or run.stdout.strip()).split()
     return int(text[0]) if run.stderr.strip() else int(text[-2])
-for name, bits, push, steps in [("held diagonal with push", 9, 1, 1000), ("idle at rest", 0, 0, 1000), ("baseline (no steps)", 0, 0, 0)]:
+for name, bits, push, steps in [
+    ("held diagonal with push", 9, 1, 1000),
+    ("boosted diagonal with push", 41, 1, 1000),
+    ("idle at rest", 0, 0, 1000),
+    ("baseline (no steps)", 0, 0, 0),
+]:
     src = timing.replace("STEPS", str(steps)).replace("BITS", str(bits)).replace("PUSH", str(push))
     (build/"timing.c").write_text(src, encoding="utf-8")
     subprocess.run([sdk/"mos-sim-clang", "-Os", "-mlto-zp=0", build/"timing.c", *assemblies, "-o", build/"timing"], check=True)

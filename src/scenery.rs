@@ -3,6 +3,8 @@
 use crate::assets::{Segment, StageInfo};
 use crate::game::STATIC_SKY;
 use crate::{GeometrySink, Vec3, EXTERIOR_TERRAIN};
+#[cfg(test)]
+mod cave_tests;
 mod space;
 
 /// Native scenery always writes the renderer's bounded staging buffer. Keeping
@@ -19,7 +21,7 @@ pub(crate) static SKY_COLORS: [u8; 10] = [6, 8, 11, 4, 0, 11, 8, 11, 6, 4];
 
 /// Frame setup selects this color while the SCENERY overlay is loaded.
 #[inline(never)]
-#[cfg_attr(target_arch = "mos", link_section = ".phase.scenery")]
+#[cfg_attr(target_arch = "mos", link_section = ".phase.scenery_extra")]
 pub fn sky_color(theme: u8, transition: Option<(u8, u16)>) -> u8 {
     if theme >= 10 {
         return 0;
@@ -38,15 +40,21 @@ pub fn sky_color(theme: u8, transition: Option<(u8, u16)>) -> u8 {
     let from = SKY_COLORS[theme as usize];
     if let Some((next_theme, elapsed)) = transition {
         let to = SKY_COLORS[next_theme as usize];
+        if next_theme == 4 {
+            // The moving mouth supplies its own dark interior. Change the
+            // bitmap background only once the entrance covers the whole sky.
+            return if elapsed < 399 { from } else { to };
+        }
+        if theme == 4 {
+            return cave_light(to, elapsed);
+        }
         if from == to || elapsed < 100 {
             from
         } else if elapsed < 200 {
             14
-        } else if elapsed < 300 && next_theme != 4 {
+        } else if elapsed < 300 {
             12
         } else {
-            // The cave facets switch on at the midpoint. Darken the opening
-            // with them, keeping its overlapping roof/crystals to three inks.
             to
         }
     } else {
@@ -55,20 +63,26 @@ pub fn sky_color(theme: u8, transition: Option<(u8, u16)>) -> u8 {
 }
 
 #[test]
-fn cave_entry_darkens_with_its_midpoint_facets() {
+fn cave_sky_follows_the_mouth_instead_of_the_generic_midpoint() {
     assert_eq!(sky_color(0, Some((4, 0))), 6);
-    assert_eq!(sky_color(0, Some((4, 100))), 14);
-    assert_eq!(sky_color(0, Some((4, 199))), 14);
-    assert_eq!(sky_color(0, Some((4, 200))), 0);
+    assert_eq!(sky_color(0, Some((4, 100))), 6);
+    assert_eq!(sky_color(0, Some((4, 199))), 6);
+    assert_eq!(sky_color(0, Some((4, 200))), 6);
     assert_eq!(sky_color(0, Some((4, 399))), 0);
-    assert_eq!(sky_color(4, Some((1, 200))), 12);
+    assert_eq!(sky_color(4, Some((1, 0))), 0);
+    assert_eq!(sky_color(4, Some((1, 100))), 8);
+    assert_eq!(sky_color(4, Some((1, 200))), 8);
 }
 
 /// Bound on authored scenery records before culling and near-plane clipping.
 /// This limits staging; the projected count determines foreground capacity.
 #[inline(always)]
 pub fn raw_face_limit(transition: Option<(u8, u16)>) -> u16 {
-    if transition.is_some() {
+    if matches!(transition, Some((1, _))) {
+        // Cave exit retains both backdrops while lifting the roof. The raw
+        // staging allocation already holds 96; no foreground RAM is added.
+        96
+    } else if transition.is_some() {
         80
     } else {
         70
@@ -430,6 +444,19 @@ fn land(sink: &mut SceneSink<'_>, context: &Decoration, drop: i16) {
         }
         first = last;
     }
+    backdrop(sink, &info, if transition { elapsed } else { 400 }, drop);
+}
+
+/// Ordinary crossings morph their backdrop. A cave has a separate entrance
+/// silhouette, so rock never turns into a cloud or collapses into a mountain.
+#[inline(never)]
+#[cfg_attr(target_arch = "mos", link_section = ".phase.scenery")]
+fn backdrop(sink: &mut SceneSink<'_>, info: &StageInfo, elapsed: u16, drop: i16) {
+    let transition = elapsed < 400 && info.next_theme < 10;
+    if transition && (info.theme == 4 || info.next_theme == 4) && elapsed > 0 && elapsed < 399 {
+        cave_backdrop(sink, info, elapsed);
+        return;
+    }
     for face in 0..14 {
         let (mut points, mut color) = backdrop_face(info.theme, face);
         if transition {
@@ -451,6 +478,135 @@ fn land(sink: &mut SceneSink<'_>, context: &Decoration, drop: i16) {
         }
         // STATIC_SKY marks the far backdrop for the projector's parallax
         // drift, also while a crossing blends it, so the drift never jumps.
+        sink.triangle(points[0], points[1], points[2], color, STATIC_SKY);
+    }
+}
+
+// The same luminance steps as the victory fade, reversed for daylight beyond
+// the cave. Keep the small table in SCENERY: victory GEOMETRY is not loaded here.
+#[cfg_attr(target_arch = "mos", link_section = ".phase.scenery_extra.data")]
+static CAVE_LIGHT: [[u8; 16]; 5] = [
+    [0, 11, 0, 0, 0, 0, 0, 11, 0, 0, 0, 0, 0, 0, 0, 0],
+    [0, 11, 0, 11, 0, 0, 0, 11, 0, 0, 11, 0, 0, 0, 0, 0],
+    [0, 12, 0, 9, 11, 11, 0, 9, 11, 0, 9, 0, 0, 9, 0, 11],
+    [0, 15, 2, 14, 9, 9, 6, 8, 9, 11, 8, 11, 11, 5, 6, 12],
+    [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
+];
+
+#[inline(never)]
+#[cfg_attr(target_arch = "mos", link_section = ".phase.scenery_extra")]
+fn cave_light(color: u8, elapsed: u16) -> u8 {
+    if elapsed == 0 {
+        0
+    } else if elapsed >= 100 {
+        color
+    } else {
+        CAVE_LIGHT[(elapsed / 20) as usize][color as usize]
+    }
+}
+
+/// A shared projected-space pose keeps crystals attached despite their three
+/// different depths. Positive camera Y moves upward. Preserve Z, including
+/// the ceiling's occlusion of the farther crystal roots.
+/// These helpers occupy retired pixel workspace, keeping the composed
+/// scenery images inside their existing execution window.
+#[inline(never)]
+#[cfg_attr(target_arch = "mos", link_section = ".phase.scenery_aux")]
+fn cave_pose(points: &mut [Vec3; 3], elapsed: u16, entering: bool) {
+    let amount = weight(elapsed);
+    let scale = if entering {
+        64 + crate::math::mul_q8(192, amount)
+    } else {
+        256
+    };
+    // Entry starts ~200 pixels below its final pose (top below the viewport).
+    // Exit travels ~150 pixels: even the wall feet clear the top with parallax.
+    let rise = if entering {
+        -(384 - amount - amount / 2)
+    } else {
+        crate::math::mul_q8(288, amount)
+    };
+    for point in points {
+        point.x = crate::math::mul_q8(point.x, scale);
+        point.y = crate::math::mul_q8(point.y, scale) + crate::math::mul_q8(point.z, rise);
+    }
+}
+
+#[inline(never)]
+#[cfg_attr(target_arch = "mos", link_section = ".phase.scenery_aux")]
+fn far_backdrop_face(sink: &mut SceneSink<'_>, mut points: [Vec3; 3], color: u8) {
+    // Double both position and replay parallax. Projection stays identical,
+    // while even the outdoor horizon sorts behind the farthest crystal.
+    for point in &mut points {
+        point.x *= 2;
+        point.y *= 2;
+        point.z *= 2;
+    }
+    sink.triangle(
+        points[0],
+        points[1],
+        points[2],
+        color,
+        STATIC_SKY | crate::render::DOUBLE_SKY_DEPTH,
+    );
+}
+
+#[inline(never)]
+#[cfg_attr(target_arch = "mos", link_section = ".phase.scenery")]
+fn cave_backdrop(sink: &mut SceneSink<'_>, info: &StageInfo, elapsed: u16) {
+    let entering = info.next_theme == 4;
+    let outside = if entering {
+        info.theme
+    } else {
+        info.next_theme
+    };
+    for face in 0..14 {
+        let (points, color) = backdrop_face(outside, face);
+        far_backdrop_face(
+            sink,
+            points,
+            if entering {
+                color
+            } else {
+                cave_light(color, elapsed)
+            },
+        );
+    }
+    if entering {
+        // Black fills only the approaching silhouette, behind its rock and
+        // crystals but in front of the outdoor backdrop. The floor remains
+        // ordinary foreground terrain. Never lift this mask during exit.
+        let corners = [
+            Vec3 {
+                x: -2816,
+                y: -2048,
+                z: 2350,
+            },
+            Vec3 {
+                x: -2816,
+                y: 1992,
+                z: 2350,
+            },
+            Vec3 {
+                x: 2816,
+                y: 1992,
+                z: 2350,
+            },
+            Vec3 {
+                x: 2816,
+                y: -2048,
+                z: 2350,
+            },
+        ];
+        for face in 0..2 {
+            let mut points = [corners[0], corners[face + 1], corners[face + 2]];
+            cave_pose(&mut points, elapsed, true);
+            far_backdrop_face(sink, points, 0);
+        }
+    }
+    for face in 0..14 {
+        let (mut points, color) = backdrop_face(4, face);
+        cave_pose(&mut points, elapsed, entering);
         sink.triangle(points[0], points[1], points[2], color, STATIC_SKY);
     }
 }
@@ -1297,14 +1453,9 @@ mod tests {
     fn backdrops_keep_camera_facing_winding_through_every_transition() {
         for info in &STAGE_INFOS[..11] {
             for elapsed in 0..400 {
-                for face in 0..14 {
-                    let (mut points, _) = backdrop_face(info.theme, face);
-                    let (destination, _) = backdrop_face(info.next_theme, face);
-                    for (point, target) in points.iter_mut().zip(destination) {
-                        point.x = blend(point.x, target.x, weight(elapsed));
-                        point.y = blend(point.y, target.y, weight(elapsed));
-                        point.z = blend(point.z, target.z, weight(elapsed));
-                    }
+                let mut scene = Capture::default();
+                backdrop(&mut scene, info, elapsed, 0);
+                for (face, (points, _, _)) in scene.0.into_iter().enumerate() {
                     assert!(
                         normal(points)[2] < 0,
                         "backdrop {} -> {} face {face}, tick {elapsed}",
@@ -1488,7 +1639,7 @@ mod tests {
                 for camera in [24, 40, 56] {
                     let scene = capture(start + elapsed, section as u8, transition, camera);
                     assert!(
-                        scene.0.len() <= 80,
+                        scene.0.len() <= raw_face_limit(transition) as usize,
                         "bridge {section} tick {elapsed}: {}",
                         scene.0.len()
                     );
@@ -1718,8 +1869,11 @@ mod tests {
             let x = (head[0].x + head[1].x) / 2;
             let mut clock = crate::transition::TransitionAudio::new();
             let cues = clock.update(Some((2, elapsed)));
-            assert!(cues.events.into_iter().flatten().any(|event|
-                event.pan == crate::audio::spatial_pan(x, head[0].z)));
+            assert!(cues
+                .events
+                .into_iter()
+                .flatten()
+                .any(|event| event.pan == crate::audio::spatial_pan(x, head[0].z)));
             for point in head {
                 let screen_x = crate::projection::project(point).0;
                 assert!(
@@ -1758,22 +1912,33 @@ mod tests {
                 }
                 Effect::Footstep => {
                     let first = geometry.0[8].0[0];
-                    (first.x - CREATURE_POINTS[0][0] as i16 * 2,
-                     first.z - CREATURE_DEPTHS[0] as i16 * 2)
+                    (
+                        first.x - CREATURE_POINTS[0][0] as i16 * 2,
+                        first.z - CREATURE_DEPTHS[0] as i16 * 2,
+                    )
                 }
                 _ => {
                     let first = geometry.0[0].0[0];
-                    (first.x - TRANSPORT_POINTS[TRANSPORT_FACES[0][0] as usize][0] as i16 * 8,
-                     first.z)
+                    (
+                        first.x - TRANSPORT_POINTS[TRANSPORT_FACES[0][0] as usize][0] as i16 * 8,
+                        first.z,
+                    )
                 }
             };
             let mut clock = TransitionAudio::new();
-            let events: Vec<_> = clock.update(Some((profile, tick)))
-                .events.into_iter().flatten().collect();
+            let events: Vec<_> = clock
+                .update(Some((profile, tick)))
+                .events
+                .into_iter()
+                .flatten()
+                .collect();
             assert_eq!(events.len(), 1, "profile {profile}, tick {tick}");
             assert_eq!(events[0].effect, effect);
-            assert_eq!(events[0].pan, crate::audio::spatial_pan(x, z),
-                "profile {profile}, tick {tick}, source ({x},{z})");
+            assert_eq!(
+                events[0].pan,
+                crate::audio::spatial_pan(x, z),
+                "profile {profile}, tick {tick}, source ({x},{z})"
+            );
         }
     }
 

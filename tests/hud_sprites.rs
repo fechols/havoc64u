@@ -10,6 +10,8 @@ fn hud(mode: Mode) -> Hud {
         story_mode: false,
         shield: 75,
         charge: 128,
+        boost: 255,
+        boost_active: false,
         bombs: 2,
         lives: 3,
         score: 12345,
@@ -33,8 +35,8 @@ fn image(corner: u8, state: &DisplayState) -> [u8; 128] {
             // Grey is functional ink only: spent bombs or empty gauge space.
             let bomb = corner == 1 && (9..14).contains(&y) && x % 8 != 0 && x % 8 != 7;
             let gauge = match corner {
-                1 => (16..19).contains(&y) && (7..22).contains(&x),
-                2 => (10..13).contains(&y) && (1..23).contains(&x),
+                2 => ((10..13).contains(&y) && (1..23).contains(&x))
+                    || ((16..19).contains(&y) && (7..22).contains(&x)),
                 3 => (12..15).contains(&y) && (1..23).contains(&x),
                 _ => false,
             };
@@ -117,6 +119,7 @@ fn resource_labels_and_bomb_rectangles_fit_their_four_corner_footprints() {
     assert_eq!(pixel(&inventory, 0, 0), 0);
     let shield = image(2, &state);
     assert_text(&shield, 0, 2, b"SHIELD", 3);
+    assert_text(&shield, 1, 15, b"B", 3);
     assert_eq!(pixel(&shield, 0, 20), 0);
     assert_eq!(pixel(&shield, 11, 20), 0);
     let charge = image(3, &state);
@@ -125,6 +128,7 @@ fn resource_labels_and_bomb_rectangles_fit_their_four_corner_footprints() {
     assert_eq!(pixel(&charge, 23, 20), 0);
     assert_ne!(shield, charge);
     for (x, y) in CORNER_POSITIONS {
+        assert!(y >= 8, "sprite origins must clear the GUI strip");
         assert!(x as usize + 24 <= 160);
         assert!(y as usize + 21 <= 200);
     }
@@ -188,16 +192,14 @@ fn lives_changes_dirty_only_inventory_and_clear_the_old_tens_digit() {
 
 #[test]
 fn gauges_have_grey_empty_space_white_frames_and_status_colors() {
-    for (shield_value, charge_value, boss_value) in [(0, 0, 1), (25, 128, 25), (100, 255, 100)] {
+    for (shield_value, charge_value) in [(0, 0), (25, 128), (100, 255)] {
         let mut status = hud(Mode::Playing);
         status.shield = shield_value;
         status.charge = charge_value;
-        status.boss_shield = boss_value;
         let state = DisplayState::from_hud(&status, 0, None);
         for (corner, x, y, width, fill) in [
             (2, 0, 9, 22, shield_value as usize * 22 / 100),
             (3, 0, 11, 22, charge_value as usize * 22 / 255),
-            (1, 6, 15, 15, boss_value as usize * 15 / 100),
         ] {
             let picture = image(corner, &state);
             for column in 0..width + 2 {
@@ -227,6 +229,7 @@ fn unchanged_visible_fields_and_subpixel_gauge_changes_do_not_dirty_images() {
     status.roll_ticks = 10;
     status.victory_ticks = 20;
     status.boss_kind = 4;
+    status.boss_shield = 100;
     status.story_mode = true;
     status.shield = 76;
     status.charge = 129;
@@ -250,6 +253,70 @@ fn unchanged_visible_fields_and_subpixel_gauge_changes_do_not_dirty_images() {
         DisplayState::from_hud(&status, 0, None).changed_corners(Some(&before)),
         4
     );
+}
+
+#[test]
+fn boost_gauge_tracks_burst_and_cooldown_without_replacing_the_shield() {
+    let mut status = hud(Mode::Playing);
+    let ready = DisplayState::from_hud(&status, 0, None);
+    let shield = image(2, &ready);
+    for active in [false, true] {
+        for value in [0, 1, 85, 128, 170, 254, 255] {
+            status.boost = value;
+            status.boost_active = active;
+            let state = DisplayState::from_hud(&status, 0, None);
+            let picture = image(2, &state);
+            assert_text(&picture, 1, 15, b"B", 3);
+            let fill = value as usize * 15 / 255;
+            for column in 0..17 {
+                assert_eq!(pixel(&picture, 6 + column, 15), 3);
+                assert_eq!(pixel(&picture, 6 + column, 19), 3);
+            }
+            for column in 0..15 {
+                assert_eq!(pixel(&picture, 7 + column, 17), if column < fill { 2 } else { 1 });
+            }
+            for y in 0..15 {
+                for x in 0..24 {
+                    assert_eq!(pixel(&picture, x, y), pixel(&shield, x, y));
+                }
+            }
+            for corner in [0, 1, 3] {
+                assert_eq!(image(corner, &state), image(corner, &ready));
+            }
+        }
+    }
+}
+
+#[test]
+fn boost_pixels_and_active_flash_dirty_only_the_shield_corner() {
+    let mut status = hud(Mode::Playing);
+    status.boost = 128;
+    let baseline = DisplayState::from_hud(&status, 0, None);
+    status.boost = 129;
+    let subpixel = DisplayState::from_hud(&status, 8, None);
+    assert_eq!(subpixel, baseline);
+    assert_eq!(subpixel.changed_corners(Some(&baseline)), 0);
+    status.boost = 255;
+    let full = DisplayState::from_hud(&status, 8, None);
+    assert_eq!(full.changed_corners(Some(&baseline)), 4);
+    status.boost_active = true;
+    let flashing = DisplayState::from_hud(&status, 8, None);
+    assert_eq!(flashing.changed_corners(Some(&full)), 4);
+    assert_text(&image(2, &flashing), 1, 15, b"B", 2);
+    assert_text(&image(2, &full), 1, 15, b"B", 3);
+    for y in 0..21 {
+        for x in 0..24 {
+            if !(15..20).contains(&y) || !(1..4).contains(&x) {
+                assert_eq!(pixel(&image(2, &flashing), x, y), pixel(&image(2, &full), x, y));
+            }
+        }
+    }
+    let same_phase = DisplayState::from_hud(&status, 9, None);
+    assert_eq!(same_phase.changed_corners(Some(&flashing)), 0);
+    let white_phase = DisplayState::from_hud(&status, 16, None);
+    assert_eq!(white_phase.changed_corners(Some(&flashing)), 4);
+    status.boost_active = false;
+    assert_eq!(DisplayState::from_hud(&status, 8, None), full);
 }
 
 #[test]
@@ -330,7 +397,7 @@ fn fps_preserves_tenths_and_is_the_only_sprite_content_in_menu_modes() {
 }
 
 #[test]
-fn mode_transitions_restore_all_corners_and_show_boss_health_only_during_play() {
+fn mode_transitions_restore_all_corners_without_a_sprite_boss_meter() {
     let menu = DisplayState::from_hud(&hud(Mode::Title), 0, Some(100));
     for mode in [
         Mode::Playing,
@@ -344,9 +411,17 @@ fn mode_transitions_restore_all_corners_and_show_boss_health_only_during_play() 
         assert_eq!(state.enabled_mask(), 255);
         assert_eq!(state.changed_corners(Some(&menu)), 15);
         assert_eq!(menu.changed_corners(Some(&state)), 1);
-        assert_eq!(
-            pixel(&image(1, &state), 10, 17),
-            if mode == Mode::Playing { 2 } else { 0 }
-        );
+        let inventory = image(1, &state);
+        for y in 14..21 {
+            for x in 0..24 {
+                assert_eq!(pixel(&inventory, x, y), 0);
+            }
+        }
+        for health in [0, 1, 25, 99] {
+            status.boss_shield = health;
+            let changed = DisplayState::from_hud(&status, 0, Some(100));
+            assert_eq!(changed.changed_corners(Some(&state)), 0);
+            assert_eq!(image(1, &changed), inventory);
+        }
     }
 }

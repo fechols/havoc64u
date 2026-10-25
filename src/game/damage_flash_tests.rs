@@ -110,31 +110,31 @@ fn every_boss_flashes_from_turret_and_exposed_core_damage_only() {
             for part in [-1, 0, 1] {
                 let mut game = running_at(stage);
                 game.boss_started = true;
-                game.boss_z = 680;
+                game.bosses[0].pos.z = 680;
                 let pos = if part == 0 {
-                    game.boss_left = 0;
-                    game.boss_right = 0;
+                    game.bosses[0].left = 0;
+                    game.bosses[0].right = 0;
                     Vec3 {
                         x: 0,
                         y: 0,
-                        z: game.boss_z + BOSS_CORE_Z,
+                        z: game.bosses[0].pos.z + BOSS_CORE_Z,
                     }
                 } else {
                     Vec3 {
                         x: part * BOSS_TURRET_X,
                         y: BOSS_TURRET_Y,
-                        z: game.boss_z + BOSS_TURRET_Z,
+                        z: game.bosses[0].pos.z + BOSS_TURRET_Z,
                     }
                 };
                 shoot(&mut game, &bank, pos, kind, damage);
-                assert_eq!(game.boss_hit_flash_ticks, 21, "stage {stage}, part {part}");
+                assert_eq!(game.bosses[0].flash, 21, "stage {stage}, part {part}");
                 assert_eq!(
                     if part == 0 {
-                        game.boss_core
+                        game.bosses[0].core
                     } else if part < 0 {
-                        game.boss_left
+                        game.bosses[0].left
                     } else {
-                        game.boss_right
+                        game.bosses[0].right
                     },
                     if part == 0 {
                         BOSS_CORE_HP - damage
@@ -145,28 +145,28 @@ fn every_boss_flashes_from_turret_and_exposed_core_damage_only() {
                 game.prepare_damage_feedback_frame();
                 shoot(&mut game, &bank, pos, kind, damage);
                 assert_eq!(
-                    game.boss_hit_flash_ticks, 20,
+                    game.bosses[0].flash, 20,
                     "repeated boss damage must not extend the white phase"
                 );
             }
 
             let mut game = running_at(stage);
             game.boss_started = true;
-            game.boss_z = 680;
+            game.bosses[0].pos.z = 680;
             let core = Vec3 {
                 x: 0,
                 y: 0,
-                z: game.boss_z + BOSS_CORE_Z,
+                z: game.bosses[0].pos.z + BOSS_CORE_Z,
             };
             shoot(&mut game, &bank, core, kind, damage);
             assert_eq!(
-                (game.boss_core, game.boss_hit_flash_ticks),
+                (game.bosses[0].core, game.bosses[0].flash),
                 (BOSS_CORE_HP, 0)
             );
-            game.boss_hit_flash_ticks = 3;
+            game.bosses[0].flash = 3;
             shoot(&mut game, &bank, core, kind, damage);
             assert_eq!(
-                (game.boss_core, game.boss_hit_flash_ticks),
+                (game.bosses[0].core, game.bosses[0].flash),
                 (BOSS_CORE_HP, 3)
             );
         }
@@ -179,27 +179,30 @@ fn boss_bomb_flash_preserves_shielding_and_immediate_destruction() {
         let bank = test_bank(stage);
         let mut game = running_at(stage);
         game.boss_started = true;
-        game.boss_left = 4;
-        game.boss_right = 4;
+        game.bosses[0].left = 4;
+        game.bosses[0].right = 4;
         game.bomb(&bank);
         assert_eq!(
-            (game.boss_left, game.boss_right, game.boss_core),
+            (game.bosses[0].left, game.bosses[0].right, game.bosses[0].core),
             (0, 0, BOSS_CORE_HP)
         );
-        assert_eq!(game.boss_hit_flash_ticks, 21);
-        game.boss_hit_flash_ticks = 2;
+        assert_eq!(game.bosses[0].flash, 21);
+        game.bosses[0].flash = 2;
         game.bomb(&bank);
         assert_eq!(
-            (game.boss_core, game.boss_hit_flash_ticks),
+            (game.bosses[0].core, game.bosses[0].flash),
             (BOSS_CORE_HP - 8, 2)
         );
-        game.boss_core = 8;
+        game.bosses[0].core = 8;
         game.bomb(&bank);
-        assert!(game.boss_defeated);
-        assert_eq!(game.score, 5000);
+        assert_eq!(game.boss_defeated, stage != 17);
+        assert_eq!(game.score, if stage == 17 { 0 } else { 5000 });
         assert!(game.explosions.iter().any(|effect| effect.ticks > 0));
         game.explosions = [Explosion::EMPTY; 6];
-        assert!(capture(&game, &bank, 200).is_empty());
+        if stage == 17 {
+            assert_eq!((game.boss_phase, game.boss_split_ticks), (1, 50));
+            assert!(!capture(&game, &bank, 200).is_empty());
+        } else { assert!(capture(&game, &bank, 200).is_empty()); }
     }
 }
 
@@ -212,7 +215,7 @@ fn projectile_and_control_bomb_hits_start_ten_full_white_ticks_at_the_first_fram
         let mut game = running_at(0);
         game.actors[0] = target(assets::FIGHTER, 0, 520);
         if bomb {
-            game.controls.bomb_pending = true;
+            game.controls.flags |= BOMB_PENDING;
         } else {
             game.shots[0] = Shot {
                 pos: Vec3 { x: 0, y: 0, z: 480 },
@@ -284,14 +287,14 @@ fn sustained_boss_damage_alternates_and_other_parts_cannot_bypass_recovery() {
         let bank = test_bank(stage);
         let mut game = running_at(stage);
         game.boss_started = true;
-        game.boss_z = 680;
-        game.boss_left = 100;
-        game.boss_right = 100;
+        game.bosses[0].pos.z = 680;
+        game.bosses[0].left = 100;
+        game.bosses[0].right = 100;
         let normal = capture(&game, &bank, 300);
         let left = Vec3 {
             x: -BOSS_TURRET_X,
             y: BOSS_TURRET_Y,
-            z: game.boss_z + BOSS_TURRET_Z,
+            z: game.bosses[0].pos.z + BOSS_TURRET_Z,
         };
         let right = Vec3 {
             x: BOSS_TURRET_X,
@@ -309,21 +312,21 @@ fn sustained_boss_damage_alternates_and_other_parts_cannot_bypass_recovery() {
                 1,
             );
             next_feedback_frame(&mut game, 1);
-            assert_eq!(game.boss_hit_flash_ticks, 20 - elapsed, "stage {stage}");
+            assert_eq!(game.bosses[0].flash, 20 - elapsed, "stage {stage}");
             if elapsed < 10 {
                 assert_white_geometry(&normal, &capture(&game, &bank, 300));
             } else {
                 assert_eq!(capture(&game, &bank, 300), normal);
             }
         }
-        assert_eq!((game.boss_left, game.boss_right), (89, 90));
+        assert_eq!((game.bosses[0].left, game.bosses[0].right), (89, 90));
         next_feedback_frame(&mut game, 1);
         assert_eq!(
-            game.boss_hit_flash_ticks, 0,
+            game.bosses[0].flash, 0,
             "hits during recovery must not queue"
         );
         shoot(&mut game, &bank, right, 1, 1);
-        assert_eq!(game.boss_hit_flash_ticks, 21);
+        assert_eq!(game.bosses[0].flash, 21);
         game.prepare_damage_feedback_frame();
         assert_white_geometry(&normal, &capture(&game, &bank, 300));
     }
@@ -334,20 +337,20 @@ fn actor_slots_and_boss_feedback_advance_independently() {
     let bank = test_bank(0);
     let mut game = running_at(0);
     game.actor_hit_flash_ticks = [0, 1, 5, 10, 11, 15, 20, 21, 0, 8, 18, 21];
-    game.boss_hit_flash_ticks = 14;
+    game.bosses[0].flash = 14;
     next_feedback_frame(&mut game, 4);
     assert_eq!(
         game.actor_hit_flash_ticks,
         [0, 0, 1, 6, 10, 11, 16, 20, 0, 4, 14, 20]
     );
-    assert_eq!(game.boss_hit_flash_ticks, 10);
+    assert_eq!(game.bosses[0].flash, 10);
     game.actors[0] = target(assets::FIGHTER, 0, 520);
     let pos = actor_center_sim(&game.actors[0], &bank);
     let previous = game.actor_hit_flash_ticks;
     shoot(&mut game, &bank, pos, 1, 1);
     assert_eq!(game.actor_hit_flash_ticks[0], 21);
     assert_eq!(game.actor_hit_flash_ticks[1..], previous[1..]);
-    assert_eq!(game.boss_hit_flash_ticks, 10);
+    assert_eq!(game.bosses[0].flash, 10);
 }
 
 #[test]
@@ -403,41 +406,41 @@ fn feedback_clock_handles_tick_wrap_and_stays_still_during_pause() {
     game.ticks = u16::MAX - 4;
     game.prepare_damage_feedback_frame();
     game.actor_hit_flash_ticks[0] = 21;
-    game.boss_hit_flash_ticks = 21;
+    game.bosses[0].flash = 21;
     game.prepare_damage_feedback_frame();
     assert_eq!(
-        (game.actor_hit_flash_ticks[0], game.boss_hit_flash_ticks),
+        (game.actor_hit_flash_ticks[0], game.bosses[0].flash),
         (20, 20)
     );
     for ms in [1000, 1200, 1600] {
         game.sample_paused_input(0, ms);
         game.prepare_damage_feedback_frame();
         assert_eq!(
-            (game.actor_hit_flash_ticks[0], game.boss_hit_flash_ticks),
+            (game.actor_hit_flash_ticks[0], game.bosses[0].flash),
             (20, 20)
         );
     }
     next_feedback_frame(&mut game, 8);
     assert_eq!(game.ticks, 3);
     assert_eq!(
-        (game.actor_hit_flash_ticks[0], game.boss_hit_flash_ticks),
+        (game.actor_hit_flash_ticks[0], game.bosses[0].flash),
         (12, 12)
     );
     next_feedback_frame(&mut game, 2);
     assert_eq!(
-        (game.actor_hit_flash_ticks[0], game.boss_hit_flash_ticks),
+        (game.actor_hit_flash_ticks[0], game.bosses[0].flash),
         (10, 10)
     );
     for _ in 0..3 {
         game.prepare_damage_feedback_frame();
         assert_eq!(
-            (game.actor_hit_flash_ticks[0], game.boss_hit_flash_ticks),
+            (game.actor_hit_flash_ticks[0], game.bosses[0].flash),
             (10, 10)
         );
     }
     next_feedback_frame(&mut game, 10);
     assert_eq!(
-        (game.actor_hit_flash_ticks[0], game.boss_hit_flash_ticks),
+        (game.actor_hit_flash_ticks[0], game.bosses[0].flash),
         (0, 0)
     );
 }
@@ -468,22 +471,22 @@ fn flashes_clear_on_slot_reuse_respawn_run_reset_and_stage_transition() {
     );
     for reset in [Game::respawn, Game::reset_run, Game::reset_in_place] {
         game.actor_hit_flash_ticks = [20; ACTORS];
-        game.boss_hit_flash_ticks = 20;
+        game.bosses[0].flash = 20;
         game.ticks = 400;
         game.damage_feedback_tick = 350;
         reset(&mut game);
         assert_eq!(game.actor_hit_flash_ticks, [0; ACTORS]);
-        assert_eq!(game.boss_hit_flash_ticks, 0);
+        assert_eq!(game.bosses[0].flash, 0);
         assert_eq!(game.damage_feedback_tick, game.ticks);
     }
     game.reset_scene(Mode::Playing, 0, SECTION_TICKS - 1);
     game.actor_hit_flash_ticks[0] = 20;
-    game.boss_hit_flash_ticks = 20;
+    game.bosses[0].flash = 20;
     let bytes = empty_segment(0);
     game.tick(&Segment::new(&bytes).unwrap(), &bank);
     assert_eq!(game.mode, Mode::Transition);
     assert_eq!(game.actor_hit_flash_ticks, [0; ACTORS]);
-    assert_eq!(game.boss_hit_flash_ticks, 0);
+    assert_eq!(game.bosses[0].flash, 0);
     assert_eq!(game.damage_feedback_tick, game.ticks);
 }
 
@@ -569,9 +572,9 @@ fn whole_boss_mesh_turrets_and_exposed_core_flash_without_recoloring_other_objec
         for (left, right) in [(40, 40), (0, 40), (40, 0), (0, 0)] {
             let mut game = running_at(stage);
             game.boss_started = true;
-            game.boss_z = 680;
-            game.boss_left = left;
-            game.boss_right = right;
+            game.bosses[0].pos.z = 680;
+            game.bosses[0].left = left;
+            game.bosses[0].right = right;
             let boss_count = capture(&game, &bank, 300).len();
             game.shots[0] = Shot {
                 kind: 1,
@@ -581,21 +584,21 @@ fn whole_boss_mesh_turrets_and_exposed_core_flash_without_recoloring_other_objec
             };
             game.actors[0] = target(assets::FIGHTER, 200, 700);
             let normal = capture(&game, &bank, 300);
-            game.boss_hit_flash_ticks = 21;
+            game.bosses[0].flash = 21;
             game.prepare_damage_feedback_frame();
             let flashed = capture(&game, &bank, 300);
             assert_white_geometry(&normal[..boss_count], &flashed[..boss_count]);
             assert_eq!(&normal[boss_count..], &flashed[boss_count..]);
             next_feedback_frame(&mut game, 10);
-            assert_eq!(game.boss_hit_flash_ticks, 10);
+            assert_eq!(game.bosses[0].flash, 10);
             let recovering = capture(&game, &bank, 300);
             // The exposed core animates its normal palette with simulation time.
             // Compare recovery against an idle boss at the same instant.
-            game.boss_hit_flash_ticks = 0;
+            game.bosses[0].flash = 0;
             assert_eq!(recovering, capture(&game, &bank, 300));
-            game.boss_hit_flash_ticks = 10;
+            game.bosses[0].flash = 10;
             next_feedback_frame(&mut game, 10);
-            assert_eq!(game.boss_hit_flash_ticks, 0);
+            assert_eq!(game.bosses[0].flash, 0);
             assert_eq!(capture(&game, &bank, 300), normal);
         }
     }

@@ -37,5 +37,31 @@ class DodgeMotionTests(unittest.TestCase):
         self.assertEqual(smoke.released_dodge_displacement(state(-10), state(-7), 1, "right"), 3)
 
 
+class NeutralJoystickTests(unittest.TestCase):
+    def module(self, version=b"\x00\x01", size=26):
+        return b"JPIOSIM" + bytes(9) + version + size.to_bytes(4, "little") + b"\x1f\x80\x00\x00"
+
+    def test_only_analog_bytes_change_and_roundtrip_is_idempotent(self):
+        original = b"snapshot prefix" + self.module() + b"other modules"
+        neutral, modules = smoke.neutral_joystick_snapshot(original)
+        self.assertEqual(neutral, original[:39] + b"\xff\xff" + original[41:])
+        self.assertEqual(modules, [dict(module_offset=15, before="0000", after="ffff")])
+        repeated, repeated_modules = smoke.neutral_joystick_snapshot(neutral)
+        self.assertEqual(repeated, neutral)
+        self.assertEqual(repeated_modules[0]["before"], "ffff")
+
+    def test_unknown_version_wrong_size_and_truncation_are_rejected(self):
+        for snapshot in (self.module(version=b"\x00\x02"), self.module(size=25), self.module()[:-1]):
+            with self.subTest(snapshot=snapshot):
+                with self.assertRaisesRegex(RuntimeError, "Unsupported JPIOSIM"):
+                    smoke.neutral_joystick_snapshot(snapshot)
+
+    def test_missing_and_multiple_devices_are_rejected(self):
+        for snapshot in (b"no iosim device", self.module() + self.module()):
+            with self.subTest(snapshot=snapshot):
+                with self.assertRaisesRegex(RuntimeError, "Expected one port2 JPIOSIM"):
+                    smoke.neutral_joystick_snapshot(snapshot)
+
+
 if __name__ == "__main__":
     unittest.main()

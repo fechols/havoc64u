@@ -1,31 +1,33 @@
 ; void fast_steer_missile(SteerArgs *args)
 ; C ABI: args rc2/3. The native body of Game::steer_missile with its
 ; missile_target search and missile_velocity guidance, for one homing missile
-; per call. SteerArgs (repr(C), 21 bytes):
+; per call. SteerArgs (repr(C), 19 bytes):
 ;    0 actors        *const Actor   the twelve 16-byte actor slots
 ;    2 specs         *const u8      the bank's enemy descriptors (8 bytes each)
 ;    4 shot          Vec3           the missile's position
-;   10 boss_z        i16
+;   10 bosses        *const BossInstance (ten-byte records: Vec3, left/right/core/flash)
 ;   12 enemy_count   u8             descriptors in the bank (kinds 1..count)
-;   13 boss_active   u8             boss_started && !boss_defeated
-;   14 boss_left, 15 boss_right, 16 boss_core   u8 health
-;   17 dx, 18 dy     i8 (in/out)    the missile's lateral velocity
-;   19 target        u8 (in/out)    0 none, 1..12 actors, 13/14 turrets, 15 core
-;   20 rng           u8 (in/out)    right-shift LFSR, feedback $B8, seed $A5
+;   13 boss_count    u8             0..4; zero during the split pause
+;   14 boss_shift    u8             geometry scale: 0 original, 2 medium, 3 small
+;   15 dx, 16 dy     i8 (in/out)    the missile's lateral velocity
+;   17 target        u8 (in/out)    0 none, 1..12 actors, 13..24 boss parts
+;   18 rng           u8 (in/out)    right-shift LFSR, feedback $B8, seed $A5
 ; Keep an eligible target without drawing randomness. Otherwise count live
 ; candidates in slot/left turret/right turret/core order, choose a uniform
 ; rank and scan again for that candidate. An actor with kind 0 or hp 0 is
 ; skipped, as is one whose descriptor hp is 0 unless it is small debris
 ; (a kind past enemy_count has the default descriptor); its
 ; aim point is pos with y + center_y (10 for small debris) and closing speed
-; 32 + approach_speed. With the boss active: the left turret (-130, 30,
-; boss_z - 70) while boss_left > 0, the right turret (130, 30, boss_z - 70)
-; while boss_right > 0, the core (0, 0, boss_z - 200) once both turrets are
-; down and boss_core > 0; closing 40 when boss_z > 680, else 32. A candidate
+; 32 + approach_speed. Each live boss contributes its left/right turrets or
+; its exposed core. Offsets (-/+130,30,-70) and (0,0,-200) divide by
+; 1 << boss_shift, truncating toward zero, before adding the instance position.
+; IDs are 13 + 3 * instance + part (left/right/core). A zero core disables
+; the whole instance; closing is 40 when its z > 680, else 32. A candidate
 ; needs dz = z - shot.z > 0. No candidates or a single candidate consume no
 ; random draws. For larger pools, advance the 255-state LFSR and accept its
-; high nibble only in 1..count: every accepted rank appears sixteen times per
-; full cycle. A zero input seed is repaired only when a draw is needed.
+; high nibble only in 1..count when count <= 15, preserving ordinary targeting.
+; Larger pools use its high five bits; every accepted rank appears eight times
+; per full cycle. A zero input seed is repaired only when a draw is needed.
 ; Guidance: with no target the desired velocity is (0, 0); otherwise with
 ; d = max(dz, closing), v = clamp(clamp(error, -512, 512) * closing / d, -12,
 ; 12) per axis, the product taken as a wrapping i16 and the division truncating
@@ -41,14 +43,14 @@
 .set MS_PX, $9344
 .set MS_PY, $9346
 .set MS_PZ, $9348
-.set MS_BZ, $934a
+.set MS_BOSSES, $934a
 .set MS_EC, $934c
-.set MS_BA, $934d
-.set MS_BL, $934e
-.set MS_BR, $934f
-.set MS_BC, $9350
-.set MS_DX, $9351
-.set MS_DY, $9352
+.set MS_BCOUNT, $934d
+.set MS_SHIFT, $934e
+.set MS_DX, $934f
+.set MS_DY, $9350
+.set MS_REMAIN, $9351
+.set MS_PART, $9352
 .set MS_TX, $9353
 .set MS_TY, $9355
 .set MS_TZ, $9357
@@ -78,13 +80,13 @@ fast_steer_missile:
     sta MS_ARGS
     lda __rc3
     sta MS_ARGS+1
-    ldy #18
+    ldy #16
 .Lms_copy_args:
     lda (__rc2),y
     sta MS_ACT,y
     dey
     bpl .Lms_copy_args
-    ldy #19
+    ldy #17
     lda (__rc2),y
     sta MS_LOCK
     iny
@@ -205,71 +207,135 @@ fast_steer_missile:
     beq .Lms_boss
     jmp .Lms_actor
 .Lms_boss:
-    lda MS_BA
-    bne .Lms_boss_active
+    lda MS_BCOUNT
+    sta MS_REMAIN
+    bne .Lms_boss_start
     jmp .Lms_scan_done
-.Lms_boss_active:
+.Lms_boss_start:
+    lda MS_BOSSES
+    sta __rc4
+    lda MS_BOSSES+1
+    sta __rc5
+.Lms_boss_instance:
+    lda #0
+    sta MS_PART
     ; closing 40 above 680, else 32
     lda #32
     sta MS_TC
     lda #0
     sta MS_TC+1
-    lda MS_BZ+1
+    ldy #5
+    lda (__rc4),y
     bmi .Lms_boss_closing
     cmp #>680
     bcc .Lms_boss_closing
     bne .Lms_boss_far
-    lda MS_BZ
+    dey
+    lda (__rc4),y
     cmp #<(680+1)
     bcc .Lms_boss_closing
 .Lms_boss_far:
     lda #40
     sta MS_TC
 .Lms_boss_closing:
-    lda MS_BL
-    beq .Lms_right_turret
-    lda #$7e                    ; -130 (the assembler's < and > drop the sign)
-    sta MS_TX
-    lda #$ff
-    sta MS_TX+1
-    jsr .Lms_turret
-.Lms_right_turret:
-    lda MS_FOUND
-    beq .Lms_right_check
-    jmp .Lms_guide
-.Lms_right_check:
-    lda #14
-    sta MS_SLOT
-    lda MS_BR
-    beq .Lms_core
-    lda #<130
-    sta MS_TX
-    lda #>130
-    sta MS_TX+1
-    jsr .Lms_turret
-.Lms_core:
-    lda MS_FOUND
-    bne .Lms_guide
-    lda #15
-    sta MS_SLOT
-    lda MS_BL
-    ora MS_BR
-    bne .Lms_scan_done
-    lda MS_BC
-    beq .Lms_scan_done
-    lda #0
-    sta MS_TX
-    sta MS_TX+1
-    sta MS_TY
-    sta MS_TY+1
+    ldy #8
+    lda (__rc4),y              ; a dead core disables the complete instance
+    bne .Lms_boss_live
+    jmp .Lms_boss_next_part
+.Lms_boss_live:
+    lda MS_PART
+    cmp #2
+    beq .Lms_boss_core
+    clc
+    adc #6
+    tay
+    lda (__rc4),y              ; the selected side must still be alive
+    bne .Lms_boss_position
+    jmp .Lms_boss_next_part
+.Lms_boss_core:
+    ldy #6
+    lda (__rc4),y
+    iny
+    ora (__rc4),y
+    beq .Lms_boss_position
+    jmp .Lms_boss_next_part
+.Lms_boss_position:
+    ldy #5
+.Lms_boss_copy:
+    lda (__rc4),y
+    sta MS_TX,y
+    dey
+    bpl .Lms_boss_copy
+    lda MS_PART
+    cmp #2
+    beq .Lms_boss_core_offset
+    lda #130
+    jsr .Lms_scaled_offset
+    sta MS_T
+    lda MS_PART
+    bne .Lms_boss_right_offset
     sec
-    lda MS_BZ
-    sbc #<200
+    lda MS_TX
+    sbc MS_T
+    sta MS_TX
+    lda MS_TX+1
+    sbc #0
+    sta MS_TX+1
+    jmp .Lms_boss_side_y
+.Lms_boss_right_offset:
+    clc
+    lda MS_TX
+    adc MS_T
+    sta MS_TX
+    lda MS_TX+1
+    adc #0
+    sta MS_TX+1
+.Lms_boss_side_y:
+    lda #30
+    jsr .Lms_scaled_offset
+    clc
+    adc MS_TY
+    sta MS_TY
+    lda MS_TY+1
+    adc #0
+    sta MS_TY+1
+    lda #70
+    bne .Lms_boss_depth
+.Lms_boss_core_offset:
+    lda #200
+.Lms_boss_depth:
+    jsr .Lms_scaled_offset
+    sta MS_T
+    sec
+    lda MS_TZ
+    sbc MS_T
     sta MS_TZ
-    lda MS_BZ+1
-    sbc #>200
+    lda MS_TZ+1
+    sbc #0
     sta MS_TZ+1
     jsr .Lms_evaluate
+.Lms_boss_next_part:
+    lda MS_FOUND
+    beq .Lms_boss_advance_part
+    jmp .Lms_guide
+.Lms_boss_advance_part:
+    inc MS_SLOT
+    inc MS_PART
+    lda MS_PART
+    cmp #3
+    beq .Lms_boss_advance_instance
+    jmp .Lms_boss_closing
+.Lms_boss_advance_instance:
+    clc
+    lda __rc4
+    adc #10
+    sta __rc4
+    bcc .Lms_boss_count
+    inc __rc5
+.Lms_boss_count:
+    dec MS_REMAIN
+    beq .Lms_scan_done
+    jmp .Lms_boss_instance
 .Lms_scan_done:
     lda MS_FOUND
     bne .Lms_guide
@@ -291,7 +357,12 @@ fast_steer_missile:
     lsr
     lsr
     lsr
+    ldx MS_COUNT
+    cpx #16
+    bcs .Lms_random_sample
     lsr
+.Lms_random_sample:
+    cmp #0                      ; CPX above must not supply the zero flag
     beq .Lms_random_retry
     cmp MS_COUNT
     beq .Lms_rank_ready
@@ -371,7 +442,7 @@ fast_steer_missile:
     sta __rc2
     lda MS_ARGS+1
     sta __rc3
-    ldy #17
+    ldy #15
     lda MS_DX
     sta (__rc2),y
     iny
@@ -429,20 +500,17 @@ fast_steer_missile:
 .Lms_evaluate_done:
     rts
 
-; A turret at MS_TX (set by the caller), y 30, z boss_z - 70.
-.Lms_turret:
-    lda #30
-    sta MS_TY
-    lda #0
-    sta MS_TY+1
-    sec
-    lda MS_BZ
-    sbc #70
-    sta MS_TZ
-    lda MS_BZ+1
-    sbc #0
-    sta MS_TZ+1
-    jmp .Lms_evaluate
+; Divide a positive offset magnitude by 1 << scale. Applying the sign later
+; gives truncation toward zero for negative offsets as well.
+.Lms_scaled_offset:
+    ldx MS_SHIFT
+    beq .Lms_scaled_done
+.Lms_scaled_loop:
+    lsr
+    dex
+    bne .Lms_scaled_loop
+.Lms_scaled_done:
+    rts
 
 ; A = clamp(clamp(MS_E, -512, 512) * closing / MS_DZ, -12, 12) as a signed byte.
 .Lms_velocity:

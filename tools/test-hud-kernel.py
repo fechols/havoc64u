@@ -28,7 +28,7 @@ class Machine(publisher.Machine):
         self.hud_symbols = symbols
         self.corner = corner
         self.scroll_call = False
-        self.start, self.end = (44, 84) if corner < 2 else (212, 254)
+        self.start, self.end = (52, 92) if corner < 2 else (212, 254)
         self.destination = 0x8c00 + corner * 128
         self.mem[0x8e80] = 3
         self.mem[WRITES:WRITES + 2] = (255).to_bytes(2, "little")
@@ -54,7 +54,7 @@ class Machine(publisher.Machine):
         if 0x8c00 <= address < 0x8e00 or 0xd000 <= address < 0xd040:
             if not self.scroll_call:
                 assert self.p & I, "sprite publication with IRQs enabled"
-                base_y = 54 if self.corner < 2 else 225
+                base_y = 62 if self.corner < 2 else 225
                 for displacement in range(-4, 4):
                     assert not base_y + displacement - 1 <= self.line < base_y + displacement + 22, (
                         "sprite store during possible DMA", self.corner, self.line, hex(address))
@@ -170,7 +170,7 @@ class Machine(publisher.Machine):
 def main():
     BUILD.mkdir(parents=True, exist_ok=True)
     linker = "ENTRY(publish_hud_corner)\n__rc0 = 2; INCLUDE imag-regs.ld\n"
-    linker += "SECTIONS { . = 0x3000; .text : { *(.phase.pixels.hud_publish) *(.text.hud_apply_scroll) *(.rodata.hud_positions) } /DISCARD/ : { *(.comment) } }\n"
+    linker += "SECTIONS { . = 0x3000; .text : { *(.phase.pixels.hud_publish) *(.text.hud_apply_scroll) *(.text.hud_positions) } /DISCARD/ : { *(.comment) } }\n"
     linker += f"HUD_IMAGE_WRITES = {WRITES}; HUD_COMMITS = {COMMITS}; HUD_SCROLL = {SCROLL};\n"
     (BUILD / "kernel.ld").write_text(linker)
     source = ROOT / "target-c64/asm/hud.S"
@@ -187,7 +187,7 @@ def main():
     cases = max_mask = rollover_retries = 0
     for lines in (312, 263):
         for corner in range(4):
-            start, end = (44, 84) if corner < 2 else (212, 254)
+            start, end = (52, 92) if corner < 2 else (212, 254)
             positions = {0, lines - .01, 255.98, 256.02, 250.8, 251.01}
             positions.update(boundary + delta for boundary in (start, end - 1, end) for delta in (-.02, .02, .98))
             for position in sorted(positions):
@@ -230,7 +230,7 @@ def main():
         expected = {SCROLL: packed, 0xd010: 0xcc}
         for sprite, base_x in enumerate((30, 54, 34, 58, 30, 54, 34, 58)):
             expected[0xd000 + sprite * 2] = base_x - (packed & 7)
-            expected[0xd001 + sprite * 2] = (54 if sprite < 4 else 225) - ((packed >> 3) - 3)
+            expected[0xd001 + sprite * 2] = (62 if sprite < 4 else 225) - ((packed >> 3) - 3)
         assert all(machine.mem[address] == value for address, value in expected.items())
         allowed = set(expected) | {4, 5} | set(range(0x100, 0x200))
         assert all(address in allowed or old == new for address, (old, new) in enumerate(zip(before, machine.mem)))

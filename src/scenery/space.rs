@@ -5,8 +5,8 @@ use super::{Decoration, SceneSink};
 use crate::GeometrySink;
 use crate::Vec3;
 
-// Small immutable orbital tables fit in the unused resident code window and
-// avoid transferring the same surface data from the REU every scenery frame.
+// Small immutable orbital tables use resident code/constant space. Rock
+// vertices share the scenery-only helper image, retired before GEOMETRY.
 #[cfg_attr(target_arch = "mos", link_section = ".text.orbital_data")]
 static STARS: [[i16; 2]; 10] = [
     [-2730, 1680],
@@ -20,7 +20,7 @@ static STARS: [[i16; 2]; 10] = [
     [2320, 1510],
     [2860, 190],
 ];
-#[cfg_attr(target_arch = "mos", link_section = ".text.orbital_data")]
+#[cfg_attr(target_arch = "mos", link_section = ".rodata.orbital_data")]
 static RING: [[i16; 2]; 8] = [
     [0, 256],
     [181, 181],
@@ -331,7 +331,7 @@ const fn rock_points(radius: i16) -> [Vec3; 8] {
     ]
 }
 
-#[cfg_attr(target_arch = "mos", link_section = ".text.orbital_data")]
+#[cfg_attr(target_arch = "mos", link_section = ".phase.scenery_extra.data")]
 static ROCKS: [[Vec3; 8]; 3] = [rock_points(95), rock_points(130), rock_points(170)];
 
 #[inline(never)]
@@ -478,7 +478,7 @@ pub fn scenic_moon(sink: &mut SceneSink<'_>, context: &Decoration) {
 
 // Identical closed wreck geometry is authored once, using each environment's
 // original facet palette.
-#[cfg_attr(target_arch = "mos", link_section = ".text.orbital_data")]
+#[cfg_attr(target_arch = "mos", link_section = ".rodata.orbital_data")]
 static HULL_POINTS: [[i16; 3]; 8] = [
     [-100, 0, 0],
     [100, 0, 0],
@@ -489,7 +489,7 @@ static HULL_POINTS: [[i16; 3]; 8] = [
     [0, -120, -100],
     [210, 140, 770],
 ];
-#[cfg_attr(target_arch = "mos", link_section = ".text.orbital_data")]
+#[cfg_attr(target_arch = "mos", link_section = ".rodata.orbital_data")]
 static HULL_FACES: [[u8; 4]; 12] = [
     [0, 3, 2, 0],
     [0, 2, 1, 0],

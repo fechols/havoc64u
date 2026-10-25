@@ -42,7 +42,7 @@ fn every_scene_matches_raw_pixels_and_decoded_cells_with_identical_previous_pale
             game.render_with_shadows(&mut renderer, &mut shadows, &bank, &segment);
             let status = game.hud();
             let mut dust = SpaceDustFrame::EMPTY;
-            let ambient = dust.prepare(status.section, status.mode, game.animation_ticks());
+            let ambient = dust.prepare(status.section, status.mode, game.travel_ticks());
             for band in 0..25 {
                 let mut expected = [0; BAND_PIXELS];
                 renderer.render_band_with_ambient(band, &mut expected, ambient);
@@ -103,7 +103,7 @@ fn consecutive_scene_frames_report_independent_palette_history_differences() {
             game.render_with_shadows(&mut renderer, &mut shadows, &bank, &segment);
             let status = game.hud();
             let mut dust = SpaceDustFrame::EMPTY;
-            let ambient = dust.prepare(status.section, status.mode, game.animation_ticks());
+            let ambient = dust.prepare(status.section, status.mode, game.travel_ticks());
             for band in 0..25 {
                 let mut painter_pixels = [0; BAND_PIXELS];
                 let mut span_pixels = [0; BAND_PIXELS];

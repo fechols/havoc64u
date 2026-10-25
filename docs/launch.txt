@@ -33,6 +33,14 @@ settings. Load the new havoc.reu at address zero before running the new havoc.pr
 Turn your joystick's hardware autofire off. The game supplies its own autofire;
 controller-generated fire pulses can accidentally spend your bombs.
 
+Afterburner: tap joystick button 2 or Left Shift for a two-second burst at
+twice the forward speed and 1.5 times the steering speed. The B gauge below
+SHIELD refills during the four-second cooldown. Holding does not repeat a
+burst; release and press again when ready. Weapons and barrel rolls still
+work, and collisions still cause damage. Pause freezes the burst/cooldown.
+For a two-button ArcadeR, select C64 mode and Fire 2 (POTX), not Fire 3 or
+duplicate primary fire. A single-button joystick can use Left Shift.
+
 Hammond Rocker plays continuously on the title and throughout the attract tour.
 The final gold-medal reveal starts Galactic Dash. Release fire, then press it
 to return to the title with Galactic Dash still playing.

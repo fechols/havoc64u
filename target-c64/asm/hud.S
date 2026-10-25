@@ -32,15 +32,15 @@ publish_hud_corner:
     lsr
     ror
     sta __rc4
-    ; Top sprites begin at Y=54, bottom at Y=225. Guard every possible
+    ; Top sprites begin at Y=62, bottom at Y=225. Guard every possible
     ; opposite fine-scroll offset (-4..+3), with at least six leading lines and
     ; trailing fetch margin. The measured copy bound is below two lines.
     lda __rc7
     cmp #2
     bcs .Lhud_bottom
-    lda #44
+    lda #52
     sta __rc8
-    lda #84
+    lda #92
     bne .Lhud_end
 .Lhud_bottom:
     lda #212
@@ -166,8 +166,9 @@ hud_apply_scroll:
     rts
 .size hud_apply_scroll, .-hud_apply_scroll
 
-.section .rodata.hud_positions,"a",@progbits
+; Shared resident data; leave scarce constant RAM for game/font records.
+.section .text.hud_positions,"a",@progbits
 .Lhud_base_x:
     .byte 30,54,34,58,30,54,34,58
 .Lhud_base_y:
-    .byte 54,54,54,54,225,225,225,225
+    .byte 62,62,62,62,225,225,225,225

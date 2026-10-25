@@ -9,7 +9,7 @@ use core::{
 use havoc::{
     assets::{self, AssetBank, Segment},
     audio::{EffectsEngine, MusicState, SidBus, VideoStandard},
-    game::{Game, Hud, InputSample, PresentationEvent},
+    game::{Game, Hud, InputSample, PresentationEvent, INPUT_MASK},
     hud, hud_sprites,
     presentation::BombEffect,
     render::Renderer,
@@ -174,13 +174,16 @@ extern "C" {
     fn nmi_entry();
     fn disable_irq();
     fn enable_irq();
+    fn read_controls() -> u8;
+    fn restore_controls();
     fn io_on();
     fn io_off();
     fn publish_staged_band(band: u8);
     fn publish_hud_corner(corner: u8);
     fn hud_apply_scroll(scroll: u8);
     static __phase_boot_size: u8;
-    static __phase_sim_aux_size: u8;
+    static __phase_sim_aux_prefix_size: u8;
+    static __phase_sim_extra_size: u8;
     static __phase_geometry_prefix_size: u8;
     static __phase_geometry_base_size: u8;
     static __phase_render_aux_size: u8;
@@ -249,9 +252,9 @@ pub unsafe extern "C" fn irq_body() {
             return;
         }
         let bits = if TEST_INPUT == 0xff {
-            (!peek(0xdc00)) & 31
+            read_controls()
         } else {
-            TEST_INPUT & 31
+            TEST_INPUT & INPUT_MASK
         };
         let timer = loop {
             let hi = peek(0xdc05);
@@ -404,7 +407,14 @@ unsafe fn load_sim(profile: u8) {
     dma(
         (__code_reu_pages[23] as u32) << 12,
         0x8e00,
-        core::ptr::addr_of!(__phase_sim_aux_size) as u16,
+        core::ptr::addr_of!(__phase_sim_aux_prefix_size) as u16,
+    );
+    // Previous raster/shadow records are dead. SCENERY resets the shadow frame
+    // later in this frame, after SIM and its extra helper code have returned.
+    dma(
+        ((__code_reu_pages[23] as u32) << 12) + 0x500,
+        0xe000,
+        core::ptr::addr_of!(__phase_sim_extra_size) as u16,
     );
     load_phase(
         if profile == 7 {
@@ -661,8 +671,13 @@ unsafe fn initialize_irq(standard: VideoStandard) {
     poke(0xdd0d, 0x7f);
     let _ = peek(0xdc0d);
     let _ = peek(0xdd0d);
-    poke(0xdc02, 0);
     poke(0xdc03, 0);
+    // Timer B supplies the unaccelerated Phi2 settling clock for POTX. It has
+    // no interrupt enabled and is independent of audio's Timer A cadence.
+    poke(0xdc0f, 0);
+    word(0xdc06, 65535);
+    poke(0xdc0f, 0x11);
+    restore_controls();
     poke(0xdc0e, 0);
     word(0xdc04, AUDIO_PERIOD - 1);
     poke(0xdc0d, 0x81);
@@ -844,9 +859,9 @@ unsafe fn update_fps_overlay(mode: havoc::game::Mode) {
     // Row 7: Space column 4, CTRL column 2, Commodore column 5.
     // F is row 2 column 5; S is row 1 column 5; DEL is row 0 column 0. CIA 1 port A
     // doubles as joystick port 2, so drive it as key rows only briefly with
-    // the sampling IRQ masked, then return it to input. A column counts as a
-    // key only if it also reads high with no row selected: a joystick in
-    // port 1 or a test harness driving port B cannot fake a key press.
+    // the sampling IRQ masked, then restore joystick inputs and paddle port 2.
+    // A column counts as a key only if it also reads high with no row selected:
+    // a joystick in port 1 or a test harness driving port B cannot fake a key.
     disable_irq();
     poke(0xdc02, 0xff);
     poke(0xdc00, 0xff);
@@ -860,7 +875,7 @@ unsafe fn update_fps_overlay(mode: havoc::game::Mode) {
     let story_key = peek(0xdc01) & 0x20 == 0;
     poke(0xdc00, 0xfe);
     let delete = peek(0xdc01) & 1 == 0;
-    poke(0xdc02, 0);
+    restore_controls();
     enable_irq();
     let music_chord = row7 & 0x24 == 0x24 && delete;
     let keys = space as u8
@@ -960,9 +975,12 @@ unsafe fn prepare_scenery(current: u8, sounds: &mut TransitionAudio) -> u8 {
     stage.count()
 }
 
-#[link_section = ".phase.geometry"]
+// Instrumented builds use spare resident space for this hardware-only helper.
+// Keep production's reload in GEOMETRY; the additional benchmark code otherwise
+// pushes that tightly bounded overlay into its projection-helper window.
+#[cfg(feature = "benchmarks")]
 #[inline(never)]
-unsafe fn prepare_geometry(scenery_count: u8, bank: &AssetBank<'_>) {
+unsafe fn benchmark_load_projection() {
     io_on();
     dma(
         ((__code_reu_pages[3] as u32) << 12) + 0x3f20,
@@ -970,6 +988,23 @@ unsafe fn prepare_geometry(scenery_count: u8, bank: &AssetBank<'_>) {
         core::ptr::addr_of!(__phase_render_aux_size) as u16,
     );
     io_off();
+}
+
+#[link_section = ".phase.geometry"]
+#[inline(never)]
+unsafe fn prepare_geometry(scenery_count: u8, bank: &AssetBank<'_>) {
+    #[cfg(feature = "benchmarks")]
+    benchmark_load_projection();
+    #[cfg(not(feature = "benchmarks"))]
+    {
+        io_on();
+        dma(
+            ((__code_reu_pages[3] as u32) << 12) + 0x3f20,
+            0x6f20,
+            core::ptr::addr_of!(__phase_render_aux_size) as u16,
+        );
+        io_off();
+    }
     havoc::projection::begin_frame();
     let game = GAME.assume_init_mut();
     game.prepare_damage_feedback_frame();
@@ -1077,7 +1112,7 @@ unsafe fn update_sprite_hud(status: &Hud) {
 
 #[link_section = ".phase.pixels"]
 #[inline(never)]
-unsafe fn draw_pixels(status: &Hud) {
+unsafe fn draw_pixels() {
     // GEOMETRY may have overwritten the tail. The caller has hidden I/O for
     // raster access, so expose the REU only while loading the auxiliary image;
     // the frame-rate overlay scans the keyboard in the same exposure, and the
@@ -1088,17 +1123,21 @@ unsafe fn draw_pixels(status: &Hud) {
         0x6f20,
         core::ptr::addr_of!(__phase_pixels_aux_size) as u16,
     );
+    // Simulation is complete and no intervening render phase changes its
+    // visible status. Build the readout only after its PIXELS code is loaded.
+    let status = GAME.assume_init_ref().hud();
     update_fps_overlay(status.mode);
-    update_sprite_hud(status);
+    update_sprite_hud(&status);
     let renderer = RENDERER.assume_init_mut();
     poke(0xd021, renderer.clear_color());
     io_off();
     let ambient = SPACE_DUST.prepare(
         status.section,
         status.mode,
-        GAME.assume_init_ref().animation_ticks(),
+        GAME.assume_init_ref().travel_ticks(),
     );
-    // Every band contains scenery, including the pixels behind the sprites.
+    // Band zero belongs to the GUI. Consume its edges without painting the
+    // world so triangles crossing row eight continue at the correct positions.
     wr(core::ptr::addr_of_mut!(PROF_DETAIL), 1);
     let Some(mut pass) = renderer.raster_pass() else {
         fail(b"RASTER COMMANDS ALREADY CONSUMED")
@@ -1109,12 +1148,12 @@ unsafe fn draw_pixels(status: &Hud) {
         }
         let pixels = &mut *(0x8e00 as *mut [u8; 1280]);
         let offset = band as u16 * 40;
-        if pass.next_band_with_ambient(pixels, true, ambient) != Some(band) {
+        if pass.next_band_with_ambient(pixels, band != 0, ambient) != Some(band) {
             fail(b"INVALID RASTER BAND ORDER")
         }
         wr(core::ptr::addr_of_mut!(PROF_DETAIL), 2);
         let mut cells = havoc::cells::NativeCells;
-        hud::draw(band, &mut cells, status, FRAME_SERIAL);
+        hud::draw(band, &mut cells, &status, FRAME_SERIAL);
         if PAUSED {
             hud::draw_paused(band, &mut cells);
         }
@@ -1267,7 +1306,7 @@ unsafe fn select_stage(runtime: &mut Runtime, game: &mut Game) {
 }
 #[link_section = ".phase.sim"]
 #[inline(never)]
-unsafe fn simulate(runtime: &mut Runtime, now: u16) -> Option<Hud> {
+unsafe fn simulate(runtime: &mut Runtime, now: u16) -> Option<()> {
     let game = GAME.assume_init_mut();
     select_stage(runtime, game);
     if runtime.profile != ENEMY_CODE_PROFILE {
@@ -1329,7 +1368,7 @@ unsafe fn simulate(runtime: &mut Runtime, now: u16) -> Option<Hud> {
             }
         } else {
             game.sample_input(InputSample {
-                bits: TEST_INPUT & 31,
+                bits: TEST_INPUT & INPUT_MASK,
                 pressed: 0,
                 ms: step_ms,
             });
@@ -1363,13 +1402,13 @@ unsafe fn simulate(runtime: &mut Runtime, now: u16) -> Option<Hud> {
     }
     enable_irq();
     send_audio(game);
-    let status = game.hud();
-    GAME_MODE = status.mode as u8;
+    GAME_MODE = game.mode() as u8;
     // The campaign distance for the monitor tools: section × 30,000 as a
     // 16-bit product of 1,875 shifted by four, plus the section-local part.
-    GAME_DISTANCE = (((status.section as u16 * 1_875) as u32) << 4) + status.distance as u32;
-    GAME_STAGE = status.section;
-    Some(status)
+    let section = game.segment_index();
+    GAME_DISTANCE = (((section as u16 * 1_875) as u32) << 4) + game.local_distance() as u32;
+    GAME_STAGE = section;
+    Some(())
 }
 #[no_mangle]
 pub unsafe extern "C" fn main() -> i32 {
@@ -1418,14 +1457,15 @@ pub unsafe extern "C" fn main() -> i32 {
         // PIXELS, which only toggles the flag while flying); `simulate`
         // discards the queued joystick samples and moves the simulation
         // deadline along so resuming does not replay the missed ticks.
-        let status = loop {
+        loop {
             wr(core::ptr::addr_of_mut!(PROF_PHASE), 5);
-            if let Some(status) = simulate(&mut runtime, now) {
-                break status;
+            if simulate(&mut runtime, now).is_some() {
+                break;
             }
             wr(core::ptr::addr_of_mut!(PROF_PHASE), 1);
             load_sim(runtime.profile);
         };
+        let mode = GAME.assume_init_ref().mode();
         disable_irq();
         let music_pending = !AUDIO_READY || rd(core::ptr::addr_of!(EMULATOR_SFX_ONLY)) == 0;
         enable_irq();
@@ -1478,15 +1518,15 @@ pub unsafe extern "C" fn main() -> i32 {
         wr(core::ptr::addr_of_mut!(PROF_PHASE), 2);
         // Bridges keep the common player/projectile renderer and replace enemy
         // presentation with SCENERY wildlife. SIM remains a separate overlay.
-        let geometry_size = if status.mode == havoc::game::Mode::Victory {
+        let geometry_size = if mode == havoc::game::Mode::Victory {
             core::ptr::addr_of!(__phase_victory_size) as u16
-        } else if status.mode == havoc::game::Mode::Transition {
+        } else if mode == havoc::game::Mode::Transition {
             core::ptr::addr_of!(__phase_geometry_base_size) as u16
         } else {
             core::ptr::addr_of!(__phase_geometry_prefix_size) as u16
         };
         load_phase(
-            if status.mode == havoc::game::Mode::Victory {
+            if mode == havoc::game::Mode::Victory {
                 12
             } else {
                 3
@@ -1518,7 +1558,7 @@ pub unsafe extern "C" fn main() -> i32 {
         load_phase(4, core::ptr::addr_of!(__phase_pixels_prefix_size) as u16);
         wr(core::ptr::addr_of_mut!(PROF_PHASE), 7);
         io_off();
-        draw_pixels(&status);
+        draw_pixels();
         io_on();
         wr(core::ptr::addr_of_mut!(PROF_PHASE), 4);
         present();

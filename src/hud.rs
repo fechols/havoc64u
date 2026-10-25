@@ -1,9 +1,9 @@
-//! Transient mission screens and announcements painted into the bitmap.
+//! Reserved top strip, mission screens and announcements painted into the bitmap.
 //! Persistent cockpit readouts are independent sprites in `hud_sprites`.
 
 use crate::assets::SEGMENT_COUNT;
 use crate::game::{Hud, Mode};
-use crate::render::{draw_text, draw_text_scaled, Canvas, HUD_INK};
+use crate::render::{draw_bar, draw_text, draw_text_scaled, Canvas, HUD_INK};
 use crate::victory::REVEAL_TICKS;
 
 /// The sector panel occupies bands 3-6 for the first 800 distance units.
@@ -35,15 +35,22 @@ pub fn draw(band: u8, canvas: &mut impl Canvas, hud: &Hud, frame: u16) -> bool {
     if band >= 25 {
         return false;
     }
+    if band == 0 {
+        // Black is explicit ink: the VIC background still belongs to the sky.
+        rect(band, canvas, 0, 0, 160, 8, 0);
+        if hud.mode == Mode::Playing && hud.boss_shield != 0 {
+            draw_bar(band, canvas, 4, 2, 152, 4, hud.boss_shield as u16, 100, 2);
+        } else if !matches!(hud.mode, Mode::Title | Mode::Victory) {
+            // The simulation retains the outgoing section until arrival.
+            centered(band, canvas, 2, section_name(hud.section), 1);
+        }
+        return true;
+    }
     if hud.mode == Mode::Victory {
         return victory(band, canvas, hud, frame);
     }
-    // The map tour keeps the entire world visible around two short labels.
+    // The map tour adds a dismissal cue below the persistent level name.
     if hud.mode == Mode::Attract {
-        if band == 0 {
-            centered(band, canvas, 2, section_name(hud.section), 1);
-            return true;
-        }
         if band >= 23 {
             centered(band, canvas, 189, b"MOVE OR FIRE FOR MENU", blink(frame));
             return true;
@@ -152,7 +159,7 @@ fn title(band: u8, canvas: &mut impl Canvas, frame: u16, story_mode: bool) -> bo
         return true;
     }
     rect(band, canvas, 10, 131, 140, 67, 0);
-    centered(band, canvas, 134, b"PORT 2 / ONE BUTTON", 12);
+    centered(band, canvas, 134, b"PORT2: FIRE2/LSHIFT BOOST", 12);
     centered(band, canvas, 146, b"HOLD FIRE: SHOOT", 15);
     centered(band, canvas, 155, b"RELEASE: CHARGE", 15);
     centered(band, canvas, 164, b"DOUBLE FIRE: BOMB", 15);

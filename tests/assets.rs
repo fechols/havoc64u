@@ -413,6 +413,9 @@ fn stage_model_banks_keep_twenty_six_distinct_enemy_shapes_and_shared_player_ass
             assert_eq!(bank.enemy(kind), EnemySpec::default());
         }
         for mesh in [PLAYER, CRYSTAL, BUILDING, MEDAL] {
+            if level == 17 && mesh == CRYSTAL {
+                continue; // The final stage reserves this unused slot for child Guardians.
+            }
             assert_eq!(bank.vertex_count(mesh), first.vertex_count(mesh));
             assert_eq!(bank.face_count(mesh), first.face_count(mesh));
             for index in 0..bank.vertex_count(mesh) {
@@ -492,6 +495,34 @@ fn completed_enemy_surfaces_keep_ground_bases_and_original_vertex_bounds() {
 }
 
 #[test]
+fn child_guardian_mesh_reuses_an_unspawned_slot_and_preserves_its_open_aperture() {
+    let bytes = baked_assets::model_bank(17);
+    let bank = AssetBank::new(&bytes).unwrap();
+    assert_eq!((bank.vertex_count(CRYSTAL), bank.face_count(CRYSTAL)), (16, 32));
+    assert_eq!(bank.shift(CRYSTAL), 0);
+    assert_eq!(bank.shadow_spec(CRYSTAL), ShadowSpec::default());
+    let segment_bytes = baked_assets::segment_bank(17);
+    let segment = Segment::new(&segment_bytes).unwrap();
+    assert!((0..segment.spawn_count()).all(|index| segment.spawn(index).kind != CRYSTAL));
+    for vertex in 0..bank.vertex_count(CRYSTAL) {
+        let point = bank.vertex(CRYSTAL, vertex);
+        assert_eq!(point.z, 0);
+        assert!(point.x.abs() <= 70 && point.y.abs() <= 55);
+        assert!(point.x.abs() >= 14 || point.y.abs() >= 25);
+    }
+    // Every face bridges one edge of the inner and outer rings. No triangle
+    // crosses the center or fills the opening containing the exposed core.
+    for face in 0..bank.face_count(CRYSTAL) {
+        let indices = bank.face(CRYSTAL, face).0;
+        assert!(indices.iter().any(|&vertex| vertex < 8));
+        assert!(indices.iter().any(|&vertex| vertex >= 8));
+    }
+    let used = u16_at(&bytes, 20 + MEDAL as usize * 8) as usize
+        + bank.face_count(MEDAL) as usize * 4;
+    assert!(used <= SHADOW_SPECS_OFFSET);
+}
+
+#[test]
 fn every_quantized_model_has_outward_solids_and_explicit_thin_panel_backs() {
     use std::collections::BTreeMap;
 
@@ -538,6 +569,7 @@ fn every_quantized_model_has_outward_solids_and_explicit_thin_panel_backs() {
                 }
             }
             let expected_pairs = match mesh {
+                CRYSTAL if level == 17 => 16,
                 FIGHTER if info.theme < 10 && info.enemy_profile == 1 => 6,
                 FIGHTER if info.theme < 10 && info.enemy_profile == 2 => 2,
                 DIVER if info.theme < 10 && info.enemy_profile == 1 => 2,

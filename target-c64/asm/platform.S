@@ -154,6 +154,97 @@ enable_irq:
     cli
     rts
 
+; C64GS second fire uses SID POTX, selected through CIA 1 PA6/PA7.
+; Timer B runs at Phi2 even with the CPU accelerated. A keyboard scan changes
+; the paddle selection, so keep the previous button state until 1024 hardware
+; cycles have elapsed. Neither the IRQ nor the foreground waits for conversion.
+.section .bss.controls,"aw",@nobits
+.globl controls_pot_since
+controls_pot_since:
+    .space 2
+.globl controls_pot_held
+controls_pot_held:
+    .space 1
+controls_tmp:
+    .space 1
+
+; Called only with IRQs masked. PA0..PA5 remain inputs; PA7 selects port 2.
+; Set the data latch high before changing direction to avoid driving any
+; joystick line low, then timestamp the final paddle selection.
+.section .text.restore_controls,"ax",@progbits
+.globl restore_controls
+restore_controls:
+    lda #$ff
+    sta $dc00
+    lda #$c0
+    sta $dc02
+    lda #$80
+    sta $dc00
+.Lcontrols_restore_timer:
+    lda $dc07
+    ldx $dc06
+    cmp $dc07
+    bne .Lcontrols_restore_timer
+    stx controls_pot_since
+    sta controls_pot_since+1
+    rts
+
+; Return the six logical held bits in A. The low five are the ordinary
+; active-low joystick inputs; bit 5 is POTX second fire OR Left Shift.
+; Assembly keeps this IRQ path free of compiler static frames.
+.section .text.read_controls,"ax",@progbits
+.globl read_controls
+read_controls:
+    lda $dc00
+    eor #$ff
+    and #$1f
+    pha
+.Lcontrols_read_timer:
+    lda $dc07
+    tay
+    ldx $dc06
+    cmp $dc07
+    bne .Lcontrols_read_timer
+    stx controls_tmp
+    lda controls_pot_since
+    sec
+    sbc controls_tmp
+    sty controls_tmp
+    lda controls_pot_since+1
+    sbc controls_tmp
+    cmp #4
+    bcc .Lcontrols_shift
+    lda $d419
+    cmp #$80
+    lda #0
+    bcs .Lcontrols_store_pot
+    lda #$20
+.Lcontrols_store_pot:
+    sta controls_pot_held
+.Lcontrols_shift:
+    lda #$ff
+    sta $dc00
+    sta $dc02
+    lda #$fd
+    sta $dc00
+    lda $dc01
+    asl
+    lda #0
+    bcs .Lcontrols_merge
+    lda #$20
+.Lcontrols_merge:
+    ; Read the raw Shift column: idle qualification would reject a genuine
+    ; Shift while joystick DOWN grounds its row. None of the other game keys
+    ; share column 7. Unrelated multi-key combinations can still matrix-ghost.
+    ora controls_pot_held
+    sta controls_tmp
+    pla
+    ora controls_tmp
+    pha
+    jsr restore_controls
+    pla
+    rts
+
 ; External-call barriers keep compiler-generated triangle accesses on the
 ; intended side of the processor-port change. The IRQ preserves this setting.
 .section .text.io_off,"ax",@progbits

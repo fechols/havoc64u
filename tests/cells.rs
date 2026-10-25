@@ -39,7 +39,7 @@ fn cell_band_shows_the_pixel_band_of_every_scene() {
         game.render_with_shadows(&mut renderer, &mut shadows, &bank, &segment);
         let status = game.hud();
         let mut dust = SpaceDustFrame::EMPTY;
-        let ambient = dust.prepare(status.section, status.mode, game.animation_ticks());
+        let ambient = dust.prepare(status.section, status.mode, game.travel_ticks());
         let background = renderer.clear_color();
         backgrounds.insert(background);
         // Preceding attributes: slot retention must not change what is shown.

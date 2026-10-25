@@ -84,6 +84,11 @@ def main():
         ("transport-directory-size", 0x14c, "INVALID REU CODE SIZE"),
         ("sim-helpers-directory-size", 0x154, "INVALID REU CODE SIZE"),
     ]
+    # Newer SIM helper images load a second code region from offset $500.
+    # Historical packages only contain the prefix, so retain their case set.
+    if int.from_bytes(image[0x154:0x156], "little") > 0x500:
+        cases.append(("sim-extra-code", overlay_offsets[23] + 0x500,
+                      "REU CODE CHECKSUM FAILED"))
     overlays = (
         ("boot", 1, 4), ("lowlands", 2, 6), ("geometry", 3, 8),
         ("pixels", 4, 10), ("audio", 5, 12), ("wildlife", 7, 34),

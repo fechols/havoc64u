@@ -37,6 +37,9 @@ const SCENERY_OFFSET: usize = 2176;
 pub const NEAR: i16 = 8;
 pub const HUD_INK: u8 = 0x80;
 pub(crate) const TERRAIN_CLEAR_INK: u8 = 0x40;
+/// Staging-only: a sky layer with doubled XYZ also needs doubled camera drift.
+/// Projection drops this bit; depth sorting and rasterization see normal sky.
+pub(crate) const DOUBLE_SKY_DEPTH: u8 = 0x04;
 
 /// An append-only geometry transaction, valid before sorting or rasterization.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -81,7 +84,8 @@ const _: () = {
 #[inline(always)]
 pub(crate) fn drift_sky(points: &mut [Vec3; 3], flags: u8, parallax_x: i16, parallax_y: i16) {
     if flags & crate::game::STATIC_SKY != 0 {
-        drift_points(points, parallax_x, parallax_y);
+        let scale = if flags & DOUBLE_SKY_DEPTH != 0 { 2 } else { 1 };
+        drift_points(points, parallax_x * scale, parallax_y * scale);
     }
 }
 
@@ -1611,7 +1615,7 @@ pub fn draw_bar(
         return;
     }
     // Sixteen-bit arithmetic: every caller keeps width × maximum below 65,536
-    // (bars are at most 60 pixels over values of at most 255).
+    // (the 152-pixel boss bar uses a maximum of 100).
     debug_assert!(width as u32 * maximum as u32 <= u16::MAX as u32);
     let fill = if maximum == 0 {
         0
@@ -1864,7 +1868,14 @@ mod tests {
             {
                 let mut stage = staged.scenery_stage();
                 stage.triangle(far(-800, 300), far(0, 900), far(800, 300), 14, STATIC_SKY);
-                stage.triangle(far(-800, -300), far(0, 200), far(800, -300), 5, 0);
+                // The depth modifier alone must never make scenery drift.
+                stage.triangle(
+                    far(-800, -300),
+                    far(0, 200),
+                    far(800, -300),
+                    5,
+                    DOUBLE_SKY_DEPTH,
+                );
                 assert_eq!(stage.count(), 2);
             }
             direct.triangle(
@@ -1889,6 +1900,41 @@ mod tests {
             // Backdrop moves against the pan; ordinary scenery never moves.
             assert_eq!(command(&staged, 0) == reference.0, (dx, dy) == (0, 0));
             assert_eq!(command(&staged, 1), reference.1);
+        }
+    }
+    #[test]
+    fn doubled_sky_depth_preserves_projected_shape_and_parallax() {
+        use crate::game::STATIC_SKY;
+        for (dx, dy) in [(0, 0), (100, 32), (-100, -32), (37, -5)] {
+            for depth in [2350, 3072, 3584, 4064] {
+                let mut original = Renderer::new();
+                let mut distant = Renderer::new();
+                for (renderer, scale, flags) in [
+                    (&mut original, 1, STATIC_SKY),
+                    (&mut distant, 2, STATIC_SKY | DOUBLE_SKY_DEPTH),
+                ] {
+                    let points = [(-800, 300), (0, 900), (800, 300)].map(|(x, y)| Vec3 {
+                        x: x * scale,
+                        y: y * scale,
+                        z: depth * scale,
+                    });
+                    renderer
+                        .scenery_stage()
+                        .triangle(points[0], points[1], points[2], 14, flags);
+                    assert_eq!(renderer.project_scenery(1, dx, dy), 1);
+                }
+                let a = original.triangles[0];
+                let b = distant.triangles[0];
+                assert_eq!(
+                    (a.x, a.y, a.color, a.reserved),
+                    (b.x, b.y, b.color, b.reserved)
+                );
+                assert_eq!(b.depth, a.depth * 2);
+                assert_eq!(
+                    b.reserved, STATIC_SKY,
+                    "depth modifier retires after projection"
+                );
+            }
         }
     }
     #[test]

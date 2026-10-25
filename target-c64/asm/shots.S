@@ -48,7 +48,9 @@
 .set SS_R, __rc18               ; the slot's radius
 .set SS_K, __rc19               ; the slot's kind
 
-.section .phase.sim.shots,"ax",@progbits
+; SIM restores this self-contained helper before every tick. Its workspace
+; becomes raster/shadow storage after SIM returns; the actor ABI is unchanged.
+.section .phase.sim_extra.shots,"ax",@progbits
 .globl fast_shot_scan
 .type fast_shot_scan,@function
 fast_shot_scan:

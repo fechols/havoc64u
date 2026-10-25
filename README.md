@@ -12,7 +12,7 @@ Fly an original 3D rail shooter for the **64 MHz C64 Ultimate**. Skim green hill
 - **Quad-SID effects** — Deep energy-cannon fire, heavy hull impacts, and resonant filter sweeps. Each effect uses one SID or a stereo pair; four chips let sounds overlap. Music plays entirely through the DACs.
 - **Rock soundtrack** — Rock out to Hammond Rocker through the title and attract tour, hear a different song in every stage, and earn the final gold medal for Galactic Dash. Mission Failed closes an unsuccessful run.
 - **18 varied stages** — Journey from green hills to orbital battlefields.
-- **Five bosses** — Break their defenses and strike their exposed cores.
+- **Five bosses** — Break their defenses and strike their exposed cores. The final Gate Guardian splits into two bosses, then four fighting together.
 - **Aircraft-like handling** — Bank, climb, and dive with weight and momentum.
 - **Versatile weapons** — Unleash autofire, charged shots, homing missiles, and bombs.
 - **Defensive barrel rolls** — Deflect enemy shots while keeping your guns firing.
@@ -94,7 +94,7 @@ The afterburner doubles forward speed and increases steering speed by 50%. The *
 - **Roll through shots, dodge scenery.** Keep steering and firing during a roll, but avoid solid obstacles.
 - **Clear a path.** Shoot small orbital fragments; bomb large rocks and wreckage. Every 15 enemy kills restore one bomb, up to three.
 - **Collect supplies.** Green shields restore 60 points, up to 100; purple rectangles add one bomb, up to three.
-- **Break the boss's defenses.** Destroy both side units, then the core, to advance. Each boss defeat restores full shields and three bombs.
+- **Break the boss's defenses.** Destroy both side units, then the core, to advance. Clearing a boss encounter restores full shields and three bombs. The Gate Guardian has three phases: one 200-HP boss, two 100-HP bosses, then four 50-HP bosses. Each child has its own protected core. Clear the whole wave to advance; each split gives a one-second break, full shields, and three bombs.
 - **Make each life count.** Normal mode starts with three lives. Story mode starts with 99 lives: press **S** at the title to select it, then press fire. The choice remains selected until you toggle it again or restart the program. Losing a life restarts the current stage with your score intact; losing all lives ends the run. A fresh fire press retries with the selected starting lives.
 - **Catch your breath.** Scenic crossings are safe, but bombs still consume inventory. Leaving a cleared boss stage restores one life, up to the selected mode's starting lives.
 

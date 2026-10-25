@@ -72,6 +72,8 @@ def main():
     auxiliary = next(section for section in elf.sections if section.name == checker["SIM_AUX_SECTION"])
     auxiliary_name = next(symbol.name for symbol in elf.symbols if symbol.section == auxiliary.index and symbol.kind == 2)
     auxiliary_call = next(entry for entry in entries if entry[1].index == auxiliary.index and entry[3] == 3)
+    extra = next(section for section in elf.sections if section.name == checker["SIM_EXTRA_SECTION"])
+    extra_name = next(symbol.name for symbol in elf.symbols if symbol.section == extra.index and symbol.kind == 2)
     pixels_auxiliary = next(section for section in elf.sections if section.name == checker["PIXELS_AUX_SECTION"])
     pixels_auxiliary_name = next(symbol.name for symbol in elf.symbols
                                 if symbol.section == pixels_auxiliary.index and symbol.kind == 2)
@@ -116,6 +118,10 @@ def main():
     def pixels_header(data, field, value):
         headers = struct.unpack_from("<I", data, 32)[0]
         struct.pack_into("<I", data, headers + pixels_auxiliary.index * 40 + field, value)
+
+    def extra_header(data, field, value):
+        headers = struct.unpack_from("<I", data, 32)[0]
+        struct.pack_into("<I", data, headers + extra.index * 40 + field, value)
 
     def non_jsr(data, entry):
         _position, owner, address, _kind, _symbol, _table = entry
@@ -162,6 +168,11 @@ def main():
         ("helpers-wrong-address", lambda data: auxiliary_header(data, 12, 0x8e01), "SIM helpers must fit"),
         ("helpers-outgrow-workspace", lambda data: auxiliary_header(data, 20, 0x501), "SIM helpers must fit"),
         ("helpers-not-reloaded", lambda data: replace_target(data, helper_dma, phase_loader_name), "SIM helper loader"),
+        ("sim-extra-wrong-address", lambda data: extra_header(data, 12, 0xe001), "SIM extra helpers must fit"),
+        ("sim-extra-outgrows-workspace", lambda data: extra_header(data, 20, 0x1801), "SIM extra helpers must fit"),
+        ("irq-calls-sim-extra", lambda data: replace_target(data, irq, extra_name), "unsafe overlay references"),
+        ("geometry-calls-sim-extra", lambda data: replace_target(data, geometry, extra_name), "unsafe overlay references"),
+        ("escaped-sim-extra-pointer", lambda data: replace_target(data, pointer, extra_name), "unsafe overlay references"),
         ("pixels-helpers-overlap-masks", lambda data: pixels_header(data, 12, 0x6f1f), "PIXELS helpers must fit"),
         ("pixels-helpers-overlap-irq", lambda data: pixels_header(data, 20, 0x2e1), "PIXELS helpers must fit"),
         ("pixels-helpers-not-reloaded", lambda data: replace_target(data, pixels_dma, phase_loader_name), "PIXELS helper loader"),
@@ -192,6 +203,21 @@ def main():
     for helper in ('__divsi3', '__udivsi3', '__mulsi3'):
         cases.append((f'forbidden-{helper}', lambda data, name=helper: rename_symbol(data, name),
                       'generic 32-bit helper linked'))
+    projection_loader = next((symbol.name for symbol in elf.symbols
+                              if checker['readable_name'](symbol.name) == 'havoc_c64::benchmark_load_projection'), None)
+    if projection_loader is not None:
+        projection_call = next(entry for entry in entries
+                               if entry[1].executable and entry[4].section < len(elf.sections)
+                               and (callee := elf.function_at(entry[4].section, entry[4].address
+                                    + struct.unpack_from('<i', elf.data, entry[0] + 8)[0]))
+                               and callee.name == 'havoc_c64::benchmark_load_projection')
+        expected = 'benchmark projection loader needs one direct GEOMETRY entry call'
+        cases.extend((
+            ('benchmark-projection-jump', lambda data: non_jsr(data, projection_call), expected),
+            ('benchmark-projection-interior', lambda data: nonzero_addend(data, projection_call), expected),
+            ('irq-calls-benchmark-projection', lambda data: replace_target(data, irq, projection_loader), expected),
+            ('escaped-benchmark-projection-pointer', lambda data: replace_target(data, pointer, projection_loader), expected),
+        ))
     for name, value, expected in (
         ('__hud_sprites_start', 0x8bff, 'incorrect HUD sprite allocation'),
         ('__hud_sprites_end', 0x8e01, 'incorrect HUD sprite allocation'),

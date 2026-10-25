@@ -484,7 +484,7 @@ fn menu_music_toggle_changes_only_the_track_and_toggles_back() {
         game.player.x = 37;
         game.player.y = -22;
         game.actors[0] = enemy(assets::FIGHTER, 30, 10, 500);
-        game.controls.fire_armed = true;
+        game.controls.flags |= FIRE_ARMED;
         game
     }
     for mode in [Mode::Title, Mode::Attract] {
@@ -677,9 +677,9 @@ fn scenic_bridges_add_exactly_eight_seconds_and_keep_the_outgoing_checkpoint() {
         game.shield = 61;
         game.boss_started = game.stage_info.boss_kind != 0;
         game.boss_defeated = game.boss_started;
-        game.boss_left = 0;
-        game.boss_right = 0;
-        game.boss_core = 0;
+        game.bosses[0].left = 0;
+        game.bosses[0].right = 0;
+        game.bosses[0].core = 0;
         let expected_shield = 61;
         let before_scene = game.scenery_ticks();
         let cue = game.music_state();
@@ -712,7 +712,7 @@ fn scenic_bridges_add_exactly_eight_seconds_and_keep_the_outgoing_checkpoint() {
         assert_eq!(game.scenery_ticks(), 0);
         assert_eq!((game.spawn_segment, game.spawn_cursor), (outgoing + 1, 0));
         assert_eq!(
-            (game.boss_left, game.boss_right, game.boss_core),
+            (game.bosses[0].left, game.bosses[0].right, game.bosses[0].core),
             (40, 40, 120)
         );
         game.tick(&segment, &test_bank(game.segment_index())); // A stale outgoing view cannot spawn encounters.
@@ -791,7 +791,7 @@ fn bridge_entry_removes_hostiles_before_live_bombs_and_keeps_player_projectiles(
         pos: game.player,
         kind: 1,
     };
-    game.controls.bomb_pending = true;
+    game.controls.flags |= BOMB_PENDING;
     let bytes = empty_segment(0);
     game.tick(
         &Segment::new(&bytes).unwrap(),
@@ -881,9 +881,9 @@ fn all_eighteen_checkpoints_restore_stage_encounters_and_bosses_after_repeated_d
         game.score = 12345;
         for remaining in [2, 1] {
             game.boss_started = true;
-            game.boss_left = 0;
-            game.boss_right = 3;
-            game.boss_core = 7;
+            game.bosses[0].left = 0;
+            game.bosses[0].right = 3;
+            game.bosses[0].core = 7;
             game.spawn_cursor = 20;
             game.actors[0] = enemy(assets::FIGHTER, 0, 0, 800);
             game.shots[0].kind = 2;
@@ -898,7 +898,7 @@ fn all_eighteen_checkpoints_restore_stage_encounters_and_bosses_after_repeated_d
             assert_eq!(game.scenery_ticks(), 0);
             assert_eq!((game.spawn_segment, game.spawn_cursor), (stage, 0));
             assert_eq!(
-                (game.boss_left, game.boss_right, game.boss_core),
+                (game.bosses[0].left, game.bosses[0].right, game.bosses[0].core),
                 (40, 40, 120)
             );
             assert!(!game.boss_started && !game.boss_defeated);
@@ -938,9 +938,9 @@ fn all_boss_gates_start_on_time_and_allow_early_or_late_kills() {
             assert_eq!(game.hud().boss_shield, 100);
             let boundary = (stage as u32 + 1) * SECTION_TICKS as u32;
             if early {
-                game.boss_left = 0;
-                game.boss_right = 0;
-                game.boss_core = 0;
+                game.bosses[0].left = 0;
+                game.bosses[0].right = 0;
+                game.bosses[0].core = 0;
                 game.check_boss_death();
                 game.tick(&segment, &bank);
                 assert_eq!(
@@ -952,7 +952,7 @@ fn all_boss_gates_start_on_time_and_allow_early_or_late_kills() {
             } else {
                 set_rail(&mut game, boundary - 1);
                 let animation = game.ticks;
-                let before_z = game.boss_z;
+                let before_z = game.bosses[0].pos.z;
                 for _ in 0..80 {
                     game.tick(&segment, &bank);
                 }
@@ -960,13 +960,20 @@ fn all_boss_gates_start_on_time_and_allow_early_or_late_kills() {
                 assert_eq!(game.stage_ticks, SECTION_TICKS);
                 assert_eq!(game.ticks, animation + 80);
                 assert!(
-                    game.boss_z < before_z,
+                    game.bosses[0].pos.z < before_z,
                     "combat keeps advancing while the route is held"
                 );
-                game.boss_left = 0;
-                game.boss_right = 0;
-                game.boss_core = 0;
+                game.bosses[0].left = 0;
+                game.bosses[0].right = 0;
+                game.bosses[0].core = 0;
                 game.check_boss_death();
+            }
+            if stage == 17 {
+                for _ in 0..2 {
+                    while game.boss_split_ticks != 0 { game.tick(&segment, &bank); }
+                    for boss in &mut game.bosses { boss.left = 0; boss.right = 0; boss.core = 0; }
+                    game.check_boss_death();
+                }
             }
             game.tick(&segment, &bank);
             assert_eq!(game.stage_ticks, SECTION_TICKS);
@@ -1036,10 +1043,10 @@ fn every_boss_refills_immediately_once_by_projectile_or_finishing_bomb() {
             let mut game = Game::preview_at_for_test(stage);
             let bank = test_bank(stage);
             game.boss_started = true;
-            game.boss_left = 0;
-            game.boss_right = 0;
-            game.boss_core = if use_bomb { 8 } else { 4 };
-            game.boss_z = 680;
+            game.bosses[0].left = 0;
+            game.bosses[0].right = 0;
+            game.bosses[0].core = if use_bomb { 8 } else { 4 };
+            game.bosses[0].pos.z = 680;
             game.shield = 17;
             game.bombs = 1;
             game.lives = 2;
@@ -1058,16 +1065,18 @@ fn every_boss_refills_immediately_once_by_projectile_or_finishing_bomb() {
                 };
                 game.update_shots(&bank);
             }
-            assert!(game.boss_defeated, "stage {stage}, bomb {use_bomb}");
+            assert_eq!(game.boss_defeated, stage != 17, "stage {stage}, bomb {use_bomb}");
+            let reward = if stage == 17 { 0 } else { 5000 };
+            if stage == 17 { assert_eq!((game.boss_phase, game.boss_split_ticks), (1, 50)); }
             assert_eq!(
                 (game.shield, game.bombs, game.lives, game.score),
-                (100, 3, 2, 5000)
+                (100, 3, 2, reward)
             );
             assert!(game.shots.iter().all(|s| s.kind != 2));
             game.shield = 73;
             game.bombs = 0;
             game.check_boss_death();
-            assert_eq!((game.shield, game.bombs, game.score), (73, 0, 5000));
+            assert_eq!((game.shield, game.bombs, game.score), (73, 0, reward));
         }
     }
 }
@@ -1076,16 +1085,16 @@ fn every_boss_refills_immediately_once_by_projectile_or_finishing_bomb() {
 fn doubled_boss_health_keeps_a_normalized_hud_until_the_last_hit() {
     let mut game = running();
     assert_eq!(
-        (game.boss_left, game.boss_right, game.boss_core),
+        (game.bosses[0].left, game.bosses[0].right, game.bosses[0].core),
         (40, 40, 120)
     );
     assert_eq!(game.hud().boss_shield, 0);
     game.boss_started = true;
     assert_eq!(game.hud().boss_shield, 100);
-    game.boss_left = 0;
-    game.boss_right = 0;
+    game.bosses[0].left = 0;
+    game.bosses[0].right = 0;
     for (health, percent) in [(120, 60), (119, 60), (2, 1), (1, 1), (0, 0)] {
-        game.boss_core = health;
+        game.bosses[0].core = health;
         assert_eq!(game.hud().boss_shield, percent);
     }
 }
@@ -1097,7 +1106,7 @@ fn each_boss_has_a_distinct_side_and_exposed_core_attack() {
     {
         let mut game = running();
         set_rail(&mut game, stage * SECTION_TICKS + BOSS_START_TICKS);
-        game.boss_z = 680;
+        game.bosses[0].pos.z = 680;
         game.ticks = rate - 1;
         game.update_boss();
         assert!(game.shots.iter().all(|shot| shot.kind == 0));
@@ -1122,8 +1131,8 @@ fn each_boss_has_a_distinct_side_and_exposed_core_attack() {
             );
         }
         game.shots.fill(Shot::EMPTY);
-        game.boss_left = 0;
-        game.boss_right = 0;
+        game.bosses[0].left = 0;
+        game.bosses[0].right = 0;
         game.ticks = core_rate;
         game.update_boss();
         assert_eq!(
@@ -1892,10 +1901,10 @@ fn crystal_cave_has_an_unbroken_roof_side_walls_and_visible_hanging_crystals() {
 fn resident_state_fits_budget() {
     assert_eq!(core::mem::size_of::<PresentationEvent>(), 1);
     // Host C alignment adds eight bytes relative to the byte-aligned MOS
-    // layout. The native compile-time assertion and ELF audit enforce 640.
+    // layout. The native compile-time assertion and ELF audit enforce 768.
     let alignment_padding = if cfg!(target_arch = "mos") { 0 } else { 8 };
     assert!(
-        core::mem::size_of::<Game>() <= 640 + alignment_padding,
+        core::mem::size_of::<Game>() <= 768 + alignment_padding,
         "{}",
         core::mem::size_of::<Game>()
     );
@@ -1930,7 +1939,7 @@ fn attract_enemy_and_carrier_shots_spawn_and_move_silently() {
         let mut g = Game::new();
         if carrier {
             g.reset_scene(Mode::Attract, 11, 1000);
-            g.boss_z = 680;
+            g.bosses[0].pos.z = 680;
             g.ticks = 39;
         } else {
             g.reset_scene(Mode::Attract, 0, 0);
@@ -2019,12 +2028,12 @@ fn attract_section_cuts_clear_encounters_boss_audio_and_gestures() {
         ..Explosion::EMPTY
     };
     g.boss_started = true;
-    g.boss_left = 0;
+    g.bosses[0].left = 0;
     g.controls.now = 0xfff0;
-    g.controls.fire_armed = true;
-    g.controls.shot_pending = true;
+    g.controls.flags |= FIRE_ARMED;
+    g.controls.flags |= SHOT_PENDING;
     g.controls.roll_pending = -1;
-    g.controls.bomb_pending = true;
+    g.controls.flags |= BOMB_PENDING;
     // Seed stale audio directly: attract mode suppresses new sound events.
     g.audio[0] = AudioEvent {
         effect: Effect::EnemyFire,
@@ -2045,12 +2054,12 @@ fn attract_section_cuts_clear_encounters_boss_audio_and_gestures() {
     assert!(g.pickups.iter().all(|p| p.kind == 0));
     assert!(g.explosions.iter().all(|e| e.ticks == 0));
     assert!(!g.boss_started);
-    assert_eq!((g.boss_left, g.boss_right, g.boss_core), (40, 40, 120));
+    assert_eq!((g.bosses[0].left, g.bosses[0].right, g.bosses[0].core), (40, 40, 120));
     assert_eq!(g.controls.now, 0xfff0);
     assert_eq!(g.controls.released_at, g.controls.now);
-    assert!(!g.controls.fire_armed);
-    assert!(!g.controls.shot_pending);
-    assert!(!g.controls.bomb_pending);
+    assert!((g.controls.flags & FIRE_ARMED == 0));
+    assert!((g.controls.flags & SHOT_PENDING == 0));
+    assert!((g.controls.flags & BOMB_PENDING == 0));
     assert_eq!(g.controls.roll_pending, 0);
     assert!(g.pop_audio().is_none());
 }
@@ -2080,15 +2089,10 @@ fn compact_reset_matches_every_constructor_field_without_comparing_padding() {
         fire_at: 13_960,
         left_at: 13_980,
         right_at: 13_990,
-        fire_armed: true,
-        left_armed: true,
-        right_armed: true,
+        flags: FIRE_ARMED | LEFT_ARMED | RIGHT_ARMED | SHOT_PENDING | BOMB_PENDING | START_PENDING,
         cached_charge: 255,
-        shot_pending: true,
         shot_charge: 255,
-        bomb_pending: true,
         roll_pending: -1,
-        start_pending: true,
     };
     game.player = Vec3 {
         x: 90,
@@ -2143,10 +2147,10 @@ fn compact_reset_matches_every_constructor_field_without_comparing_padding() {
     game.respawn_ticks = 12;
     game.flight.bank = -20 * 256;
     game.flight.vel = [300, -40];
-    game.boss_z = 680;
-    game.boss_left = 0;
-    game.boss_right = 0;
-    game.boss_core = 0;
+    game.bosses[0].pos.z = 680;
+    game.bosses[0].left = 0;
+    game.bosses[0].right = 0;
+    game.bosses[0].core = 0;
     game.boss_started = true;
     game.boss_defeated = true;
     game.kills = 279;
@@ -2171,9 +2175,9 @@ fn victory_freezes_the_run_and_consumes_inputs_through_all_four_hundred_ticks() 
     set_rail(&mut game, MISSION_TICKS - 1);
     game.boss_started = true;
     game.boss_defeated = true;
-    game.boss_left = 0;
-    game.boss_right = 0;
-    game.boss_core = 0;
+    game.bosses[0].left = 0;
+    game.bosses[0].right = 0;
+    game.bosses[0].core = 0;
     game.player.x = 24;
     game.player.y = -32;
     game.score = 12_345;
@@ -2193,7 +2197,7 @@ fn victory_freezes_the_run_and_consumes_inputs_through_all_four_hundred_ticks() 
         game.stage_ticks,
         game.flight,
         game.roll_ticks,
-        game.boss_z,
+        game.bosses[0].pos.z,
         game.scenery_ticks(),
         game.scenery_camera_y(),
     );
@@ -2225,15 +2229,15 @@ fn victory_freezes_the_run_and_consumes_inputs_through_all_four_hundred_ticks() 
                 game.stage_ticks,
                 game.flight,
                 game.roll_ticks,
-                game.boss_z,
+                game.bosses[0].pos.z,
                 game.scenery_ticks(),
                 game.scenery_camera_y(),
             ),
             frozen
         );
-        assert!(!game.controls.start_pending);
-        assert!(!game.controls.shot_pending);
-        assert!(!game.controls.bomb_pending);
+        assert!((game.controls.flags & START_PENDING == 0));
+        assert!((game.controls.flags & SHOT_PENDING == 0));
+        assert!((game.controls.flags & BOMB_PENDING == 0));
         assert_eq!(game.controls.roll_pending, 0);
         assert!(game.pop_audio().is_none());
     }
@@ -2637,7 +2641,7 @@ fn respawn_uses_section_checkpoint_and_retains_score() {
 fn carrier_core_is_protected_until_both_turrets_die() {
     let mut g = running();
     g.boss_started = true;
-    g.boss_z = 680;
+    g.bosses[0].pos.z = 680;
     g.shots[0] = Shot {
         pos: Vec3 { x: 0, y: 0, z: 450 },
         kind: 1,
@@ -2645,9 +2649,9 @@ fn carrier_core_is_protected_until_both_turrets_die() {
         ..Shot::EMPTY
     };
     g.update_shots(&test_bank(g.segment_index()));
-    assert_eq!(g.boss_core, 120);
-    g.boss_left = 0;
-    g.boss_right = 0;
+    assert_eq!(g.bosses[0].core, 120);
+    g.bosses[0].left = 0;
+    g.bosses[0].right = 0;
     g.shots[0] = Shot {
         pos: Vec3 { x: 0, y: 0, z: 450 },
         kind: 1,
@@ -2655,7 +2659,7 @@ fn carrier_core_is_protected_until_both_turrets_die() {
         ..Shot::EMPTY
     };
     g.update_shots(&test_bank(g.segment_index()));
-    assert_eq!(g.boss_core, 116);
+    assert_eq!(g.bosses[0].core, 116);
 }
 #[test]
 fn shield_magnet_recovers_near_misses_and_rewards_once() {
@@ -2851,7 +2855,7 @@ fn bomb_presentation_survives_rewarded_inventory_full_audio_and_catch_up() {
         Effect::Footstep, Effect::BirdCall, Effect::Transport, Effect::TransportAway] {
         g.sound(effect, 0);
     }
-    g.controls.bomb_pending = true;
+    g.controls.flags |= BOMB_PENDING;
     let bytes = empty_segment(0);
     let segment = Segment::new(&bytes).unwrap();
     g.tick(&segment, &test_bank(g.segment_index()));
@@ -2869,10 +2873,11 @@ fn killing_the_gate_guardian_keeps_bomb_presentation_on_the_victory_screen() {
     let mut g = running();
     set_rail(&mut g, MISSION_TICKS - 1);
     g.boss_started = true;
-    g.boss_left = 0;
-    g.boss_right = 0;
-    g.boss_core = 8;
-    g.controls.bomb_pending = true;
+    g.boss_phase = 2;
+    g.bosses[0].left = 0;
+    g.bosses[0].right = 0;
+    g.bosses[0].core = 8;
+    g.controls.flags |= BOMB_PENDING;
     let bytes = empty_segment(assets::SEGMENT_COUNT - 1);
     let segment = Segment::new(&bytes).unwrap();
     g.tick(&segment, &test_bank(g.segment_index()));
@@ -3137,7 +3142,7 @@ fn paused_gestures_do_not_trigger_actions_after_neutral_resume() {
         sample(&mut g, FIRE | direction, 60);
         sample(&mut g, 0, 80);
         sample(&mut g, FIRE | direction, 100);
-        assert!(g.controls.bomb_pending);
+        assert!((g.controls.flags & BOMB_PENDING != 0));
         assert_ne!(g.controls.roll_pending, 0);
         for (bits, ms) in [
             (0, 120),
@@ -3276,7 +3281,7 @@ fn remembered_instants_survive_the_clock_wrapping_many_times() {
         };
         assert_eq!(g.hud().charge, expected, "at {ms}");
     }
-    assert!(!g.controls.right_armed && !g.controls.fire_armed);
+    assert!((g.controls.flags & RIGHT_ARMED == 0) && (g.controls.flags & FIRE_ARMED == 0));
     sample(&mut g, RIGHT, ms + 20);
     assert_eq!(
         g.controls.roll_pending, 0,
@@ -3290,7 +3295,7 @@ fn remembered_instants_survive_the_clock_wrapping_many_times() {
     );
     sample(&mut g, FIRE, ms + 80);
     assert!(
-        !g.controls.bomb_pending,
+        (g.controls.flags & BOMB_PENDING == 0),
         "an ancient fire tap is not half of a double tap"
     );
     assert_eq!(g.controls.shot_charge, 255);
@@ -3399,9 +3404,9 @@ fn missile_random_acquisition_covers_every_candidate_count_without_bias() {
             g.actors[index] = enemy(assets::FIGHTER, index as i16 * 10, 0, 900);
         }
         g.boss_started = count > ACTORS;
-        g.boss_left = u8::from(count > ACTORS);
-        g.boss_right = u8::from(count > ACTORS + 1);
-        g.boss_core = 0;
+        g.bosses[0].left = u8::from(count > ACTORS);
+        g.bosses[0].right = u8::from(count > ACTORS + 1);
+        g.bosses[0].core = BOSS_CORE_HP;
         let seed = g.missile_rng;
         if count == 0 {
             let mut lock = 15;
@@ -3657,16 +3662,16 @@ fn missile_scene_resets_clear_locks_and_respawns_preserve_random_sequence() {
     g.missile_targets.fill(0xef);
     g.missile_rng = 0x37;
     g.respawn();
-    assert_eq!(g.missile_targets, [0; SHOTS / 2]);
+    assert_eq!(g.missile_targets, [0; SHOTS]);
     assert_eq!(g.missile_rng, 0x37);
     g.missile_targets.fill(0xef);
     g.reset_scene(Mode::Attract, 6, 100);
-    assert_eq!(g.missile_targets, [0; SHOTS / 2]);
+    assert_eq!(g.missile_targets, [0; SHOTS]);
     assert_eq!(g.missile_rng, 0xA5);
     g.missile_targets.fill(0xef);
     g.missile_rng = 0x49;
     g.reset_run();
-    assert_eq!(g.missile_targets, [0; SHOTS / 2]);
+    assert_eq!(g.missile_targets, [0; SHOTS]);
     assert_eq!(g.missile_rng, 0xA5);
 }
 #[test]
@@ -3711,7 +3716,7 @@ fn missile_guidance_reaches_moving_fighters_divers_and_distant_opposite_side_tur
 fn missile_boss_targeting_tracks_live_turrets_then_exposed_core() {
     let mut g = running();
     g.boss_started = true;
-    g.boss_z = 900;
+    g.bosses[0].pos.z = 900;
     let origin = Vec3 { x: 0, y: 0, z: 200 };
     let mut lock = 0;
     assert_eq!(
@@ -3726,8 +3731,8 @@ fn missile_boss_targeting_tracks_live_turrets_then_exposed_core() {
         ))
     );
     assert_eq!(lock, 14);
-    g.boss_right = 0;
-    g.boss_z = 680;
+    g.bosses[0].right = 0;
+    g.bosses[0].pos.z = 680;
     assert_eq!(
         g.missile_target(origin, &mut lock, &test_bank(g.segment_index())),
         Some((
@@ -3740,7 +3745,7 @@ fn missile_boss_targeting_tracks_live_turrets_then_exposed_core() {
         ))
     );
     assert_eq!(lock, 13);
-    g.boss_left = 0;
+    g.bosses[0].left = 0;
     assert_eq!(
         g.missile_target(origin, &mut lock, &test_bank(g.segment_index())),
         Some((Vec3 { x: 0, y: 0, z: 480 }, 32))
@@ -3750,7 +3755,7 @@ fn missile_boss_targeting_tracks_live_turrets_then_exposed_core() {
     for _ in 0..20 {
         g.update_shots(&test_bank(g.segment_index()));
     }
-    assert_eq!(g.boss_core, 116);
+    assert_eq!(g.bosses[0].core, 116);
     g.boss_defeated = true;
     assert_eq!(
         g.missile_target(origin, &mut lock, &test_bank(g.segment_index())),
@@ -3764,21 +3769,21 @@ fn missile_rejects_shielded_dead_passed_and_inactive_boss_locks() {
     let bank = test_bank(0);
     let origin = Vec3 { x: 0, y: 0, z: 200 };
     g.boss_started = true;
-    g.boss_z = 680;
+    g.bosses[0].pos.z = 680;
     let mut lock = 15;
     assert!(g.missile_target(origin, &mut lock, &bank).is_some());
     assert_eq!(lock, 14, "a shielded core lock reacquires a live turret");
-    g.boss_left = 0;
-    g.boss_right = 0;
-    g.boss_core = 0;
+    g.bosses[0].left = 0;
+    g.bosses[0].right = 0;
+    g.bosses[0].core = 0;
     assert_eq!(g.missile_target(origin, &mut lock, &bank), None);
     assert_eq!(lock, 0);
-    g.boss_core = 120;
-    g.boss_z = origin.z - BOSS_CORE_Z;
+    g.bosses[0].core = 120;
+    g.bosses[0].pos.z = origin.z - BOSS_CORE_Z;
     lock = 15;
     assert_eq!(g.missile_target(origin, &mut lock, &bank), None);
     assert_eq!(lock, 0, "targets at the missile depth are no longer ahead");
-    g.boss_z = 680;
+    g.bosses[0].pos.z = 680;
     g.boss_started = false;
     lock = 15;
     assert_eq!(g.missile_target(origin, &mut lock, &bank), None);
@@ -4041,11 +4046,11 @@ fn all_boss_turret_shots_keep_inclusive_bounds_and_ignore_destroyed_sides() {
                     let mut game = running();
                     set_rail(&mut game, stage * SECTION_TICKS + BOSS_START_TICKS);
                     game.boss_started = true;
-                    game.boss_z = 680;
+                    game.bosses[0].pos.z = 680;
                     if side < 0 {
-                        game.boss_left = hp;
+                        game.bosses[0].left = hp;
                     } else {
-                        game.boss_right = hp;
+                        game.bosses[0].right = hp;
                     }
                     game.shots[0] = Shot {
                         pos: Vec3 {
@@ -4060,9 +4065,9 @@ fn all_boss_turret_shots_keep_inclusive_bounds_and_ignore_destroyed_sides() {
                     game.update_shots(&test_bank(stage as u8));
                     let hit = inside && hp != 0;
                     let actual = if side < 0 {
-                        (game.boss_left, game.boss_right)
+                        (game.bosses[0].left, game.bosses[0].right)
                     } else {
-                        (game.boss_right, game.boss_left)
+                        (game.bosses[0].right, game.bosses[0].left)
                     };
                     assert_eq!(
                         actual,
@@ -4070,7 +4075,7 @@ fn all_boss_turret_shots_keep_inclusive_bounds_and_ignore_destroyed_sides() {
                         "stage {stage}, side {side}, hp {hp}, ({x},{y},{old_z})"
                     );
                     assert_eq!(
-                        (game.boss_core, game.boss_defeated, game.score),
+                        (game.bosses[0].core, game.boss_defeated, game.score),
                         (120, false, 0)
                     );
                     assert_eq!(game.shots[0].kind, if hit { 0 } else { 1 });
@@ -4109,9 +4114,9 @@ fn all_boss_cores_absorb_shielded_shots_at_the_same_inclusive_bounds() {
                 let mut game = running();
                 set_rail(&mut game, stage * SECTION_TICKS + BOSS_START_TICKS);
                 game.boss_started = true;
-                game.boss_z = 680;
-                game.boss_left = left;
-                game.boss_right = right;
+                game.bosses[0].pos.z = 680;
+                game.bosses[0].left = left;
+                game.bosses[0].right = right;
                 game.shots[0] = Shot {
                     pos: Vec3 { x, y, z: old_z },
                     kind: 1,
@@ -4119,9 +4124,9 @@ fn all_boss_cores_absorb_shielded_shots_at_the_same_inclusive_bounds() {
                     ..Shot::EMPTY
                 };
                 game.update_shots(&test_bank(stage as u8));
-                assert_eq!((game.boss_left, game.boss_right), (left, right));
+                assert_eq!((game.bosses[0].left, game.bosses[0].right), (left, right));
                 assert_eq!(
-                    game.boss_core,
+                    game.bosses[0].core,
                     if hit && left == 0 && right == 0 {
                         116
                     } else {
@@ -4148,7 +4153,7 @@ fn all_boss_shots_keep_actor_priority_and_single_core_death_feedback() {
             let mut game = running();
             set_rail(&mut game, stage * SECTION_TICKS + BOSS_START_TICKS);
             game.boss_started = true;
-            game.boss_z = 680;
+            game.bosses[0].pos.z = 680;
             game.actors[0] = enemy(assets::FIGHTER, 130 * side, 30, 610);
             game.actors[0].hp = 6;
             game.shots[0] = Shot {
@@ -4164,7 +4169,7 @@ fn all_boss_shots_keep_actor_priority_and_single_core_death_feedback() {
             game.update_shots(&bank);
             assert_eq!(game.actors[0].hp, 2);
             assert_eq!(
-                (game.boss_left, game.boss_right, game.boss_core),
+                (game.bosses[0].left, game.bosses[0].right, game.bosses[0].core),
                 (40, 40, 120)
             );
             assert_eq!(game.shots[0].kind, 0);
@@ -4174,10 +4179,10 @@ fn all_boss_shots_keep_actor_priority_and_single_core_death_feedback() {
         let mut game = running();
         set_rail(&mut game, stage * SECTION_TICKS + BOSS_START_TICKS);
         game.boss_started = true;
-        game.boss_z = 680;
-        game.boss_left = 0;
-        game.boss_right = 0;
-        game.boss_core = 4;
+        game.bosses[0].pos.z = 680;
+        game.bosses[0].left = 0;
+        game.bosses[0].right = 0;
+        game.bosses[0].core = 4;
         let shot = Shot {
             pos: Vec3 { x: 0, y: 0, z: 432 },
             kind: 1,
@@ -4189,14 +4194,14 @@ fn all_boss_shots_keep_actor_priority_and_single_core_death_feedback() {
         game.actors[0].hp = 255;
         game.shots[0] = shot;
         game.update_shots(&bank);
-        assert_eq!((game.boss_core, game.score, game.shots[0].kind), (4, 0, 0));
+        assert_eq!((game.bosses[0].core, game.score, game.shots[0].kind), (4, 0, 0));
         assert_eq!(game.pop_audio().unwrap().effect, Effect::EnemyHit);
         assert!(game.pop_audio().is_none());
         game.actors[0] = Actor::EMPTY;
         game.shots[0] = shot;
         game.update_shots(&bank);
         assert_eq!(
-            (game.boss_core, game.score, game.shots[0].kind),
+            (game.bosses[0].core, game.score, game.shots[0].kind),
             (0, 5000, 0)
         );
         assert!(game.boss_defeated);
@@ -4221,7 +4226,7 @@ fn enlarged_carrier_targets_are_reachable_and_fire_from_the_visible_parts() {
         ] {
             let mut g = running();
             g.boss_started = true;
-            g.boss_z = 680;
+            g.bosses[0].pos.z = 680;
             g.shots[0] = Shot {
                 pos: Vec3 {
                     x: x * side,
@@ -4234,7 +4239,7 @@ fn enlarged_carrier_targets_are_reachable_and_fire_from_the_visible_parts() {
             };
             g.update_shots(&test_bank(11));
             assert_eq!(
-                if side < 0 { g.boss_left } else { g.boss_right },
+                if side < 0 { g.bosses[0].left } else { g.bosses[0].right },
                 40 - u8::from(hit)
             );
         }
@@ -4243,19 +4248,19 @@ fn enlarged_carrier_targets_are_reachable_and_fire_from_the_visible_parts() {
         for (boss_z, player_x) in [(900, 0), (680, 100 * side)] {
             let mut g = running();
             g.boss_started = true;
-            g.boss_z = boss_z;
+            g.bosses[0].pos.z = boss_z;
             g.player.x = player_x;
             if side < 0 {
-                g.boss_right = 0;
+                g.bosses[0].right = 0;
             } else {
-                g.boss_left = 0;
+                g.bosses[0].left = 0;
             }
             g.fire_player(255);
             for _ in 0..30 {
                 g.update_shots(&test_bank(11));
             }
             assert_eq!(
-                if side < 0 { g.boss_left } else { g.boss_right },
+                if side < 0 { g.bosses[0].left } else { g.bosses[0].right },
                 36,
                 "side {side}, boss_z {boss_z}"
             );
@@ -4263,7 +4268,7 @@ fn enlarged_carrier_targets_are_reachable_and_fire_from_the_visible_parts() {
     }
     let mut g = running();
     set_rail(&mut g, 11 * SECTION_TICKS + BOSS_START_TICKS);
-    g.boss_z = 680;
+    g.bosses[0].pos.z = 680;
     g.ticks = 40;
     g.update_boss();
     assert_eq!(
@@ -4283,8 +4288,8 @@ fn enlarged_carrier_targets_are_reachable_and_fire_from_the_visible_parts() {
         }
     );
     g.shots.fill(Shot::EMPTY);
-    g.boss_left = 0;
-    g.boss_right = 0;
+    g.bosses[0].left = 0;
+    g.bosses[0].right = 0;
     g.ticks = 50;
     g.update_boss();
     assert_eq!(
@@ -4323,7 +4328,7 @@ fn missiles_obey_obstacle_collision_and_boss_core_protection() {
     assert_eq!(g.score, 0);
     g.actors[0] = Actor::EMPTY;
     g.boss_started = true;
-    g.boss_z = 680;
+    g.bosses[0].pos.z = 680;
     g.shots[0] = Shot {
         pos: Vec3 { x: 0, y: 0, z: 450 },
         kind: 3,
@@ -4332,7 +4337,7 @@ fn missiles_obey_obstacle_collision_and_boss_core_protection() {
     };
     g.update_shots(&test_bank(g.segment_index()));
     assert_eq!(g.shots[0].kind, 0);
-    assert_eq!(g.boss_core, 120, "a missile cannot damage a shielded core");
+    assert_eq!(g.bosses[0].core, 120, "a missile cannot damage a shielded core");
 }
 #[test]
 fn missile_pool_priority_preserves_charge_and_ordinary_shot_rules() {
@@ -4343,7 +4348,7 @@ fn missile_pool_priority_preserves_charge_and_ordinary_shot_rules() {
         ..Shot::EMPTY
     };
     let mut g = running();
-    g.missile_targets.fill(0xee);
+    g.missile_targets.fill(14);
     g.add_shot(missile);
     assert_eq!(g.shots[0].kind, 3);
     assert_eq!((g.missile_lock(0), g.missile_lock(1)), (0, 14));
@@ -4384,7 +4389,7 @@ fn missile_pool_priority_preserves_charge_and_ordinary_shot_rules() {
             ..missile
         };
     }
-    g.missile_targets.fill(0xdd);
+    g.missile_targets.fill(13);
     g.add_shot(missile);
     assert_eq!(
         g.shots[23].pos.z, 198,
@@ -4452,21 +4457,12 @@ fn full_eighteen_stage_campaign_is_winnable_with_regular_joystick_input() {
         let bank = test_bank(section);
         let mut target = Vec3 { x: 0, y: 0, z: 800 };
         if g.boss_started && !g.boss_defeated {
-            target = if g.boss_left > 0 {
-                Vec3 {
-                    x: -100,
-                    y: 30,
-                    z: 610,
-                }
-            } else if g.boss_right > 0 {
-                Vec3 {
-                    x: 100,
-                    y: 30,
-                    z: 610,
-                }
-            } else {
-                Vec3 { x: 0, y: 0, z: 480 }
-            };
+            if let Some(boss) = g.bosses[..g.boss_count()].iter().find(|boss| boss.core > 0) {
+                let part = if boss.left > 0 { 0 } else if boss.right > 0 { 1 } else { 2 };
+                target = boss.part_position(part, g.boss_divisor());
+                target.x = target.x.clamp(-100, 100);
+                target.y = target.y.clamp(-65, 65);
+            }
         } else {
             let mut nearest = 2400;
             for actor in &g.actors {
@@ -4546,9 +4542,9 @@ fn full_eighteen_stage_campaign_is_winnable_with_regular_joystick_input() {
         g.mode,
         g.segment_index(),
         g.hud().distance,
-        g.boss_left,
-        g.boss_right,
-        g.boss_core,
+        g.bosses[0].left,
+        g.bosses[0].right,
+        g.bosses[0].core,
         g.lives
     );
 }
@@ -4815,7 +4811,7 @@ fn fully_occupied_scene_keeps_critical_geometry_inside_command_budget() {
     let bank = AssetBank::new(&data).unwrap();
     let mut g = running();
     g.boss_started = true;
-    g.boss_z = 680;
+    g.bosses[0].pos.z = 680;
     for a in &mut g.actors {
         *a = Actor {
             pos: Vec3 { x: 0, y: 0, z: 100 },
@@ -4887,7 +4883,7 @@ fn real_enemy_rosters_fit_saturated_and_near_scenes_with_identical_staged_pixels
                 g.player.x = x;
                 g.player.y = y;
                 g.boss_started = g.stage_info.boss_kind != 0;
-                g.boss_z = if near { 100 } else { 680 };
+                g.bosses[0].pos.z = if near { 100 } else { 680 };
                 for (i, actor) in g.actors.iter_mut().enumerate() {
                     let kind = 1 + i as u8 % bank.enemy_count();
                     *actor = enemy(

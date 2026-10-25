@@ -68,6 +68,9 @@ def main():
             ("__startup_checks_end", 0x9301, "startup checks exceed shared workspace"),
             ("__phase_sim_aux_start", 0x8dff, "SIM helpers must start after HUD sprites"),
             ("__phase_sim_aux_end", 0x9301, "SIM helpers exceed shared workspace"),
+            ("__phase_sim_extra_start", 0xdfff, "SIM extra helpers must start at $E000"),
+            ("__phase_sim_extra_end", 0xf801, "SIM extra helpers exceed retired raster workspace"),
+            ("__phase_sim_aux_size", 0x500, "incorrect composed SIM helper size"),
             ("__pixel_band_start", 0x8dff, "pixel band must occupy $8E00-$92FF after HUD sprites"),
             ("__pixel_band_end", 0x9301, "pixel band must occupy $8E00-$92FF after HUD sprites"),
             ("__sfx_state_start", 0xcd01, "SFX state bounds disagree"),
@@ -141,6 +144,24 @@ def main():
             assert "SFX state" in result.stderr or ".sfx_state outside allocation" in result.stderr, result.stdout + result.stderr
             cases += 1
             print(f"Rejected SFX state field {field}={value}")
+        game_state = next(section for section in elf.sections if section.name == ".game_state")
+        game_header = section_offset + game_state.index * section_stride
+        # Four boss records and byte-sized missile locks may occupy the first
+        # 128 bytes of the former IRQ backup, but must stop before $CB00.
+        data = bytearray(elf.data)
+        struct.pack_into("<I", data, game_header + 20, 0x300)
+        damaged_elf.write_bytes(data)
+        result = check(prg, damaged_elf)
+        assert result.returncode == 0, result.stdout + result.stderr
+        for field, value in ((12, 0xc7ff), (20, 0x301)):
+            data = bytearray(elf.data)
+            struct.pack_into("<I", data, game_header + field, value)
+            damaged_elf.write_bytes(data)
+            result = check(prg, damaged_elf)
+            assert result.returncode != 0, f"accepted Game state field {field}={value}"
+            assert ".game_state outside allocation" in result.stderr, result.stdout + result.stderr
+            cases += 1
+            print(f"Rejected Game state field {field}={value}")
         program_offset = struct.unpack_from("<I", elf.data, 28)[0]
         program_stride, program_count = struct.unpack_from("<HH", elf.data, 42)
         boot = next(section for section in elf.sections if section.name == ".phase.boot")

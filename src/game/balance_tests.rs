@@ -374,7 +374,7 @@ fn partially_full_shot_pools_keep_the_center_then_left_then_right_fan() {
     let position = Vec3 { x: 0, y: 0, z: 900 };
     for available in 0..=3 {
         let mut game = running(0);
-        game.missile_targets.fill(0xaa);
+        game.missile_targets.fill(10);
         for (index, shot) in game.shots.iter_mut().enumerate() {
             *shot = Shot {
                 pos: Vec3 {
@@ -458,10 +458,10 @@ fn ordinary_and_boss_projectiles_all_deal_six_damage() {
         for exposed in [false, true] {
             let mut game = running(stage);
             game.stage_ticks = game.boss_start_ticks();
-            game.boss_z = 680;
+            game.bosses[0].pos.z = 680;
             if exposed {
-                game.boss_left = 0;
-                game.boss_right = 0;
+                game.bosses[0].left = 0;
+                game.bosses[0].right = 0;
             }
             game.update_boss();
             assert_six_point_projectile_hit(&mut game, &test_bank(stage));

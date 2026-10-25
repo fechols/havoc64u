@@ -155,7 +155,11 @@ def main():
         assert len(code) == symbols['__phase_scenery_size']
         package(f'scenery-{name}', code, at, at+2)
     auxiliary = extract('sim_aux')
-    assert len(auxiliary) == symbols['__phase_sim_aux_size'] and len(auxiliary) <= 0x500
+    assert len(auxiliary) == symbols['__phase_sim_aux_prefix_size'] <= 0x500
+    extra = extract('sim_extra')
+    assert len(extra) == symbols['__phase_sim_extra_size'] <= 0x1800
+    auxiliary = auxiliary.ljust(0x500, b'\0') + extra
+    assert len(auxiliary) == symbols['__phase_sim_aux_size']
     package('sim-helpers', auxiliary, 84, 86)
     package('shadow', extract('shadow'), 116, 118)
     auxiliary = extract('scenery_aux')

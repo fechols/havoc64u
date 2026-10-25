@@ -5,12 +5,14 @@ Usage: python3 tools/test-missile-kernel.py
 Requires LLVM-MOS's mos-sim-clang and mos-sim. The harness builds the
 quarter-square table and compares fast_steer_missile (the native body of
 Game::steer_missile: the missile_target search over the twelve actor slots and
-the boss's turrets and core, then missile_velocity per axis) with a C
+up to four bosses' turrets and cores, then missile_velocity per axis) with a C
 transcription of the Rust reference in release-mode arithmetic: wrapping i16
 differences and products, truncating division, retained target IDs and the
 same rejection-sampled LFSR ranks. Random scenes mix live,
 dead and empty slots, kinds outside the bank's descriptors, small debris,
-every closing speed, boss states on both sides of the 680 depth and shots at
+every closing speed, boss states on both sides of the 680 depth, all three
+scales, protected/dead boss parts, IDs through 24, split-pause suppression,
+candidate pools above 15, and shots at
 every position, including coordinates whose differences wrap. The steered
 dx/dy, selected target and RNG state must match on every scene. The JSON report
 stays under target/missile-test.
@@ -33,10 +35,12 @@ source = r'''
 #include <string.h>
 struct Vec3 { int16_t x, y, z; };
 struct Actor { struct Vec3 pos; int16_t origin_x, origin_y; uint16_t age; uint8_t kind, hp, flags, approach_speed; };
-struct Args { const struct Actor *actors; const uint8_t *specs; struct Vec3 shot; int16_t boss_z;
-              uint8_t enemy_count, boss_active, boss_left, boss_right, boss_core; int8_t dx, dy;
+struct BossInstance { struct Vec3 pos; uint8_t left, right, core, flash; };
+struct Args { const struct Actor *actors; const uint8_t *specs; struct Vec3 shot; const struct BossInstance *bosses;
+              uint8_t enemy_count, boss_count, boss_shift; int8_t dx, dy;
               uint8_t target, rng; };
-_Static_assert(sizeof(struct Args)==21, "native steering ABI");
+_Static_assert(sizeof(struct BossInstance)==10, "native boss ABI");
+_Static_assert(sizeof(struct Args)==19, "native steering ABI");
 extern void fast_steer_missile(struct Args *args);
 #define QLO ((uint8_t*)0xc000)
 #define QHI ((uint8_t*)0xc200)
@@ -45,6 +49,7 @@ extern void fast_steer_missile(struct Args *args);
 #define MS_BESTC (*(volatile int16_t*)0x9361)
 #define MS_FOUND (*(volatile uint8_t*)0x9367)
 static struct Actor actors[12];
+static struct BossInstance bosses[4];
 static uint8_t specs[3 * 8];
 static int16_t w16(int32_t v){ return (int16_t)(uint16_t)(uint32_t)v; }
 static int16_t clamp16(int32_t v, int32_t lo, int32_t hi){ return (int16_t)(v<lo?lo:(v>hi?hi:v)); }
@@ -55,7 +60,7 @@ static int8_t velocity(int16_t error, int16_t closing, int16_t dz){
   return (int8_t)clamp16(q,-12,12);
 }
 static int candidate(const struct Args *a, uint8_t id, struct Vec3 *t, int16_t *closing){
-    if(id==0 || id>15) return 0;
+    if(id==0 || id>24) return 0;
     if(id<=12){
       const struct Actor *actor=&a->actors[id-1];
       uint8_t spec_hp=0; int8_t center=0;
@@ -65,26 +70,32 @@ static int candidate(const struct Args *a, uint8_t id, struct Vec3 *t, int16_t *
       *t=actor->pos; t->y=w16((int32_t)t->y+(small?10:center));
       *closing=(int16_t)(32+actor->approach_speed);
     } else {
-      if(!a->boss_active) return 0;
+      uint8_t instance=(id-13)/3, part=(id-13)%3;
+      if(instance>=a->boss_count) return 0;
+      const struct BossInstance *boss=&a->bosses[instance];
+      if(!boss->core) return 0;
       int16_t x, y, z;
-      if(id==13){ if(a->boss_left==0) return 0; x=-130; y=30; z=-70; }
-      else if(id==14){ if(a->boss_right==0) return 0; x=130; y=30; z=-70; }
-      else { if(!(a->boss_left==0 && a->boss_right==0 && a->boss_core>0)) return 0; x=0; y=0; z=-200; }
-      t->x=x; t->y=y; t->z=w16((int32_t)a->boss_z+z);
-      *closing=a->boss_z>680?40:32;
+      if(part==0){ if(boss->left==0) return 0; x=-130; y=30; z=-70; }
+      else if(part==1){ if(boss->right==0) return 0; x=130; y=30; z=-70; }
+      else { if(boss->left || boss->right) return 0; x=0; y=0; z=-200; }
+      int16_t scale=(int16_t)(1u<<a->boss_shift);
+      t->x=w16((int32_t)boss->pos.x+x/scale);
+      t->y=w16((int32_t)boss->pos.y+y/scale);
+      t->z=w16((int32_t)boss->pos.z+z/scale);
+      *closing=boss->pos.z>680?40:32;
     }
     return w16((int32_t)t->z-a->shot.z)>0;
 }
 static int target(struct Args *a, struct Vec3 *best, int16_t *best_closing){
   if(candidate(a,a->target,best,best_closing)) return 1;
-  uint8_t candidates[15], count=0, rank=0;
-  for(uint8_t id=1;id<=15;id++) if(candidate(a,id,best,best_closing)) candidates[count++]=id;
+  uint8_t candidates[24], count=0, rank=0;
+  for(uint8_t id=1;id<=24;id++) if(candidate(a,id,best,best_closing)) candidates[count++]=id;
   a->target=0;
   if(count==0) return 0;
   if(count>1){
     uint8_t sample;
     if(a->rng==0) a->rng=0xa5;
-    do { a->rng=(uint8_t)((a->rng>>1)^((a->rng&1)?0xb8:0)); sample=a->rng>>4; }
+    do { a->rng=(uint8_t)((a->rng>>1)^((a->rng&1)?0xb8:0)); sample=a->rng>>(count>15?3:4); }
     while(sample==0 || sample>count);
     rank=sample-1;
   }
@@ -117,14 +128,15 @@ static int check(struct Args *a){
   int same=mine.dx==theirs.dx && mine.dy==theirs.dy && mine.target==theirs.target &&
     mine.rng==theirs.rng && kernel_found==found &&
     (!found || (MS_BEST[0]==best.x && MS_BEST[1]==best.y && MS_BEST[2]==best.z && MS_BESTC==closing));
-  if(found){ targeted++; if(best.z!=0 && (best.x==130||best.x==-130||(best.x==0&&best.y==0)) && a->boss_active) boss_targets++; }
+  if(found){ targeted++; if(theirs.target>12) boss_targets++; }
   if(!same){
     printf("FAIL check %lu: shot (%d,%d,%d) dx %d dy %d -> kernel dx %d dy %d found %d target (%d,%d,%d) closing %d; reference dx %d dy %d found %d target (%d,%d,%d) closing %d\n",
       (unsigned long)checks,a->shot.x,a->shot.y,a->shot.z,a->dx,a->dy,mine.dx,mine.dy,kernel_found,MS_BEST[0],MS_BEST[1],MS_BEST[2],MS_BESTC,
       theirs.dx,theirs.dy,found,best.x,best.y,best.z,closing);
     printf(" lock/rng %u/%02x -> kernel %u/%02x reference %u/%02x\n",a->target,a->rng,mine.target,mine.rng,theirs.target,theirs.rng);
     printf(" kernel scratch: d %d e %d p %u neg %02x v %d %d\n",*(volatile int16_t*)0x9368,*(volatile int16_t*)0x9371,*(volatile uint16_t*)0x9373,*(volatile uint8_t*)0x9377,*(volatile int8_t*)0x9378,*(volatile int8_t*)0x9379);
-    printf(" boss active %u z %d left %u right %u core %u; bank count %u\n",a->boss_active,a->boss_z,a->boss_left,a->boss_right,a->boss_core,a->enemy_count);
+    printf(" boss count %u shift %u; bank count %u\n",a->boss_count,a->boss_shift,a->enemy_count);
+    for(uint8_t i=0;i<4;i++) printf(" boss %u: at (%d,%d,%d) left %u right %u core %u\n",i,bosses[i].pos.x,bosses[i].pos.y,bosses[i].pos.z,bosses[i].left,bosses[i].right,bosses[i].core);
     for(uint8_t i=0;i<12;i++) printf(" actor %u: kind %u hp %u flags %02x speed %u at (%d,%d,%d)\n",i,actors[i].kind,actors[i].hp,actors[i].flags,actors[i].approach_speed,actors[i].pos.x,actors[i].pos.y,actors[i].pos.z);
     return 1;
   }
@@ -146,7 +158,7 @@ static void random_actor(struct Actor *a, uint8_t scale){
 int main(void){
   uint16_t square=0;
   for(uint16_t n=0;n<512;n++){QLO[n]=(uint8_t)square;QHI[n]=(uint8_t)(square>>8);square=(uint16_t)(square+((n+1)>>1));}
-  struct Args a; memset(&a,0,sizeof a); a.actors=actors; a.specs=specs; a.rng=0xa5;
+  struct Args a; memset(&a,0,sizeof a); a.actors=actors; a.specs=specs; a.bosses=bosses; a.rng=0xa5;
   /* Authored eligibility, retained locks, vanished/passed targets and boss parts. */
   memset(actors,0,sizeof actors); memset(specs,0,sizeof specs);
   specs[0]=3; specs[1]=0; specs[8]=3; specs[9]=0; specs[16]=6; specs[17]=(uint8_t)-19;
@@ -165,15 +177,45 @@ int main(void){
   actors[0].pos.z=199; if(check(&a)) return 1;
   actors[0].kind=0; actors[0].flags=2; actors[0].hp=2; actors[0].pos.z=700;
   a.target=1; if(check(&a) || a.target!=0) return 1; /* empty debris slot cannot retain a lock */
-  for(uint16_t z=0;z<3000;z+=97){ a.boss_active=1; a.boss_z=(int16_t)z; a.boss_left=40; a.boss_right=40; a.boss_core=120;
-    if(check(&a)) return 1; a.boss_left=0; if(check(&a)) return 1; a.boss_right=0; if(check(&a)) return 1; a.boss_core=0; if(check(&a)) return 1; }
-  a.boss_z=680; a.boss_left=1; if(check(&a)) return 1; a.boss_z=681; if(check(&a)) return 1;
-  a.boss_active=0;
+  for(uint16_t z=0;z<3000;z+=97){ a.boss_count=1; bosses[0].pos.z=(int16_t)z; bosses[0].left=40; bosses[0].right=40; bosses[0].core=120;
+    if(check(&a)) return 1; bosses[0].left=0; if(check(&a)) return 1; bosses[0].right=0; if(check(&a)) return 1; bosses[0].core=0; if(check(&a)) return 1; }
+  bosses[0].pos.z=680; bosses[0].left=1; bosses[0].core=120; if(check(&a)) return 1; bosses[0].pos.z=681; if(check(&a)) return 1;
+  /* Every instance/part ID, scale, shield state and stale lock, including a
+     dead instance with stale side HP and a split pause (count zero). */
+  static const uint8_t shifts[]={0,2,3};
+  for(uint8_t scale=0;scale<3;scale++) for(uint8_t count=0;count<=4;count++) for(uint8_t phase=0;phase<5;phase++){
+    a.boss_shift=shifts[scale]; a.boss_count=count; a.shot.x=0; a.shot.y=0; a.shot.z=200;
+    for(uint8_t i=0;i<4;i++){
+      bosses[i].pos.x=(int16_t)(-96+64*i); bosses[i].pos.y=(int16_t)(-27+18*i); bosses[i].pos.z=680+(i&1);
+      bosses[i].left=phase==1||phase==3?0:20;
+      bosses[i].right=phase==2||phase==3?0:20;
+      bosses[i].core=phase==4?0:60;
+    }
+    for(uint8_t lock=0;lock<=26;lock++){ a.target=lock; a.rng=0xa5; if(check(&a)) return 1; }
+  }
+  /* Part depth boundaries and wrapped instance coordinates. */
+  a.boss_count=4;
+  for(uint8_t scale=0;scale<3;scale++) for(uint8_t part=0;part<3;part++) for(int8_t edge=-1;edge<=1;edge++){
+    a.boss_shift=shifts[scale];
+    for(uint8_t i=0;i<4;i++){
+      bosses[i].pos.x=i&1?32767:-32768; bosses[i].pos.y=i&2?32767:-32768;
+      bosses[i].pos.z=(int16_t)(680+i); bosses[i].left=part==0?20:0;
+      bosses[i].right=part==1?20:0; bosses[i].core=60;
+      a.shot.z=(int16_t)(bosses[i].pos.z-(part==2?200:70)/(1<<a.boss_shift)+edge);
+      a.target=(uint8_t)(13+3*i+part); if(check(&a)) return 1;
+    }
+  }
+  a.boss_count=0;
   /* Every candidate rank and initial RNG state, including zero repair. Counts
-     13/14 include the boss's turrets; a live core excludes those two turrets. */
-  for(uint8_t count=0;count<=14;count++){
+     above 12 include boss turrets. IDs have gaps at shielded cores; counts
+     above 15 exercise the high-five-bit sampler. */
+  for(uint8_t count=0;count<=20;count++){
     memset(actors,0,sizeof actors); a.shot.x=0; a.shot.y=0; a.shot.z=200;
-    a.boss_active=count>12; a.boss_z=900; a.boss_left=count>12; a.boss_right=count>13; a.boss_core=1;
+    memset(bosses,0,sizeof bosses); a.boss_count=count>12?4:0; a.boss_shift=0;
+    for(uint8_t i=0;i<4;i++){
+      bosses[i].pos.z=900; bosses[i].left=count>12+2*i; bosses[i].right=count>13+2*i;
+      bosses[i].core=bosses[i].left;
+    }
     for(uint8_t i=0;i<count && i<12;i++) actors[i]=chased;
     for(uint16_t seed=0;seed<256;seed++){
       a.target=0; a.rng=(uint8_t)seed;
@@ -183,18 +225,21 @@ int main(void){
       if(check(&a) || a.target!=locked || a.rng!=saved_rng) return 1;
     }
     if(count>1){
-      /* Seed the cycle at an accepted draw, then exactly 16*count subsequent
-         acquisitions traverse all accepted high nibbles once. */
+      /* Seed at an accepted draw and traverse the complete accepted cycle:
+         sixteen hits per eligible rank, or eight when using five bits. */
       a.target=0; a.rng=0xa5; if(check(&a)) return 1;
-      uint8_t cycle_rng=a.rng; uint16_t hits[15]={0};
-      for(uint16_t draw=0;draw<(uint16_t)count*16;draw++){
+      uint8_t cycle_rng=a.rng, repeats=count>15?8:16; uint16_t hits[24]={0};
+      for(uint16_t draw=0;draw<(uint16_t)count*repeats;draw++){
         a.target=0; if(check(&a)) return 1; hits[a.target-1]++;
       }
       if(a.rng!=cycle_rng) return 1;
-      for(uint8_t i=0;i<count;i++) if(hits[i]!=16) return 1;
+      for(uint8_t id=1;id<=24;id++){
+        struct Vec3 t; int16_t closing;
+        if(hits[id-1]!=(candidate(&a,id,&t,&closing)?repeats:0)) return 1;
+      }
     }
   }
-  a.boss_active=0; a.target=0;
+  a.boss_count=0; a.target=0;
   /* extreme guidance: error clamps, wrapping products, tiny and huge depths */
   memset(actors,0,sizeof actors);
   static const int16_t errors[]={-32768,-30000,-513,-512,-511,-1,0,1,511,512,513,30000,32767};
@@ -212,9 +257,16 @@ int main(void){
     a.enemy_count=(uint8_t)(2+(next()>>8)%2);
     if(scale==2){ a.shot.x=(int16_t)(next()>>16); a.shot.y=(int16_t)(next()>>16); a.shot.z=(int16_t)(next()>>16); }
     else { a.shot.x=pick(next()>>4,1000); a.shot.y=pick(next()>>4,600); a.shot.z=(int16_t)(8+(next()>>8)%2400); }
-    a.boss_active=(uint8_t)((next()>>8)%3==0); a.boss_z=(int16_t)(((next()>>8)%4==0)?680+(int16_t)((next()>>8)%3)-1:pick(next()>>4,2500));
-    a.boss_left=(uint8_t)(((next()>>8)&1)?0:(next()>>8)); a.boss_right=(uint8_t)(((next()>>8)&1)?0:(next()>>8)); a.boss_core=(uint8_t)(((next()>>8)%3)?(next()>>8):0);
-    a.target=(uint8_t)((next()>>8)%20); a.rng=(uint8_t)(next()>>8);
+    a.boss_count=(uint8_t)((next()>>8)%5); a.boss_shift=shifts[(next()>>8)%3];
+    for(uint8_t i=0;i<4;i++){
+      bosses[i].pos.x=scale==2?(int16_t)(next()>>16):pick(next()>>4,200);
+      bosses[i].pos.y=scale==2?(int16_t)(next()>>16):pick(next()>>4,100);
+      bosses[i].pos.z=(int16_t)(((next()>>8)%4==0)?680+(int16_t)((next()>>8)%3)-1:pick(next()>>4,2500));
+      bosses[i].left=(uint8_t)(((next()>>8)&1)?0:(next()>>8));
+      bosses[i].right=(uint8_t)(((next()>>8)&1)?0:(next()>>8));
+      bosses[i].core=(uint8_t)(((next()>>8)%3)?(next()>>8):0);
+    }
+    a.target=(uint8_t)((next()>>8)%28); a.rng=(uint8_t)(next()>>8);
     if((next()>>8)%5==0){ a.dx=(int8_t)(next()>>8); a.dy=(int8_t)(next()>>8); } else { a.dx=(int8_t)pick(next()>>4,12); a.dy=(int8_t)pick(next()>>4,12); }
     if(check(&a)) return 1;
   }

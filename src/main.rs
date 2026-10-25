@@ -21,14 +21,16 @@ fn frame(
     game.render_with_shadows(&mut r, &mut shadows, bank, segment);
     let status = game.hud();
     let mut dust = SpaceDustFrame::EMPTY;
-    let ambient = dust.prepare(status.section, status.mode, game.animation_ticks());
+    let ambient = dust.prepare(status.section, status.mode, game.travel_ticks());
     let mut output = vec![0; 10_001];
     for band in 0..25u8 {
         let mut pixels = [0; 1280];
         let mut bitmap = [0; 320];
         let mut screen = [0; 40];
         let mut color = [0; 40];
-        r.render_band_with_ambient(band, &mut pixels, ambient);
+        if band != 0 {
+            r.render_band_with_ambient(band, &mut pixels, ambient);
+        }
         hud::draw(band, &mut pixels, &status, number);
         render::pack_band(
             &pixels,

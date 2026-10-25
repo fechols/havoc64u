@@ -62,8 +62,8 @@ class Machine(Cpu):
             writable.append((section.address, section.address + section.size))
         super().__init__(memory, writable)
         self.mem[2:4] = self.stack_top.to_bytes(2, "little")
-        self.mem[0xdc00] = 255
-        self.mem[0xdc02] = self.mem[0xdc03] = 0
+        self.mem[0xdc00] = 0x80
+        self.mem[0xdc02], self.mem[0xdc03] = 0xc0, 0
         # Only mode and the menu selection/activity fields are used here. Their
         # offsets and valid discriminants come from this exact native build.
         self.mem[self.game_start:self.game_end] = bytes(self.game_end - self.game_start)
@@ -128,8 +128,9 @@ class Machine(Cpu):
             raise KernelError(f"{label}: scanner exceeded {self.budget} instructions at ${self.pc:04x}")
         require(self.s == 0xfd and self.mem[2:4] == stack, f"{label}: stack imbalance")
         require(not self.p & IRQ_MASK, f"{label}: IRQs left disabled")
-        require(self.mem[0xdc02] == 0 and self.mem[0xdc03] == 0,
-                f"{label}: joystick ports not restored to input")
+        require(self.mem[0xdc02] == 0xc0 and self.mem[0xdc03] == 0
+                and self.mem[0xdc00] == 0x80,
+                f"{label}: joystick inputs/paddle port 2 not restored")
         require(255 in self.scan_reads, f"{label}: missing idle-column baseline")
         after = bytes(self.mem[self.game_start:self.game_end])
         offset = self.selector - self.game_start
@@ -297,7 +298,7 @@ def exercise(elf, symbols, layout, budget):
             "scanner_calls": sum(cpu.calls for cpu in machines),
             "maximum_cpu_cycles_per_call": max(cpu.max_cycles for cpu in machines),
             "maximum_instructions_per_call": max(cpu.max_steps for cpu in machines),
-            "invariants": ["IRQ exclusion during CIA scan", "CIA ports restored to input",
+            "invariants": ["IRQ exclusion during CIA scan", "joystick inputs and paddle port 2 restored",
                            "balanced native stacks", "only menu selectors/activity may change in Game"]}
 
 

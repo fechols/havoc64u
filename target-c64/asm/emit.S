@@ -963,7 +963,8 @@ fast_clip_triangle:
 ; The native loop of Renderer::project_scenery: records of 20 bytes (three
 ; camera-space points, colour, flags) staged at RENDERER + 6 + 2176 are
 ; consumed in order from `start`. A STATIC_SKY record (flags bit 1) first has
-; the sky parallax subtracted from its points in place; a record whose three
+; the sky parallax subtracted from its points in place, twice when its XYZ
+; were doubled for a farther layer (staging-only flags bit 2); a record whose three
 ; depths all reach the near plane (z >= 8) is emitted with fast_emit_triangle;
 ; the first record that needs near clipping stops the loop and its index is
 ; returned (already drifted) so the caller clips it and resumes at index + 1.
@@ -1030,8 +1031,10 @@ fast_replay_scenery:
     lda (__rc2),y
     sta RS_FLAGS
     and #2
+    tax                         ; repeat toggle starts with bit 2 clear
     beq .Lrs_near
     ; Backdrop: x -= parallax_x, y -= parallax_y for the three points.
+.Lrs_drift_start:
     ldy #0
 .Lrs_drift:
     sec
@@ -1056,6 +1059,15 @@ fast_replay_scenery:
     iny
     cpy #18
     bne .Lrs_drift
+    ; Double-depth backdrops retain their original projected camera drift.
+    ; The drift body preserves X. Toggle its bit 2 against the modifier: a
+    ; distant layer repeats once, then clears the toggle on its second pass.
+    ; Neither the shared frame offsets nor staged flags are changed.
+    txa
+    eor RS_FLAGS
+    and #4
+    tax
+    bne .Lrs_drift_start
 .Lrs_near:
     ldy #5
     jsr .Lrs_depth_ok

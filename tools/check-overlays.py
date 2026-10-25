@@ -189,6 +189,8 @@ ALTERNATE_ENTRIES = {
 STARTUP_SECTION = ".startup_checks"
 STARTUP_ENTRY = "havoc_c64::check_code_package"
 SIM_AUX_SECTION = ".phase.sim_aux"
+SIM_EXTRA_SECTION = ".phase.sim_extra"
+SIM_HELPERS = {SIM_AUX_SECTION, SIM_EXTRA_SECTION}
 SCENERY_AUX_SECTION = ".phase.scenery_aux"
 SCENERY_EXTRA_SECTION = ".phase.scenery_extra"
 SCENERY_HELPERS = {SCENERY_AUX_SECTION, SCENERY_EXTRA_SECTION}
@@ -243,7 +245,7 @@ def audit(path):
     elf = Elf(path)
     audit_startup(elf)
     phases = {section.name: section for section in elf.sections if section.name.startswith(".phase.")}
-    require(set(phases) == set(ENTRIES) | set(ENEMY_ENTRIES) | set(SCENERY_ENTRIES) | set(ALTERNATE_ENTRIES) | {SIM_AUX_SECTION, *SCENERY_HELPERS, PIXELS_AUX_SECTION, RENDER_AUX_SECTION},
+    require(set(phases) == set(ENTRIES) | set(ENEMY_ENTRIES) | set(SCENERY_ENTRIES) | set(ALTERNATE_ENTRIES) | {*SIM_HELPERS, *SCENERY_HELPERS, PIXELS_AUX_SECTION, RENDER_AUX_SECTION},
             "ELF must contain seven common phases, seven encounter tails, ten scenery tails, terminal SIM, victory GEOMETRY and SIM/PIXELS/projection helpers")
     entry_functions = {}
     for name, expected in {**ENTRIES, **ENEMY_ENTRIES, **SCENERY_ENTRIES, **ALTERNATE_ENTRIES}.items():
@@ -288,12 +290,19 @@ def audit(path):
                 'front span heads must reuse exactly $77AC-$77B3 of retired raster scratch')
     require(auxiliary.address == 0x8E00 and 0 < auxiliary.size <= 0x500,
             "SIM helpers must fit the retired $8E00-$92FF workspace")
-    require(all(name in symbols for name in ("__phase_sim_aux_start", "__phase_sim_aux_end", "__phase_sim_aux_size")),
+    require(all(name in symbols for name in ("__phase_sim_aux_start", "__phase_sim_aux_end", "__phase_sim_aux_prefix_size")),
             "missing SIM helper ownership boundaries")
     require(symbols["__phase_sim_aux_start"].address == auxiliary.address
             and symbols["__phase_sim_aux_end"].address == auxiliary.address + auxiliary.size
-            and symbols["__phase_sim_aux_size"].address == auxiliary.size,
+            and symbols["__phase_sim_aux_prefix_size"].address == auxiliary.size,
             "SIM helper section disagrees with its ownership boundaries")
+    sim_extra = phases[SIM_EXTRA_SECTION]
+    require(sim_extra.address == 0xE000 and 0 < sim_extra.size <= 0x1800
+            and symbols['__phase_sim_extra_start'].address == sim_extra.address
+            and symbols['__phase_sim_extra_end'].address == sim_extra.address + sim_extra.size
+            and symbols['__phase_sim_extra_size'].address == sim_extra.size
+            and symbols['__phase_sim_aux_size'].address == 0x500 + sim_extra.size,
+            'SIM extra helpers must fit retired raster/shadow storage at $E000-$F7FF')
     pixels_auxiliary = phases[PIXELS_AUX_SECTION]
     render_auxiliary = phases[RENDER_AUX_SECTION]
     scenery_auxiliary = phases[SCENERY_AUX_SECTION]
@@ -470,12 +479,27 @@ def audit(path):
     render_prefix_refs = []
     render_loader_calls = []
     render_entry_tail_refs = []
+    render_loader_entry_calls = []
+    benchmark_projection = next((function for functions in elf.functions.values()
+                                 for function in functions
+                                 if function.name == 'havoc_c64::benchmark_load_projection'), None)
+    if benchmark_projection is not None:
+        require(benchmark is not None and benchmark.size
+                and elf.sections[benchmark_projection.section].name == '.text',
+                'benchmark projection loader must be resident and instrumented only')
+    projection_loader = (benchmark_projection.name if benchmark_projection is not None
+                         else ENTRIES['.phase.geometry'])
+    projection_loader_section = '.text' if benchmark_projection is not None else '.phase.geometry'
     scenery_aux_loader_refs = []
     scenery_aux_loader_calls = []
     scenery_entry_aux_refs = []
     shadow_load_refs = Counter()
     for source, address, kind, symbol, addend in relocations:
         if not source.executable:
+            require(not source.flags & 2 or benchmark_projection is None
+                    or symbol.section != benchmark_projection.section
+                    or not benchmark_projection.address <= symbol.address + addend < benchmark_projection.end,
+                    'benchmark projection loader needs one direct GEOMETRY entry call')
             continue
         caller = elf.function_at(source.index, address)
         if symbol.name in ('__phase_shadow_size', '__phase_shadow_finalize_size'):
@@ -508,20 +532,32 @@ def audit(path):
                     'GEOMETRY prefix size may only be used by its resident phase loader')
             render_prefix_refs.append(kind)
         if symbol.name == '__phase_render_aux_size':
-            require(caller is not None and caller.name == ENTRIES['.phase.geometry']
-                    and source.name == '.phase.geometry' and kind in (4, 5) and addend == 0,
+            require(caller is not None and caller.name == projection_loader
+                    and source.name == projection_loader_section and kind in (4, 5) and addend == 0,
                     'projection helper size may only be used by its GEOMETRY reload function')
             render_loader_refs.append(kind)
-        if (caller is not None and caller.name == ENTRIES['.phase.geometry']
-                and symbol.section < len(elf.sections)):
+        if symbol.section < len(elf.sections):
             target = elf.sections[symbol.section]
             callee = elf.function_at(target.index, symbol.address + addend) if target.executable else None
-            if target.name == RENDER_AUX_SECTION:
-                render_entry_tail_refs.append(address)
-            if callee and callee.name in ('havoc_c64::dma', 'io_on', 'io_off'):
+            if benchmark_projection is not None and callee == benchmark_projection:
                 instruction = address - source.address - 1
+                require(caller is not None and caller.name == ENTRIES['.phase.geometry']
+                        and source.name == '.phase.geometry' and kind == 3
+                        and symbol.address + addend == benchmark_projection.address
+                        and 0 <= instruction < source.size and elf.contents(source)[instruction] == 0x20,
+                        'benchmark projection loader needs one direct GEOMETRY entry call')
+                render_loader_entry_calls.append(address)
+            if caller is not None and caller.name == ENTRIES['.phase.geometry'] and target.name == RENDER_AUX_SECTION:
+                render_entry_tail_refs.append(address)
+            if caller is not None and caller.name == projection_loader and callee and callee.name in ('havoc_c64::dma', 'io_on', 'io_off'):
+                instruction = address - source.address - 1
+                direct_call = (0 <= instruction < source.size
+                               and (elf.contents(source)[instruction] == 0x20
+                                    or benchmark_projection is not None and callee.name == 'io_off'
+                                    and elf.contents(source)[instruction] == 0x4C
+                                    and address + 2 == caller.end))
                 require(kind == 3 and 0 <= instruction < source.size
-                        and elf.contents(source)[instruction] == 0x20,
+                        and symbol.address + addend == callee.address and direct_call,
                         'projection helper loader must use direct bank and DMA calls')
                 render_loader_calls.append((address, callee.name))
         if symbol.name == "__phase_pixels_size":
@@ -548,7 +584,7 @@ def audit(path):
                         and elf.contents(source)[instruction] == 0x20,
                         "PIXELS helper loader must use direct bank and DMA calls")
                 pixels_loader_calls.append((address, callee.name))
-        if symbol.name == "__phase_sim_aux_size":
+        if symbol.name in ("__phase_sim_aux_prefix_size", "__phase_sim_extra_size"):
             require(caller is not None and caller.name == "havoc_c64::load_sim"
                     and source.name in (".text", ".benchmark_resident") and kind in (4, 5) and addend == 0,
                     "SIM helper size may only be used by its resident reload function")
@@ -563,9 +599,10 @@ def audit(path):
                     and elf.contents(source)[instruction] == 0x20,
                     "SIM helper loader must use direct DMA and phase-load calls")
             loader_calls[callee.name].append(address)
-    require(sorted(loader_refs) == [4, 5]
-            and len(loader_calls["havoc_c64::dma"]) == len(loader_calls["havoc_c64::load_phase"]) == 1
-            and loader_calls["havoc_c64::dma"][0] < loader_calls["havoc_c64::load_phase"][0],
+    require(sorted(loader_refs) == [4, 4, 5, 5]
+            and len(loader_calls["havoc_c64::dma"]) == 2
+            and len(loader_calls["havoc_c64::load_phase"]) == 1
+            and max(loader_calls["havoc_c64::dma"]) < loader_calls["havoc_c64::load_phase"][0],
             "SIM helper loader must reload its complete helpers before loading each SIM profile")
     pixels_loader_sequence = [name for _, name in sorted(pixels_loader_calls)]
     require(sorted(pixels_prefix_refs) == [4, 5] and sorted(pixels_loader_refs) == [4, 5]
@@ -582,7 +619,11 @@ def audit(path):
     require(sorted(render_prefix_refs) == [4, 5] and sorted(render_loader_refs) == [4, 5]
             and [name for _, name in sorted(render_loader_calls)] == ['io_on', 'havoc_c64::dma', 'io_off'],
             'GEOMETRY must reload projection helpers with I/O mapped before projection')
-    require(all(address > sorted(render_loader_calls)[2][0] for address in render_entry_tail_refs),
+    require(len(render_loader_entry_calls) == (1 if benchmark_projection is not None else 0),
+            'benchmark projection loader needs one direct GEOMETRY entry call')
+    render_reload_end = (render_loader_entry_calls[0] if benchmark_projection is not None
+                         else sorted(render_loader_calls)[2][0])
+    require(all(address > render_reload_end for address in render_entry_tail_refs),
             'GEOMETRY entry references projection helpers before reloading them')
     require(sorted(scenery_aux_loader_refs) == [4, 4, 5, 5]
             and [name for _, name in sorted(scenery_aux_loader_calls)][:4] == ['io_on', 'havoc_c64::dma', 'havoc_c64::dma', 'io_off'],
@@ -719,11 +760,11 @@ def audit(path):
             elif source.name in SCENERY_HELPERS and target.name == '.phase.scenery':
                 require(destination < terrain_end, 'SCENERY helpers reference optional scenery space code')
                 local_references[source.name] += 1
-            elif source.name in SIM_SECTIONS and target.name == SIM_AUX_SECTION:
+            elif source.name in SIM_SECTIONS | SIM_HELPERS and target.name in SIM_HELPERS:
                 # All SIM profiles reload these helpers before executing. The
                 # projection cache and pixel band may overwrite them afterward.
                 local_references[source.name] += 1
-            elif source.name == SIM_AUX_SECTION and target.name == ".phase.sim":
+            elif source.name in SIM_HELPERS and target.name == ".phase.sim":
                 require(destination < enemy_address,
                         "SIM helpers reference an alternative tail without an active-profile guarantee")
                 local_references[source.name] += 1
@@ -746,7 +787,7 @@ def audit(path):
         if not source.executable:
             # Validated as an owned switch table below.
             continue
-        if target.name in ENEMY_ENTRIES or target.name in SCENERY_ENTRIES or target.name in ALTERNATE_ENTRIES or target.name in (SIM_AUX_SECTION, *SCENERY_HELPERS, PIXELS_AUX_SECTION, RENDER_AUX_SECTION):
+        if target.name in ENEMY_ENTRIES or target.name in SCENERY_ENTRIES or target.name in ALTERNATE_ENTRIES or target.name in (*SIM_HELPERS, *SCENERY_HELPERS, PIXELS_AUX_SECTION, RENDER_AUX_SECTION):
             errors.append(f"unapproved direct overlay-tail reference: {origin} -> {target.name}")
             continue
         expected = startup_entry if target.name == STARTUP_SECTION else entry_functions[target.name]
@@ -773,7 +814,7 @@ def audit(path):
             if consumers != {target}:
                 names = sorted(consumer.name if consumer else "unknown/data" for consumer in consumers)
                 errors.append(f"overlay switch table {elf.sections[section].name}:${start:04X}-${end-1:04X} targets {target.name}, consumed by {names}")
-    for name in [".text", *ENTRIES, STARTUP_SECTION, SIM_AUX_SECTION, *SCENERY_HELPERS, PIXELS_AUX_SECTION, RENDER_AUX_SECTION]:
+    for name in [".text", *ENTRIES, STARTUP_SECTION, *SIM_HELPERS, *SCENERY_HELPERS, PIXELS_AUX_SECTION, RENDER_AUX_SECTION]:
         require(sources[name] > 0, f"no retained relocations for {name}; link with --emit-relocs")
     require(not errors, "unsafe overlay references:\n  " + "\n  ".join(errors))
     if benchmark is not None and benchmark.size:
@@ -825,8 +866,8 @@ def audit(path):
     print("Encounter ABI: one opaque SIM call; seven entries at the shared prefix boundary")
     print("Scenery ABI: one opaque SCENERY call; ten entries at the shared prefix boundary")
     print(f"Terrestrial SCENERY: {terrain_end-scenery_phase.address} bytes; zero references to unloaded space helpers")
-    print("SIM helpers: $8E00-$92FF, callable only by SIM profiles; no IRQ or other-phase references")
-    print("SIM helper lifetime: one direct resident DMA before every load_sim profile transfer")
+    print("SIM helpers: $8E00-$92FF and retired $E000-$F7FF raster/shadow storage; callable only by SIM profiles, no IRQ or other-phase references")
+    print("SIM helper lifetime: two direct resident DMAs before every load_sim profile transfer")
     print("PIXELS helpers: $6F20-$71FF; prefix-only calls, reloaded with I/O mapped before raster access")
     print("Victory ABI: one terminal SIM and one medal GEOMETRY call; matching alternate tails")
     print(f"IRQ relocation graph: {len(reached)} functions, all resident")

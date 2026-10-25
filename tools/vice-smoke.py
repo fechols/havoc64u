@@ -149,6 +149,44 @@ def configure_emulator_audio(mon, syms, failures, package_format, backend="sfx")
                               "before": before, "value": 1}}
 
 
+def neutral_joystick_snapshot(snapshot):
+    """Release port 2 POT inputs in the JPIOSIM 0.1 snapshot module format."""
+    data = bytearray(snapshot)
+    marker = b"JPIOSIM" + bytes(9)
+    modules = []
+    offset = 0
+    while (offset := data.find(marker, offset)) >= 0:
+        version = bytes(data[offset + 16:offset + 18])
+        size = int.from_bytes(data[offset + 18:offset + 22], "little")
+        if version != b"\x00\x01" or size != 26 or offset + size > len(data):
+            raise RuntimeError(f"Unsupported JPIOSIM snapshot module at {offset}: "
+                               f"version={version.hex()}, size={size}")
+        before = bytes(data[offset + 24:offset + 26])
+        data[offset + 24:offset + 26] = b"\xff\xff"
+        modules.append(dict(module_offset=offset, before=before.hex(), after="ffff"))
+        offset += size
+    if len(modules) != 1:
+        raise RuntimeError(f"Expected one port2 JPIOSIM snapshot module; found {len(modules)}")
+    return bytes(data), modules
+
+
+def configure_emulator_inputs(mon, output):
+    """Initialize real sampler inputs; iosim has no POT resource or monitor setter."""
+    original = output / "iosim-original.vsf"
+    neutral = output / "iosim-neutral.vsf"
+    mon.command(f'dump "{original.as_posix()}"')
+    data, modules = neutral_joystick_snapshot(original.read_bytes())
+    neutral.write_bytes(data)
+    mon.command(f'undump "{neutral.as_posix()}"')
+    return dict(
+        scope="Port 2 uses native digital joystick sampling through VICE iosim. "
+              "Its POTX/POTY default of 0 is initialized to the released value 255 via snapshot. "
+              "Unused port 1 has no device: iosim would force CIA PB7 low and falsely report Left Shift. "
+              "Production input code is unchanged; this does not validate an actual second-button press.",
+        port1_device="none", port2_device="iosim", potx=255, poty=255,
+        original_snapshot=str(original), neutral_snapshot=str(neutral), modules=modules)
+
+
 def png(path, rows, width, height):
     def chunk(kind, data):
         return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data))
@@ -265,7 +303,7 @@ def sprite_shake_alignment(state):
     dx, dy = registers[0x16] & 7, (registers[0x11] & 7) - 3
     actual = []
     for sprite in range(8):
-        corner_x, corner_y = ((3, 4), (133, 4), (3, 175), (133, 175))[sprite // 2]
+        corner_x, corner_y = ((3, 12), (133, 12), (3, 175), (133, 175))[sprite // 2]
         expected = (24 + corner_x * 2 + (sprite % 2) * 24 - dx, 50 + corner_y - dy)
         position = (registers[sprite * 2] + (((registers[0x10] >> sprite) & 1) * 256),
                     registers[sprite * 2 + 1])
@@ -497,6 +535,32 @@ def segment_cache_addresses(syms):
     return tuple(addresses)
 
 
+BOSS_FIELD_PATHS = {"boss_z": "bosses[0].pos.z", "boss_left": "bosses[0].left",
+                    "boss_right": "bosses[0].right", "boss_core": "bosses[0].core",
+                    "boss_hit_flash_ticks": "bosses[0].flash"}
+
+
+def add_boss_layout_fields(fields, boss_fields, vec_fields, boss_size):
+    """Flatten the checked boss array and retain first-boss fixture aliases."""
+    if boss_size != 10 or not re.fullmatch(r"havoc::game::(?:boss::)?BossInstance\[4\]", fields["bosses"]["type"]):
+        raise RuntimeError("Unsupported four-boss DWARF layout")
+    for index in range(4):
+        base = fields["bosses"]["offset"] + index * boss_size
+        for name in ("left", "right", "core", "flash"):
+            field = boss_fields[name]
+            if field["type"] != "u8":
+                raise RuntimeError(f"Unsupported BossInstance::{name} type")
+            fields[f"bosses[{index}].{name}"] = dict(field, offset=base + field["offset"], size=1)
+        for axis in ("x", "y", "z"):
+            field = vec_fields[axis]
+            if field["type"] != "i16":
+                raise RuntimeError("Unsupported boss position type")
+            fields[f"bosses[{index}].pos.{axis}"] = dict(field,
+                offset=base + boss_fields["pos"]["offset"] + field["offset"], size=2)
+    for alias, path in BOSS_FIELD_PATHS.items():
+        fields[alias] = dict(fields[path])
+
+
 def dwarf_game_layout(elf, tool, syms, output, controls=False):
     """Read Rust field offsets and enum values from this exact target build."""
     descriptions = {}
@@ -505,6 +569,17 @@ def dwarf_game_layout(elf, tool, syms, output, controls=False):
             [str(tool), f"--name={name}", "--show-children", str(elf)], text=True)
         (output / f"dwarf-{name.lower()}.txt").write_text(descriptions[name])
     fields = dwarf_members(descriptions["Game"], "Game")
+    if "bosses" in fields:
+        for name in ("BossInstance", "Vec3"):
+            if name not in descriptions:
+                descriptions[name] = subprocess.check_output(
+                    [str(tool), f"--name={name}", "--show-children", str(elf)], text=True)
+                (output / f"dwarf-{name.lower()}.txt").write_text(descriptions[name])
+        size = re.search(r"DW_AT_byte_size\s+\((0x[0-9a-fA-F]+|\d+)\)", descriptions["BossInstance"])
+        if not size:
+            raise RuntimeError("Missing BossInstance DWARF size")
+        add_boss_layout_fields(fields, dwarf_members(descriptions["BossInstance"], "BossInstance"),
+                               dwarf_members(descriptions["Vec3"], "Vec3"), int(size[1], 0))
     modes = {}
     for block in re.split(r"(?=^0x[0-9a-fA-F]+:)", descriptions["Mode"], flags=re.M):
         if not re.match(r"0x[0-9a-fA-F]+:\s+DW_TAG_enumerator\b", block):
@@ -522,6 +597,10 @@ def dwarf_game_layout(elf, tool, syms, output, controls=False):
         required.update(transition_ticks="u16", ticks="u16")
     if "repeat_spawn_cursor" in fields:
         required["repeat_spawn_cursor"] = "u8"
+    if "bosses" in fields:
+        required.update(boss_phase="u8", boss_split_ticks="u8")
+        required.update({name: field["type"] for name, field in fields.items()
+                         if name.startswith("bosses[")})
     sizes = {"u8": 1, "i8": 1, "u16": 2, "u32": 4, "i16": 2, "bool": 1, "havoc::game::Mode": 1}
     if "stage_id" in fields:
         required["stage_id"] = "u8"
@@ -601,6 +680,11 @@ def logical_game_state(state):
     state = dict(state)
     if "stage_ticks" in state:
         state["rail_ticks"] = state["stage_id"] * 3750 + state["stage_ticks"]
+    if "bosses" in state:
+        boss = state["bosses"][0]
+        state.update(boss_z=boss["pos"]["z"], boss_left=boss["left"],
+                     boss_right=boss["right"], boss_core=boss["core"],
+                     boss_hit_flash_ticks=boss["flash"])
     return state
 
 
@@ -619,6 +703,8 @@ def read_game_state(mon, layout, names, raw=None):
     names = list(names)
     if "stage_ticks" in layout["fields"]:
         names += ["stage_id", "stage_ticks"]
+    if "bosses" in layout["fields"]:
+        names += ["boss_phase", "boss_split_ticks"]
     return {name: read_game_field(mon, layout, name, raw) for name in names}
 
 
@@ -629,6 +715,12 @@ def clock_fixture(values, fields, count, transition_mode=6):
     DWARF offsets are installed, and conflicting dual-clock fixtures fail.
     """
     values = dict(values)
+    if "boss_phase" in fields and "boss_started" in values:
+        values.setdefault("boss_phase", 0)
+        values.setdefault("boss_split_ticks", 0)
+        if values["boss_phase"] == 0:
+            values.setdefault("bosses[0].pos.x", 0)
+            values.setdefault("bosses[0].pos.y", 0)
     # Isolated encounters disable both streams; previews rewind both. Older
     # packages have only the original cursor and keep their existing layout.
     if "spawn_cursor" in values and "repeat_spawn_cursor" in fields:
@@ -831,6 +923,7 @@ def enemy_bank_check(mon, syms, package, section, game=None):
 
 def full_boss_health(initial_state):
     """Read full health from a freshly initialized target, including old builds."""
+    initial_state = logical_game_state(initial_state)
     health = {name: initial_state[name] for name in ("boss_left", "boss_right", "boss_core")}
     if (any(type(value) is not int or not 0 < value <= 255 for value in health.values())
             or sum(health.values()) > 255):
@@ -1638,16 +1731,194 @@ def control_checks(mon, syms, failures, elf, dwarf_tool, output, result):
     result["passed"] = True
 
 
+def boost_checks(mon, syms, failures, elf, dwarf_tool, output, result):
+    """Validate native burst timing using explicitly synthetic input samples."""
+    layout = dwarf_game_layout(elf, dwarf_tool, syms, output, controls=True)
+    fields = layout["fields"]
+    for name, kind, width in (("boost_cycle", "u16", 2),
+                              ("extra_travel_ticks", "u16", 2),
+                              ("invulnerability", "u8", 1)):
+        if fields.get(name, {}).get("type") != kind:
+            raise RuntimeError(f"Boost checks require Game::{name} ({kind})")
+        fields[name]["size"] = width
+    description = subprocess.check_output(
+        [str(dwarf_tool), "--name=Controls", "--show-children", str(elf)], text=True)
+    flags = dwarf_members(description, "Controls").get("flags", {})
+    if flags.get("type") != "u8":
+        raise RuntimeError("Boost checks require Controls::flags")
+    fields["controls.flags"] = dict(flags, size=1,
+        offset=fields["controls"]["offset"] + flags["offset"])
+    if "TEST_INPUT" not in syms or "irq_entry" not in syms:
+        raise RuntimeError("Boost checks require TEST_INPUT and irq_entry")
+    sample_layout = layout["input_sample"]
+    result.update(passed=False, excluded_from_timing=True, monitor_assisted=True,
+                  synthetic_input=True, layout=layout, frames=[], samples=[], state_patches=[],
+                  scope="Synthetic TEST_INPUT bit 0x20 passes through the real raster input ring and native simulation. "
+                        "A logged invulnerability guard prevents fixture deaths. Does not validate physical POTX, "
+                        "controller wiring, or Left Shift keyboard scanning.")
+    observed = ("mode", "ticks", "rail_ticks", "boost_cycle", "extra_travel_ticks",
+                "controls.bits", "controls.flags", "invulnerability")
+    mon.command("jpdb 1 $1f")  # Release the physical five-bit port; boost is synthetic.
+    mon.command("bank ram")
+    original_input = mon.integer(syms["TEST_INPUT"], 1)
+    original_guard = read_game_field(mon, layout, "invulnerability")
+    mon.command("bank cpu")
+
+    def write(label, address, raw):
+        mon.command("bank ram")
+        try:
+            before = mon.read(address, len(raw))
+            mon.command(f"> {address:04x} " + " ".join(f"{byte:02x}" for byte in raw))
+            if mon.read(address, len(raw)) != bytes(raw):
+                raise RuntimeError(f"Boost fixture write failed: {label}")
+        finally:
+            mon.command("bank cpu")
+        result["state_patches"].append(dict(label=label, address=address,
+                                           before=before.hex(), after=bytes(raw).hex()))
+
+    guard_address = layout["address"] + fields["invulnerability"]["offset"]
+
+    def observe(label):
+        mon.run_until(syms["frame_complete"], failures)
+        frame = counters(mon, syms)
+        mon.command("bank ram")
+        raw = mon.read(layout["address"], syms["__game_state_end"] - layout["address"])
+        frame.update(label=label, game=read_game_state(mon, layout, observed, raw),
+                     stack_guards={name: mon.integer(syms[name], 1)
+                                   for name in ("__stack_bottom", "__irq_stack_bottom")})
+        mon.command("bank cpu")
+        result["frames"].append(frame)
+        game = frame["game"]
+        if game["mode"] != layout["modes"]["Playing"]:
+            raise RuntimeError("Boost fixture left active gameplay")
+        if frame["input_overflows"] or frame["frame_dropped"] or any(
+                value != 0xa5 for value in frame["stack_guards"].values()):
+            raise RuntimeError("Boost fixture dropped input/geometry or changed a stack guard")
+        if not 0 <= game["boost_cycle"] <= 300 or bool(game["controls.flags"] & 0x80) != (game["boost_cycle"] > 200):
+            raise RuntimeError("Native boost phase flag disagrees with its countdown")
+        if frame["test_input"] == 255:
+            raise RuntimeError("Boost fixture unexpectedly left synthetic input mode")
+        if game["invulnerability"] < 100:
+            write("refresh fixture invulnerability", guard_address, b"\xff")
+        return game
+
+    def pulse(bits):
+        write("synthetic input", syms["TEST_INPUT"], bytes([bits]))
+        head = mon.integer(sample_layout["head_address"], 1)
+        for _ in range(8):
+            mon.run_until(syms["irq_entry"], failures)
+            next_head = mon.integer(sample_layout["head_address"], 1)
+            if next_head != head:
+                break
+        else:
+            raise RuntimeError("No accepted synthetic boost sample within eight IRQs")
+        if (next_head - head) & 63 != 1:
+            raise RuntimeError("Synthetic boost pulse skipped an input-ring sample")
+        address = sample_layout["address"] + ((next_head - 1) & 63) * sample_layout["size"]
+        raw = mon.read(address, sample_layout["size"])
+        sample = {name: int.from_bytes(raw[field["offset"]:field["offset"] + field["size"]], "little")
+                  for name, field in sample_layout["fields"].items()}
+        sample.update(synthetic=True, requested_bits=bits, ring_head=next_head)
+        result["samples"].append(sample)
+        if sample["bits"] != bits:
+            raise RuntimeError("Synthetic boost sample did not retain the requested input")
+
+    def countdown(before, after):
+        elapsed = (after["ticks"] - before["ticks"]) & 0xffff
+        if after["boost_cycle"] != max(0, before["boost_cycle"] - elapsed):
+            raise RuntimeError("Boost burst/cooldown did not follow the simulation clock")
+        # The countdown decreases before each future tick's phase is selected.
+        active_ticks = max(0, min(elapsed, before["boost_cycle"] - 201))
+        extra = (after["extra_travel_ticks"] - before["extra_travel_ticks"]) & 0xffff
+        if extra != active_ticks:
+            raise RuntimeError("Boost travel clock differs from active simulation ticks")
+        if after["stage_id"] != before["stage_id"] or after["rail_ticks"] - before["rail_ticks"] != elapsed + active_ticks:
+            raise RuntimeError("Boost fixture did not advance the rail at exactly twice cruise speed")
+        result["checked_simulation_ticks"] = result.get("checked_simulation_ticks", 0) + elapsed
+        result["checked_active_ticks"] = result.get("checked_active_ticks", 0) + active_ticks
+
+    try:
+        write("fixture invulnerability", guard_address, b"\xff")
+        pulse(0)
+        observe("neutral drain")
+        baseline = observe("ready baseline")
+        if baseline["boost_cycle"] or baseline["stage_ticks"] >= 2500:
+            raise RuntimeError("Boost checks need a ready burst with room before the next stage boundary")
+        pulse(0x20)
+        pulse(0)
+        for _ in range(8):
+            active = observe("tap released")
+            if active["controls.bits"] == 0 and active["boost_cycle"] > 200:
+                break
+        else:
+            raise RuntimeError("A released synthetic tap did not leave the burst active")
+        result["active_capture"] = capture(mon, syms, output, "boost-active-released")
+        previous = active
+        for _ in range(400):
+            current = observe("released burst countdown")
+            countdown(previous, current)
+            previous = current
+            if current["boost_cycle"] <= 200:
+                break
+        else:
+            raise RuntimeError("Boost burst did not finish")
+        if (current["extra_travel_ticks"] - baseline["extra_travel_ticks"]) & 0xffff != 100:
+            raise RuntimeError("Native burst did not last exactly 100 simulation ticks")
+        result["burst_active_ticks"] = 100
+        pulse(0x20)  # Press during cooldown and keep holding past readiness.
+        for _ in range(500):
+            current = observe("held during cooldown")
+            countdown(previous, current)
+            previous = current
+            if current["boost_cycle"] == 0:
+                break
+        else:
+            raise RuntimeError("Boost cooldown did not finish")
+        for _ in range(3):
+            current = observe("held after readiness")
+            countdown(previous, current)
+            previous = current
+            if current["controls.bits"] != 0x20 or current["boost_cycle"]:
+                raise RuntimeError("Holding a cooldown press retriggered boost")
+        result["held_cooldown_press_rejected"] = True
+        pulse(0)
+        released = observe("fresh press release")
+        countdown(previous, released)
+        pulse(0x20)
+        pulse(0)
+        for _ in range(8):
+            current = observe("fresh press accepted")
+            if current["boost_cycle"] > 200 and current["controls.bits"] == 0:
+                break
+        else:
+            raise RuntimeError("Fresh press after cooldown did not activate a released burst")
+        result["fresh_press_accepted"] = True
+        # Leave later optional checks in ordinary, ready gameplay.
+        for _ in range(700):
+            previous = current
+            current = observe("finish fresh burst and cooldown")
+            countdown(previous, current)
+            if current["boost_cycle"] == 0:
+                break
+        else:
+            raise RuntimeError("Fresh burst cleanup did not reach readiness")
+        result["passed"] = True
+        print("BOOST: synthetic tap, released 100-tick burst, 2x rail travel, cooldown hold rejection, and fresh press passed", flush=True)
+    finally:
+        write("restore input source", syms["TEST_INPUT"], bytes([original_input]))
+        write("restore fixture invulnerability", guard_address, bytes([original_guard]))
+
+
 def pause_checks(mon, syms, failures, elf, dwarf_tool, output, result):
     """Check paused input disposal and resume rebasing through the native loop."""
     layout = dwarf_game_layout(elf, dwarf_tool, syms, output, controls=True)
     description = subprocess.check_output(
         [str(dwarf_tool), "--name=Controls", "--show-children", str(elf)], text=True)
     controls = dwarf_members(description, "Controls")
-    pending = ("shot_pending", "bomb_pending", "roll_pending", "start_pending")
-    armed = ("fire_armed", "left_armed", "right_armed")
-    for name in (*pending, *armed, "cached_charge"):
-        kind = "i8" if name == "roll_pending" else "u8" if name == "cached_charge" else "bool"
+    # Flags 0..6 contain tap history and pending actions; bit7 is active boost.
+    control_fields = ("flags", "roll_pending", "cached_charge")
+    for name in control_fields:
+        kind = "i8" if name == "roll_pending" else "u8"
         if controls.get(name, {}).get("type") != kind:
             raise RuntimeError(f"Unsupported pause-check Controls::{name}")
         layout["fields"][f"controls.{name}"] = dict(controls[name], size=1,
@@ -1680,7 +1951,7 @@ def pause_checks(mon, syms, failures, elf, dwarf_tool, output, result):
 
     observed = ("ticks", "rail_ticks", "mode", "bombs", "roll_ticks", "roll_cooldown",
                 "shot_cooldown", "player.x", "player.y", "controls.bits",
-                *(f"controls.{name}" for name in (*pending, *armed, "cached_charge")))
+                *(f"controls.{name}" for name in control_fields))
 
     def observe(label):
         mon.run_until(syms["frame_complete"], failures)
@@ -1701,7 +1972,7 @@ def pause_checks(mon, syms, failures, elf, dwarf_tool, output, result):
         game = frame["game"]
         if game["bombs"] != baseline["game"]["bombs"] or game["roll_ticks"]:
             raise RuntimeError("Paused input spent a bomb or started a roll")
-        if any(game[f"controls.{name}"] for name in (*pending, *armed)):
+        if game["controls.flags"] & 0x7f or game["controls.roll_pending"]:
             raise RuntimeError("Paused input retained a pending gesture or armed tap")
         if frozen and (game["ticks"], game["rail_ticks"]) != (baseline["game"]["ticks"], baseline["game"]["rail_ticks"]):
             raise RuntimeError("Paused or first resumed frame advanced simulation time")
@@ -1843,10 +2114,39 @@ def hud_checks(mon, syms, failures, elf, dwarf_tool, output, result):
     settled = observe()
     if any(settled[key] != changed[key] for key in ("hud_image_writes", "hud_commits", "image_hashes")):
         raise RuntimeError("Completed score update kept rewriting the HUD")
+
+    # Exercise the bitmap strip through the real PIXELS overlay while paused.
+    # Boss health must no longer dirty the inventory's sprite images.
+    caption = decoded_pixels(Path(result["capture"]["native"]).read_bytes(),
+                             result["capture"]["background"])[:1280]
+    if set(caption) != {0, 1}:
+        raise RuntimeError("Level strip is not white text on opaque black")
+    saved_boss = read_game_state(mon, layout, ["boss_started", "boss_left", "boss_right", "boss_core"])
+    result["strip_cases"] = []
+    field("boss_started", 1)
+    for health, left, right, core in [(100, 40, 40, 120), (50, 0, 0, 100), (1, 0, 0, 2), (0, 0, 0, 0)]:
+        for name, value in (("boss_left", left), ("boss_right", right), ("boss_core", core)):
+            field(name, value)
+        sample = observe()
+        if any(sample[key] != settled[key] for key in ("hud_image_writes", "hud_commits", "image_hashes")):
+            raise RuntimeError("Bitmap boss health changed a corner sprite")
+        shot = capture(mon, syms, output, f"hud-boss-{health}")
+        pixels = decoded_pixels(Path(shot["native"]).read_bytes(), shot["background"])[:1280]
+        expected = caption
+        if health:
+            expected = bytes((2 if x < 4 + health * 152 // 100 else 11)
+                             if 4 <= x < 156 and 2 <= y < 6 else 0
+                             for y in range(8) for x in range(160))
+        if pixels != expected:
+            raise RuntimeError(f"Incorrect native GUI strip at boss health {health}")
+        result["strip_cases"].append(dict(health=health, capture=shot))
+    for name, value in saved_boss.items():
+        field(name, value)
+    observe()
     mon.command("jpdb 1 $1f")
     write("resume", pause, b"\x00")
     result["passed"] = True
-    print("HUD: eight fixed sprites retained across frames; unchanged state wrote zero bytes; score dirtied one corner", flush=True)
+    print("HUD: lazy sprite updates and placement passed; black level strip, red boss health, and restored name passed", flush=True)
 
 
 def check_feedback_geometry(reference, commands, white, pulse=(), core_color=7):
@@ -1925,10 +2225,11 @@ def weapon_checks(mon, syms, failures, elf, dwarf_tool, output, result, video, p
             array["fields"][f"pos.{axis}"] = dict(component,
                 offset=array["fields"]["pos"]["offset"] + component["offset"])
     missile_targets = fields.get("missile_targets")
-    if not missile_targets or missile_targets["type"] != f"u8[{arrays['shots']['count'] // 2}]":
-        raise RuntimeError("Unsupported packed Game::missile_targets array type")
+    lock_match = re.fullmatch(r"u8\[(\d+)\]", missile_targets["type"]) if missile_targets else None
+    if lock_match is None or int(lock_match[1]) not in (arrays["shots"]["count"], arrays["shots"]["count"] // 2):
+        raise RuntimeError("Unsupported Game::missile_targets array type")
     lock_address = layout["address"] + missile_targets["offset"]
-    lock_bytes = arrays["shots"]["count"] // 2
+    lock_bytes = int(lock_match[1])
     if lock_address + lock_bytes > syms["__game_state_end"]:
         raise RuntimeError("Weapon fixture missile locks exceed reserved Game state")
     renderer = structs["Renderer"]
@@ -2036,9 +2337,13 @@ def weapon_checks(mon, syms, failures, elf, dwarf_tool, output, result, video, p
         mon.command("bank ram")
         frame["game"] = read_game_state(mon, layout, observed_fields)
         frame["actors"], frame["shots"] = read_array("actors"), read_array("shots")
+        if "bosses" in fields:
+            frame["bosses"] = [{member: read_field(f"bosses[{index}].{member}")
+                                 for member in ("pos.x", "pos.y", "pos.z", "left", "right", "core", "flash")}
+                                for index in range(4)]
         locks = mon.read(lock_address, lock_bytes)
-        frame["missile_targets"] = [locks[index // 2] >> (4 * (index & 1)) & 15
-                                    for index in range(arrays["shots"]["count"])]
+        frame["missile_targets"] = (list(locks) if lock_bytes == arrays["shots"]["count"] else
+            [locks[index // 2] >> (4 * (index & 1)) & 15 for index in range(arrays["shots"]["count"])])
         frame["pickups"] = read_array("pickups")
         frame["stack_guards"] = {name: mon.integer(syms[name], 1)
                                  for name in ("__stack_bottom", "__irq_stack_bottom")}
@@ -2535,7 +2840,7 @@ def weapon_checks(mon, syms, failures, elf, dwarf_tool, output, result, video, p
                     expected = 0xcc
                 else:
                     sprite, axis = divmod(address - 0xd000, 2)
-                    corner_x, corner_y = ((3, 4), (133, 4), (3, 175), (133, 175))[sprite // 2]
+                    corner_x, corner_y = ((3, 12), (133, 12), (3, 175), (133, 175))[sprite // 2]
                     expected = ((24 + corner_x * 2 + (sprite % 2) * 24 - applied[0]) & 255
                                 if axis == 0 else 50 + corner_y - (applied[1] - 3))
                 if value != expected:
@@ -2691,6 +2996,10 @@ def weapon_checks(mon, syms, failures, elf, dwarf_tool, output, result, video, p
                         "finisher": "physical bomb" if stage == 16 else "projectile"}
             result["scenarios"].append(scenario)
             ready_stage(scenario, stage)
+            split_boss = stage == 17 and "bosses" in fields
+            if split_boss:
+                scenario["name"] = "gate-guardian-three-phase-refills"
+                seed(scenario, {"rail_ticks": stage * 3750 + 3000})
             seed(scenario, {"boss_started": 1, "boss_defeated": 0, "boss_z": 680,
                             "boss_left": 0, "boss_right": 0,
                             "boss_core": 8 if stage == 16 else 4,
@@ -2703,8 +3012,51 @@ def weapon_checks(mon, syms, failures, elf, dwarf_tool, output, result, video, p
                              {"kind": 1, "damage": 4, "pos.x": 0, "pos.y": 0, "pos.z": 450})
             for _ in range(4):
                 frame = observe(scenario)
-                if frame["game"]["boss_defeated"]:
+                if frame["game"]["boss_defeated"] or (split_boss and frame["game"]["boss_phase"] == 1):
                     break
+            if split_boss:
+                for phase in (1, 2):
+                    expected = dict(boss_defeated=0, boss_phase=phase, shield=100, bombs=3, score=0)
+                    if any(frame["game"][name] != value for name, value in expected.items()):
+                        raise RuntimeError("Guardian split did not refill once and keep the encounter active")
+                    if not frame["game"]["boss_split_ticks"]:
+                        raise RuntimeError("Guardian split omitted its safe animation interval")
+                    if any(shot["kind"] for shot in frame["shots"]):
+                        raise RuntimeError("Guardian split retained projectiles")
+                    # Monitor changes distinguish the transition's single refill
+                    # from a refill repeated during its safe interval.
+                    seed(scenario, {"shield": 73, "bombs": 0})
+                    for _ in range(60):
+                        frame = observe(scenario)
+                        if frame["game"]["shield"] != 73 or frame["game"]["bombs"] != 0:
+                            raise RuntimeError("Guardian split repeated its refill")
+                        if frame["game"]["boss_split_ticks"] == 0:
+                            break
+                    else:
+                        raise RuntimeError("Guardian split did not complete")
+                    for boss in frame["bosses"][:1 << phase]:
+                        if (boss["left"], boss["right"], boss["core"]) != (40 >> phase, 40 >> phase, 120 >> phase):
+                            raise RuntimeError("Guardian children did not retain exact phase health")
+                    scenario.setdefault("completed_splits", []).append(phase)
+                    children = frame["bosses"][:1 << phase]
+                    values = {f"bosses[{index}].{part}": (4 if part == "core" else 0)
+                              for index in range(1 << phase) for part in ("left", "right", "core")}
+                    seed(scenario, values, clear=("shots",))
+                    # Kill the first medium separately: it must not start the
+                    # four-boss phase while its sibling remains alive.
+                    for index, boss in enumerate(children):
+                        seed_element(scenario, "shots", index,
+                                     {"kind": 1, "damage": 4, "pos.x": boss["pos.x"],
+                                      "pos.y": boss["pos.y"],
+                                      "pos.z": boss["pos.z"] - (50 if phase == 1 else 25) - 30})
+                        if phase == 1 and index == 0:
+                            frame = observe(scenario)
+                            if frame["game"]["boss_phase"] != phase or frame["game"]["boss_defeated"]:
+                                raise RuntimeError("Guardian advanced before both medium bosses died")
+                    for _ in range(8):
+                        frame = observe(scenario)
+                        if frame["game"]["boss_phase"] != phase or frame["game"]["boss_defeated"]:
+                            break
             expected = dict(boss_defeated=1, shield=100, bombs=3, score=5000)
             if any(frame["game"][name] != value for name, value in expected.items()):
                 raise RuntimeError("Boss defeat did not immediately refill shields and bombs")
@@ -2745,6 +3097,8 @@ def main():
                         help="after timing, seed section boundaries and results modes through ELF/DWARF-derived monitor writes")
     parser.add_argument("--control-checks", action="store_true",
                         help="after timing, verify Up climbs, Down dives, and lateral dodges with IRQ-synchronized physical joystick input")
+    parser.add_argument("--boost-checks", action="store_true",
+                        help="after timing, verify boost bursts and cooldown with explicitly synthetic TEST_INPUT samples; capture active boost")
     parser.add_argument("--pause-checks", action="store_true",
                         help="after timing, verify paused-input disposal and resume rebasing with monitor-assisted pause toggles")
     parser.add_argument("--weapon-checks", action="store_true",
@@ -2789,14 +3143,14 @@ def main():
             available.bind(("127.0.0.1", 0))
             port = available.getsockname()[1]
         startup = output / "startup.mon"
-        startup.write_text("jpdb 0 $1f\njpdb 1 $1f\n")
+        startup.write_text("jpdb 1 $1f\n")
         # The calibrated headless companion crashes while parsing -config;
         # doomc64u's own launcher likewise removes that option. Isolate XDG
         # directories instead and specify all test resources on the CLI.
         command = [str(args.vice.resolve()), "-directory", str(args.roms.resolve()), "+logtofile", "+logcolorize",
                    "-"+args.video, "-warp", "+sound", "-jamaction", "5", "-autostartprgmode", "1",
                    "-reu", "-reusize", str(package_format["reu_size"] // 1024), "-reuimage", str(reu), "+reuimagerw", "-sidextra", str(sid_count-1), "-sid2address", "0xd420",
-                   "-joydev1", "0", "-joydev2", "0", "-controlport1device", "iosim", "-controlport2device", "iosim",
+                   "-joydev1", "0", "-joydev2", "0", "-controlport1device", "none", "-controlport2device", "iosim",
                    "-remotemonitor", "-remotemonitoraddress", f"127.0.0.1:{port}",
                    "-initbreak", "0x080d", "-moncommands", str(startup), "-autostart", str(prg)]
         if sid_count == 4:
@@ -2827,6 +3181,7 @@ def main():
         mon.command("log on")
         report["emulator_audio"] = configure_emulator_audio(
             mon, syms, failures, package_format, args.audio_backend)
+        report["emulator_inputs"] = configure_emulator_inputs(mon, output)
         mon.run_until(syms["frame_complete"], failures)
         report["title"] = counters(mon, syms)
         report["title"]["capture"] = capture(mon, syms, output, "title")
@@ -2916,6 +3271,11 @@ def main():
             control_checks(mon, syms, failures, elf,
                            args.llvm_dwarfdump or args.llvm_nm.with_name("llvm-dwarfdump"),
                            output, report["control_checks"])
+        if args.boost_checks:
+            report["boost_checks"] = {}
+            boost_checks(mon, syms, failures, elf,
+                         args.llvm_dwarfdump or args.llvm_nm.with_name("llvm-dwarfdump"),
+                         output, report["boost_checks"])
         if args.pause_checks:
             report["pause_checks"] = {}
             pause_checks(mon, syms, failures, elf,

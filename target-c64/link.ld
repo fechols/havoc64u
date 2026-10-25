@@ -17,6 +17,7 @@ MEMORY {
     phase (rwx) : ORIGIN = 0x3000, LENGTH = 0x4200
     startup_checks (rx) : ORIGIN = 0x8E00, LENGTH = 0x0500
     sim_aux (rx) : ORIGIN = 0x8E00, LENGTH = 0x0500
+    sim_extra (rx) : ORIGIN = 0xE000, LENGTH = 0x1800
     scenery_extra (rx) : ORIGIN = 0xE000, LENGTH = 0x0800
     constants (r) : ORIGIN = 0x7800, LENGTH = 0x0800
     tables (r) : ORIGIN = 0x9900, LENGTH = 0x0700
@@ -27,7 +28,7 @@ MEMORY {
     image_midgap (r) : ORIGIN = 0x8000, LENGTH = 0x0E00
     image_postgap (r) : ORIGIN = 0x9300, LENGTH = 0x0600
     renderer (rw) : ORIGIN = 0xCFFA, LENGTH = 0x1006
-    game (rw) : ORIGIN = 0xC800, LENGTH = 0x0280
+    game (rw) : ORIGIN = 0xC800, LENGTH = 0x0300
     audio (rw) : ORIGIN = 0xCE00, LENGTH = 0x01B0
     /* The effects state sits in the page below the DAC state. */
     sfx_state (rw) : ORIGIN = 0xCD00, LENGTH = 0x0100
@@ -253,6 +254,14 @@ SECTIONS {
         *(.phase.sim_aux .phase.sim_aux.*)
         __phase_sim_aux_end = .;
     } >sim_aux
+    /* SIM runs before SCENERY resets its shadow frame. Previous raster tails,
+     * masks and shadow records are retired here; every SIM entry reloads this
+     * code before use, and it becomes scratch again when SIM returns. */
+    .phase.sim_extra 0xE000 : AT(__reu_sim_helpers + 0x500) {
+        __phase_sim_extra_start = .;
+        *(.phase.sim_extra .phase.sim_extra.*)
+        __phase_sim_extra_end = .;
+    } >sim_extra
     /* Called exactly once from main, before BOOT loads common assets over
      * this range. Never reachable from an interrupt or a later overlay. */
     .startup_checks : {
@@ -391,7 +400,8 @@ __irq_stack_bottom = 0x7500;
 /* LLVM-MOS gives non-reentrant functions static local frames in .noinit.
  * Nothing reachable from irq_body may own one (tools/check-irq-frames.py
  * audits the linked closure), so the interrupt needs no frame backup and
- * $BF40-$BFFF plus $CA80-$CCFF are free. */
+ * $BF40-$BFFF plus $CB00-$CCFF are free; Game uses the first 128 bytes of
+ * the former $CA80-$CCFF backup for the four-boss state and byte locks. */
 __resident_end = MAX(LOADADDR(.data) + SIZEOF(.data), ADDR(.text) + SIZEOF(.text));
 /* The first mission buffer uses the retired default screen page below the
  * PRG. The second stays above the cell workspace; neither is used by an
@@ -407,7 +417,9 @@ __hud_sprites_end = 0x8E00;
 __phase_run = 0x3000;
 __phase_boot_size = SIZEOF(.phase.boot);
 __phase_sim_base_size = SIZEOF(.phase.sim);
-__phase_sim_aux_size = SIZEOF(.phase.sim_aux);
+__phase_sim_aux_prefix_size = SIZEOF(.phase.sim_aux);
+__phase_sim_extra_size = SIZEOF(.phase.sim_extra);
+__phase_sim_aux_size = 0x500 + __phase_sim_extra_size;
 __phase_enemy_size = MAX(MAX(MAX(MAX(MAX(MAX(MAX(SIZEOF(.phase.terminal), SIZEOF(.phase.enemy.lowlands)), SIZEOF(.phase.enemy.canyon)), SIZEOF(.phase.enemy.fortress)), SIZEOF(.phase.enemy.carrier)), SIZEOF(.phase.enemy.warden)), SIZEOF(.phase.enemy.citadel)), SIZEOF(.phase.enemy.flagship));
 __phase_sim_size = __phase_sim_base_size + __phase_enemy_size;
 __phase_sim_end = __phase_sim_start + __phase_sim_size;
@@ -564,7 +576,7 @@ ASSERT(__pixel_band_start == 0x8E00 && __pixel_band_end == 0x9300, "incorrect sh
 ASSERT(__cell_hud_seen == 0x9328, "HUD-seen flag must reuse cell scratch at $9328")
 ASSERT(ADDR(.sfx_state) == 0xCD00 && SIZEOF(.sfx_state) <= 0x0100, "SID effects state must occupy $CD00-$CDFF")
 ASSERT(SIZEOF(.renderer) <= 0x1006, "renderer exceeds header plus hidden-I/O triangle storage")
-ASSERT(SIZEOF(.game_state) <= 0x0280, "game state exceeds $C800-$CA7F")
+ASSERT(SIZEOF(.game_state) <= 0x0300, "game state exceeds $C800-$CAFF")
 ASSERT(SIZEOF(.unexpected_static_stack) == 0, "compiler static locals outside .noinit are not IRQ-safe")
 ASSERT(SIZEOF(.audio_state) <= 0x01B0, "audio state exceeds $CE00-$CFAF")
 ASSERT(SIZEOF(.rodata) <= 0x0800, "resident constants exceed $7800-$7FFF")
@@ -572,7 +584,8 @@ ASSERT(SIZEOF(.rodata) + SIZEOF(.sfx_helpers) <= 0x0800, "resident constants and
 ASSERT(SIZEOF(.tables) <= 0x0700, "resident tables exceed $9900-$9FFF")
 ASSERT(SIZEOF(.phase.boot) <= 0x4200, "BOOT overlay exceeds $3000-$71FF")
 ASSERT(__phase_sim_size <= 0x4200, "composed SIM overlay exceeds $3000-$71FF")
-ASSERT(__phase_sim_aux_size > 0 && __phase_sim_aux_size <= 0x0500, "SIM helpers exceed retired startup / renderer workspace")
+ASSERT(__phase_sim_aux_prefix_size > 0 && __phase_sim_aux_prefix_size <= 0x0500, "SIM helpers exceed retired startup / renderer workspace")
+ASSERT(__phase_sim_extra_size > 0 && __phase_sim_extra_size <= 0x1800, "SIM extra helpers exceed retired raster / shadow workspace")
 ASSERT(encounter_lowlands == encounter_step && encounter_canyon == encounter_step && encounter_fortress == encounter_step && encounter_carrier == encounter_step && encounter_warden == encounter_step && encounter_citadel == encounter_step && encounter_flagship == encounter_step, "encounter ABI entries must start every SIM tail")
 ASSERT(SIZEOF(.phase.enemy.lowlands) > 0 && SIZEOF(.phase.enemy.canyon) > 0 && SIZEOF(.phase.enemy.fortress) > 0 && SIZEOF(.phase.enemy.carrier) > 0, "all four enemy tails are required")
 ASSERT(__phase_geometry_prefix_size <= 0x3F20, "GEOMETRY overlaps shared projection helpers at $6F20")

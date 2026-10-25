@@ -464,8 +464,8 @@ fn camera_height_range_and_all_boss_components_remain_covered() {
             game.update_boss();
             game.shots.fill(Shot::EMPTY);
             for exposed in [false, true] {
-                game.boss_left = if exposed { 0 } else { BOSS_SIDE_HP };
-                game.boss_right = game.boss_left;
+                game.bosses[0].left = if exposed { 0 } else { BOSS_SIDE_HP };
+                game.bosses[0].right = game.bosses[0].left;
                 let mut capture = Capture::default();
                 game.render_combat(
                     &mut SceneBudget {
@@ -482,10 +482,10 @@ fn camera_height_range_and_all_boss_components_remain_covered() {
                 assert!(
                     bounds.min[2] > i32::from(NEAR),
                     "stage {stage}, boss z {}, exposed {exposed}: {bounds:?}",
-                    game.boss_z
+                    game.bosses[0].pos.z
                 );
             }
         }
-        assert_eq!(game.boss_z, 680);
+        assert_eq!(game.bosses[0].pos.z, 680);
     }
 }

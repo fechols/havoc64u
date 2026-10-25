@@ -38,7 +38,11 @@ assert symbols['__startup_checks_start']==0x8e00, 'startup checks must start aft
 assert 0x8e00<symbols['__startup_checks_end']<=0x9300, 'startup checks exceed shared workspace'
 assert symbols['__phase_sim_aux_start']==0x8e00, 'SIM helpers must start after HUD sprites at $8E00'
 assert 0x8e00<symbols['__phase_sim_aux_end']<=0x9300, 'SIM helpers exceed shared workspace'
-assert symbols['__phase_sim_aux_size']==symbols['__phase_sim_aux_end']-symbols['__phase_sim_aux_start']
+assert symbols['__phase_sim_aux_prefix_size']==symbols['__phase_sim_aux_end']-symbols['__phase_sim_aux_start']
+assert symbols['__phase_sim_extra_start']==0xe000, 'SIM extra helpers must start at $E000'
+assert 0xe000<symbols['__phase_sim_extra_end']<=0xf800, 'SIM extra helpers exceed retired raster workspace'
+assert symbols['__phase_sim_extra_size']==symbols['__phase_sim_extra_end']-symbols['__phase_sim_extra_start']
+assert symbols['__phase_sim_aux_size']==0x500+symbols['__phase_sim_extra_size'], 'incorrect composed SIM helper size'
 low_end=symbols['__segment0_start']
 assert symbols['__renderer_start']==0xcffa and symbols['__renderer_end']==0xe000
 assert symbols['__pixel_band_start']==0x8e00 and symbols['__pixel_band_end']==0x9300, 'pixel band must occupy $8E00-$92FF after HUD sprites'
@@ -96,7 +100,7 @@ assert symbols['__phase_pixels_size'] == 0x3f20 + symbols['__phase_pixels_aux_si
 assert symbols['__raster_player_seen']==0x77ab
 assert (symbols['__raster_prepare_scratch_start'],symbols['__raster_prepare_scratch_end'])==(0x77a0,0x77bf)
 assert symbols['__irq_stack']<=symbols['__raster_prepare_scratch_start']<symbols['__raster_prepare_scratch_end']<=0x7800
-ranges={'.basic_header':(0x801,0x3000),'.text':(0x801,0x3000),'.data':(0x200,low_end),'.bss':(0x200,low_end),'.noinit':(0x200,low_end),'.sfx_state':(0xcd00,0xce00),'.sfx_patches':(0x7200,0x7500),'.startup_checks':(0x8e00,0x9300),'.rodata':(0x7800,0x8000),'.tables':(0x9900,0xa000),'.renderer':(0xcffa,0xe000),'.game_state':(0xc800,0xca80),'.audio_state':(0xce00,0xcfb0),'.zp.data':(0x22,0xf0),'.zp.bss':(0x22,0xf0),'.zp.noinit':(0x22,0xf0)}
+ranges={'.basic_header':(0x801,0x3000),'.text':(0x801,0x3000),'.data':(0x200,low_end),'.bss':(0x200,low_end),'.noinit':(0x200,low_end),'.sfx_state':(0xcd00,0xce00),'.sfx_patches':(0x7200,0x7500),'.startup_checks':(0x8e00,0x9300),'.rodata':(0x7800,0x8000),'.tables':(0x9900,0xa000),'.renderer':(0xcffa,0xe000),'.game_state':(0xc800,0xcb00),'.audio_state':(0xce00,0xcfb0),'.zp.data':(0x22,0xf0),'.zp.bss':(0x22,0xf0),'.zp.noinit':(0x22,0xf0)}
 ranges['.benchmark_resident'] = (0xff20, 0xfffa)
 ranges['.sfx_helpers'] = (0x7800, 0x8000)
 used=[]
@@ -115,7 +119,10 @@ for line in listing.splitlines():
         phase_sizes[name]=size
     if name in ('.phase.sim_aux', '.phase.scenery_aux'):
         assert address == 0x8e00 and 0 < size <= 0x500, name
-        assert size == symbols['__phase_sim_aux_size' if name == '.phase.sim_aux' else '__phase_scenery_aux_prefix_size'], name
+        assert size == symbols['__phase_sim_aux_prefix_size' if name == '.phase.sim_aux' else '__phase_scenery_aux_prefix_size'], name
+    elif name == '.phase.sim_extra':
+        assert address == 0xe000 and 0 < size <= 0x1800, 'SIM extra helpers exceed retired raster workspace'
+        assert size == symbols['__phase_sim_extra_size'], name
     elif name == '.phase.scenery_extra':
         assert address == 0xe000 and 0 < size <= 0x800, 'SCENERY extra helpers overlap shadow frame'
         assert size == symbols['__phase_scenery_extra_size'], name
@@ -229,6 +236,7 @@ phase_loads = {
     '.phase.audio': symbols['__reu_audio'],
     '.phase.scenery': symbols['__reu_scenery_wildlife'],
     '.phase.sim_aux': symbols['__reu_sim_helpers'],
+    '.phase.sim_extra': symbols['__reu_sim_helpers'] + 0x500,
     '.phase.terminal': symbols['__reu_sim_terminal'] + symbols['__phase_sim_base_size'],
     '.phase.victory': symbols['__reu_victory'] + symbols['__phase_geometry_base_size'],
 }
@@ -296,7 +304,7 @@ print('Models8400-8BFF; HUD sprites8C00-8DFF; overflow-cell pixel band8E00-92FF;
 print('Overlay3000-71FF; permanent SFX patches7200-74FF; main stackC400-C7FF; IRQ stack7500-75FF')
 print('PIXELS code3000-6F1F helpers6F20-71FF; sorted order7600-76FF; edge headsEF20-FF1F tailsE000-EBFF masksEC00-EF1F; commands stay in emission orderD000-DFFF')
 print(f'PIXELS prefix {symbols["__phase_pixels_prefix_size"]} bytes; helpers {symbols["__phase_pixels_aux_size"]} bytes; checksummed composition {symbols["__phase_pixels_size"]} bytes; runtime omits the raster-data gap')
-print('GEOMETRY/SHADOW code3000-6F1F; shared projection6F20-7132; projection cache8E00-907F and depth sorting8E00-91FF share PIXELS band; sorted order7600-76FF')
+print(f'GEOMETRY/SHADOW code3000-6F1F; shared projection6F20-{symbols["__phase_render_aux_start"]+symbols["__phase_render_aux_size"]-1:04X}; projection cache8E00-907F and depth sorting8E00-91FF share PIXELS band; sorted order7600-76FF')
 print('SCENERY code3000-71FF; raw recordsD880-DFFF share GEOMETRY commands')
 print(f'SCENERY helpers: {symbols["__phase_scenery_aux_prefix_size"]} bytes at8E00 and {symbols["__phase_scenery_extra_size"]} bytes atE000; both retire before GEOMETRY; persistent shadow frameE800-FF1F')
 print(f'SHADOW full {symbols["__phase_shadow_size"]} bytes; disabled prefix {symbols["__phase_shadow_finalize_size"]} bytes; one transfer per frame')
@@ -309,7 +317,7 @@ print('OVL7 startup code sizes by directory order: ' + ', '.join(map(str, code_s
 reserved = sum(end - start for start, end, _ in reu_allocations)
 print(f'REU 16 MiB: {reserved:,} reserved bytes; {symbols["__reu_size"] - reserved:,} unreserved bytes; DMC1 soundtrack $100000-$FDFFFF; two mutable 64 KiB PCM slots $FE0000-$FFFFFF')
 print('REU logical phase slots: ' + ', '.join(f'{phase_id:02X}=${symbols[f"__reu_{name}"]:06X}' for phase_id, name, expected in reu_layout))
-print(f'SIM helper code8E00-92FF: {symbols["__phase_sim_aux_size"]} bytes; reloaded before every SIM profile, shares retired startup/cache/band workspace')
+print(f'SIM helpers: {symbols["__phase_sim_aux_prefix_size"]} bytes at8E00 and {symbols["__phase_sim_extra_size"]} bytes atE000; reloaded before every SIM profile, retire before SCENERY resets shadow records')
 print(f'Victory GEOMETRY composed image {symbols["__phase_victory_size"]} bytes')
 
 print('Raster preparation scratch77A0-77BE: reused later by PIXELS raster/packer; models remain intact')

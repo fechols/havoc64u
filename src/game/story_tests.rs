@@ -30,7 +30,7 @@ fn title_story_toggle_changes_only_selection_and_menu_activity() {
         game.menu_ticks = ATTRACT_TICKS - 1;
         game.menu_music_galactic = true;
         game.controls.now = 12_345;
-        game.controls.fire_armed = true;
+        game.controls.flags |= FIRE_ARMED;
         game.player.x = 37;
         game.score = 987;
         game.encounter_seed = 91;
@@ -69,7 +69,7 @@ fn story_toggle_is_ignored_in_every_non_title_mode() {
                     value.menu_activity = activity;
                     value.lives = 2;
                     value.controls.bits = FIRE | LEFT;
-                    value.controls.start_pending = true;
+                    value.controls.flags |= START_PENDING;
                 }
                 game.toggle_story_mode();
                 assert_eq!(game, expected, "ignored toggle changed {mode:?}");
@@ -84,10 +84,10 @@ fn queued_start_uses_story_selection_when_the_fire_edge_is_consumed() {
     for original in [false, true] {
         let mut game = select_story(original);
         sample(&mut game, FIRE, 20);
-        assert!(game.controls.start_pending);
+        assert!((game.controls.flags & START_PENDING != 0));
         game.toggle_story_mode();
         assert!(
-            game.controls.start_pending,
+            (game.controls.flags & START_PENDING != 0),
             "selection must not consume Fire"
         );
         tick(&mut game);
@@ -95,7 +95,7 @@ fn queued_start_uses_story_selection_when_the_fire_edge_is_consumed() {
         assert_eq!(game.story_mode, !original);
         assert_eq!(game.lives, if original { 3 } else { 99 });
         assert_eq!(game.controls.bits, FIRE);
-        assert!(!game.controls.start_pending);
+        assert!((game.controls.flags & START_PENDING == 0));
     }
 }
 
@@ -266,7 +266,7 @@ fn game_over_requires_a_fresh_fire_edge_and_restarts_with_the_selected_lives() {
         sample(&mut game, FIRE, 20);
         game.damage_player(100);
         assert_eq!((game.mode, game.lives), (Mode::GameOver, 0));
-        assert!(!game.controls.start_pending);
+        assert!((game.controls.flags & START_PENDING == 0));
         sample(&mut game, FIRE, 40);
         tick(&mut game);
         assert_eq!(game.mode, Mode::GameOver);
@@ -293,9 +293,9 @@ fn victory_return_and_the_following_run_preserve_story_selection() {
         game.stage_ticks = SECTION_TICKS - 1;
         game.boss_started = true;
         game.boss_defeated = true;
-        game.boss_left = 0;
-        game.boss_right = 0;
-        game.boss_core = 0;
+        game.bosses[0].left = 0;
+        game.bosses[0].right = 0;
+        game.bosses[0].core = 0;
         game.lives = 2;
         tick(&mut game);
         assert_eq!(game.mode, Mode::Victory);

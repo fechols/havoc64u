@@ -11,10 +11,10 @@ mod space_carrier {
         );
         game.player.y = player_y;
         game.boss_started = true;
-        game.boss_z = boss_z;
+        game.bosses[0].pos.z = boss_z;
         if exposed {
-            game.boss_left = 0;
-            game.boss_right = 0;
+            game.bosses[0].left = 0;
+            game.bosses[0].right = 0;
         }
         game
     }

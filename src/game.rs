@@ -4,13 +4,21 @@ use crate::assets::{self, AssetBank, Segment, Spawn, StageInfo};
 use crate::audio::{AudioEvent, Effect, MusicState};
 use crate::{emit_mesh, GeometrySink, Vec3, TERRAIN_CLEAR_GEOMETRY};
 
+mod boss;
+mod boss_render;
+use boss::{BossInstance, INITIAL_BOSSES};
+
 pub const UP: u8 = 1;
 pub const DOWN: u8 = 2;
 pub const LEFT: u8 = 4;
 pub const RIGHT: u8 = 8;
 pub const FIRE: u8 = 16;
+pub const BOOST: u8 = 32;
+pub const INPUT_MASK: u8 = UP | DOWN | LEFT | RIGHT | FIRE | BOOST;
+pub const BOOST_TICKS: u16 = 100;
+pub const BOOST_COOLDOWN_TICKS: u16 = 200;
 pub const MISSION_DISTANCE: u32 = assets::SEGMENT_DISTANCE * assets::SEGMENT_COUNT as u32;
-/// Added scenic flight time between combat sections, at 50 simulation ticks/s.
+/// Scenic crossing length in rail units (eight seconds at cruise speed).
 pub const TRANSITION_TICKS: u16 = 400;
 /// Fixed camera-space backdrop geometry; nearer scene geometry still occludes it.
 pub(crate) const STATIC_SKY: u8 = 2;
@@ -52,6 +60,14 @@ const DOUBLE_TAP_WINDOW_MS: u16 = 500;
 /// Fire released this long charges a homing missile; the remembered release
 /// instant is held within this window of the present.
 const CHARGE_FULL_MS: u16 = 2000;
+const FIRE_ARMED: u8 = 1;
+const LEFT_ARMED: u8 = 2;
+const RIGHT_ARMED: u8 = 4;
+const SHOT_PENDING: u8 = 8;
+const BOMB_PENDING: u8 = 16;
+const START_PENDING: u8 = 32;
+const BOOST_PENDING: u8 = 64;
+const BOOST_ACTIVE: u8 = 128;
 
 // Per-level switches compile into three bytes. Shadow ink is selected separately
 // by shadow_color so the Space Carrier can contrast with its gray deck.
@@ -150,6 +166,9 @@ pub struct Hud {
     pub bombs: u8,
     pub lives: u8,
     pub charge: u8,
+    /// Boost gauge: full when ready, draining while active, refilling on cooldown.
+    pub boost: u8,
+    pub boost_active: bool,
     pub score: u32,
     /// Distance into the current section, 0..=30,000 world units.
     pub distance: u16,
@@ -248,15 +267,10 @@ struct Controls {
     fire_at: u16,
     left_at: u16,
     right_at: u16,
-    fire_armed: bool,
-    left_armed: bool,
-    right_armed: bool,
+    flags: u8,
     cached_charge: u8,
-    shot_pending: bool,
     shot_charge: u8,
-    bomb_pending: bool,
     roll_pending: i8,
-    start_pending: bool,
 }
 impl Controls {
     const NEW: Self = Self {
@@ -266,15 +280,10 @@ impl Controls {
         fire_at: 0,
         left_at: 0,
         right_at: 0,
-        fire_armed: false,
-        left_armed: false,
-        right_armed: false,
+        flags: 0,
         cached_charge: 0,
-        shot_pending: false,
         shot_charge: 0,
-        bomb_pending: false,
         roll_pending: 0,
-        start_pending: false,
     };
     // The HUD reads charge outside SIM. Sampling performs the timer arithmetic
     // in SIM and leaves this byte available in every phase.
@@ -283,6 +292,7 @@ impl Controls {
         self.cached_charge
     }
     #[inline(never)]
+    #[cfg_attr(target_arch = "mos", link_section = ".phase.sim_extra")]
     fn computed_charge(&self) -> u8 {
         if self.bits & FIRE != 0 {
             return 0;
@@ -301,6 +311,9 @@ impl Controls {
     fn sample(&mut self, input: InputSample) {
         let old = self.bits;
         let pressed = input.pressed | (input.bits & !old);
+        if pressed & BOOST != 0 {
+            self.flags |= BOOST_PENDING;
+        }
         self.now = input.ms;
         if old & FIRE != 0 && input.bits & FIRE == 0 {
             self.released_at = input.ms;
@@ -313,47 +326,47 @@ impl Controls {
             self.released_at = input.ms.wrapping_sub(CHARGE_FULL_MS);
         }
         if input.ms.wrapping_sub(self.fire_at) > DOUBLE_TAP_WINDOW_MS {
-            self.fire_armed = false;
+            self.flags &= !FIRE_ARMED;
         }
         if input.ms.wrapping_sub(self.left_at) > DOUBLE_TAP_WINDOW_MS {
-            self.left_armed = false;
+            self.flags &= !LEFT_ARMED;
         }
         if input.ms.wrapping_sub(self.right_at) > DOUBLE_TAP_WINDOW_MS {
-            self.right_armed = false;
+            self.flags &= !RIGHT_ARMED;
         }
         // Charge is measured before storing the newly held fire button.
         if pressed & FIRE != 0 {
             self.shot_charge = self.computed_charge();
-            self.shot_pending = true;
-            self.start_pending = true;
-            if self.fire_armed {
-                self.bomb_pending = true;
-                self.fire_armed = false;
+            self.flags |= SHOT_PENDING;
+            self.flags |= START_PENDING;
+            if self.flags & FIRE_ARMED != 0 {
+                self.flags |= BOMB_PENDING;
+                self.flags &= !FIRE_ARMED;
             } else {
                 self.fire_at = input.ms;
-                self.fire_armed = true;
+                self.flags |= FIRE_ARMED;
             }
         }
         if input.bits & (LEFT | RIGHT) == LEFT | RIGHT {
-            self.left_armed = false;
-            self.right_armed = false;
+            self.flags &= !LEFT_ARMED;
+            self.flags &= !RIGHT_ARMED;
         } else {
             if pressed & LEFT != 0 {
-                if self.left_armed {
+                if self.flags & LEFT_ARMED != 0 {
                     self.roll_pending = -1;
-                    self.left_armed = false;
+                    self.flags &= !LEFT_ARMED;
                 } else {
                     self.left_at = input.ms;
-                    self.left_armed = true;
+                    self.flags |= LEFT_ARMED;
                 }
             }
             if pressed & RIGHT != 0 {
-                if self.right_armed {
+                if self.flags & RIGHT_ARMED != 0 {
                     self.roll_pending = 1;
-                    self.right_armed = false;
+                    self.flags &= !RIGHT_ARMED;
                 } else {
                     self.right_at = input.ms;
-                    self.right_armed = true;
+                    self.flags |= RIGHT_ARMED;
                 }
             }
         }
@@ -363,10 +376,8 @@ impl Controls {
     #[inline(never)]
     #[cfg_attr(target_arch = "mos", link_section = ".phase.sim")]
     fn clear_pending(&mut self) {
-        self.shot_pending = false;
-        self.bomb_pending = false;
+        self.flags &= FIRE_ARMED | LEFT_ARMED | RIGHT_ARMED | BOOST_ACTIVE;
         self.roll_pending = 0;
-        self.start_pending = false;
     }
 }
 
@@ -381,7 +392,7 @@ pub struct Game {
     player: Vec3,
     /// Fractional position, velocity and attitude of the ship (flight.rs).
     flight: Flight,
-    // One tick is eight world units within this checkpoint. Campaign duration
+    // Each rail unit is eight world units; a boost advances two per tick. Duration
     // may exceed 65535 ticks without widening the hot simulation arithmetic.
     stage_ticks: u16,
     stage_id: u8,
@@ -413,10 +424,9 @@ pub struct Game {
     roll_cooldown: u8,
     roll_direction: i8,
     respawn_ticks: u8,
-    boss_z: i16,
-    boss_left: u8,
-    boss_right: u8,
-    boss_core: u8,
+    bosses: [BossInstance; 4],
+    boss_phase: u8,
+    boss_split_ticks: u8,
     boss_started: bool,
     boss_defeated: bool,
     kills: u16,
@@ -425,18 +435,21 @@ pub struct Game {
     pickups: [Pickup; 4],
     explosions: [Explosion; 6],
     audio: [AudioEvent; AUDIO_CAPACITY],
-    // Two four-bit locks per byte: 0 none, 1..12 actors, 13..15 boss parts.
-    missile_targets: [u8; SHOTS / 2],
+    // One lock per shot: 0 none, 1..12 actors, 13..24 boss parts.
+    missile_targets: [u8; SHOTS],
     missile_rng: u8,
     // Separate feedback state preserves the native 16-byte Actor ABI:
     // 0 ready, 1..10 normal recovery, 11..20 white, 21 awaiting its first frame.
     actor_hit_flash_ticks: [u8; ACTORS],
-    boss_hit_flash_ticks: u8,
     damage_feedback_tick: u16,
+    // 300..201 active, 200..1 cooling, 0 ready. Both phases use real 50 Hz ticks.
+    boost_cycle: u16,
+    // Adds only boosted travel to the continuous dust clock, never combat time.
+    extra_travel_ticks: u16,
 }
 
 #[cfg(target_arch = "mos")]
-const _: () = assert!(core::mem::size_of::<Game>() <= 640);
+const _: () = assert!(core::mem::size_of::<Game>() <= 768);
 
 impl Default for Game {
     fn default() -> Self {
@@ -467,11 +480,12 @@ impl Game {
             story_mode: false,
             actors: [Actor::EMPTY; ACTORS],
             shots: [Shot::EMPTY; SHOTS],
-            missile_targets: [0; SHOTS / 2],
+            missile_targets: [0; SHOTS],
             missile_rng: MISSILE_SEED,
             actor_hit_flash_ticks: [0; ACTORS],
-            boss_hit_flash_ticks: 0,
             damage_feedback_tick: 0,
+            boost_cycle: 0,
+            extra_travel_ticks: 0,
             pickups: [Pickup::EMPTY; 4],
             explosions: [Explosion::EMPTY; 6],
             audio: [AudioEvent {
@@ -495,10 +509,9 @@ impl Game {
             roll_cooldown: 0,
             roll_direction: 0,
             respawn_ticks: 0,
-            boss_z: 1800,
-            boss_left: BOSS_SIDE_HP,
-            boss_right: BOSS_SIDE_HP,
-            boss_core: BOSS_CORE_HP,
+            bosses: INITIAL_BOSSES,
+            boss_phase: 0,
+            boss_split_ticks: 0,
             boss_started: false,
             boss_defeated: false,
             kills: 0,
@@ -508,7 +521,7 @@ impl Game {
     #[cfg_attr(target_arch = "mos", link_section = ".phase.sim")]
     pub fn sample_input(&mut self, input: InputSample) {
         if matches!(self.mode, Mode::Title | Mode::Attract)
-            && (input.bits | input.pressed) & (UP | DOWN | LEFT | RIGHT | FIRE) != 0
+            && (input.bits | input.pressed) & INPUT_MASK != 0
         {
             // Keep short pulses until the next simulation tick, even if the
             // controller is released again between display-rate samples.
@@ -516,6 +529,10 @@ impl Game {
         }
         let before = self.controls.charge();
         self.controls.sample(input);
+        // A press during cooldown must not wait in the input queue until ready.
+        if self.boost_cycle != 0 || !matches!(self.mode, Mode::Playing | Mode::Transition) {
+            self.controls.flags &= !BOOST_PENDING;
+        }
         if before < 255 && self.controls.charge() == 255
             && matches!(self.mode, Mode::Playing | Mode::Transition) {
             self.sound(Effect::MissileReady, 0);
@@ -532,9 +549,9 @@ impl Game {
             ms,
         });
         self.controls.clear_pending();
-        self.controls.fire_armed = false;
-        self.controls.left_armed = false;
-        self.controls.right_armed = false;
+        self.controls.flags &= !FIRE_ARMED;
+        self.controls.flags &= !LEFT_ARMED;
+        self.controls.flags &= !RIGHT_ARMED;
     }
     /// Host inspection starts at a useful mission location without changing the
     /// production binary. Late encounter records are aged on the following tick.
@@ -549,7 +566,7 @@ impl Game {
         game.invulnerability = 0;
         if game.stage_info.boss_kind != 0 && local_distance / 8 >= game.boss_start_ticks() {
             game.boss_started = true;
-            game.boss_z = 680;
+            game.bosses[0].pos.z = 680;
         }
         game
     }
@@ -587,10 +604,10 @@ impl Game {
         game.lives = 2;
         game.boss_started = true;
         game.boss_defeated = true;
-        game.boss_z = 680;
-        game.boss_left = 0;
-        game.boss_right = 0;
-        game.boss_core = 0;
+        game.bosses[0].pos.z = 680;
+        game.bosses[0].left = 0;
+        game.bosses[0].right = 0;
+        game.bosses[0].core = 0;
         game
     }
     /// Select terminal simulation independently of the active scene/model bank.
@@ -624,9 +641,57 @@ impl Game {
     pub fn animation_ticks(&self) -> u16 {
         self.ticks
     }
+    /// Continuous forward-motion clock for dust, independent of combat timing.
+    #[inline(always)]
+    pub fn travel_ticks(&self) -> u16 {
+        self.ticks.wrapping_add(self.extra_travel_ticks)
+    }
+    #[inline(always)]
+    pub fn boost_active(&self) -> bool {
+        self.controls.flags & BOOST_ACTIVE != 0
+    }
+    #[inline(always)]
+    fn forward_speed(&self) -> i16 {
+        SPEED + if self.boost_active() { SPEED } else { 0 }
+    }
+    // Resident: shared by all SIM tails without enlarging their common prefix.
+    #[inline(never)]
+    #[cfg_attr(target_arch = "mos", link_section = ".phase.sim_extra")]
+    fn tick_boost(&mut self) {
+        if !matches!(self.mode, Mode::Playing | Mode::Transition) {
+            self.boost_cycle = 0;
+            self.controls.flags &= !(BOOST_PENDING | BOOST_ACTIVE);
+            return;
+        }
+        self.boost_cycle = self.boost_cycle.saturating_sub(1);
+        if self.controls.flags & BOOST_PENDING != 0 && self.boost_cycle == 0 {
+            self.boost_cycle = BOOST_TICKS + BOOST_COOLDOWN_TICKS;
+            self.sound_player(Effect::Roll);
+        }
+        self.controls.flags &= !BOOST_PENDING;
+        self.controls.flags &= !BOOST_ACTIVE;
+        if self.boost_cycle > BOOST_COOLDOWN_TICKS {
+            self.controls.flags |= BOOST_ACTIVE;
+            self.extra_travel_ticks = self.extra_travel_ticks.wrapping_add(1);
+        }
+    }
+    #[inline(never)]
+    #[cfg_attr(target_arch = "mos", link_section = ".phase.pixels")]
+    fn boost_gauge(&self) -> u8 {
+        if self.boost_active() {
+            ((self.boost_cycle - BOOST_COOLDOWN_TICKS) * 255 / BOOST_TICKS) as u8
+        } else {
+            ((BOOST_COOLDOWN_TICKS - self.boost_cycle) * 255 / BOOST_COOLDOWN_TICKS) as u8
+        }
+    }
     #[inline(never)]
     pub fn segment_index(&self) -> u8 {
         self.stage_id
+    }
+    /// Progress for native monitor publication before the presentation overlay loads.
+    #[inline(always)]
+    pub fn local_distance(&self) -> u16 {
+        self.stage_ticks * 8
     }
     #[inline(always)]
     pub fn stage_info(&self) -> StageInfo {
@@ -664,7 +729,7 @@ impl Game {
             self.stage_info = segment.stage_info();
         }
     }
-    /// Outgoing section and elapsed ticks; the incoming checkpoint opens on exit.
+    /// Outgoing section and traveled rail units; the incoming checkpoint opens on exit.
     #[inline(never)]
     pub fn transition_progress(&self) -> Option<(u8, u16)> {
         if self.mode == Mode::Transition {
@@ -701,6 +766,7 @@ impl Game {
         color
     }
     #[inline(never)]
+    #[cfg_attr(target_arch = "mos", link_section = ".phase.pixels")]
     pub fn hud(&self) -> Hud {
         Hud {
             mode: self.mode,
@@ -709,15 +775,13 @@ impl Game {
             bombs: self.bombs,
             lives: self.lives,
             charge: self.controls.charge(),
+            boost: self.boost_gauge(),
+            boost_active: self.boost_active(),
             score: self.score,
-            distance: self.stage_ticks * 8,
+            distance: self.local_distance(),
             section: self.segment_index(),
             roll_ticks: self.roll_ticks,
-            boss_shield: if self.boss_started {
-                (self.boss_left + self.boss_right + self.boss_core + 1) >> 1
-            } else {
-                0
-            },
+            boss_shield: self.boss_health(),
             boss_kind: self.stage_info.boss_kind,
             victory_ticks: self.victory_ticks(),
         }
@@ -807,8 +871,8 @@ impl Game {
     fn sound_at(&mut self, effect: Effect, x: i16, z: i16) {
         self.sound(effect, crate::audio::spatial_pan(x, z));
     }
+    // Resident leaf shared by all simulation profiles.
     #[inline(never)]
-    #[cfg_attr(target_arch = "mos", link_section = ".phase.sim")]
     fn sound_player(&mut self, effect: Effect) {
         // The ship and its muzzle (Z=180/198) share the same integer-X
         // center band, [-9,9]. Player movement changes X/Y only.
@@ -879,10 +943,7 @@ impl Game {
         self.shield = 100;
         self.bombs = 3;
         self.lives = 3;
-        self.boss_z = 1800;
-        self.boss_left = BOSS_SIDE_HP;
-        self.boss_right = BOSS_SIDE_HP;
-        self.boss_core = BOSS_CORE_HP;
+        self.reset_bosses();
         self.stage_info = StageInfo::FIRST;
         self.missile_rng = MISSILE_SEED;
     }
@@ -901,9 +962,12 @@ impl Game {
         for flash in &mut self.actor_hit_flash_ticks {
             advance_enemy_hit_flash(flash, elapsed);
         }
-        advance_enemy_hit_flash(&mut self.boss_hit_flash_ticks, elapsed);
+        for boss in &mut self.bosses {
+            advance_enemy_hit_flash(&mut boss.flash, elapsed);
+        }
     }
     #[inline(never)]
+    #[cfg_attr(target_arch = "mos", link_section = ".phase.sim_extra")]
     fn damage_actor(&mut self, index: usize, damage: u8) -> u8 {
         let previous = self.actors[index].hp;
         let hp = previous.saturating_sub(damage);
@@ -921,6 +985,7 @@ impl Game {
     #[cfg_attr(target_arch = "mos", link_section = ".phase.sim")]
     pub fn tick(&mut self, segment: &Segment<'_>, bank: &AssetBank<'_>) {
         self.bind_stage(segment);
+        self.tick_boost();
         self.ticks = self.ticks.wrapping_add(1);
         if self.simulation_profile() == 7 {
             #[cfg(target_arch = "mos")]
@@ -936,7 +1001,7 @@ impl Game {
         }
         if self.mode == Mode::Playing {
             let boundary = SECTION_TICKS;
-            let next = (self.stage_ticks + 1).min(boundary);
+            let next = (self.stage_ticks + 1 + self.boost_active() as u16).min(boundary);
             if next == boundary
                 && self.stage_id + 1 < assets::SEGMENT_COUNT
                 && (self.stage_info.boss_kind == 0 || self.boss_defeated)
@@ -953,9 +1018,9 @@ impl Game {
                 }
                 self.actors = [Actor::EMPTY; ACTORS];
                 self.actor_hit_flash_ticks = [0; ACTORS];
-                self.boss_hit_flash_ticks = 0;
+                self.bosses[0].flash = 0;
                 self.damage_feedback_tick = self.ticks;
-                self.missile_targets = [0; SHOTS / 2];
+                self.missile_targets = [0; SHOTS];
                 self.pickups = [Pickup::EMPTY; 4];
                 for shot in &mut self.shots {
                     if shot.kind == 2 {
@@ -971,11 +1036,17 @@ impl Game {
         } else {
             self.menu_ticks += 1;
         }
+        let splitting = self.boss_split_ticks != 0;
         if self.mode == Mode::Playing {
             self.update_player_controls(bank);
         }
         self.controls.clear_pending();
-        self.stage_ticks = (self.stage_ticks + 1).min(SECTION_TICKS);
+        if self.boss_split_ticks != 0 {
+            if splitting { self.advance_boss_split(); }
+            self.update_explosions();
+            return;
+        }
+        self.stage_ticks = (self.stage_ticks + 1 + self.boost_active() as u16).min(SECTION_TICKS);
         let section = self.segment_index();
         if self.spawn_segment != section {
             self.spawn_segment = section;
@@ -1006,10 +1077,12 @@ impl Game {
             && self.boss_defeated
         {
             self.mode = Mode::Victory;
+            self.boost_cycle = 0;
+            self.controls.flags &= !BOOST_ACTIVE;
             self.menu_music_galactic = true;
             self.menu_ticks = 0;
             self.shots = [Shot::EMPTY; SHOTS];
-            self.missile_targets = [0; SHOTS / 2];
+            self.missile_targets = [0; SHOTS];
             self.sound(Effect::Pickup, 0);
         }
     }
@@ -1018,7 +1091,7 @@ impl Game {
     fn tick_nonplaying(&mut self, bank: &AssetBank<'_>) {
         match self.mode {
             Mode::Title => {
-                if self.controls.start_pending {
+                if self.controls.flags & START_PENDING != 0 {
                     self.reset_run();
                 } else if self.menu_activity || self.controls.bits != 0 {
                     self.menu_ticks = 0;
@@ -1076,7 +1149,8 @@ impl Game {
                 self.controls.clear_pending();
                 self.update_shots(bank);
                 self.update_explosions();
-                self.transition_ticks += 1;
+                self.transition_ticks = (self.transition_ticks + 1 + self.boost_active() as u16)
+                    .min(TRANSITION_TICKS);
                 if self.transition_ticks == TRANSITION_TICKS {
                     self.transition_ticks = 0;
                     self.mode = Mode::Playing;
@@ -1090,13 +1164,10 @@ impl Game {
                     self.spawn_cursor = 0;
                     self.repeat_spawn_cursor = 0;
                     self.boss_started = false;
-                    self.boss_hit_flash_ticks = 0;
+                    self.bosses[0].flash = 0;
                     self.damage_feedback_tick = self.ticks;
                     self.boss_defeated = false;
-                    self.boss_z = 1800;
-                    self.boss_left = BOSS_SIDE_HP;
-                    self.boss_right = BOSS_SIDE_HP;
-                    self.boss_core = BOSS_CORE_HP;
+                    self.reset_bosses();
                 }
                 return;
             }
@@ -1110,7 +1181,7 @@ impl Game {
             // Consume every reveal gesture, including the tick that reaches the
             // result screen. A held fire button cannot skip or restart it.
             self.menu_ticks += 1;
-        } else if self.controls.start_pending {
+        } else if self.controls.flags & START_PENDING != 0 {
             if self.mode == Mode::Victory {
                 self.reset_scene(Mode::Title, 0, 0);
             } else {
@@ -1134,14 +1205,15 @@ impl Game {
             self.sound_player(Effect::Roll);
         }
         self.move_player();
-        if self.controls.shot_pending {
+        if self.boss_split_ticks != 0 { return; }
+        if self.controls.flags & SHOT_PENDING != 0 {
             self.fire_player(self.controls.shot_charge);
             self.shot_cooldown = 5;
         } else if self.controls.bits & FIRE != 0 && self.shot_cooldown == 0 {
             self.fire_player(0);
             self.shot_cooldown = 5;
         }
-        if self.controls.bomb_pending && self.bombs > 0 {
+        if self.controls.flags & BOMB_PENDING != 0 && self.bombs > 0 {
             self.bomb(bank);
         }
     }
@@ -1155,7 +1227,8 @@ impl Game {
         } else {
             0
         };
-        flight::step(&mut self.player, &mut self.flight, self.controls.bits, push);
+        let bits = (self.controls.bits & !BOOST) | if self.boost_active() { BOOST } else { 0 };
+        flight::step(&mut self.player, &mut self.flight, bits, push);
     }
     #[inline(never)]
     #[cfg_attr(target_arch = "mos", link_section = ".phase.sim")]
@@ -1270,7 +1343,7 @@ impl Game {
                 index
             };
             let spawn = segment.spawn(token & 0x7f);
-            if self.stage_info.boss_kind == 0 || !self.boss_defeated {
+            if (self.stage_info.boss_kind == 0 || !self.boss_defeated) && self.boss_phase == 0 {
                 let enemy = matches!(spawn.kind, assets::FIGHTER | assets::DIVER | assets::TURRET);
                 if enemy || !repeated {
                     self.spawn_encounter(spawn, local - distance, bank, token);
@@ -1352,13 +1425,8 @@ impl Game {
         if let Some(slot) = self.actors.iter().position(|a| a.kind == 0) {
             // A reused slot is a new target, never an inherited lock.
             let target = slot as u8 + 1;
-            for locks in &mut self.missile_targets {
-                if *locks & 15 == target {
-                    *locks &= 0xf0;
-                }
-                if *locks >> 4 == target {
-                    *locks &= 0x0f;
-                }
+            for lock in &mut self.missile_targets {
+                if *lock == target { *lock = 0; }
             }
             self.actors[slot] = Actor {
                 pos: Vec3 {
@@ -1368,11 +1436,12 @@ impl Game {
                 },
                 origin_x: spawn.x,
                 origin_y: spawn.y,
-                age: late / 8,
+                age: if self.boost_active() { late >> 4 } else { late >> 3 },
                 kind: spawn.kind,
                 hp,
                 flags: spawn.flags,
-                approach_speed: if obstacle { 8 } else { spec.speed },
+                approach_speed: if obstacle { self.forward_speed() as u8 }
+                    else { spec.speed + (self.forward_speed() - SPEED) as u8 },
             };
             self.actor_hit_flash_ticks[slot] = 0;
         }
@@ -1401,6 +1470,7 @@ impl Game {
             a.age = a.age.wrapping_add(1);
             let obstacle = matches!(a.kind, assets::BUILDING | assets::ROCK);
             let old_z = a.pos.z;
+            a.pos.z -= self.forward_speed() - SPEED;
             let attack = if obstacle {
                 a.pos.z -= SPEED;
                 0
@@ -1454,62 +1524,46 @@ impl Game {
             BOSS_START_TICKS
         }
     }
-    #[inline(always)]
+    #[inline(never)]
+    #[cfg_attr(target_arch = "mos", link_section = ".phase.sim_extra")]
     fn update_boss_for(&mut self, kind: u8) {
         if kind == 0 || self.stage_ticks < self.boss_start_ticks() || self.boss_defeated {
             return;
         }
         if !self.boss_started { self.sound(Effect::BossArrival, 0); }
         self.boss_started = true;
-        self.boss_z = (self.boss_z - 8).max(680);
-        if self.boss_z > 900 {
-            return;
-        }
-        let exposed = self.boss_left == 0 && self.boss_right == 0;
-        let rate = if kind == 1 {
-            50
-        } else if kind == 2 {
-            45
-        } else if exposed {
-            25
-        } else {
-            40
-        };
-        let pulse = enemies::boss_pulse(self.ticks, rate);
-        if pulse == 0 {
-            return;
-        }
-        let side = pulse == 2;
-        if exposed {
-            let x = 14 * assets::BOSS_SCALE;
-            self.enemy_shot(Vec3 {
-                x: if side { x } else { -x },
-                y: 0,
-                z: self.boss_z + BOSS_CORE_Z,
-            });
-            if kind == 1 {
-                self.enemy_shot(Vec3 {
-                    x: if side { -x } else { x },
-                    y: 0,
-                    z: self.boss_z + BOSS_CORE_Z,
-                });
-            }
-        } else {
-            for right in [false, true] {
-                let alive = if right {
-                    self.boss_right
-                } else {
-                    self.boss_left
-                } != 0;
-                if alive && (kind == 3 || right == side) {
-                    self.enemy_attack(
-                        Vec3 {
-                            x: if right { BOSS_TURRET_X } else { -BOSS_TURRET_X },
-                            y: BOSS_TURRET_Y + 18 * assets::BOSS_SCALE,
-                            z: self.boss_z + BOSS_TURRET_Z - 28 * assets::BOSS_SCALE,
-                        },
-                        if kind == 2 { 2 } else { 1 },
-                    );
+        if self.boss_split_ticks != 0 { return; }
+        if self.boss_phase == 0 { self.bosses[0].pos.z = (self.bosses[0].pos.z - 8).max(680); }
+        let divisor = self.boss_divisor();
+        for index in 0..self.boss_count() {
+            let boss = self.bosses[index];
+            if boss.core == 0 || boss.pos.z > 900 { continue; }
+            let exposed = boss.exposed();
+            let rate = if kind == 1 { 50 } else if kind == 2 { 45 } else if exposed { 25 } else { 40 };
+            let pulse = enemies::boss_pulse(self.ticks.wrapping_add(index as u16 * 11), rate);
+            if pulse == 0 { continue; }
+            let side = pulse == 2;
+            if exposed {
+                let mut pos = boss.part_position(2, divisor);
+                let x = ((14 * assets::BOSS_SCALE) as u8 >> self.boss_scale_shift()) as i16;
+                pos.x += if side { x } else { -x };
+                self.enemy_shot(pos);
+                if kind == 1 {
+                    pos.x += if side { -2 * x } else { 2 * x };
+                    self.enemy_shot(pos);
+                }
+            } else {
+                for part in 0..2 {
+                    let alive = if part == 0 { boss.left } else { boss.right } != 0;
+                    if alive && (kind == 3 || (part == 1) == side) {
+                        let mut pos = boss.part_position(part, divisor);
+                        // Miniature reactors are flat diamonds; fire from their centers.
+                        if self.boss_phase == 0 {
+                            pos.y += 18 * assets::BOSS_SCALE;
+                            pos.z -= 28 * assets::BOSS_SCALE;
+                        }
+                        self.enemy_attack(pos, if kind == 2 { 2 } else { 1 });
+                    }
                 }
             }
         }
@@ -1533,7 +1587,7 @@ impl Game {
             s.pos.z += match s.kind {
                 1 => 48,
                 3 => 32,
-                _ => -18,
+                _ => -18 - (self.forward_speed() - SPEED),
             };
             if s.pos.z > 2400
                 || s.pos.z < crate::render::NEAR
@@ -1559,53 +1613,18 @@ impl Game {
                         self.sound_at(if missile { Effect::MissileImpact } else { Effect::EnemyHit }, pos.x, pos.z);
                     }
                 }
-                if s.kind != 0 && self.boss_started && !self.boss_defeated {
-                    let mut hit = false;
-                    let mut part_destroyed = false;
-                    let turret_depth =
-                        swept_z(old_z, s.pos.z, self.boss_z + BOSS_TURRET_Z, BOSS_HIT_DEPTH);
-                    // Turret X ranges [-176,-84] and [84,176] are disjoint,
-                    // so the shot's sign selects the only side it can hit.
-                    let (turret_x, turret_hp) = if s.pos.x < 0 {
-                        (-BOSS_TURRET_X, &mut self.boss_left)
-                    } else {
-                        (BOSS_TURRET_X, &mut self.boss_right)
-                    };
-                    if *turret_hp > 0
-                        && turret_depth
-                        && close_xy(
-                            s.pos,
-                            Vec3 {
-                                x: turret_x,
-                                y: BOSS_TURRET_Y,
-                                z: 0,
-                            },
-                            BOSS_TURRET_RADIUS,
-                        )
-                    {
-                        damage_boss_part(turret_hp, s.damage, &mut self.boss_hit_flash_ticks);
-                        part_destroyed = *turret_hp == 0;
-                        hit = true;
-                    } else if swept_z(old_z, s.pos.z, self.boss_z + BOSS_CORE_Z, BOSS_HIT_DEPTH)
-                        && close_xy(s.pos, Vec3 { x: 0, y: 0, z: 0 }, BOSS_CORE_RADIUS)
-                    {
-                        if self.boss_left == 0 && self.boss_right == 0 {
-                            damage_boss_part(
-                                &mut self.boss_core,
-                                s.damage,
-                                &mut self.boss_hit_flash_ticks,
-                            );
-                        }
-                        hit = true;
-                    }
-                    if hit {
-                        let missile = s.kind == 3;
+                if s.kind != 0 {
+                    if let Some(effect) = self.hit_boss(old_z, &s) {
                         s.kind = 0;
-                        self.check_boss_death();
-                        if !self.boss_defeated {
-                            self.sound_at(if part_destroyed { Effect::EnemyExplosion }
-                                else if missile { Effect::MissileImpact } else { Effect::BossHit }, s.pos.x, s.pos.z);
+                        if effect != Effect::BossExplosion
+                            || self.bosses[..self.boss_count()].iter().any(|boss| boss.core > 0) {
+                            self.sound_at(effect, s.pos.x, s.pos.z);
+                        } else {
+                            // Protect the cleared wave before later hostile slots run.
+                            // New children still wait until every projectile is stored.
+                            self.clear_hostile_shots();
                         }
+                        if effect == Effect::BossExplosion { self.explode(s.pos, 7); }
                     }
                 }
             } else if self.mode == Mode::Playing
@@ -1625,6 +1644,7 @@ impl Game {
                 self.set_missile_lock(i, 0);
             }
         }
+        if self.boss_started { self.check_boss_death(); }
     }
     /// The first actor slot, in slot order, that a player shot or missile at
     /// `pos` hits after moving from depth `old_z`.
@@ -1686,25 +1706,9 @@ impl Game {
         }
     }
     #[inline(always)]
-    fn missile_lock(&self, index: usize) -> u8 {
-        let locks = self.missile_targets[index / 2];
-        if index & 1 == 0 {
-            locks & 15
-        } else {
-            locks >> 4
-        }
-    }
-    // Resident: shared by SIM and its attack helper, leaving room for the
-    // selected life cap in every composed simulation profile.
-    #[inline(never)]
-    fn set_missile_lock(&mut self, index: usize, target: u8) {
-        let locks = &mut self.missile_targets[index / 2];
-        if index & 1 == 0 {
-            *locks = (*locks & 0xf0) | target;
-        } else {
-            *locks = (*locks & 0x0f) | (target << 4);
-        }
-    }
+    fn missile_lock(&self, index: usize) -> u8 { self.missile_targets[index] }
+    #[inline(always)]
+    fn set_missile_lock(&mut self, index: usize, target: u8) { self.missile_targets[index] = target; }
     #[cfg(not(target_arch = "mos"))]
     fn missile_candidate(
         &self,
@@ -1731,25 +1735,19 @@ impl Game {
                 32 + actor.approach_speed as i16,
             )
         } else {
-            if !self.boss_started || self.boss_defeated {
-                return None;
-            }
-            let (x, y, z) = match id {
-                13 if self.boss_left > 0 => (-BOSS_TURRET_X, BOSS_TURRET_Y, BOSS_TURRET_Z),
-                14 if self.boss_right > 0 => (BOSS_TURRET_X, BOSS_TURRET_Y, BOSS_TURRET_Z),
-                15 if self.boss_left == 0 && self.boss_right == 0 && self.boss_core > 0 => {
-                    (0, 0, BOSS_CORE_Z)
-                }
-                _ => return None,
-            };
-            (
-                Vec3 {
-                    x,
-                    y,
-                    z: self.boss_z + z,
-                },
-                if self.boss_z > 680 { 40 } else { 32 },
-            )
+            if !self.boss_started || self.boss_defeated || self.boss_split_ticks != 0
+                || !(13..=24).contains(&id) { return None; }
+            let index = (id - 13) as usize / 3;
+            let part = (id - 13) % 3;
+            if index >= self.boss_count() { return None; }
+            let boss = self.bosses[index];
+            if boss.core == 0 || match part {
+                0 => boss.left == 0,
+                1 => boss.right == 0,
+                _ => !boss.exposed(),
+            } { return None; }
+            (boss.part_position(part, self.boss_divisor()),
+             if self.boss_phase == 0 && boss.pos.z > 680 { 40 } else { 32 })
         };
         if target.z - position.z > 0 {
             Some((target, closing))
@@ -1770,7 +1768,7 @@ impl Game {
         }
         *target = 0;
         let mut count = 0;
-        for id in 1..=15 {
+        for id in 1..=24 {
             count += u8::from(self.missile_candidate(position, id, bank).is_some());
         }
         if count == 0 {
@@ -1786,14 +1784,14 @@ impl Game {
                     (self.missile_rng >> 1) ^ if self.missile_rng & 1 != 0 { 0xb8 } else { 0 };
                 // Each nonzero high nibble appears 16 times per LFSR cycle.
                 // Reject zero and out-of-range values instead of modulo bias.
-                let draw = self.missile_rng >> 4;
+                let draw = self.missile_rng >> if count <= 15 { 4 } else { 3 };
                 if draw != 0 && draw <= count {
                     rank = draw - 1;
                     break;
                 }
             }
         }
-        for id in 1..=15 {
+        for id in 1..=24 {
             if let Some(candidate) = self.missile_candidate(position, id, bank) {
                 if rank == 0 {
                     *target = id;
@@ -1817,18 +1815,16 @@ impl Game {
                 actors: *const Actor,
                 specs: *const u8,
                 shot: Vec3,
-                boss_z: i16,
+                bosses: *const BossInstance,
                 enemy_count: u8,
-                boss_active: u8,
-                boss_left: u8,
-                boss_right: u8,
-                boss_core: u8,
+                boss_count: u8,
+                scale_shift: u8,
                 dx: i8,
                 dy: i8,
                 target: u8,
                 rng: u8,
             }
-            const _: [(); 21] = [(); core::mem::size_of::<SteerArgs>()];
+            const _: [(); 19] = [(); core::mem::size_of::<SteerArgs>()];
             extern "C" {
                 fn fast_steer_missile(args: *mut SteerArgs);
             }
@@ -1836,12 +1832,12 @@ impl Game {
                 actors: self.actors.as_ptr(),
                 specs: bank.enemy_specs(),
                 shot: shot.pos,
-                boss_z: self.boss_z,
+                bosses: self.bosses.as_ptr(),
                 enemy_count: bank.enemy_count(),
-                boss_active: (self.boss_started && !self.boss_defeated) as u8,
-                boss_left: self.boss_left,
-                boss_right: self.boss_right,
-                boss_core: self.boss_core,
+                boss_count: if self.boss_started && !self.boss_defeated && self.boss_split_ticks == 0 {
+                    self.boss_count() as u8
+                } else { 0 },
+                scale_shift: self.boss_scale_shift(),
                 dx: shot.dx,
                 dy: shot.dy,
                 target: *target,
@@ -1899,17 +1895,22 @@ impl Game {
             }
         }
     }
+    // Shared retirement stays outside the tightly packed simulation profiles.
+    #[inline(never)]
+    #[cfg_attr(target_arch = "mos", link_section = ".phase.sim_extra")]
+    fn clear_hostile_shots(&mut self) {
+        for shot in &mut self.shots {
+            if shot.kind == 2 { shot.kind = 0; }
+        }
+    }
     #[inline(never)]
     #[cfg_attr(target_arch = "mos", link_section = ".phase.sim")]
     fn bomb(&mut self, bank: &AssetBank<'_>) {
+        if self.boss_split_ticks != 0 { return; }
         self.bombs -= 1;
         self.presentation_event = PresentationEvent::Bomb;
         self.sound(Effect::Bomb, 0);
-        for s in &mut self.shots {
-            if s.kind == 2 {
-                s.kind = 0;
-            }
-        }
+        self.clear_hostile_shots();
         for i in 0..ACTORS {
             if self.actors[i].kind == assets::ROCK && self.stage_info.theme >= 10 {
                 self.kill_actor(i, bank);
@@ -1919,42 +1920,18 @@ impl Game {
                 }
             }
         }
-        if self.boss_started && !self.boss_defeated {
-            let open = self.boss_left == 0 && self.boss_right == 0;
-            damage_boss_part(&mut self.boss_left, 8, &mut self.boss_hit_flash_ticks);
-            damage_boss_part(&mut self.boss_right, 8, &mut self.boss_hit_flash_ticks);
-            if open {
-                damage_boss_part(&mut self.boss_core, 8, &mut self.boss_hit_flash_ticks);
+        if self.boss_started && !self.boss_defeated && self.boss_split_ticks == 0 {
+            let count = self.boss_count();
+            for boss in &mut self.bosses[..count] {
+                if boss.core == 0 { continue; }
+                let open = boss.exposed();
+                damage_boss_part(&mut boss.left, 8, &mut boss.flash);
+                damage_boss_part(&mut boss.right, 8, &mut boss.flash);
+                if open { damage_boss_part(&mut boss.core, 8, &mut boss.flash); }
             }
             self.check_boss_death();
         }
         self.explode(Vec3 { x: 0, y: 0, z: 400 }, 1);
-    }
-    #[inline(never)]
-    #[cfg_attr(target_arch = "mos", link_section = ".phase.sim")]
-    fn check_boss_death(&mut self) {
-        if self.boss_core == 0 && !self.boss_defeated {
-            self.boss_defeated = true;
-            self.shield = 100;
-            self.bombs = 3;
-            self.score += 5000;
-            self.sound(Effect::BossExplosion, 0);
-            for x in [-80, -40, 0, 40, 80] {
-                self.explode(
-                    Vec3 {
-                        x,
-                        y: 0,
-                        z: self.boss_z,
-                    },
-                    7,
-                );
-            }
-            for s in &mut self.shots {
-                if s.kind == 2 {
-                    s.kind = 0;
-                }
-            }
-        }
     }
     #[inline(never)]
     #[cfg_attr(target_arch = "mos", link_section = ".phase.sim")]
@@ -1974,6 +1951,8 @@ impl Game {
                        else { Effect::PlayerHit });
         }
         if self.shield == 0 {
+            self.boost_cycle = 0;
+            self.controls.flags &= !BOOST_ACTIVE;
             self.lives = self.lives.saturating_sub(1);
             self.explode(self.player, 7);
             self.sound(Effect::PlayerDeath, 0);
@@ -1998,10 +1977,10 @@ impl Game {
         self.repeat_spawn_cursor = 0;
         self.actors = [Actor::EMPTY; ACTORS];
         self.actor_hit_flash_ticks = [0; ACTORS];
-        self.boss_hit_flash_ticks = 0;
+        self.bosses[0].flash = 0;
         self.damage_feedback_tick = self.ticks;
         self.shots = [Shot::EMPTY; SHOTS];
-        self.missile_targets = [0; SHOTS / 2];
+        self.missile_targets = [0; SHOTS];
         self.pickups = [Pickup::EMPTY; 4];
         self.explosions = [Explosion::EMPTY; 6];
         self.player = Vec3 {
@@ -2010,6 +1989,8 @@ impl Game {
             z: PLAYER_Z,
         };
         self.flight = Flight::ZERO;
+        self.boost_cycle = 0;
+        self.controls.flags &= !BOOST_ACTIVE;
         self.shield = 100;
         self.invulnerability = 100;
         self.hit_flash_ticks = 0;
@@ -2020,18 +2001,15 @@ impl Game {
         self.mode = Mode::Playing;
         self.boss_started = false;
         self.boss_defeated = false;
-        self.boss_z = 1800;
-        self.boss_left = BOSS_SIDE_HP;
-        self.boss_right = BOSS_SIDE_HP;
-        self.boss_core = BOSS_CORE_HP;
-        self.controls.fire_armed = false;
-        self.controls.left_armed = false;
-        self.controls.right_armed = false;
+        self.reset_bosses();
+        self.controls.flags &= !FIRE_ARMED;
+        self.controls.flags &= !LEFT_ARMED;
+        self.controls.flags &= !RIGHT_ARMED;
         self.controls.released_at = self.controls.now;
         self.controls.cached_charge = 0;
     }
+    // Resident leaf: keep the full encounter profiles within the SIM window.
     #[inline(never)]
-    #[cfg_attr(target_arch = "mos", link_section = ".phase.sim")]
     fn add_pickup(&mut self, pos: Vec3, kind: u8) {
         // Admit every third bomb from either scripted spawns or enemy drops.
         if kind == 2 {
@@ -2048,12 +2026,13 @@ impl Game {
     #[inline(never)]
     #[cfg_attr(target_arch = "mos", link_section = ".phase.sim")]
     fn update_pickups(&mut self) {
+        let speed = self.forward_speed();
         for i in 0..self.pickups.len() {
             let p = &mut self.pickups[i];
             if p.kind == 0 {
                 continue;
             }
-            p.pos.z -= SPEED as i16;
+            p.pos.z -= speed;
             if self.mode == Mode::Playing {
                 let depth = p.pos.z.wrapping_sub(PLAYER_Z);
                 if depth as u16 <= PICKUP_MAGNET_DEPTH as u16
@@ -2085,8 +2064,8 @@ impl Game {
             }
         }
     }
+    // Resident leaf shared by combat, damage, and terminal simulation.
     #[inline(never)]
-    #[cfg_attr(target_arch = "mos", link_section = ".phase.sim")]
     fn explode(&mut self, pos: Vec3, color: u8) {
         let index = self
             .explosions
@@ -2100,11 +2079,13 @@ impl Game {
         };
     }
     #[inline(never)]
+    #[cfg_attr(target_arch = "mos", link_section = ".phase.sim_extra")]
     fn update_explosions(&mut self) {
+        let speed = self.forward_speed();
         for e in &mut self.explosions {
             if e.ticks > 0 {
                 e.ticks -= 1;
-                e.pos.z -= SPEED as i16;
+                e.pos.z -= speed;
             }
         }
     }
@@ -2234,7 +2215,7 @@ impl Game {
                         Vec3 {
                             x: 0,
                             y: 0,
-                            z: self.boss_z,
+                            z: self.bosses[0].pos.z,
                         },
                         false,
                         camera_y,
@@ -2382,6 +2363,7 @@ impl Game {
             );
             sink.color_override = 0;
             // Each flat exhaust has an explicit underside for high climbs.
+            let exhaust = self.exhaust_appearance();
             for x in [-11, 11] {
                 let p = Vec3 {
                     x: self.player.x + x,
@@ -2391,17 +2373,11 @@ impl Game {
                 let left = Vec3 { x: p.x - 3, ..p };
                 let right = Vec3 { x: p.x + 3, ..p };
                 let tip = Vec3 {
-                    z: p.z
-                        - 12
-                        - (if self.mode == Mode::Victory {
-                            self.ticks.wrapping_sub(self.menu_ticks)
-                        } else {
-                            self.ticks
-                        } & 7) as i16,
+                    z: p.z - (exhaust & 255) as i16,
                     ..p
                 };
-                tri(sink, left, right, tip, 8);
-                tri(sink, right, left, tip, 8);
+                tri(sink, left, right, tip, (exhaust >> 8) as u8);
+                tri(sink, right, left, tip, (exhaust >> 8) as u8);
             }
             sink.finish_group(checkpoint);
         }
@@ -2461,77 +2437,7 @@ impl Game {
     #[inline(never)]
     #[cfg_attr(target_arch = "mos", link_section = ".phase.geometry.combat")]
     fn render_combat(&self, sink: &mut SceneBudget<'_, impl GeometrySink>, bank: &AssetBank<'_>) {
-        if self.boss_started && !self.boss_defeated {
-            let checkpoint = sink.begin_group();
-            let previous_flags = sink.extra_flags;
-            // The Dreadnought stays above the flight deck. Protect the whole
-            // assembly from long deck triangles and the final ground shadows.
-            if self.stage_info.boss_kind == 4 {
-                sink.extra_flags |= TERRAIN_CLEAR_GEOMETRY;
-            }
-            sink.color_override = u8::from(self.boss_hit_flash_ticks > ENEMY_HIT_FLASH_TICKS);
-            emit_mesh(
-                sink,
-                bank,
-                assets::CARRIER,
-                Vec3 {
-                    x: 0,
-                    y: 0,
-                    z: self.boss_z,
-                },
-                0,
-                0,
-                0,
-                false,
-            );
-            if self.boss_left > 0 {
-                emit_mesh(
-                    sink,
-                    bank,
-                    assets::TURRET,
-                    Vec3 {
-                        x: -BOSS_TURRET_X,
-                        y: BOSS_TURRET_Y,
-                        z: self.boss_z + BOSS_TURRET_Z,
-                    },
-                    0,
-                    0,
-                    0,
-                    false,
-                );
-            }
-            if self.boss_right > 0 {
-                emit_mesh(
-                    sink,
-                    bank,
-                    assets::TURRET,
-                    Vec3 {
-                        x: BOSS_TURRET_X,
-                        y: BOSS_TURRET_Y,
-                        z: self.boss_z + BOSS_TURRET_Z,
-                    },
-                    0,
-                    0,
-                    0,
-                    false,
-                );
-            }
-            if self.boss_left == 0 && self.boss_right == 0 {
-                diamond(
-                    sink,
-                    Vec3 {
-                        x: 0,
-                        y: 0,
-                        z: self.boss_z + BOSS_CORE_Z,
-                    },
-                    22 * assets::BOSS_SCALE,
-                    if self.ticks & 8 == 0 { 7 } else { 2 },
-                );
-            }
-            sink.color_override = 0;
-            sink.extra_flags = previous_flags;
-            sink.finish_group(checkpoint);
-        }
+        self.render_bosses(sink, bank);
         self.render_effects(sink);
         for (i, a) in self.actors.iter().enumerate() {
             if a.kind != 0 && a.pos.z >= ACTOR_RETIRE_Z {
@@ -2670,7 +2576,6 @@ impl Game {
     /// arithmetic shift is exact enough and far cheaper than a signed divide;
     /// outlined because inlining it bloats the GEOMETRY frame driver.
     #[inline(never)]
-    #[cfg_attr(target_arch = "mos", link_section = ".phase.geometry")]
     pub fn sky_parallax(&self) -> [i16; 2] {
         if matches!(self.mode, Mode::Title | Mode::Attract) {
             // One horizontal cycle takes 512 ticks (10.24 s); the smaller
@@ -2684,7 +2589,23 @@ impl Game {
         }
     }
     #[inline(never)]
-    #[cfg_attr(target_arch = "mos", link_section = ".phase.geometry")]
+    #[cfg_attr(target_arch = "mos", link_section = ".phase.render_aux")]
+    fn exhaust_appearance(&self) -> u16 {
+        let phase = if self.mode == Mode::Victory {
+            self.ticks.wrapping_sub(self.menu_ticks)
+        } else {
+            self.ticks
+        };
+        let length = 12 + (phase & 7);
+        if self.boost_active() {
+            // Keep both faces of each flame; white flicker needs no extra faces.
+            let color = if phase & 4 == 0 { 14 } else { 1 };
+            (color << 8) | (length * 2)
+        } else {
+            (8 << 8) | length
+        }
+    }
+    #[inline(never)]
     fn player_appearance(&self) -> u16 {
         // The barrel roll's linear spin rides on the coordinated bank, so the
         // end of the spin (a full turn) is continuous with the banked hull.
@@ -2706,7 +2627,7 @@ impl Game {
     /// The flight model's pitch (nose up while climbing) plus the authored
     /// ascent of the orbital bridge.
     #[inline(never)]
-    #[cfg_attr(target_arch = "mos", link_section = ".phase.geometry")]
+    #[cfg_attr(target_arch = "mos", link_section = ".phase.render_aux")]
     fn player_pitch(&self) -> u8 {
         let flight = (self.flight.pitch >> 8) as u8;
         if self.mode != Mode::Transition || self.stage_info.bridge_profile != 3 {
@@ -2760,7 +2681,7 @@ fn shadow_model(
 }
 
 #[inline(never)]
-#[cfg_attr(target_arch = "mos", link_section = ".sfx_helpers")]
+#[cfg_attr(target_arch = "mos", link_section = ".phase.sim_extra")]
 fn placement_random(value: u8) -> u8 {
     (value >> 1) ^ if value & 1 != 0 { 0xb8 } else { 0 }
 }
@@ -3156,6 +3077,9 @@ mod story_tests;
 mod balance_tests;
 
 #[cfg(test)]
+mod boost_tests;
+
+#[cfg(test)]
 mod damage_flash_tests;
 
 #[cfg(test)]
@@ -3172,3 +3096,9 @@ mod camera_clearance_tests;
 
 #[cfg(all(test, feature = "host-tools"))]
 mod flyby_capture_tests;
+
+#[cfg(all(test, feature = "host-tools"))]
+mod boss_render_tests;
+
+#[cfg(all(test, feature = "host-tools"))]
+mod boss_tests;
