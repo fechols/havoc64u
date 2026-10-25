@@ -2,6 +2,12 @@
 
 **Heavy Assault Vessel: Orbital Combat**
 
+<p align="center">
+  <a href="assets/cover/H.A.V.O.C.%20Cover.png">
+    <img src="assets/cover/H.A.V.O.C.%20Cover.png" alt="H.A.V.O.C. cover art featuring a blue spacecraft battling enemy fleets beneath a shattered moon" width="480">
+  </a>
+</p>
+
 Your ship is an unreasonable amount of firepower with a cockpit attached!
 
 Fly an original 3D rail shooter for the **64 MHz C64 Ultimate**. Skim green hills, squeeze through crystal caves, and blast into orbit to take on enemy fleets.
