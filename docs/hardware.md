@@ -709,6 +709,20 @@ The bootstrap structure was informed by the neighboring `doomc64u` repository. `
 
 ## Reproduce the README showcase
 
+### Current physical hardware capture (2026-10-24)
+
+The README gallery and teaser now use `HAVOC complete playthrough 10-24-2026.mp4`, supplied as a physical C64 Ultimate recording. Its SHA-256 is `dea37ce30aeb3b0542b0d567609e6d2639dfa5ed81d9f51bddcbdab131e9a3aa`; the source is 640×480 at 60 capture frames per second, with 48 kHz stereo audio. The recorded game build is not independently identified, so the media is labeled by hardware and recording date rather than a release version.
+
+All thirteen PNGs and the video use the fixed FFmpeg crop `crop=534:300:54:90`, producing 534×300 images with square pixels. There is no scaling, stretching, palette substitution, scanline filtering, interpolation, or gameplay retiming. The 60 fps output preserves the recording's cadence and does not claim a 60 fps game renderer. The gallery keeps its twelve scene names and order, plus the title preview.
+
+The editing recipe and evidence are retained under `target/readme-hardware-20261024/`: `assemble.py` extracts lossless intermediate clips and encodes the teaser; `manifest.json` records source hashes and exact frame intervals; `gallery/gallery-selection.json` records still timestamps and output hashes; and `review/` retains the visual contact sheets. Run `assemble.py` with Python 3 on Windows, using the original capture at the path recorded in that script and FFmpeg/FFprobe from `C:/ffmpeg-8.1/bin/`. Generated media and review artifacts remain under `target/`; only selected gallery images belong in `docs/media/`.
+
+The 91.2-second edit retains the existing storyboard: title (4), Lowland Approach (12), Crystal Cave (12), Iron Canyon (12), Foundry Belt (12), Storm Front (12), complete orbital ascent (10), Asteroid Belt (4), Shattered Moon (4), Space Carrier (4), and title outro (5.2). The title bookends are taken from the recording's opening, and the teaser ends before any boss defeat or campaign ending.
+
+The full `assets/music/source/Ashen Wastes.m4a` plays once from beginning to end at its original speed and gain. Captured game audio is muted, and no emulator effects are mixed in. `final/report.json` verifies 5,472 H.264 frames, 48 kHz stereo AAC, 91.2 seconds, 6,505,585 bytes, and a decoded audio true peak of −1.6 dBTP. The high-quality CRF 16 master already fits the 9.8 MB upload limit, so the published copy uses the same bytes. The [hardware teaser MP4](https://github.com/fechols/havoc64u/releases/download/v0.1.4/havoc-teaser-hardware-20261024.mp4) has SHA-256 `4273adcd27e91d0df10cd1127035c032d6fb3fa93d8db4bae9e2880e663a08b2`. Validation includes sampled visual review, full-file decode, and audio measurements; real-time audiovisual playback remains unverified.
+
+### Historical emulator capture workflow
+
 Build the four-SID package first, then run the capture and encoding steps from Linux/WSL:
 
 ```sh
@@ -731,7 +745,7 @@ The encoder writes `target/readme-showcase/havoc-showcase.mp4` by default, bound
 
 The 2026-10-21 README refresh is preserved under `target/readme-refresh-20261021/`. Its frozen `package/` and `build-provenance.json` identify the four-SID build with music kernels enabled; `final/manifest.json` selects the eight verified takes and `final/encoded/report.json` verifies the 72-second MP4. The capture pilot uses physical joystick input with inertia-aware avoidance, and the Asteroid Belt preview starts at the beginning of the stage on a low scenic flight path. All retained takes preserve full shields and pass the existing raster-effect, geometry, input, and music checks.
 
-The current 2026-10-24 refresh is preserved under `target/readme-refresh-20261024/`. Its frozen v0.1.3 `package/` and `build-provenance.json` identify the upgraded renderer; `takes.json` and `assemble.py` select eleven verified takes. `final/review.json` verifies 709 retained native frames, unchanged package hashes, full shields and three lives, zero rolls, and the complete orbital ascent. `gallery-selection.json` identifies all twelve replacement screenshots and the title preview. Visual frame sequences and trajectory checks are retained under `review/`; they are distinct from a real-time playback review. `final/encoded/report.json` verifies the 91.2-second, 4,444,861-byte MP4, full Ashen Wastes source usage, and a decoded audio true peak of −4.9 dBTP. The published [teaser MP4](https://github.com/fechols/havoc64u/releases/download/v0.1.3/havoc-teaser-v0.1.3.mp4) has SHA-256 `5e7de40765e1e528d2ec1612dafb5ca161f21b6c89d9203785e925834925dc4f`.
+The earlier 2026-10-24 emulator refresh is preserved under `target/readme-refresh-20261024/`. Its frozen v0.1.3 `package/` and `build-provenance.json` identify the upgraded renderer; `takes.json` and `assemble.py` select eleven verified takes. `final/review.json` verifies 709 retained native frames, unchanged package hashes, full shields and three lives, zero rolls, and the complete orbital ascent. `gallery-selection.json` identifies all twelve replacement screenshots and the title preview. Visual frame sequences and trajectory checks are retained under `review/`; they are distinct from a real-time playback review. `final/encoded/report.json` verifies the 91.2-second, 4,444,861-byte MP4, full Ashen Wastes source usage, and a decoded audio true peak of −4.9 dBTP. The historical [emulator teaser MP4](https://github.com/fechols/havoc64u/releases/download/v0.1.3/havoc-teaser-v0.1.3.mp4) has SHA-256 `5e7de40765e1e528d2ec1612dafb5ca161f21b6c89d9203785e925834925dc4f`.
 
 ## Terrain visibility coverage
 

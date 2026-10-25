@@ -29,15 +29,15 @@ The four-SID effects engine runs in resident assembly at 50 Hz. Each chip acts a
 
 ## See it in action
 
-**Sound on!** Fly from the lowlands into orbit with smoother flight and a glimpse of the late-game Space Carrier. This fresh **91-second teaser** pairs the complete original recording of **Ashen Wastes** with quieter four-SID combat effects. Captured from v0.1.3 in a PAL emulator at the game's original speed.
+**Sound on!** Fly from the lowlands into orbit with a glimpse of the late-game Space Carrier. This **91-second teaser** uses footage recorded on a **physical C64 Ultimate** on October 24, 2026, edited to the complete original recording of **Ashen Wastes**. The capture's black borders are cropped, with its colors, scanlines, proportions, and original gameplay speed preserved. The soundtrack replaces the captured game audio.
 
 <!-- Keep the GitHub attachment URL on its own line for inline video playback. -->
 
-https://github.com/user-attachments/assets/32d73b81-79a1-41ab-b616-c33cefa40800
+https://github.com/user-attachments/assets/e28c8650-1e2d-4470-9767-cf0c76257224
 
-[Watch or download the teaser (MP4)](https://github.com/fechols/havoc64u/releases/download/v0.1.3/havoc-teaser-v0.1.3.mp4).
+[Watch or download the hardware teaser (MP4)](https://github.com/fechols/havoc64u/releases/download/v0.1.4/havoc-teaser-hardware-20261024.mp4).
 
-Screenshots: **v0.1.3 with the upgraded renderer**, freshly captured in a PAL emulator.
+Screenshots: matching scenes from the **physical C64 Ultimate playthrough recorded October 24, 2026**, with the black capture borders cropped.
 
 | Lowland Approach | Crystal Cave |
 | --- | --- |
