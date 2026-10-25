@@ -13,10 +13,12 @@ import itertools
 import json
 from pathlib import Path
 import sys
+import time
 
 ROOT = Path(__file__).resolve().parent.parent
 SOURCE = ROOT / "assets/splash/havoc_splash.png"
 OUTPUT = ROOT / "assets/splash"
+SPATIAL_SCRIPT = Path(__file__).with_name("splash_spatial.py")
 WIDTH, HEIGHT = 160, 200
 BACKGROUND = 6
 PALETTE_SOURCE = "https://github.com/GideonZ/1541ultimate/blob/master/software/u64/u64_config.cc"
@@ -37,7 +39,11 @@ def script_sha256() -> str:
     return sha256(Path(__file__).read_bytes().replace(b"\r\n", b"\n"))
 
 
-def verify_assets(source: Path, output: Path) -> None:
+def support_hashes() -> dict[str, str]:
+    return {"tools/splash_spatial.py": sha256(SPATIAL_SCRIPT.read_bytes().replace(b"\r\n", b"\n"))}
+
+
+def verify_assets(source: Path, output: Path, method: str | None = None) -> None:
     """Fast normal-build check; deliberately has no imaging dependencies."""
     try:
         settings = json.loads((output / "havoc_splash.json").read_text(encoding="utf-8"))
@@ -48,6 +54,9 @@ def verify_assets(source: Path, output: Path) -> None:
             (settings["source_sha256"] == sha256(source.read_bytes()), "source image"),
             (settings["payload_sha256"] == sha256(payload), "generated bitmap"),
             (settings["generator"]["script_sha256"] == script_sha256(), "converter"),
+            (settings["generator"]["support_files"] == support_hashes(), "spatial converter"),
+            (settings["method"] in ("legacy", "spatial")
+             and (method is None or settings["method"] == method), "conversion method"),
             (len(payload) == 10001 and payload[-1] == BACKGROUND, "bitmap length/background"),
             (all(value < 16 for value in payload[9000:10000]), "color RAM values"),
             (settings["background_index"] == BACKGROUND, "background setting"),
@@ -67,16 +76,19 @@ if __name__ == "__main__" and "--verify-assets" in sys.argv[1:]:
     verify_parser.add_argument("--source", type=Path, default=SOURCE)
     verify_parser.add_argument("--output", type=Path, default=OUTPUT)
     verify_parser.add_argument("--verify-assets", action="store_true")
+    verify_parser.add_argument("--method", choices=("legacy", "spatial"))
     verify_args = verify_parser.parse_args()
-    verify_assets(verify_args.source, verify_args.output)
+    verify_assets(verify_args.source, verify_args.output, verify_args.method)
     raise SystemExit(0)
 
 import numpy as np
 from PIL import Image, __version__ as PILLOW_VERSION
+import splash_spatial as spatial
 
 PALETTE = np.array([tuple(bytes.fromhex(color)) for color in PALETTE_HEX], dtype=np.uint8)
 METRIC = np.array([2.0, 1.0, 1.0], dtype=np.float64)
 EDGE_SCALE = 0.12
+SEED_STRENGTHS = (1.0, 0.75, 0.5, 0.0)
 
 
 def srgb_to_linear(rgb: np.ndarray) -> np.ndarray:
@@ -154,8 +166,10 @@ def choose_palettes(linear: np.ndarray, background: int = BACKGROUND) -> np.ndar
     return palettes
 
 
-def dither(linear: np.ndarray, palettes: np.ndarray) -> np.ndarray:
-    """Strong, serpentine FS; source boundaries attenuate error propagation."""
+def dither(linear: np.ndarray, palettes: np.ndarray, strength: float = 1.0) -> np.ndarray:
+    """Serpentine FS; source boundaries attenuate error propagation."""
+    if not 0.0 <= strength <= 1.0:
+        raise ValueError("Dither strength must be between zero and one")
     height, width, _ = linear.shape
     original_lab = linear_to_oklab(linear)
     error = np.zeros_like(linear, dtype=np.float64)
@@ -179,8 +193,75 @@ def dither(linear: np.ndarray, palettes: np.ndarray) -> np.ndarray:
                     delta = original_lab[y, x] - original_lab[ny, nx]
                     attenuation = np.exp(-float(np.dot(delta, delta)) / EDGE_SCALE ** 2)
                     # Do not renormalize: an edge deliberately discards its share.
-                    error[ny, nx] += residual * (fraction * attenuation)
+                    error[ny, nx] += residual * (fraction * attenuation * strength)
     return codes
+
+
+def spatial_objective(linear: np.ndarray) -> spatial.SpatialObjective:
+    return spatial.SpatialObjective(linear, LINEAR_PALETTE, LAB_PALETTE,
+                                    METRIC, edge_weights, linear_to_oklab)
+
+
+def palette_indices(codes: np.ndarray, palettes: np.ndarray) -> np.ndarray:
+    height, width = codes.shape
+    return palettes[np.arange(height)[:, None] // 8,
+                    np.arange(width)[None, :] // 4, codes]
+
+
+def spatial_indices(linear: np.ndarray, palettes: np.ndarray | None = None,
+                    background: int = BACKGROUND, progress=None,
+                    *, baseline_codes: np.ndarray | None = None) -> np.ndarray:
+    """Choose a deterministic dither seed, then improve its spatial color error."""
+    if palettes is None:
+        palettes = choose_palettes(linear, background)
+    objective = spatial_objective(linear)
+    if baseline_codes is None:
+        baseline_codes = dither(linear, palettes)
+    baseline = palette_indices(baseline_codes, palettes)
+    baseline_score = objective.score(baseline)["total"]
+    best, best_score = baseline, baseline_score
+    for strength in SEED_STRENGTHS:
+        candidate = baseline if strength == 1.0 else palette_indices(dither(linear, palettes, strength), palettes)
+        score = objective.score(candidate)["total"]
+        if progress:
+            progress(f"Dither seed {strength:g}: spatial error {score:.9f}")
+        if score < best_score - 1e-12:
+            best, best_score = candidate, score
+    result = spatial.refine(objective, best, background, progress=progress)
+    result_score = objective.score(result)["total"]
+    if progress:
+        progress(f"Spatial error {baseline_score:.9f} -> {result_score:.9f}")
+    # A full recomputation guards the final result independently of cached deltas.
+    return result if result_score < baseline_score - 1e-12 else baseline.copy()
+
+
+def indices_to_codes(indices: np.ndarray, background: int = BACKGROUND) -> tuple[np.ndarray, np.ndarray]:
+    """Canonically assign legal color indices to the four hardware slots."""
+    indices = np.asarray(indices)
+    if (indices.ndim != 2 or indices.shape[0] % 8 or indices.shape[1] % 4
+            or not 0 <= background < 16 or np.any(indices < 0) or np.any(indices > 15)
+            or not np.issubdtype(indices.dtype, np.integer)):
+        raise ValueError("Indices must contain legal C64 colors in complete 4x8 cells")
+    height, width = indices.shape
+    codes = np.empty_like(indices, dtype=np.uint8)
+    palettes = np.empty((height // 8, width // 4, 4), dtype=np.uint8)
+    for cy in range(height // 8):
+        for cx in range(width // 4):
+            cell = indices[cy * 8:cy * 8 + 8, cx * 4:cx * 4 + 4]
+            used = set(int(c) for c in np.unique(cell)) - {background}
+            if len(used) > 3:
+                raise ValueError("Cell uses more than three non-background colors")
+            for color in range(16):
+                if len(used) == 3:
+                    break
+                if color != background:
+                    used.add(color)
+            palette = np.array([background, *sorted(used)], dtype=np.uint8)
+            palettes[cy, cx] = palette
+            lookup = np.zeros(16, dtype=np.uint8)
+            lookup[palette] = np.arange(4, dtype=np.uint8)
+            codes[cy * 8:cy * 8 + 8, cx * 4:cx * 4 + 4] = lookup[cell]
+    return codes, palettes
 
 
 def pack(codes: np.ndarray, palettes: np.ndarray, background: int = BACKGROUND) -> bytes:
@@ -219,12 +300,22 @@ def decode(payload: bytes) -> np.ndarray:
     return indices
 
 
-def encode(linear: np.ndarray, background: int = BACKGROUND) -> bytes:
+def encode(linear: np.ndarray, background: int = BACKGROUND, method: str = "spatial", progress=None) -> bytes:
+    if method not in ("legacy", "spatial"):
+        raise ValueError(f"Unknown conversion method: {method}")
     palettes = choose_palettes(linear, background)
-    return pack(dither(linear, palettes), palettes, background)
+    codes = dither(linear, palettes)
+    original = pack(codes, palettes, background)
+    if method == "legacy":
+        return original
+    indices = spatial_indices(linear, palettes, background, progress, baseline_codes=codes)
+    if np.array_equal(indices, palette_indices(codes, palettes)):
+        return original
+    codes, palettes = indices_to_codes(indices, background)
+    return pack(codes, palettes, background)
 
 
-def metadata(source: Path, payload: bytes) -> dict:
+def metadata(source: Path, payload: bytes, method: str = "spatial") -> dict:
     with Image.open(source) as image:
         source_size = list(image.size)
     return {
@@ -240,6 +331,9 @@ def metadata(source: Path, payload: bytes) -> dict:
         "background_index": BACKGROUND,
         "palette": {"name": "ultimate-default", "rgb_hex": list(PALETTE_HEX), "source": PALETTE_SOURCE},
         "resample": "linear-sRGB Lanczos3; full composition; no tone or saturation adjustment",
+        "method": method,
+        "spatial_refinement": ({"seed_strengths": list(SEED_STRENGTHS), **spatial.SETTINGS}
+                               if method == "spatial" else None),
         "quantization": {"local_triples": 455, "metric": "squared Oklab", "metric_weights": METRIC.tolist(),
                          "edge_weight": "1 + min(3, 12 * max four-neighbor Oklab distance)",
                          "tie_break": "lowest lexicographic palette indices"},
@@ -249,6 +343,7 @@ def metadata(source: Path, payload: bytes) -> dict:
                    "renormalize": False,
                    "gamut": "clip adjusted linear RGB to [0,1] for selection; retain unclipped residual"},
         "generator": {"script": "tools/encode-splash.py", "script_sha256": script_sha256(), "script_hash_newlines": "LF",
+                      "support_files": support_hashes(),
                       "numpy": np.__version__, "pillow": PILLOW_VERSION},
     }
 
@@ -257,11 +352,16 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source", type=Path, default=SOURCE)
     parser.add_argument("--output", type=Path, default=OUTPUT)
+    parser.add_argument("--method", choices=("legacy", "spatial"), default="spatial",
+                        help="spatial refinement (default) or original exhaustive palettes and diffusion")
     parser.add_argument("--check", action="store_true", help="verify the committed binary, settings and decoded previews without writing")
     parser.add_argument("--verify-assets", action="store_true", help="fast manifest check; no Pillow or NumPy required")
     args = parser.parse_args()
-    payload = encode(downsample(args.source))
-    data = metadata(args.source, payload)
+    started = time.perf_counter()
+    payload = encode(downsample(args.source), method=args.method,
+                     progress=lambda message: print(message, flush=True))
+    data = metadata(args.source, payload, args.method)
+    print(f"Conversion took {time.perf_counter() - started:.2f} seconds", flush=True)
     binary_path = args.output / "havoc_splash.bin"
     metadata_path = args.output / "havoc_splash.json"
     if args.check:

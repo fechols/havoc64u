@@ -28,9 +28,23 @@ the unpainted remainder. Fatal startup errors still show the text diagnostic.
 
 The offline converter, `tools/encode-splash.py`, preserves the source's full
 composition and filters in linear light to 160×200 logical pixels. It tests all
-455 local color triples per 4×8 cell using edge-weighted Oklab error, then uses
-full-strength serpentine Floyd–Steinberg diffusion with reduced error transfer
-across strong edges. The pinned palette comes from the
+455 local color triples per 4×8 cell using edge-weighted Oklab error. The default
+`--method spatial` compares serpentine Floyd–Steinberg seeds at strengths 1,
+0.75, 0.5, and 0, then refines the best decoded pixel pattern and local colors.
+Its objective combines unfiltered edge-weighted Oklab error (25%) with Oklab
+error after two scales of linear-light Gaussian mixing (50% and 25%). The
+filters account for the wide logical pixels, truncate at image boundaries,
+and renormalize there. Four pixel sweeps, one local-color replacement sweep,
+and two further pixel sweeps consider legal recolors and adjacent swaps;
+each accepted move strictly reduces the objective. Pixel stages stop early
+when a complete sweep makes no improvement. All cells retain background 6
+and at most three other hardware colors.
+
+`--method legacy` reproduces the original exhaustive palettes and full-strength,
+edge-attenuated diffusion byte for byte. Spatial refinement retains that payload
+if it cannot improve the objective. This addresses the difference between
+individual-pixel matching and perceived dither mixtures; a free-palette SOM is
+not used. Both methods use the pinned palette from the
 [Ultimate firmware default colors](https://github.com/GideonZ/1541ultimate/blob/master/software/u64/u64_config.cc).
 This splash-specific palette does not change the gameplay quantizer or the
 machine's saved palette settings. The committed
@@ -45,8 +59,30 @@ python3 tools/encode-splash.py --check
 python3 tools/test-splash-converter.py
 ```
 
+For a reproducible decoded comparison, including title, ship, sky, and explosion
+crops and separate raw/fine/coarse error measurements:
+
+```sh
+python3 tools/encode-splash.py --method legacy --output target/splash-quality/legacy
+python3 tools/compare-splash.py --baseline target/splash-quality/legacy/havoc_splash.bin --candidate assets/splash/havoc_splash.bin
+```
+
+Comparison images and JSON measurements go under `target/splash-quality/comparison`.
+The residual-texture measurement describes only source-flat neighbor pairs;
+it is not a whole-image quality score. Spatial fidelity can improve while some
+areas retain or gain visible dither texture. Inspect the decoded comparison
+alongside the objective rather than treating its score as a display measurement.
+For the committed artwork, spatial refinement reduces the combined error from
+0.0107542693 to 0.0094767414 (11.88%); raw, fine, and coarse errors all decrease.
+Conversion took about 29 seconds versus one second for legacy on the local
+Python 3.14 / NumPy 2.5.1 / Pillow 12.3.0 environment. Review of the full frame
+and crops preserves lettering, ship contours, and bright flame cores; the sky
+remains visibly dithered. These measurements add no work to normal game builds
+or C64 startup.
+
 The JSON sidecar records the source/output hashes, palette, conversion settings,
-and dependency versions. Normal target builds consume the committed binary and
+dependency versions, and normalized hashes of both converter modules. Normal
+target builds consume the committed binary and
 run `python3 tools/encode-splash.py --verify-assets` to reject stale assets using
 only the Python standard library; they do not need image-processing dependencies.
 Linked startup, layout, and

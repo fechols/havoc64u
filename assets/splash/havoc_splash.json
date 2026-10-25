@@ -7,7 +7,7 @@
     1086
   ],
   "payload": "havoc_splash.bin",
-  "payload_sha256": "6421afacd6fa3ede89b78b2abb6d8fbcb8f904836f13b407f0a264b4bf2cd05f",
+  "payload_sha256": "c3524e0ff553a37df9c708ba32731cce83e7753a360a780a9521b4c78f59a12b",
   "layout": {
     "bitmap_bytes": 8000,
     "screen_bytes": 1000,
@@ -46,6 +46,59 @@
     "source": "https://github.com/GideonZ/1541ultimate/blob/master/software/u64/u64_config.cc"
   },
   "resample": "linear-sRGB Lanczos3; full composition; no tone or saturation adjustment",
+  "method": "spatial",
+  "spatial_refinement": {
+    "seed_strengths": [
+      1.0,
+      0.75,
+      0.5,
+      0.0
+    ],
+    "objective": "squared Oklab after filtering linear RGB",
+    "loss_weights": {
+      "raw": 0.25,
+      "fine": 0.5,
+      "coarse": 0.25
+    },
+    "raw_normalization": "source edge-weight sum",
+    "spatial_normalization": "pixel count",
+    "filters": [
+      {
+        "sigma_xy": [
+          0.6,
+          1.0
+        ],
+        "radius_xy": [
+          1,
+          2
+        ]
+      },
+      {
+        "sigma_xy": [
+          1.2,
+          2.0
+        ],
+        "radius_xy": [
+          2,
+          4
+        ]
+      }
+    ],
+    "boundary": "truncate and renormalize each Gaussian at image edges",
+    "pixel_sweeps_before_palette": 4,
+    "palette_sweeps": 1,
+    "pixel_sweeps_after_palette": 2,
+    "early_stop": "pixel stage stops after a sweep with no accepted move",
+    "minimum_improvement": 1e-12,
+    "linear_rgb_zero_epsilon": 1e-14,
+    "moves": [
+      "legal single-pixel recolor",
+      "legal right/down pixel swap",
+      "replace all occurrences of one local non-background color"
+    ],
+    "tie_break": "first candidate: ascending color index, right swap, down swap",
+    "scan": "alternating forward/reverse raster; row-major palette cells"
+  },
   "quantization": {
     "local_triples": 455,
     "metric": "squared Oklab",
@@ -68,8 +121,11 @@
   },
   "generator": {
     "script": "tools/encode-splash.py",
-    "script_sha256": "3639ad7e7651ad72ae7a91d4aad8c92f16ac7488db30827735ce0a64d8190304",
+    "script_sha256": "cd693d265cd94729a7813d8ab8dca1959fe590ae6e30436d2659b96822a9ef89",
     "script_hash_newlines": "LF",
+    "support_files": {
+      "tools/splash_spatial.py": "5efeb3ceffc869a58a355a9e5518ade9f4b2368ef45d1b0799a0ee245a5bc1e9"
+    },
     "numpy": "2.5.1",
     "pillow": "12.3.0"
   }
