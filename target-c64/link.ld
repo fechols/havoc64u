@@ -400,8 +400,11 @@ __irq_stack_bottom = 0x7500;
 /* LLVM-MOS gives non-reentrant functions static local frames in .noinit.
  * Nothing reachable from irq_body may own one (tools/check-irq-frames.py
  * audits the linked closure), so the interrupt needs no frame backup and
- * $BF40-$BFFF plus $CB00-$CCFF are free; Game uses the first 128 bytes of
+ * $BF40-$BFBF plus $CB00-$CCFF are free; Game uses the first 128 bytes of
  * the former $CA80-$CCFF backup for the four-boss state and byte locks. */
+/* Immutable reticle image in the unused bitmap tail. */
+__reticle_sprite_start = 0xBFC0;
+__reticle_sprite_end = 0xC000;
 __resident_end = MAX(LOADADDR(.data) + SIZEOF(.data), ADDR(.text) + SIZEOF(.text));
 /* The first mission buffer uses the retired default screen page below the
  * PRG. The second stays above the cell workspace; neither is used by an
@@ -571,6 +574,7 @@ ASSERT(ADDR(.noinit) + SIZEOF(.noinit) <= __segment0_start, "low globals overlap
 ASSERT(__segment1_start == 0x9700 && __segment1_end == ORIGIN(tables) && __segment1_end - __segment1_start == 512, "incorrect second mission buffer allocation")
 ASSERT(__hud_sprites_start == 0x8C00 && __hud_sprites_end == 0x8E00 && __hud_sprites_end - __hud_sprites_start == 8 * 64, "incorrect HUD sprite allocation")
 ASSERT((__hud_sprites_start & 63) == 0 && __hud_sprites_end <= 0x9000, "HUD sprites must be aligned in VIC-visible RAM")
+ASSERT(__reticle_sprite_start == 0xBFC0 && __reticle_sprite_end == 0xC000 && __reticle_sprite_end - __reticle_sprite_start == 64 && (__reticle_sprite_start & 63) == 0, "incorrect resident reticle allocation")
 ASSERT(__hud_sprites_end == __pixel_band_start && ORIGIN(startup_checks) == __pixel_band_start && ORIGIN(sim_aux) == __pixel_band_start, "shared workspace overlaps HUD sprites")
 ASSERT(__pixel_band_start == 0x8E00 && __pixel_band_end == 0x9300, "incorrect shared pixel-band workspace")
 ASSERT(__cell_hud_seen == 0x9328, "HUD-seen flag must reuse cell scratch at $9328")

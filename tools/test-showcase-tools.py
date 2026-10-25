@@ -12,6 +12,9 @@ import wave
 spec = importlib.util.spec_from_file_location("showcase", Path(__file__).with_name("capture-showcase.py"))
 showcase = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(showcase)
+spec = importlib.util.spec_from_file_location("encode", Path(__file__).with_name("encode-showcase.py"))
+encode = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(encode)
 
 
 def state():
@@ -24,6 +27,27 @@ class ShowcasePilot(unittest.TestCase):
     def setUp(self):
         self.package = bytearray(0xb0800)
         self.package[0xb0000 + 88 + 3] = 20  # Fighter's authored ram radius.
+
+    def test_encoder_reads_legacy_and_hires_capture_widths(self):
+        with tempfile.TemporaryDirectory() as directory:
+            for width in (160, 320):
+                rows = [bytes((x + y) & 255 for x in range(width * 3)) for y in range(200)]
+                path = Path(directory) / f"{width}.png"
+                showcase.vice.png(path, rows, width, 200)
+                self.assertEqual(encode.native_rgb(path), b"".join(rows))
+
+    def test_showcase_preserves_single_hardware_pixel_sprite_detail(self):
+        registers = [0] * 47
+        registers[0x11], registers[0x16] = 0x3b, 0x18
+        registers[0x15], registers[0x27] = 1, 1
+        registers[0], registers[1] = 24, 50
+        image = bytes([0b01000000]) + bytes(63)
+        sprites = dict(format="vic-sprites-v1", origin=[24, 50], registers=registers,
+                       pointers=[48] * 8, images=[image.hex()] + [bytes(64).hex()] * 7)
+        rows = showcase.pixels(bytes(10000), 0, sprites)
+        self.assertEqual(len(rows[0]), 320 * 3)
+        self.assertEqual(rows[0][:9], bytes(showcase.vice.PALETTE[0]) +
+                         bytes(showcase.vice.PALETTE[1]) + bytes(showcase.vice.PALETTE[0]))
 
     def test_brakes_for_inertia_and_holds_fire_without_periodic_roll_taps(self):
         game = state()

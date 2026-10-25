@@ -64,7 +64,7 @@ static void reference(uint8_t *r, const struct Vec3 p[3], uint8_t color, uint8_t
   uint16_t depth=(uint16_t)(sum/3);
   uint8_t *c=r+6+count*16;
   for(uint8_t i=0;i<3;i++){ c[i*2]=(uint8_t)sx[i]; c[i*2+1]=(uint8_t)(sx[i]>>8); c[6+i*2]=(uint8_t)sy[i]; c[7+i*2]=(uint8_t)(sy[i]>>8); }
-  c[12]=(uint8_t)depth; c[13]=(uint8_t)(depth>>8); c[14]=color&15; c[15]=flags&0x62;
+  c[12]=(uint8_t)depth; c[13]=(uint8_t)(depth>>8); c[14]=color&15; c[15]=flags&0xe2;
   count++; r[0]=(uint8_t)count; r[1]=(uint8_t)(count>>8);
 }
 static uint32_t checks, emitted, replay_checks;
@@ -137,7 +137,7 @@ int main(void){
     struct Vec3 line[3]={front[0],front[0],front[2]};
     begin_frame();
     if(check(front,7,(uint8_t)flags)||check(back,7,(uint8_t)flags)||check(line,7,(uint8_t)flags))return 1;
-    if(RENDERER[0]!=1||RENDERER[1]||RENDERER[2]||RENDERER[3]||RENDERER[21]!=(flags&0x62)){
+    if(RENDERER[0]!=1||RENDERER[1]||RENDERER[2]||RENDERER[3]||RENDERER[21]!=(flags&0xe2)){
       printf("FAIL unconditional culling flags=%u\n",flags);return 1;
     }
   }

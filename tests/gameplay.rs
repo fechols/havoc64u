@@ -662,7 +662,7 @@ fn chase_camera_translates_foreground_without_moving_world_geometry_or_backdrop(
         false,
     );
     for face in &mut world_ship.0 {
-        face.2 |= TERRAIN_CLEAR_SCENE_FLAG;
+        face.2 |= TERRAIN_CLEAR_SCENE_FLAG | 0x80; // Player identity for reticle clipping.
     }
     assert_eq!(
         &title_geometry.0[..bank.face_count(PLAYER) as usize],
@@ -762,7 +762,7 @@ fn chase_camera_reveals_carrier_and_keeps_controlled_hull_on_screen() {
                 y: p.y - eye_y,
                 ..p
             });
-            face.2 |= TERRAIN_CLEAR_SCENE_FLAG;
+            face.2 |= TERRAIN_CLEAR_SCENE_FLAG | 0x80; // Player identity for reticle clipping.
         }
         assert_eq!(
             &geometry.0[..ship_faces],

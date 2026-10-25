@@ -17,6 +17,8 @@ mod front;
 #[cfg(test)]
 mod shadow_tests;
 mod sort;
+mod probe;
+pub use probe::PlayerPixelProbe;
 #[cfg(all(feature = "span-buffer", not(target_arch = "mos")))]
 mod spans;
 #[cfg(all(feature = "span-buffer", not(target_arch = "mos")))]
@@ -604,7 +606,7 @@ impl Renderer {
         #[allow(unused_mut)]
         let mut pass = RasterPass::new(self);
         #[cfg(not(target_arch = "mos"))]
-        pass.prepare();
+        pass.prepare(None);
         Some(pass)
     }
 
@@ -615,8 +617,32 @@ impl Renderer {
     pub fn prepare_raster(&mut self) {
         assert_eq!(self.padding, 0);
         let mut pass = RasterPass::new(self);
-        pass.prepare();
+        pass.prepare(None);
         pass.renderer.padding = 1;
+    }
+
+    /// Reuse the normal preparation pass to sample the player's silhouette.
+    #[cfg(target_arch = "mos")]
+    #[inline(never)]
+    #[link_section = ".phase.shadow.final"]
+    pub fn prepare_raster_with_probe(&mut self, probe: &mut PlayerPixelProbe) {
+        assert_eq!(self.padding, 0);
+        let mut pass = RasterPass::new(self);
+        pass.prepare(Some(probe));
+        pass.renderer.padding = 1;
+    }
+
+    /// Host captures use the same prepared-edge predicate without consuming
+    /// commands; native rendering performs this during its existing preparation.
+    #[cfg(not(target_arch = "mos"))]
+    pub fn probe_player_pixels(&self, probe: &mut PlayerPixelProbe) {
+        assert_eq!(self.padding, 0);
+        for triangle in &self.triangles[..self.triangle_count as usize] {
+            if triangle.reserved & crate::PLAYER_GEOMETRY != 0 {
+                let (head, tail) = prepare_triangle(triangle);
+                probe.triangle(&head, &tail);
+            }
+        }
     }
 
     /// Project, cull and record one triangle whose corners all lie at or
@@ -658,7 +684,7 @@ impl Renderer {
         triangle.depth = crate::math::div_u32_u16(a.z as u32 + b.z as u32 + c.z as u32, 3) as i16;
         triangle.color = color & 15;
         triangle.reserved = flags
-            & (crate::game::STATIC_SKY | crate::TERRAIN_CLEAR_GEOMETRY | crate::EXTERIOR_TERRAIN);
+            & (crate::game::STATIC_SKY | crate::TERRAIN_CLEAR_GEOMETRY | crate::EXTERIOR_TERRAIN | crate::PLAYER_GEOMETRY);
         self.triangles[self.triangle_count as usize] = triangle;
         self.triangle_count += 1;
     }
@@ -824,7 +850,7 @@ impl<'a> RasterPass<'a> {
 
     #[inline(never)]
     #[cfg_attr(target_arch = "mos", link_section = ".phase.shadow.final")]
-    fn prepare(&mut self) {
+    fn prepare(&mut self, mut probe: Option<&mut PlayerPixelProbe>) {
         self.masks_mut().fill([0; 32]);
         for index in 0..self.renderer.triangle_count as usize {
             #[cfg(target_arch = "mos")]
@@ -832,13 +858,24 @@ impl<'a> RasterPass<'a> {
                 let source = *(SORT_ORDER as *const u8).add(index) as usize;
                 let head = self.head_ptr(index);
                 let tail = self.tails_mut().as_mut_ptr().add(index);
+                let player = self.renderer.triangles[source].reserved & crate::PLAYER_GEOMETRY != 0;
                 prepare_triangle_into(&self.renderer.triangles[source], &mut *head, &mut *tail);
+                if player {
+                    if let Some(probe) = probe.as_deref_mut() {
+                        probe.triangle(&*head, &*tail);
+                    }
+                }
                 *tail
             };
             #[cfg(not(target_arch = "mos"))]
             let (head, tail) = prepare_triangle(&self.renderer.triangles[index]);
             #[cfg(not(target_arch = "mos"))]
             {
+                if self.renderer.triangles[index].reserved & crate::PLAYER_GEOMETRY != 0 {
+                    if let Some(probe) = probe.as_deref_mut() {
+                        probe.triangle(&head, &tail);
+                    }
+                }
                 self.write_head(index, head);
                 self.tails[index] = tail;
             }

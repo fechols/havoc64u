@@ -99,6 +99,39 @@ pub static mut HUD_SCROLL: u8 = 0xff;
 pub static mut HUD_IMAGE_WRITES: u16 = 0;
 #[no_mangle]
 pub static mut HUD_COMMITS: u16 = 0;
+// The raster IRQ owns sprite placement/enables; PIXELS can atomically cancel
+// an armed reticle before publication. SHADOW stages one aim sample, which
+// present publishes after all bitmap bands.
+#[no_mangle]
+pub static mut HUD_ENABLE_PENDING: u8 = 0;
+#[no_mangle]
+pub static mut HUD_ENABLE_ACTIVE: u8 = 0;
+#[no_mangle]
+pub static mut HUD_SPRITE0_COLOR: u8 = 3;
+#[no_mangle]
+pub static mut RETICLE_PENDING_X: u16 = 0;
+#[no_mangle]
+pub static mut RETICLE_PENDING_Y: u8 = 0;
+#[no_mangle]
+pub static mut RETICLE_PENDING_VISIBLE: u8 = 0;
+#[no_mangle]
+pub static mut RETICLE_ACTIVE_X: u16 = 0;
+#[no_mangle]
+pub static mut RETICLE_ACTIVE_Y: u8 = 0;
+#[no_mangle]
+pub static mut RETICLE_ACTIVE_VISIBLE: u8 = 0;
+#[no_mangle]
+pub static mut RETICLE_MISSES: u16 = 0;
+/// Zero: HUD registers/next raster 92. One: reticle registers/next raster 251.
+#[no_mangle]
+pub static mut SPRITE_PHASE: u8 = 1;
+#[no_mangle]
+pub static mut IRQ_FRAME_EVENT: u8 = 0;
+static mut RETICLE_FRAME_X: u16 = 0;
+static mut RETICLE_FRAME_Y: u8 = 0;
+static mut RETICLE_FRAME_VISIBLE: u8 = 0;
+static mut RETICLE_PROBE: havoc::render::PlayerPixelProbe = havoc::render::PlayerPixelProbe::EMPTY;
+static mut RETICLE_RETIRE_OLD: bool = false;
 // The game publishes staged bands into VIC bank 2; tooling reads this constant to
 // locate the visible screen and bitmap. initialize_video stores it so the
 // linker keeps the symbol.
@@ -181,6 +214,9 @@ extern "C" {
     fn publish_staged_band(band: u8);
     fn publish_hud_corner(corner: u8);
     fn hud_apply_scroll(scroll: u8);
+    fn reticle_restore();
+    fn reticle_hide();
+    static __reticle_sprite_start: u8;
     static __phase_boot_size: u8;
     static __phase_sim_aux_prefix_size: u8;
     static __phase_sim_extra_size: u8;
@@ -229,13 +265,15 @@ unsafe fn word(p: u16, v: u16) {
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn irq_body() {
+pub unsafe extern "C" fn irq_body(frame_event: u8) {
     let cia = peek(0xdc0d);
     if cia & 1 != 0 {
         audio_tick();
     }
-    if peek(0xd019) & 1 != 0 {
-        poke(0xd019, 1);
+    // The wrapper classifies/acknowledges raster events before calling Rust.
+    // A middle-screen interrupt arriving during audio remains pending until
+    // RTI; it must never become an extra frame/input sample here.
+    if frame_event != 0 {
         VIDEO_FRAMES = VIDEO_FRAMES.wrapping_add(1);
         let [scroll, border] = BOMB_EFFECT.sample();
         poke(0xd016, 0x18 | (scroll & 7));
@@ -243,9 +281,10 @@ pub unsafe extern "C" fn irq_body() {
         // seven reads raster position but writes the IRQ compare high bit.
         poke(0xd011, (peek(0xd011) & 0x78) | (scroll >> 3));
         poke(0xd020, border);
-        if HUD_SCROLL != scroll {
-            hud_apply_scroll(scroll);
-        }
+        // Reassert positions every video frame: sprite zero has been borrowed
+        // since line 92 even if the bitmap's fine scroll has not changed.
+        hud_apply_scroll(scroll);
+        reticle_restore();
         // Initial score validation can outlast the input queue. Begin input
         // capture and the simulation clock only when that boot work is done.
         if !AUDIO_READY {
@@ -826,13 +865,17 @@ pub unsafe extern "C" fn benchmark_frame_ready() {
 unsafe fn benchmark_now(sim_ms: u16, ticks: u8) -> u16 {
     sim_ms.wrapping_add(ticks as u16 * 20)
 }
+#[link_section = ".phase.pixels"]
 #[inline(never)]
-#[cfg_attr(feature = "benchmarks", link_section = ".benchmark_resident")]
 unsafe fn present() {
+    io_on();
     // Every band has already been published into the visible bank and color RAM.
     // Enable the display once the first complete frame exists, preserving the
     // raster-driven bomb shake's Y scroll; the IRQ keeps these mode bits.
     disable_irq();
+    RETICLE_PENDING_X = RETICLE_FRAME_X;
+    RETICLE_PENDING_Y = RETICLE_FRAME_Y;
+    RETICLE_PENDING_VISIBLE = RETICLE_FRAME_VISIBLE & !PAUSED as u8;
     poke(0xd011, 0x38 | (peek(0xd011) & 7));
     enable_irq();
     frame_complete();
@@ -1028,6 +1071,46 @@ unsafe fn prepare_geometry(scenery_count: u8, bank: &AssetBank<'_>) {
     wr(core::ptr::addr_of_mut!(PROF_DETAIL), 0);
 }
 
+#[link_section = ".phase.shadow.final"]
+#[inline(never)]
+unsafe fn prepare_reticle_probe() {
+    let aim = GAME
+        .assume_init_ref()
+        .reticle_position()
+        .filter(|&(x, y)| (0..160).contains(&x) && (0..200).contains(&y));
+    if let Some(center) = aim {
+        let (x, y) = havoc::reticle::vic_position(center);
+        RETICLE_FRAME_X = x;
+        RETICLE_FRAME_Y = y;
+        RETICLE_FRAME_VISIBLE = 1;
+    } else {
+        RETICLE_FRAME_VISIBLE = 0;
+    }
+
+    // Pending is immutable until present; active can latch it in the IRQ.
+    // Snapshot both atomically before testing the next rendered silhouette.
+    disable_irq();
+    let active = if core::ptr::read_volatile(core::ptr::addr_of!(RETICLE_ACTIVE_VISIBLE)) != 0 {
+        Some(havoc::reticle::screen_position((
+            core::ptr::read_volatile(core::ptr::addr_of!(RETICLE_ACTIVE_X)),
+            core::ptr::read_volatile(core::ptr::addr_of!(RETICLE_ACTIVE_Y)),
+        )))
+    } else {
+        None
+    };
+    let pending = if core::ptr::read_volatile(core::ptr::addr_of!(RETICLE_PENDING_VISIBLE)) != 0 {
+        Some(havoc::reticle::screen_position((
+            core::ptr::read_volatile(core::ptr::addr_of!(RETICLE_PENDING_X)),
+            core::ptr::read_volatile(core::ptr::addr_of!(RETICLE_PENDING_Y)),
+        )))
+    } else {
+        None
+    };
+    enable_irq();
+    RETICLE_PROBE = havoc::render::PlayerPixelProbe::new([aim, active, pending]);
+    RETICLE_RETIRE_OLD = false;
+}
+
 #[link_section = ".phase.shadow.entry"]
 #[inline(never)]
 unsafe fn prepare_shadows(enabled: bool) {
@@ -1044,7 +1127,13 @@ unsafe fn prepare_shadows(enabled: bool) {
     FRAME_TRIANGLES = renderer.triangle_count;
     FRAME_DROPPED = renderer.dropped;
     geometry_complete();
-    renderer.prepare_raster();
+    prepare_reticle_probe();
+    let probe = &mut *core::ptr::addr_of_mut!(RETICLE_PROBE);
+    renderer.prepare_raster_with_probe(probe);
+    if probe.covered(0) {
+        RETICLE_FRAME_VISIBLE = 0;
+    }
+    RETICLE_RETIRE_OLD = probe.covered(1) || probe.covered(2);
 }
 
 // Only the full image may enter this tail. Disabled levels load just the
@@ -1102,10 +1191,8 @@ unsafe fn update_sprite_hud(status: &Hud) {
             publish_hud_corner(corner);
         }
     }
-    let enabled = next.enabled_mask();
-    if peek(0xd015) != enabled {
-        poke(0xd015, enabled);
-    }
+    // Byte publication is atomic; the line-251 IRQ latches the desired mask.
+    wr(core::ptr::addr_of_mut!(HUD_ENABLE_PENDING), next.enabled_mask());
     HUD_STATE.write(next);
     HUD_VALID = true;
 }
@@ -1127,6 +1214,11 @@ unsafe fn draw_pixels() {
     // visible status. Build the readout only after its PIXELS code is loaded.
     let status = GAME.assume_init_ref().hud();
     update_fps_overlay(status.mode);
+    if RETICLE_FRAME_VISIBLE == 0 || RETICLE_RETIRE_OLD || PAUSED {
+        // Retire old aiming before new hull pixels or captions are published. Position
+        // changes still wait for present; only hiding can take effect early.
+        reticle_hide();
+    }
     update_sprite_hud(&status);
     let renderer = RENDERER.assume_init_mut();
     poke(0xd021, renderer.clear_color());
@@ -1171,6 +1263,8 @@ unsafe fn draw_pixels() {
         io_off();
     }
     wr(core::ptr::addr_of_mut!(PROF_DETAIL), 0);
+    wr(core::ptr::addr_of_mut!(PROF_PHASE), 4);
+    present();
 }
 
 // The source is the PRG's future IRQ-stack gap; copy before initialize_irq
@@ -1226,6 +1320,11 @@ unsafe fn initialize_hud() {
     // The common asset bank temporarily owns $8400-$8FFF during validation.
     // Initialize these bytes only after load_initial_assets has consumed it.
     core::ptr::write_bytes(0x8c00 as *mut u8, 0, 512);
+    core::ptr::copy_nonoverlapping(
+        havoc::reticle::IMAGE.as_ptr(),
+        core::ptr::addr_of!(__reticle_sprite_start) as *mut u8,
+        64,
+    );
     for sprite in 0..8u16 {
         poke(0x83f8 + sprite, 0x30 + sprite as u8);
     }
@@ -1559,9 +1658,6 @@ pub unsafe extern "C" fn main() -> i32 {
         wr(core::ptr::addr_of_mut!(PROF_PHASE), 7);
         io_off();
         draw_pixels();
-        io_on();
-        wr(core::ptr::addr_of_mut!(PROF_PHASE), 4);
-        present();
         if peek(0xc400) != 0xa5 || peek(0x7500) != 0xa5 {
             fail(b"STACK GUARD FAILED")
         }

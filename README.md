@@ -91,6 +91,8 @@ Watch the weapon meter: **HOMING MISSILE** means your next shot tracks a random 
 
 The afterburner doubles forward speed and increases steering speed by 50%. The **B gauge beneath SHIELD** is full when ready, drains during the burst, and refills during cooldown; B flashes while boosting. Releasing the button does not cut the burst short, and holding it does not start another burst. Steering, firing, and rolls remain available while boosting. The joystick's second button must be configured as independent C64/C64GS Fire 2; Left Shift also works with a one-button joystick.
 
+The white single-pixel reticle marks your straight firing line at a fixed distance ahead. It follows your ship and the camera, hides wherever the ship or its exhaust covers it, and stays hidden for level-name splashes, pause, menus, and the victory medal and results.
+
 - **Roll through shots, dodge scenery.** Keep steering and firing during a roll, but avoid solid obstacles.
 - **Clear a path.** Shoot small orbital fragments; bomb large rocks and wreckage. Every 15 enemy kills restore one bomb, up to three.
 - **Collect supplies.** Green shields restore 60 points, up to 100; purple rectangles add one bomb, up to three.

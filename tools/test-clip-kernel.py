@@ -63,7 +63,7 @@ static void emit(uint8_t *r, const struct Vec3 p[3], uint8_t color, uint8_t flag
   uint16_t depth=(uint16_t)(sum/3);
   uint8_t *c=r+6+count*16;
   for(uint8_t i=0;i<3;i++){ c[i*2]=(uint8_t)sx[i]; c[i*2+1]=(uint8_t)(sx[i]>>8); c[6+i*2]=(uint8_t)sy[i]; c[7+i*2]=(uint8_t)(sy[i]>>8); }
-  c[12]=(uint8_t)depth; c[13]=(uint8_t)(depth>>8); c[14]=color&15; c[15]=flags&0x62;
+  c[12]=(uint8_t)depth; c[13]=(uint8_t)(depth>>8); c[14]=color&15; c[15]=flags&0xe2;
   count++; r[0]=(uint8_t)count; r[1]=(uint8_t)(count>>8);
 }
 /* Rust: div_i32 truncates toward zero; here numerator and denominator are positive. */

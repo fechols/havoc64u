@@ -2,7 +2,7 @@ mod host;
 use havoc::{
     assets::*,
     game::{Game, InputSample, FIRE, TRANSITION_TICKS},
-    hud, hud_sprites,
+    hud, hud_sprites, reticle,
     render::{self, Renderer},
     space_dust::SpaceDustFrame,
 };
@@ -13,12 +13,16 @@ fn frame(
     bank: &AssetBank<'_>,
     segment: &Segment<'_>,
     number: u16,
-) -> (Vec<u8>, u16, u16) {
+) -> (Vec<u8>, u16, u16, Option<(i16, i16)>) {
     game.prepare_damage_feedback_frame();
     let mut r = Renderer::new();
     r.begin(game.sky_color());
     let mut shadows = havoc::shadow::ShadowFrame::new();
     game.render_with_shadows(&mut r, &mut shadows, bank, segment);
+    let aim = game.reticle_position();
+    let mut probe = render::PlayerPixelProbe::new([aim, None, None]);
+    r.probe_player_pixels(&mut probe);
+    let aim = aim.filter(|_| !probe.covered(0));
     let status = game.hud();
     let mut dust = SpaceDustFrame::EMPTY;
     let ambient = dust.prepare(status.section, status.mode, game.travel_ticks());
@@ -48,7 +52,7 @@ fn frame(
     }
     // Byte 10,000 is the VIC background ($D021): the frame's clear colour.
     output[10_000] = r.clear_color();
-    (output, r.triangle_count, r.dropped)
+    (output, r.triangle_count, r.dropped, aim)
 }
 
 /// Host snapshots and exact SID writes for the linked 6502 effects player.
@@ -310,14 +314,27 @@ fn ppm(frame: &[u8]) -> Vec<u8> {
 struct SpriteCapture {
     registers: [u8; 47],
     images: [[u8; 64]; 8],
+    instances: Vec<SpriteInstance>,
+}
+
+struct SpriteInstance {
+    sprite: usize,
+    enabled: bool,
+    x: u16,
+    y: u8,
+    pointer: u8,
+    image: [u8; 64],
+    color: u8,
+    multicolor: bool,
 }
 
 impl SpriteCapture {
-    fn new(game: &Game, frame: u16) -> Self {
+    fn new(game: &Game, frame: u16, aim: Option<(i16, i16)>) -> Self {
         let display = hud_sprites::DisplayState::from_hud(&game.hud(), frame, None);
         let mut capture = Self {
             registers: [0; 47],
             images: [[0; 64]; 8],
+            instances: Vec::with_capacity(9),
         };
         capture.registers[0x11] = 0x3b;
         capture.registers[0x16] = 0x18;
@@ -338,8 +355,24 @@ impl SpriteCapture {
                 capture.registers[0x10] |= ((vic_x >> 8) as u8) << sprite;
                 capture.registers[0x27 + sprite] = display.accent(corner);
                 capture.images[sprite].copy_from_slice(&images[half * 64..half * 64 + 64]);
+                capture.instances.push(SpriteInstance {
+                    sprite,
+                    enabled: display.enabled_mask() & (1 << sprite) != 0,
+                    x: vic_x,
+                    y: 50 + y as u8,
+                    pointer: 0x30 + sprite as u8,
+                    image: capture.images[sprite],
+                    color: display.accent(corner),
+                    multicolor: true,
+                });
             }
         }
+        let position = aim.map(reticle::vic_position);
+        let (x, y) = position.unwrap_or((0, 0));
+        capture.instances.push(SpriteInstance {
+            sprite: 0, enabled: position.is_some(), x, y, pointer: 0xff,
+            image: reticle::IMAGE, color: reticle::COLOR, multicolor: false,
+        });
         capture
     }
 
@@ -355,7 +388,13 @@ impl SpriteCapture {
             })
             .collect::<Vec<_>>()
             .join(",");
-        format!("{{\"format\":\"vic-sprites-v1\",\"bank_base\":32768,\"screen_base\":32768,\"origin\":[24,50],\"registers\":{:?},\"pointers\":[48,49,50,51,52,53,54,55],\"images\":[{}]}}\n", self.registers, images)
+        let instances = self.instances.iter().map(|instance| {
+            let image = instance.image.iter().map(|b| format!("{b:02x}")).collect::<String>();
+            format!("{{\"sprite\":{},\"enabled\":{},\"x\":{},\"y\":{},\"pointer\":{},\"image\":\"{}\",\"color\":{},\"multicolor\":{},\"x_expand\":false,\"y_expand\":false,\"priority\":false}}",
+                    instance.sprite, instance.enabled, instance.x, instance.y, instance.pointer,
+                    image, instance.color, instance.multicolor)
+        }).collect::<Vec<_>>().join(",");
+        format!("{{\"format\":\"vic-sprites-v2\",\"bank_base\":32768,\"screen_base\":32768,\"origin\":[24,50],\"registers\":{:?},\"pointers\":[48,49,50,51,52,53,54,55],\"images\":[{}],\"instances\":[{}]}}\n", self.registers, images, instances)
     }
 
     fn ppm(&self, frame: &[u8]) -> Vec<u8> {
@@ -366,26 +405,28 @@ impl SpriteCapture {
             for px in 0..640usize {
                 let x = px / 2;
                 // Lower numbered sprites win when nontransparent pixels overlap.
-                for sprite in 0..8usize {
-                    if self.registers[0x15] & (1 << sprite) == 0 {
+                for instance in &self.instances {
+                    if !instance.enabled {
                         continue;
                     }
-                    let sx = self.registers[sprite * 2] as i16
-                        + (((self.registers[0x10] >> sprite) & 1) as i16) * 256
-                        - 24;
-                    let sy = self.registers[sprite * 2 + 1] as i16 - 50;
+                    let sx = instance.x as i16 - 24;
+                    let sy = instance.y as i16 - 50;
                     let dx = x as i16 - sx;
                     let dy = y as i16 - sy;
                     if !(0..24).contains(&dx) || !(0..21).contains(&dy) {
                         continue;
                     }
-                    let byte = self.images[sprite][dy as usize * 3 + dx as usize / 8];
-                    let code = (byte >> (6 - (dx as usize / 2 % 4) * 2)) & 3;
-                    let color = match code {
-                        0 => continue,
-                        1 => self.registers[0x25],
-                        2 => self.registers[0x27 + sprite],
-                        _ => self.registers[0x26],
+                    let byte = instance.image[dy as usize * 3 + dx as usize / 8];
+                    let color = if instance.multicolor {
+                        match (byte >> (6 - (dx as usize / 2 % 4) * 2)) & 3 {
+                            0 => continue,
+                            1 => self.registers[0x25],
+                            2 => instance.color,
+                            _ => self.registers[0x26],
+                        }
+                    } else {
+                        if byte & (0x80 >> (dx as usize % 8)) == 0 { continue; }
+                        instance.color
                     } & 15;
                     let at = header + (py * 640 + px) * 3;
                     output[at..at + 3].copy_from_slice(&render::PALETTE_RGB[color as usize]);
@@ -452,11 +493,11 @@ fn snapshot(source: Snapshot, out: &Path) -> Result<(), Box<dyn std::error::Erro
     let data = host::segment_bank(game.segment_index());
     let segment = Segment::new(&data).unwrap();
     let bank = AssetBank::new(&models[game.segment_index() as usize]).unwrap();
-    let (bytes, triangles, dropped) = frame(&mut game, &bank, &segment, hud_frame);
+    let (bytes, triangles, dropped, aim) = frame(&mut game, &bank, &segment, hud_frame);
     if let Some(p) = out.parent() {
         fs::create_dir_all(p)?;
     }
-    let sprites = SpriteCapture::new(&game, hud_frame);
+    let sprites = SpriteCapture::new(&game, hud_frame, aim);
     fs::write(out.with_extension("ppm"), sprites.ppm(&bytes))?;
     fs::write(out.with_extension("bitmap.ppm"), ppm(&bytes))?;
     fs::write(out.with_extension("sprites.json"), sprites.json())?;

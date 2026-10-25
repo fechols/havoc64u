@@ -1221,6 +1221,7 @@ impl Game {
     /// the barrel roll adds a sideways push while it spins, and the hull banks
     /// and pitches with the manoeuvre. Resident: called from the SIM image.
     #[inline(never)]
+    #[cfg_attr(target_arch = "mos", link_section = ".phase.sim_extra")]
     fn move_player(&mut self) {
         let push = if self.roll_ticks > 0 {
             self.roll_direction
@@ -2008,8 +2009,10 @@ impl Game {
         self.controls.released_at = self.controls.now;
         self.controls.cached_charge = 0;
     }
-    // Resident leaf: keep the full encounter profiles within the SIM window.
+    // Both callers run in SIM; use its shared helper image to leave resident
+    // space for the camera transform and raster sprite interrupt.
     #[inline(never)]
+    #[cfg_attr(target_arch = "mos", link_section = ".phase.sim_extra")]
     fn add_pickup(&mut self, pos: Vec3, kind: u8) {
         // Admit every third bomb from either scripted spawns or enemy drops.
         if kind == 2 {
@@ -2315,6 +2318,34 @@ impl Game {
         crate::victory::emit(&mut budget, bank, self.menu_ticks, self.ticks);
         budget.finish_group(checkpoint);
     }
+    /// Screen position of the aiming dot at a fixed distance along the current
+    /// straight laser path. Hull attitude and homing targets do not steer it.
+    /// The level-name splash temporarily hides it until the banner clears.
+    /// Native callers run this in SHADOW while the shared projector is loaded.
+    #[inline(never)]
+    #[cfg_attr(target_arch = "mos", link_section = ".phase.shadow.final")]
+    pub fn reticle_position(&self) -> Option<(i16, i16)> {
+        if !matches!(self.mode, Mode::Playing | Mode::Transition)
+            || crate::hud::sector_banner_active(self.mode, self.stage_ticks * 8)
+        {
+            return None;
+        }
+        let point = Vec3 {
+            x: self.player.x,
+            y: self.player.y - scene_camera_y(self.mode, self.player.y, self.ticks),
+            z: crate::reticle::DISTANCE,
+        };
+        #[cfg(target_arch = "mos")]
+        {
+            extern "C" { fn fast_project(point: *const Vec3, out: *mut [i16; 2]); }
+            let mut out = [0; 2];
+            // One aim sample never benefits from the geometry vertex cache.
+            unsafe { fast_project(&point, &mut out) };
+            Some((out[0], out[1]))
+        }
+        #[cfg(not(target_arch = "mos"))]
+        Some(crate::projection::project(point))
+    }
     /// Draw prepared foreground state without advancing presentation timers.
     /// Call `prepare_damage_feedback_frame` once before drawing a new frame.
     #[inline(never)]
@@ -2349,7 +2380,7 @@ impl Game {
         ) {
             let checkpoint = sink.begin_group();
             let appearance = self.player_appearance();
-            sink.extra_flags = TERRAIN_CLEAR_GEOMETRY;
+            sink.extra_flags = TERRAIN_CLEAR_GEOMETRY | crate::PLAYER_GEOMETRY;
             sink.color_override = (appearance >> 8) as u8;
             emit_mesh(
                 sink,
@@ -2849,11 +2880,10 @@ impl<S: GeometrySink> GeometrySink for SceneBudget<'_, S> {
         self.count += self.sink.checkpoint().unwrap().triangle_count - before.triangle_count;
     }
 }
-// Only foreground GEOMETRY uses this transform. Keep one outlined copy in its
-// overlay so the expanded campaign leaves resident interrupt code room. Mesh
-// translation already saturates; the bounded camera cannot overflow i16.
+// One resident copy keeps foreground GEOMETRY below its projection-helper
+// boundary. SIM's pickup helper uses overlay space instead. Mesh translation
+// already saturates; the bounded camera cannot overflow i16.
 #[inline(never)]
-#[cfg_attr(target_arch = "mos", link_section = ".phase.geometry")]
 fn camera_point(p: Vec3, camera_y: i16) -> Vec3 {
     Vec3 {
         y: p.y - camera_y,

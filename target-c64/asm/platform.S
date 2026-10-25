@@ -106,6 +106,31 @@ irq_entry:
     lda #$35
     sta $01
     cld
+    ; Classify the scheduled raster event before touching compiler scratch.
+    ; $D012 reads the current beam, not the programmed comparison, so retain
+    ; the schedule explicitly. Never read/ack CIA ICR on the middle fast path:
+    ; simultaneous audio stays pending and enters the ordinary IRQ after RTI.
+    lda #0
+    sta IRQ_FRAME_EVENT
+    lda $d019
+    and #1
+    beq .Lirq_full
+    sta $d019
+    lda SPRITE_PHASE
+    bne .Lirq_frame
+    lda #1
+    sta SPRITE_PHASE
+    lda #251
+    sta $d012
+    jsr reticle_arm
+    jmp .Lirq_return
+.Lirq_frame:
+    lda #0
+    sta SPRITE_PHASE
+    lda #92
+    sta $d012
+    inc IRQ_FRAME_EVENT
+.Lirq_full:
     ldx #0
 .Lirq_save:
     lda __rc0,x
@@ -121,6 +146,7 @@ irq_entry:
     sta __rc0
     lda #>__irq_stack
     sta __rc1
+    lda IRQ_FRAME_EVENT
     jsr irq_body
     ldx #31
 .Lirq_restore:
@@ -128,6 +154,7 @@ irq_entry:
     sta __rc0,x
     dex
     bpl .Lirq_restore
+.Lirq_return:
     pla
     sta $01
     pla

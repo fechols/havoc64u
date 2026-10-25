@@ -2,6 +2,104 @@ use super::*;
 use std::vec::Vec;
 
 #[test]
+fn reticle_follows_the_laser_path_and_chase_camera_without_mutating_game() {
+    let mut game = Game::new();
+    game.mode = Mode::Playing;
+    game.stage_ticks = 100;
+    for x in [-100, 0, 100] {
+        for y in -65..=65 {
+            game.player.x = x;
+            game.player.y = y;
+            let expected = crate::projection::project(Vec3 {
+                x,
+                y: y - (40 + y / 4),
+                z: 512,
+            });
+            let before = game.hud();
+            let center = game.reticle_position().unwrap();
+            assert_eq!(center, expected);
+            assert_eq!(
+                game.hud(),
+                before,
+                "presentation must not advance simulation"
+            );
+            assert!((64..=95).contains(&center.0));
+            assert!((97..=123).contains(&center.1));
+            let (_, vic_y) = crate::reticle::vic_position(center);
+            // Include every bomb/hit fine-scroll Y offset (-3..+4). The
+            // reticle's entire DMA height remains between both HUD rows.
+            assert!(vic_y - 3 > 62 + 4 + 20);
+            assert!(vic_y + 4 + 20 < 225 - 3);
+        }
+    }
+    game.player = Vec3 {
+        x: 37,
+        y: -21,
+        z: PLAYER_Z,
+    };
+    game.fire_player(0);
+    let shot = game.shots.iter().find(|shot| shot.kind == 1).unwrap();
+    assert_eq!(
+        game.reticle_position(),
+        Some(crate::projection::project(Vec3 {
+            x: shot.pos.x,
+            y: shot.pos.y - scene_camera_y(game.mode, game.player.y, game.ticks),
+            z: crate::reticle::DISTANCE,
+        }))
+    );
+    let center = game.reticle_position();
+    game.flight.bank = flight::BANK_MAX;
+    game.flight.pitch = -11 * 256;
+    game.roll_ticks = 12;
+    game.missile_targets.fill(0xff);
+    assert_eq!(game.reticle_position(), center);
+}
+
+#[test]
+fn reticle_is_visible_only_in_modes_with_live_player_controls() {
+    let mut game = Game::new();
+    game.stage_ticks = 100;
+    for mode in [
+        Mode::Title,
+        Mode::Playing,
+        Mode::Respawning,
+        Mode::Victory,
+        Mode::GameOver,
+        Mode::Attract,
+        Mode::Transition,
+    ] {
+        game.mode = mode;
+        assert_eq!(
+            game.reticle_position().is_some(),
+            matches!(mode, Mode::Playing | Mode::Transition)
+        );
+    }
+}
+
+#[test]
+fn reticle_returns_exactly_when_the_level_name_splash_clears() {
+    let mut game = Game::new();
+    game.mode = Mode::Playing;
+    let mut hud = game.hud();
+    hud.distance = 799;
+    assert!(crate::hud::sector_banner_visible(&hud));
+    hud.distance = 800;
+    assert!(!crate::hud::sector_banner_visible(&hud));
+    for ticks in [0, 99, 100, 101] {
+        game.stage_ticks = ticks;
+        assert_eq!(game.reticle_position().is_some(), ticks >= 100);
+        assert_eq!(
+            game.reticle_position().is_none(),
+            crate::hud::sector_banner_visible(&game.hud())
+        );
+    }
+    game.mode = Mode::Transition;
+    game.stage_ticks = 0;
+    assert!(!crate::hud::sector_banner_visible(&game.hud()));
+    assert!(game.reticle_position().is_some());
+}
+
+#[test]
 fn orbital_debris_is_bomb_destructible_but_cannot_farm_enemy_rewards() {
     for stage in 12..18 {
         let mut game = Game::preview_at_for_test(stage);
@@ -5272,4 +5370,118 @@ fn bomb_destruction_keeps_each_screen_side_while_bomb_stays_global() {
     assert_eq!(g.pop_audio(), Some(AudioEvent { effect: Effect::EnemyExplosion, pan: -100 }));
     assert_eq!(g.pop_audio(), Some(AudioEvent { effect: Effect::EnemyExplosion, pan: 100 }));
     assert!(g.pop_audio().is_none());
+}
+
+fn player_raster_fixture(
+    game: &Game,
+    bank: &AssetBank<'_>,
+) -> (crate::render::Renderer, [u8; 160 * 200]) {
+    struct PlayerOnly(crate::render::Renderer);
+    impl GeometrySink for PlayerOnly {
+        fn triangle(&mut self, a: Vec3, b: Vec3, c: Vec3, _: u8, flags: u8) {
+            if flags & crate::PLAYER_GEOMETRY != 0 {
+                self.0.triangle(a, b, c, 1, flags);
+            }
+        }
+    }
+    let mut scene = crate::render::Renderer::new();
+    game.render_foreground(&mut scene, bank, 174);
+    scene.finish();
+    let mut isolated = PlayerOnly(crate::render::Renderer::new());
+    game.render_foreground(&mut isolated, bank, 174);
+    isolated.0.finish();
+    let mut pixels = [0; 160 * 200];
+    for band in 0..25 {
+        let mut row = [0; 1280];
+        isolated.0.render_band(band, &mut row);
+        pixels[band as usize * 1280..(band as usize + 1) * 1280].copy_from_slice(&row);
+    }
+    (scene, pixels)
+}
+
+#[test]
+fn reticle_probe_matches_player_raster_through_flight_attitudes() {
+    let bank = test_bank(0);
+    let mut game = Game::preview_at_for_test(0);
+    game.stage_ticks = 200;
+    let mut hits = 0;
+    let mut misses = 0;
+    for y in [-65, 0, 65] {
+        for bank_angle in [-flight::BANK_MAX, 0, flight::BANK_MAX] {
+            for roll in [0, 7, 15, 23] {
+                game.player.y = y;
+                game.player.x = if roll == 7 { -100 } else if roll == 23 { 100 } else { 0 };
+                game.flight.bank = bank_angle;
+                game.flight.pitch = if y < 0 { -11 * 256 } else { 11 * 256 };
+                game.roll_ticks = roll;
+                for boosted in [false, true] {
+                    game.controls.flags &= !BOOST_ACTIVE;
+                    if boosted {
+                        game.controls.flags |= BOOST_ACTIVE;
+                    }
+                    game.boost_cycle = if boosted { BOOST_TICKS + BOOST_COOLDOWN_TICKS } else { 0 };
+                    for phase in [0, 4] {
+                        game.ticks = phase;
+                        let (scene, pixels) = player_raster_fixture(&game, &bank);
+                        // The real aim and a grid through the hull and both exhausts.
+                        let aim = game.reticle_position();
+                        for py in (0..200).step_by(4) {
+                            for px in (0..160).step_by(4) {
+                                let points = [aim, Some((px, py)), Some((px + 1, py + 1))];
+                                let mut probe = crate::render::PlayerPixelProbe::new(points);
+                                scene.probe_player_pixels(&mut probe);
+                                for (i, point) in points.iter().enumerate() {
+                                    let (x, row) = point.unwrap();
+                                    let expected = pixels[row as usize * 160 + x as usize] & 15 != 0;
+                                    assert_eq!(
+                                        probe.covered(i as u8), expected,
+                                        "pose {y}/{bank_angle}/{roll}, boost {boosted}, phase {phase}, point {point:?}",
+                                    );
+                                    if expected { hits += 1; } else { misses += 1; }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    assert!(hits > 0 && misses > 0);
+}
+
+#[test]
+fn reticle_probe_covers_pixels_added_by_afterburner_exhaust() {
+    let bank = test_bank(0);
+    let mut game = Game::preview_at_for_test(0);
+    game.stage_ticks = 200;
+    for phase in [0, 4] {
+        game.ticks = phase;
+        game.controls.flags &= !BOOST_ACTIVE;
+        game.boost_cycle = 0;
+        let (normal_scene, normal_pixels) = player_raster_fixture(&game, &bank);
+        game.controls.flags |= BOOST_ACTIVE;
+        game.boost_cycle = BOOST_TICKS + BOOST_COOLDOWN_TICKS;
+        let (boosted_scene, boosted_pixels) = player_raster_fixture(&game, &bank);
+
+        // Only the boost state changed, so this raster difference isolates the
+        // extended plume outside both the normal exhaust and the unchanged hull.
+        let added: Vec<_> = normal_pixels.iter().zip(&boosted_pixels).enumerate()
+            .filter_map(|(index, (&normal, &boosted))| {
+                (normal & 15 == 0 && boosted & 15 != 0)
+                    .then_some(((index % 160) as i16, (index / 160) as i16))
+            })
+            .collect();
+        assert!(!added.is_empty(), "phase {phase} must extend the visible plume");
+        for points in added.chunks(3) {
+            let queries = core::array::from_fn(|slot| points.get(slot).copied());
+            let mut normal = crate::render::PlayerPixelProbe::new(queries);
+            let mut boosted = crate::render::PlayerPixelProbe::new(queries);
+            normal_scene.probe_player_pixels(&mut normal);
+            boosted_scene.probe_player_pixels(&mut boosted);
+            for slot in 0..points.len() {
+                assert!(!normal.covered(slot as u8));
+                assert!(boosted.covered(slot as u8), "phase {phase}, point {:?}", points[slot]);
+            }
+        }
+    }
 }

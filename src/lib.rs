@@ -18,6 +18,7 @@ pub mod math;
 pub mod presentation;
 pub mod projection;
 pub mod render;
+pub mod reticle;
 pub mod scenery;
 pub mod shadow;
 pub mod space_dust;
@@ -36,6 +37,8 @@ pub struct Vec3 {
 // against exterior terrain and ground shadows without changing foreground order.
 pub(crate) const TERRAIN_CLEAR_GEOMETRY: u8 = 0x20;
 pub(crate) const EXTERIOR_TERRAIN: u8 = 0x40;
+// Preparation-only identity: only the player's hull and attached exhaust.
+pub(crate) const PLAYER_GEOMETRY: u8 = 0x80;
 pub trait GeometrySink {
     fn triangle(&mut self, a: Vec3, b: Vec3, c: Vec3, color: u8, flags: u8);
     /// Avoid building decorative silhouettes when this scene has no shadow plane.

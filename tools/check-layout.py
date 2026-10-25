@@ -34,6 +34,8 @@ assert (symbols['__segment0_start'], symbols['__segment0_end']) == (0x600, 0x800
 assert (symbols['__segment1_start'], symbols['__segment1_end']) == (0x9700, 0x9900), 'incorrect second mission buffer allocation'
 assert symbols['__resident_end'] <= 0x3000, 'resident code overlaps the overlay window at $3000'
 assert (symbols['__hud_sprites_start'], symbols['__hud_sprites_end']) == (0x8c00, 0x8e00), 'incorrect HUD sprite allocation'
+assert (symbols['__reticle_sprite_start'], symbols['__reticle_sprite_end']) == (0xbfc0, 0xc000), 'incorrect resident reticle allocation'
+assert symbols['__reticle_sprite_start'] % 64 == 0 and symbols['__reticle_sprite_end'] - symbols['__reticle_sprite_start'] == 64, 'reticle must occupy one aligned sprite block'
 assert symbols['__startup_checks_start']==0x8e00, 'startup checks must start after HUD sprites at $8E00'
 assert 0x8e00<symbols['__startup_checks_end']<=0x9300, 'startup checks exceed shared workspace'
 assert symbols['__phase_sim_aux_start']==0x8e00, 'SIM helpers must start after HUD sprites at $8E00'
@@ -302,6 +304,7 @@ assert not any(section.name == '.music_page' or section.name.startswith('.music.
 print('Four dedicated SIDs: twelve oscillators, four filters; effects stateCD00-CDFF; patches7200-74FF')
 print('Models8400-8BFF; HUD sprites8C00-8DFF; overflow-cell pixel band8E00-92FF; GEOMETRY kernel scratch9300-93FF (PIXELS cell scratch9300-9328); cell codes9400-953F, cover/HUD9540-967F, palettes9680-96F7; segments0600-07FF and9700-98FF')
 print('Overlay3000-71FF; permanent SFX patches7200-74FF; main stackC400-C7FF; IRQ stack7500-75FF')
+print('Resident reticle BFC0-BFFF: one immutable 64-byte sprite')
 print('PIXELS code3000-6F1F helpers6F20-71FF; sorted order7600-76FF; edge headsEF20-FF1F tailsE000-EBFF masksEC00-EF1F; commands stay in emission orderD000-DFFF')
 print(f'PIXELS prefix {symbols["__phase_pixels_prefix_size"]} bytes; helpers {symbols["__phase_pixels_aux_size"]} bytes; checksummed composition {symbols["__phase_pixels_size"]} bytes; runtime omits the raster-data gap')
 print(f'GEOMETRY/SHADOW code3000-6F1F; shared projection6F20-{symbols["__phase_render_aux_start"]+symbols["__phase_render_aux_size"]-1:04X}; projection cache8E00-907F and depth sorting8E00-91FF share PIXELS band; sorted order7600-76FF')

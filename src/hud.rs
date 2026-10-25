@@ -6,11 +6,17 @@ use crate::game::{Hud, Mode};
 use crate::render::{draw_bar, draw_text, draw_text_scaled, Canvas, HUD_INK};
 use crate::victory::REVEAL_TICKS;
 
-/// The sector panel occupies bands 3-6 for the first 800 distance units.
+/// Shared with the reticle so its visibility follows the level-name splash.
+#[inline(always)]
+pub(crate) const fn sector_banner_active(mode: Mode, distance: u16) -> bool {
+    matches!(mode, Mode::Playing) && distance < 800
+}
+
+/// The sector panel occupies bands 3-6 for the first 800 playing distance units.
 #[inline(never)]
 #[cfg_attr(target_arch = "mos", link_section = ".phase.pixels")]
 pub(crate) fn sector_banner_visible(hud: &Hud) -> bool {
-    hud.distance < 800
+    sector_banner_active(hud.mode, hud.distance)
 }
 
 /// The pause caption: double-height text across the middle of the picture.

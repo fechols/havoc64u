@@ -49,7 +49,7 @@ def native_rgb(path):
         kind, payload = data[offset + 4:offset + 8], data[offset + 8:offset + 8 + length]
         if kind == b"IHDR":
             width, height, depth, color, compression, filtering, interlace = struct.unpack(">IIBBBBB", payload)
-            if (width, height, depth, color, compression, filtering, interlace) != (160, 200, 8, 2, 0, 0, 0):
+            if width not in (160, 320) or (height, depth, color, compression, filtering, interlace) != (200, 8, 2, 0, 0, 0):
                 raise ValueError(f"Unexpected native PNG format: {path}")
             dimensions = (width, height)
         elif kind == b"IDAT":
@@ -58,7 +58,7 @@ def native_rgb(path):
     if dimensions is None:
         raise ValueError(f"Missing PNG dimensions: {path}")
     rows = zlib.decompress(compressed)
-    stride = 160 * 3 + 1
+    stride = dimensions[0] * 3 + 1
     if len(rows) != stride * 200 or any(rows[y * stride] for y in range(200)):
         raise ValueError(f"Expected unfiltered native RGB rows: {path}")
     return b"".join(rows[y * stride + 1:(y + 1) * stride] for y in range(200))
@@ -190,6 +190,9 @@ def main():
         if not scene["passed"]:
             raise ValueError(f"Unverified scene: {scene_path}")
         frames = scene["frames"]
+        native_width = scene.get("native_width", 160)
+        if native_width not in (160, 320):
+            raise ValueError(f"Unsupported capture width: {native_width}")
         times = [frame["seconds"] for frame in frames]
         start, length = scene["trim_start_seconds"], scene["duration_seconds"]
         if not times or times != sorted(times) or times[0] > start or times[-1] < start + length:
@@ -208,7 +211,7 @@ def main():
         # they do not move, stretch, or replace any scene's soundtrack.
         fade_out = .25 if entry["name"] == "title-outro" else .025
         command = [ffmpeg, "-hide_banner", "-loglevel", "warning", "-y",
-                   "-f", "rawvideo", "-pixel_format", "rgb24", "-video_size", "160x200",
+                   "-f", "rawvideo", "-pixel_format", "rgb24", "-video_size", f"{native_width}x200",
                    "-framerate", str(fps), "-i", "pipe:0", "-ss", str(start),
                    "-i", external_path(audio_path, ffmpeg), "-map", "0:v:0", "-map", "1:a:0",
                    "-vf", "scale=640:480:flags=neighbor,setsar=1",
@@ -223,6 +226,8 @@ def main():
                     index = bisect.bisect_right(times, start + number / fps) - 1
                     if index != previous:
                         pixels = native_rgb(scene_path.parent / frames[index]["path"])
+                        if len(pixels) != native_width * 200 * 3:
+                            raise ValueError("PNG width differs from its scene manifest")
                         previous = index
                     process.stdin.write(pixels)
                 process.stdin.close()

@@ -2450,3 +2450,48 @@ requested. Reports record `sprite_hud_setup: matching-fixture-warmup-v1` and
 per-frame HUD commit/image-write deltas, which must both remain zero. Cold
 baseline reports with the former inherited HUD state are rejected and must be
 regenerated with the current driver.
+
+## Single-pixel reticle clipping (2026-10-24)
+
+`tools/test-reticle-probe.py` executes the linked production probe in the native
+CPU harness and compares 3,964 cases with an independent raster-span oracle.
+The cases cover edge and middle rows, clipped triangles, black facets,
+duplicate positions, and already-covered queries. Host tests additionally
+compare complete player silhouettes across 36 altitude, bank and roll poses,
+with boost off/on and both exhaust phases (144 fixtures). A separate raster
+difference check isolates pixels covered only by the longer afterburner plume.
+
+Ten player fixtures from the combined afterburner build's NTSC smoke run contain
+eight to ten hull/exhaust triangles each, including both boost plume phases.
+Summed probe calls for one aim position cost 8,080–14,889 CPU cycles, or
+**0.126–0.233 ms at 64 MHz**. Testing the new aim and both prior sprite positions
+costs 9,776–27,899 cycles (**0.153–0.436 ms**) in these samples.
+Duplicate positions share an evaluation, and covered points skip later edge
+lookups. These are CPU-model query costs, including calls and early exits;
+they exclude existing edge preparation, aim projection, dispatch, interrupts
+and bus stalls. They do not measure the full frame-time change or physical
+Ultimate timing.
+
+Reproduce after building the default package and collecting matching smoke
+fixtures with `tools/vice-smoke.py --hud-checks`:
+
+```sh
+python3 tools/test-reticle-probe.py \
+  --scene-fixtures target/reticle-merge-validation/ntsc/reticle-clip-fixtures.json
+```
+
+The report is `target/reticle-probe-test/report.json`. PAL and NTSC smoke checks
+verify visible and covered aims, retirement of distinct prior dots before the
+first bitmap publication, pause and scene visibility, and zero missed sprite
+handoffs. The merged-build fixtures also independently retire active and pending
+dots covered only by the boosted plume. Native HUD checks cover 1,192 mux cases
+and ten IRQ fixtures with the lowered HUD at Y=62.
+The default, both optional span renderers, and the benchmark build pass the
+memory-layout, overlay-ownership and IRQ-frame audits.
+
+Merged-build reports and test logs are under `target/reticle-merge-validation/`.
+All 513 host tests passed (two existing tests remain ignored), plus 162 layout
+and 89 overlay negative fixtures. Both video standards passed physical controls,
+boost, pause, weapon, multi-phase boss and HUD checks. The vertical-control test
+waits for neutral flight to settle before reversing direction, so its short
+pulse measures the requested movement independently of residual momentum.

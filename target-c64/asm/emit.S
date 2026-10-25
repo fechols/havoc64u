@@ -13,7 +13,7 @@
 ;   256 commands -> dropped += 1 (saturating) -> nothing;
 ;   depth = (z0 + z1 + z2) / 3 (exact, by the 85 h + (h + l) / 3 identity);
 ;   command = x[3], y[3], depth, color & 15,
-;             flags & (STATIC_SKY | TERRAIN_CLEAR | EXTERIOR = $62);
+;             flags & (STATIC_SKY | TERRAIN_CLEAR | EXTERIOR | PLAYER = $E2);
 ;   triangle_count += 1.
 ; Everything after the projection is the shared .Let_emit tail, which the
 ; mesh kernel below enters with projected corners of its own.
@@ -420,7 +420,7 @@ fast_emit_triangle:
     sta (__rc4),y
     iny
     lda ET_FLAGS
-    and #$62
+    and #$e2
     sta (__rc4),y
     inc RENDERER
     bne .Let_counted

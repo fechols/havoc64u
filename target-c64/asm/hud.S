@@ -76,6 +76,13 @@ hud_publish_commit:
     cpy #128
     bne .Lhud_copy
     ldx __rc6
+    bne .Lhud_first_color
+    ; Sprite zero belongs to the reticle during the middle of the frame.
+    ; Never overwrite its live foreground color while publishing score pixels.
+    lda $8e80
+    sta HUD_SPRITE0_COLOR
+    jmp .Lhud_second_color
+.Lhud_first_color:
     lda $d027,x
     and #15
     cmp $8e80
@@ -125,6 +132,30 @@ hud_publish_done:
     rts
 .size publish_hud_corner, .-publish_hud_corner
 
+; Cancel before painting a caption, including after this refresh's line-92
+; arm. This is the only foreground sprite-register update: phase and enable
+; are read with interrupts masked, so it cannot hide the top HUD occurrence.
+.section .phase.pixels.reticle_hide,"ax",@progbits
+.globl reticle_hide
+.type reticle_hide,@function
+reticle_hide:
+    php
+    sei
+    lda #0
+    sta RETICLE_PENDING_VISIBLE
+    sta RETICLE_ACTIVE_VISIBLE
+    lda SPRITE_PHASE
+    beq .Lreticle_hide_done
+    lda $d015
+    and #$fe
+    sta $d015
+.Lreticle_hide_done:
+.globl reticle_hide_done
+reticle_hide_done:
+    plp
+    rts
+.size reticle_hide, .-reticle_hide
+
 ; Resident: the line-251 IRQ supplies the bitmap's packed scroll sample.
 ; Normal bitmap scroll is (0,3). Subtract its displacement from each sprite's
 ; fixed base for equal, opposite cockpit motion without accumulated drift.
@@ -172,3 +203,114 @@ hud_apply_scroll:
     .byte 30,54,34,58,30,54,34,58
 .Lhud_base_y:
     .byte 62,62,62,62,225,225,225,225
+
+; Called only by the line-92 fast IRQ, with A/X/Y and $01 already saved.
+; No imaginary register or compiler static scratch is touched. The upper HUD
+; has finished DMA by line 92 even at maximum shake. Arm only with at least
+; eight lines left before the reticle's Y comparison; an unexpectedly late
+; interrupt hides this occurrence instead of risking a partial/wrong image.
+.section .text.reticle_arm,"ax",@progbits
+.globl reticle_arm
+.type reticle_arm,@function
+reticle_arm:
+    lda $d015
+    and #$fe
+    sta $d015
+    lda RETICLE_ACTIVE_VISIBLE
+    beq .Lreticle_arm_done
+    lda HUD_SCROLL
+    lsr
+    lsr
+    lsr
+    sec
+    sbc #3
+    clc
+    adc RETICLE_ACTIVE_Y
+    sta $d001
+    ; High/low/high sampling conservatively rejects ninth-bit rollover.
+    lda $d011
+    bmi .Lreticle_late
+    ldy $d012
+    lda $d011
+    bmi .Lreticle_late
+    cpy #92
+    bcc .Lreticle_late
+    tya
+    clc
+    adc #8
+    bcs .Lreticle_late
+    cmp $d001
+    beq .Lreticle_arm_safe
+    bcs .Lreticle_late
+.Lreticle_arm_safe:
+    lda HUD_SCROLL
+    and #7
+    clc
+    adc RETICLE_ACTIVE_X
+    sta $d000
+    lda RETICLE_ACTIVE_X+1
+    adc #0
+    and #1
+    tax
+    lda $d010
+    and #$fe
+    cpx #0
+    beq .Lreticle_high_x
+    ora #1
+.Lreticle_high_x:
+    sta $d010
+    lda #$ff ; linker asserts __reticle_sprite_start == $BFC0 in VIC bank 2
+    sta $83f8
+    lda $d01c
+    and #$fe
+    sta $d01c
+    lda #1
+    sta $d027
+    lda $d015
+    ora #1
+    sta $d015
+    bne .Lreticle_arm_done
+.Lreticle_late:
+    lda #0
+    sta RETICLE_ACTIVE_VISIBLE
+    inc RETICLE_MISSES
+    bne .Lreticle_arm_done
+    inc RETICLE_MISSES+1
+.Lreticle_arm_done:
+.globl reticle_arm_done
+reticle_arm_done:
+    rts
+.size reticle_arm, .-reticle_arm
+
+; The full line-251 IRQ has applied this frame's bitmap fine scroll and called
+; hud_apply_scroll to restore all positions. Restore the borrowed image/mode
+; and latch one completed render's aim. Foreground cannot interleave here.
+.section .text.reticle_restore,"ax",@progbits
+.globl reticle_restore
+.type reticle_restore,@function
+reticle_restore:
+    lda $d015
+    and #$fe
+    sta $d015
+    lda #$30
+    sta $83f8
+    lda $d01c
+    ora #1
+    sta $d01c
+    lda HUD_SPRITE0_COLOR
+    sta $d027
+    lda RETICLE_PENDING_X
+    sta RETICLE_ACTIVE_X
+    lda RETICLE_PENDING_X+1
+    sta RETICLE_ACTIVE_X+1
+    lda RETICLE_PENDING_Y
+    sta RETICLE_ACTIVE_Y
+    lda RETICLE_PENDING_VISIBLE
+    sta RETICLE_ACTIVE_VISIBLE
+    lda HUD_ENABLE_PENDING
+    sta HUD_ENABLE_ACTIVE
+    sta $d015
+.globl reticle_restore_done
+reticle_restore_done:
+    rts
+.size reticle_restore, .-reticle_restore

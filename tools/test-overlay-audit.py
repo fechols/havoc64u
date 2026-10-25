@@ -86,7 +86,10 @@ def main():
                            + struct.unpack_from("<i", elf.data, entry[0] + 8)[0]))
                       and callee.name == "havoc_c64::dma")
     pixels_io_on = next(entry for entry in entries if entry[1].name == ".phase.pixels"
-                        and entry[4].name == "io_on")
+                        and entry[4].name == "io_on"
+                        and (caller := elf.function_at(entry[1].index, entry[2]))
+                        and caller.name == "havoc_c64::draw_pixels"
+                        and entry[2] < pixels_dma[2])
     startup_name = next(symbol.name for symbol in elf.symbols
                         if checker["readable_name"](symbol.name) == checker["STARTUP_ENTRY"])
     phase_loader_name = next(symbol.name for symbol in elf.symbols

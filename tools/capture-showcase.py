@@ -8,7 +8,7 @@ No game, clock, health, or benchmark writes occur during recording. Bombs and
 endings are excluded because bitmap reconstruction omits raster scroll/border
 effects. This is emulator footage, not a physical-hardware recording.
 
-Outputs manifest.json and per-scene scene.json, 160x200 composited PNG frames,
+Outputs manifest.json and per-scene scene.json, 320x200 composited PNG frames,
 per-frame VIC sprite sidecars,
 640x480 aspect-correct screenshots, and 44.1 kHz stereo WAV. Paths in manifests
 are relative to the directory containing that manifest. Encoding is separate.
@@ -169,10 +169,10 @@ def validate_sfx_activity(audio, activity, expect_effects):
 
 def pixels(native, background, sprites=None):
     if sprites is not None:
-        # This recorder rejects shake. Neutral HUD coordinates and unexpanded
-        # multicolour pixels align to the bitmap's two-hardware-pixel grid.
+        # Preserve hardware-pixel resolution: the reticle uses single pixels,
+        # which disappear if the composite is sampled on the bitmap grid.
         composed = vice.composite_pixels(vice.decoded_pixels(native, background), sprites)
-        return [b"".join(bytes(vice.PALETTE[color]) for color in composed[y*320:(y+1)*320:2])
+        return [b"".join(bytes(vice.PALETTE[color]) for color in composed[y*320:(y+1)*320])
                 for y in range(200)]
     bitmap, screen, colors = native[:8000], native[8000:9000], native[9000:]
     rows = []
@@ -188,7 +188,8 @@ def pixels(native, background, sprites=None):
 
 
 def screenshot(path, rows):
-    wide = [b"".join(row[x:x+3] * 4 for x in range(0, 480, 3)) for row in rows]
+    scale = 640 // (len(rows[0]) // 3)
+    wide = [b"".join(row[x:x+3] * scale for x in range(0, len(row), 3)) for row in rows]
     vice.png(path, [wide[y * 200 // 480] for y in range(480)], 640, 480)
 
 
@@ -408,7 +409,7 @@ class Capture:
                            scope="Native emulator; independently seeded scene; physical joystick only after preparation",
                            included_in_video=not scene.get("gallery", False),
                            trim_start_seconds=PREROLL, duration_seconds=args.duration or scene["seconds"],
-                           native_width=160, native_height=200, display_width=640, display_height=480,
+                           native_width=320, native_height=200, display_width=640, display_height=480,
                            frames=[], screenshot="screenshot.png", setup_patches=[])
         if "pilot_target" in scene:
             self.report["pilot_target"] = scene["pilot_target"]
@@ -580,10 +581,10 @@ class Capture:
         native = b"".join(parts)
         if len(native) != 10000:
             raise RuntimeError("Incomplete native bitmap/screen/color data")
-        sprites = vice.sprite_state(self.mon)
+        sprites = vice.sprite_state(self.mon, self.syms)
         rows = pixels(native, background, sprites)
         path = self.frames_dir / f"{index:06d}.png"
-        vice.png(path, rows, 160, 200)
+        vice.png(path, rows, 320, 200)
         sprite_path = path.with_suffix(".sprites.json")
         sprite_path.write_text(json.dumps(sprites, indent=2) + "\n")
         elapsed = (counters["bus_cycles"] - self.report["audio_start_cycle"]) / self.hz

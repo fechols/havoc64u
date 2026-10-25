@@ -14,6 +14,7 @@ import json
 import os
 from pathlib import Path
 import re
+import runpy
 import signal
 import socket
 import struct
@@ -212,7 +213,7 @@ def decoded_pixels(native, background):
     return bytes(pixels)
 
 
-def sprite_state(mon):
+def sprite_state(mon, syms=None):
     """Capture the VIC's actual sprite registers, pointers and pointed-to RAM.
 
     This sidecar is independent of bitmap dumps: old 10,000/10,001-byte frame
@@ -226,8 +227,55 @@ def sprite_state(mon):
     pointers = list(mon.read(screen_base + 0x3f8, 8))
     images = [mon.read(bank_base + pointer * 64, 64).hex() for pointer in pointers]
     mon.command("bank cpu")
-    return dict(format="vic-sprites-v1", bank_base=bank_base, screen_base=screen_base,
-                origin=[24, 50], registers=registers, pointers=pointers, images=images)
+    state = dict(format="vic-sprites-v1", bank_base=bank_base, screen_base=screen_base,
+                 origin=[24, 50], registers=registers, pointers=pointers, images=images)
+    if syms and "RETICLE_ACTIVE_VISIBLE" in syms:
+        # Registers describe only the current multiplex phase. Reconstruct the
+        # logical appearances from the same latched state used by the IRQ,
+        # without running the emulator (benchmark capture must not add work).
+        mon.command("bank ram")
+        scroll = mon.integer(syms["HUD_SCROLL"], 1)
+        dx, dy = scroll & 7, (scroll >> 3) - 3
+        enabled = mon.integer(syms["HUD_ENABLE_ACTIVE"], 1)
+        hud_color = mon.integer(syms["HUD_SPRITE0_COLOR"], 1)
+        instances = []
+        for sprite in range(8):
+            x, y = ((3, 12), (133, 12), (3, 175), (133, 175))[sprite // 2]
+            instances.append(dict(sprite=sprite, enabled=bool(enabled & (1 << sprite)),
+                                  x=24 + x * 2 + (sprite % 2) * 24 - dx, y=50 + y - dy,
+                                  pointer=0x30 + sprite, image=mon.read(0x8c00 + sprite * 64, 64).hex(),
+                                  color=hud_color if sprite == 0 else registers[0x27 + sprite] & 15,
+                                  multicolor=True, x_expand=False, y_expand=False, priority=False))
+        instances.append(dict(sprite=0, enabled=bool(mon.integer(syms["RETICLE_ACTIVE_VISIBLE"], 1)),
+                              x=mon.integer(syms["RETICLE_ACTIVE_X"], 2) + dx,
+                              y=mon.integer(syms["RETICLE_ACTIVE_Y"], 1) + dy,
+                              pointer=0xff, image=mon.read(0xbfc0, 64).hex(), color=1,
+                              multicolor=False, x_expand=False, y_expand=False, priority=False))
+        state.update(format="vic-sprites-v2", instances=instances,
+                     phase=mon.integer(syms["SPRITE_PHASE"], 1),
+                     reticle_misses=mon.integer(syms["RETICLE_MISSES"], 2))
+        mon.command("bank cpu")
+    return state
+
+
+def sprite_instances(state):
+    """Logical draw occurrences; a reused hardware slot may occur twice."""
+    if state.get("format") == "vic-sprites-v2":
+        return state["instances"]
+    if state.get("format") != "vic-sprites-v1":
+        raise ValueError("Expected a vic-sprites-v1 or vic-sprites-v2 sidecar")
+    registers = state["registers"]
+    return [dict(sprite=sprite, enabled=bool(registers[0x15] & (1 << sprite)),
+                 x=registers[sprite * 2] + (256 if registers[0x10] & (1 << sprite) else 0),
+                 y=registers[sprite * 2 + 1], pointer=state["pointers"][sprite], image=state["images"][sprite],
+                 color=registers[0x27 + sprite] & 15, multicolor=bool(registers[0x1c] & (1 << sprite)),
+                 x_expand=bool(registers[0x1d] & (1 << sprite)), y_expand=bool(registers[0x17] & (1 << sprite)),
+                 priority=bool(registers[0x1b] & (1 << sprite))) for sprite in range(8)]
+
+
+def sprite_images(state):
+    """Canonical image bytes, independent of the instantaneous VIC phase."""
+    return b"".join(bytes.fromhex(instance["image"]) for instance in sprite_instances(state))
 
 
 def sprite_visual_state(state):
@@ -237,6 +285,12 @@ def sprite_visual_state(state):
     the sidecar, and must not make identical HUDs compare unequal.
     """
     registers = state["registers"]
+    if state.get("format") == "vic-sprites-v2":
+        return dict(display=[registers[0x11] & 7, registers[0x16] & 7,
+                             registers[0x20] & 15, registers[0x25] & 15, registers[0x26] & 15],
+                    instances=[instance if instance["enabled"] else
+                               dict(sprite=instance["sprite"], enabled=False)
+                               for instance in sprite_instances(state)])
     indices = [*range(17), 0x15, 0x17, 0x1b, 0x1c, 0x1d, 0x25, 0x26, *range(0x27, 0x2f)]
     enabled = registers[0x15]
     values = [registers[index] if index < 0x27 or enabled & (1 << (index - 0x27)) else 0 for index in indices]
@@ -251,8 +305,8 @@ def composite_pixels(bitmap_pixels, state):
     to the 160-pixel bitmap grid would lose half a multicolour pixel of shake.
     The HUD configures every sprite in front of the bitmap.
     """
-    if len(bitmap_pixels) != 32000 or state.get("format") != "vic-sprites-v1":
-        raise ValueError("Expected a 160x200 bitmap and vic-sprites-v1 sidecar")
+    if len(bitmap_pixels) != 32000:
+        raise ValueError("Expected a 160x200 bitmap")
     registers = state["registers"]
     dx, dy = registers[0x16] & 7, (registers[0x11] & 7) - 3
     pixels = bytearray([registers[0x20] & 15]) * 64000
@@ -265,21 +319,19 @@ def composite_pixels(bitmap_pixels, state):
             if 0 <= source_x < 320:
                 pixels[y * 320 + x] = bitmap_pixels[source_y * 160 + source_x // 2]
     origin_x, origin_y = state["origin"]
-    for sprite in reversed(range(8)):
-        bit = 1 << sprite
-        if not registers[0x15] & bit:
+    for instance in sorted(sprite_instances(state), key=lambda item: item["sprite"], reverse=True):
+        if not instance["enabled"]:
             continue
-        if registers[0x1b] & bit:
+        if instance["priority"]:
             raise ValueError("HUD preview requires foreground sprite priority")
-        image = bytes.fromhex(state["images"][sprite])
+        image = bytes.fromhex(instance["image"])
         if len(image) != 64:
             raise ValueError("Sprite image must contain exactly 64 bytes")
-        left = registers[sprite * 2] + (256 if registers[0x10] & bit else 0) - origin_x
-        top = registers[sprite * 2 + 1] - origin_y
-        x_scale = 2 if registers[0x1d] & bit else 1
-        y_scale = 2 if registers[0x17] & bit else 1
-        multicolor = bool(registers[0x1c] & bit)
-        colors = (None, registers[0x25], registers[0x27 + sprite], registers[0x26])
+        left, top = instance["x"] - origin_x, instance["y"] - origin_y
+        x_scale = 2 if instance["x_expand"] else 1
+        y_scale = 2 if instance["y_expand"] else 1
+        multicolor = instance["multicolor"]
+        colors = (None, registers[0x25], instance["color"], registers[0x26])
         for row in range(21 * y_scale):
             y = top + row
             if not 0 <= y < 200:
@@ -292,7 +344,7 @@ def composite_pixels(bitmap_pixels, state):
                 byte = image[(row // y_scale) * 3 + source_x // 8]
                 code = ((byte >> (6 - (source_x // 2 % 4) * 2)) & 3) if multicolor else ((byte >> (7 - source_x % 8)) & 1)
                 if code:
-                    color = colors[code] if multicolor else registers[0x27 + sprite]
+                    color = colors[code] if multicolor else instance["color"]
                     pixels[y * 320 + x] = color & 15
     return bytes(pixels)
 
@@ -305,12 +357,262 @@ def sprite_shake_alignment(state):
     for sprite in range(8):
         corner_x, corner_y = ((3, 12), (133, 12), (3, 175), (133, 175))[sprite // 2]
         expected = (24 + corner_x * 2 + (sprite % 2) * 24 - dx, 50 + corner_y - dy)
-        position = (registers[sprite * 2] + (((registers[0x10] >> sprite) & 1) * 256),
-                    registers[sprite * 2 + 1])
+        position = ((state["instances"][sprite]["x"], state["instances"][sprite]["y"])
+                    if state.get("format") == "vic-sprites-v2" else
+                    (registers[sprite * 2] + (((registers[0x10] >> sprite) & 1) * 256),
+                     registers[sprite * 2 + 1]))
         if position != expected:
             raise RuntimeError(f"Sprite {sprite} shake is {position}, expected {expected} for scroll {(dx, dy)}")
         actual.append(position)
     return dict(offset=[dx, dy], positions=actual)
+
+
+def sprite_phase_check(state):
+    """Check actual VIC state against the active logical multiplex phase."""
+    registers = state["registers"]
+    instances = sprite_instances(state)
+    expected = instances[:8]
+    if state.get("format") == "vic-sprites-v2" and state["phase"] == 1:
+        expected = [instances[8], *expected[1:]]
+    enabled = sum((1 << sprite) for sprite, instance in enumerate(expected) if instance["enabled"])
+    if (registers[0x15] != enabled or any(registers[index] for index in (0x17, 0x1b, 0x1d))
+            or [registers[0x25] & 15, registers[0x26] & 15] != [12, 1]):
+        raise RuntimeError("Sprite enable, expansion, priority, or shared colors disagree with the active phase")
+    for sprite, instance in enumerate(expected):
+        # An invisible borrowed slot can retain its previous coordinates/art.
+        if sprite == 0 and not instance["enabled"]:
+            continue
+        actual = (registers[sprite * 2] + (((registers[0x10] >> sprite) & 1) * 256),
+                  registers[sprite * 2 + 1], state["pointers"][sprite],
+                  registers[0x27 + sprite] & 15, bool(registers[0x1c] & (1 << sprite)))
+        wanted = (instance["x"], instance["y"], instance["pointer"], instance["color"], instance["multicolor"])
+        if actual != wanted:
+            raise RuntimeError(f"Sprite {sprite} phase state {actual} differs from {wanted}")
+    return dict(phase=state.get("phase", 0), enabled=enabled)
+
+
+def reticle_checks(mon, syms, failures, output):
+    """Observe both actual raster configurations and the completed VIC frame."""
+    mon.command("bank ram")
+    image = mon.read(0xbfc0, 64)
+    misses = mon.integer(syms["RETICLE_MISSES"], 2)
+    mon.command("bank cpu")
+    if misses:
+        raise RuntimeError(f"Reticle scheduling already missed {misses} raster deadlines")
+    expected_image = bytearray(64)
+    expected_image[31] = 0x08
+    if image != expected_image:
+        raise RuntimeError("Resident reticle is not exactly one centered native pixel")
+    # The level-name splash intentionally hides aiming. Allow ordinary game
+    # frames to finish it before examining the visible multiplex occurrence.
+    for _ in range(120):
+        if mon.integer(syms["RETICLE_PENDING_VISIBLE"], 1):
+            break
+        mon.run_until(syms["frame_complete"], failures)
+    else:
+        raise RuntimeError("Gameplay did not leave its reticle-hidden splash")
+    # The newly visible pending sample is published at frame_complete, but
+    # becomes active only at the following line-251 latch.
+    mon.run_until(syms["reticle_restore_done"], failures)
+    samples = []
+    for _ in range(2):
+        mon.run_until(syms["reticle_arm_done"], failures)
+        armed = sprite_state(mon, syms)
+        sprite_phase_check(armed)
+        if armed["phase"] != 1 or not armed["instances"][8]["enabled"]:
+            raise RuntimeError("Gameplay raster did not arm the resident reticle")
+        raster = armed["registers"][0x12] + (256 if armed["registers"][0x11] & 128 else 0)
+        if raster >= armed["instances"][8]["y"] - 2:
+            raise RuntimeError("Reticle register setup finished too close to its first scanline")
+        samples.append(dict(stage="reticle", instance=armed["instances"][8], phase=armed["phase"],
+                            raster_line=raster))
+        mon.run_until(syms["reticle_restore_done"], failures)
+        restored = sprite_state(mon, syms)
+        sprite_phase_check(restored)
+        if restored["phase"] != 0 or not restored["instances"][0]["enabled"]:
+            raise RuntimeError("Raster did not restore the top-left HUD sprite")
+        raster = restored["registers"][0x12] + (256 if restored["registers"][0x11] & 128 else 0)
+        if not (raster >= 251 or raster < restored["instances"][0]["y"] - 2):
+            raise RuntimeError("HUD restoration finished after its next-frame setup deadline")
+        samples.append(dict(stage="hud", instance=restored["instances"][0], phase=restored["phase"],
+                            raster_line=raster))
+    mon.command("bank ram")
+    unchanged = mon.read(0xbfc0, 64) == image
+    final_misses = mon.integer(syms["RETICLE_MISSES"], 2)
+    mon.command("bank cpu")
+    if not unchanged or final_misses != 0:
+        raise RuntimeError("Reticle art changed or raster scheduling missed its deadline")
+    path = output / "reticle-multiplex-vice.png"
+    mon.command(f'screenshot "{path.as_posix()}" 2')
+    return dict(passed=True, samples=samples, resident_image_sha256=hashlib.sha256(image).hexdigest(),
+                reticle_misses=final_misses, screenshot=str(path),
+                scope="Actual post-switch VIC registers, persistent image RAM, and VICE scanout; no simulated reticle overlay.")
+
+
+def reticle_silhouette_checks(mon, syms, failures, elf, dwarf_tool, output):
+    """Seed poses after SIM; verify exact clipping and retirement before DMA."""
+    layout = dwarf_game_layout(elf, dwarf_tool, syms, output, controls=True)
+    fields = layout["fields"]
+    has_boost = "boost_cycle" in fields
+    if has_boost:
+        if fields["boost_cycle"]["type"] != "u16":
+            raise RuntimeError("Reticle boost fixtures require a u16 countdown")
+        fields["boost_cycle"]["size"] = 2
+        for parent, name, members, kind, width in (
+                ("controls", "Controls", ("flags",), "u8", 1),
+                ("flight", "Flight", ("bank", "pitch"), "i16", 2)):
+            description = subprocess.check_output(
+                [str(dwarf_tool), f"--name={name}", "--show-children", str(elf)], text=True)
+            (output / f"dwarf-{name.lower()}.txt").write_text(description)
+            nested = dwarf_members(description, name)
+            for member in members:
+                item = nested.get(member, {})
+                if item.get("type") != kind:
+                    raise RuntimeError(f"Unsupported reticle fixture field {name}::{member}")
+                fields[f"{parent}.{member}"] = dict(item, size=width,
+                    offset=fields[parent]["offset"] + item["offset"])
+    geometry = resident_symbol(syms, "prepare_geometry")[1]
+    metadata = runpy.run_path(str(ROOT / "tools/check-overlays.py"))["Elf"](elf)
+    section = next(item for item in metadata.sections if item.name == ".phase.geometry")
+    offset = section.offset + geometry - section.address
+    geometry_code = metadata.data[offset:offset + 32]
+    prepare = runpy.run_path(str(ROOT / "tools/test-raster-prep.py"))["expected"]
+    samples = []
+    saw_hidden = saw_visible = False
+    unboosted = {}
+
+    def checkpoint(address, phase, code=None):
+        for _ in range(200):
+            mon.run_until(address, failures)
+            if mon.integer(syms["PROF_PHASE"], 1) == phase and (code is None or mon.read(address, len(code)) == code):
+                return
+        raise RuntimeError("Reticle fixture missed its overlay checkpoint")
+
+    def write(address, data):
+        mon.command("bank ram")
+        mon.command(f"> {address:04x} " + " ".join(f"{byte:02x}" for byte in data))
+        if mon.read(address, len(data)) != data:
+            raise RuntimeError("Reticle fixture write failed")
+        mon.command("bank cpu")
+
+    def field(name, value):
+        item = layout["fields"][name]
+        write(layout["address"] + item["offset"],
+              value.to_bytes(item["size"], "little", signed=item["type"].startswith("i")))
+
+    def read(name):
+        mon.command("bank ram")
+        value = read_game_field(mon, layout, name)
+        mon.command("bank cpu")
+        return value
+
+    if has_boost:
+        original_boost = (read("boost_cycle"), read("controls.flags") & 0xc0)
+    fixtures = [(x, y, roll, False, None) for x, y, roll in
+                ((0, 0, 0), (0, 65, 0), (0, 65, 7),
+                 (0, 65, 15), (-100, 65, 23), (100, -65, 0))]
+    if has_boost:
+        # Both blue and white afterburner phases use a longer silhouette.
+        fixtures += [(0, 0, 0, boosted, phase)
+                     for phase in (0, 4) for boosted in (False, True)]
+    for index, (x, y, roll, boosted, phase) in enumerate(fixtures):
+        checkpoint(geometry, 6, geometry_code)
+        for name, value in (("player.x", x), ("player.y", y), ("roll_ticks", roll),
+                            ("roll_direction", 1), ("stage_ticks", 200)):
+            field(name, value)
+        if has_boost:
+            field("controls.flags", (read("controls.flags") & 0x3f) | (0x80 if boosted else 0))
+            field("boost_cycle", 300 if boosted else 0)
+            # Keep matched flame comparisons independent of intervening SIM flight.
+            field("flight.bank", 0)
+            field("flight.pitch", 0)
+            if phase is not None:
+                field("ticks", (read("ticks") & ~7) | phase)
+        mon.run_until(syms["geometry_complete"], failures)
+        mon.command("bank ram")
+        count = mon.integer(syms["FRAME_TRIANGLES"])
+        raw = mon.read(syms["__renderer_start"] + 6, count * 16)
+        mon.command("bank cpu")
+        player = [raw[i:i+16] for i in range(0, len(raw), 16) if raw[i+15] & 128]
+        if not player:
+            raise RuntimeError("Rendered player has no silhouette identity")
+        hull = set()
+        for triangle in player:
+            values = struct.unpack("<7h2B", triangle)
+            prepared = prepare(values[:3], values[3:6], values[7], values[8])
+            lx, ls, sx, ss, bx, bs, top, middle, bottom, flags = struct.unpack("<6i4B", prepared)
+            for row in range(top, bottom):
+                if row == middle:
+                    sx, ss = bx, bs
+                left, right = (lx, sx) if flags & 16 else (sx, lx)
+                hull.update((column, row) for column in range(max(0, left >> 16), min(160, right >> 16)))
+                lx += ls
+                sx += ss
+        aim = (80 + x * 80 // 512, 100 + (-(y - (40 + int(y / 4))) * 133 // 512))
+        hidden = aim in hull
+        saw_hidden |= hidden
+        saw_visible |= not hidden
+        # Both prior slots are tested: they can differ while awaiting a latch.
+        # On alternate fixtures put them inside the new hull; otherwise clear.
+        old = sorted(hull)[::max(1, len(hull)-1)][:2] if index % 2 == 0 else [(1, 100), (158, 100)]
+        old = (old + old)[:2]
+        plume_point = None
+        if phase is not None:
+            if not boosted:
+                unboosted[phase] = hull
+            else:
+                plume = sorted(hull - unboosted[phase])
+                if not plume:
+                    raise RuntimeError("Afterburner fixture did not extend the player's silhouette")
+                plume_point = plume[len(plume) // 2]
+                # Independently prove active and pending old dots retire when
+                # only the longer flame covers them; the new aim remains clear.
+                if hidden:
+                    raise RuntimeError("Afterburner retirement fixture needs a clear new aim")
+                old = [plume_point, (158, 100)] if phase == 0 else [(1, 100), plume_point]
+        for prefix, point in zip(("ACTIVE", "PENDING"), old):
+            write(syms[f"RETICLE_{prefix}_X"], (12 + point[0] * 2).to_bytes(2, "little"))
+            write(syms[f"RETICLE_{prefix}_Y"], bytes([40 + point[1]]))
+            write(syms[f"RETICLE_{prefix}_VISIBLE"], b"\x01")
+        checkpoint(syms["publish_staged_band"], 7)
+        retire = hidden or any(point in hull for point in old)
+        if retire and (mon.integer(syms["RETICLE_PENDING_VISIBLE"], 1) or
+                       mon.integer(syms["RETICLE_ACTIVE_VISIBLE"], 1)):
+            raise RuntimeError("Old reticle survived until new bitmap publication")
+        mon.run_until(syms["frame_complete"], failures)
+        visible = mon.integer(syms["RETICLE_PENDING_VISIBLE"], 1)
+        if bool(visible) != (not hidden):
+            raise RuntimeError(f"Reticle clipping disagrees with raster spans at {aim}")
+        samples.append(dict(pose=[x, y, roll], points=[aim, *old], hidden=hidden,
+                            boosted=boosted, exhaust_phase=phase, boost_only_point=plume_point,
+                            retired_before_publication=retire, triangles=[t.hex() for t in player]))
+    if has_boost:
+        field("boost_cycle", original_boost[0])
+        field("controls.flags", (read("controls.flags") & 0x3f) | original_boost[1])
+    if not saw_hidden or not saw_visible:
+        raise RuntimeError("Reticle fixtures must exercise both clipping outcomes")
+    (output / "reticle-clip-fixtures.json").write_text(json.dumps(samples, indent=2) + "\n")
+    print("RETICLE: exact silhouette clipping and stale-position retirement passed", flush=True)
+    return dict(passed=True, monitor_assisted=True, samples=samples)
+
+
+def reticle_hide_check(mon, syms, failures):
+    """Observe physical retirement at the PIXELS checkpoint before captions."""
+    for _ in range(64):
+        mon.run_until(syms["reticle_hide_done"], failures)
+        # PIXELS shares its execution addresses with other code overlays.
+        if mon.integer(syms["PROF_PHASE"], 1) == 7:
+            break
+    else:
+        raise RuntimeError("Did not reach reticle retirement in the PIXELS overlay")
+    state = sprite_state(mon, syms)
+    if mon.integer(syms["RETICLE_PENDING_VISIBLE"], 1) or state["instances"][8]["enabled"]:
+        raise RuntimeError("Reticle retirement left pending or active aiming enabled")
+    sprite_phase_check(state)
+    if state["phase"] == 1 and state["registers"][0x15] & 1:
+        raise RuntimeError("Reticle pixels remain physically enabled before caption painting")
+    return dict(before_caption=True, phase=state["phase"], enabled_mask=state["registers"][0x15],
+                raster_line=state["registers"][0x12] + (256 if state["registers"][0x11] & 128 else 0))
 
 
 def capture(mon, syms, output, name):
@@ -352,7 +654,7 @@ def capture(mon, syms, output, name):
     png(output / f"{name}-native.png", rows, 160, 200)
     # VIC multicolor pixels are wide on a 4:3 display; retain both the exact
     # native grid and an aspect-correct preview for visual review.
-    sprites = sprite_state(mon)
+    sprites = sprite_state(mon, syms)
     sprite_path = output / f"{name}-sprites.json"
     sprite_path.write_text(json.dumps(sprites, indent=2) + "\n")
     pixels = composite_pixels(decoded_pixels(native, background), sprites)
@@ -365,7 +667,7 @@ def capture(mon, syms, output, name):
     mon.command(f'screenshot "{(output / (name+"-vice.png")).as_posix()}" 2')
     return {"bank": bank, "native": str(path), "sha256": hashlib.sha256(native).hexdigest(),
             "background": background, "nonzero_bitmap_bytes": sum(value != 0 for value in bitmap),
-            "sprites": str(sprite_path), "sprite_images_sha256": hashlib.sha256(b"".join(bytes.fromhex(image) for image in sprites["images"])).hexdigest(),
+            "sprites": str(sprite_path), "sprite_images_sha256": hashlib.sha256(sprite_images(sprites)).hexdigest(),
             "composited_pixels_sha256": hashlib.sha256(pixels).hexdigest()}
 
 
@@ -377,7 +679,8 @@ def counters(mon, syms):
                         ("FRONT_BANK", 1), ("TEST_INPUT", 1), ("RENDER_SEGMENT", 1),
                         ("ENEMY_CODE_PROFILE", 1), ("ENEMY_MODEL_PROFILE", 1), ("MODEL_STREAM_BYTES", 2),
                         ("MUSIC_CUE", 1), ("MUSIC_ACTIVE_CUE", 1),
-                        ("MUSIC_UNDERRUNS", 2), ("HUD_IMAGE_WRITES", 2), ("HUD_COMMITS", 2)):
+                        ("MUSIC_UNDERRUNS", 2), ("HUD_IMAGE_WRITES", 2), ("HUD_COMMITS", 2),
+                        ("RETICLE_MISSES", 2)):
         if name in syms:
             result[name.lower()] = mon.integer(syms[name], width)
     mon.command("bank io")
@@ -1244,10 +1547,28 @@ def streaming_checks(mon, syms, failures, elf, reu, dwarf_tool, output, result):
         mon.command("jpdb 1 $1f")
         observe(scenario)
         observe(scenario)
+        if "RETICLE_ACTIVE_VISIBLE" in syms:
+            # Establish a real visible aiming occurrence before the winning
+            # tick, so this catches a stale reticle surviving the mode change.
+            seed(scenario, {"rail_ticks": format["count"]*3750-250, "mode": layout["modes"]["Playing"],
+                            "boss_started": 1, "boss_defeated": 1,
+                            "score": 24000, "shield": 76, "lives": 2, "bombs": 1})
+            scenario["reticle_setup_patches"] = scenario["monitor_patches"]
+            observe(scenario)
+            mon.run_until(syms["reticle_restore_done"], failures)
+            mon.run_until(syms["reticle_arm_done"], failures)
+            aiming = sprite_state(mon, syms)
+            sprite_phase_check(aiming)
+            if not aiming["instances"][8]["enabled"]:
+                raise RuntimeError("Pre-victory gameplay did not display a reticle")
+            scenario["reticle_visible_before_victory"] = True
+            observe(scenario)
         seed(scenario, {"rail_ticks": format["count"]*3750-1, "mode": layout["modes"]["Playing"],
                         "boss_started": 1, "boss_defeated": 1,
                         "score": 24000, "shield": 76, "lives": 2, "bombs": 1})
         mon.command("jpdb 1 $0f")
+        if "reticle_hide_done" in syms:
+            scenario["reticle_hidden_before_medal_painting"] = reticle_hide_check(mon, syms, failures)
         frozen = epoch = None
         music_pages = []
         previous_music = None
@@ -1257,6 +1578,17 @@ def streaming_checks(mon, syms, failures, elf, reu, dwarf_tool, output, result):
             game = frame["game"]
             if game["mode"] != layout["modes"]["Victory"]:
                 raise RuntimeError("Natural victory entry failed or FIRE skipped the medal reveal")
+            if "RETICLE_ACTIVE_VISIBLE" in syms:
+                if mon.integer(syms["RETICLE_PENDING_VISIBLE"], 1):
+                    raise RuntimeError("Completed victory frame retained pending aiming state")
+                if epoch is None:
+                    mon.run_until(syms["reticle_restore_done"], failures)
+                    mon.run_until(syms["reticle_arm_done"], failures)
+                hidden = sprite_state(mon, syms)
+                sprite_phase_check(hidden)
+                if hidden["instances"][8]["enabled"]:
+                    raise RuntimeError("Victory reveal retained a stale reticle after the frame latch")
+                scenario["reticle_hidden_through_reveal_and_results"] = True
             if epoch is None:
                 if game["menu_ticks"] >= 400:
                     raise RuntimeError("First victory frame skipped the reveal")
@@ -1662,7 +1994,24 @@ def control_checks(mon, syms, failures, elf, dwarf_tool, output, result):
     baseline = observe(setup)
     result["setup"] = setup
     for name, bits, direction in (("up-climbs-world-y", 1, 1), ("down-dives-world-y", 2, -1)):
-        scenario = {"name": name, "before": baseline["game"]}
+        # The assisted flight model retains velocity after release. Settle
+        # before reversing direction so the next short pulse is measured from
+        # rest, independently of the render/IRQ phase at its release.
+        neutral = {"name": name + "-neutral-settle"}
+        stable = 0
+        for _ in range(16):
+            previous = baseline
+            baseline = observe(neutral)
+            if (baseline["game"]["controls.bits"] == 0 and
+                    baseline["game"]["player.y"] == previous["game"]["player.y"]):
+                stable += 1
+                if stable == 2:
+                    break
+            else:
+                stable = 0
+        else:
+            raise RuntimeError("Vertical control fixture did not settle after release")
+        scenario = {"name": name, "before": baseline["game"], "neutral_setup": neutral}
         result["scenarios"].append(scenario)
         pulse(scenario, bits, 6)
         pulse(scenario, 0)
@@ -1981,7 +2330,20 @@ def pause_checks(mon, syms, failures, elf, dwarf_tool, output, result):
     for _ in range(5):
         baseline = observe("neutral-setup")
     write("pause", pause, b"\x01")
+    if "reticle_hide_done" in syms:
+        result["reticle_hidden_before_pause_painting"] = reticle_hide_check(mon, syms, failures)
     clean(observe("paused"), baseline, frozen=True)
+    if "RETICLE_ACTIVE_VISIBLE" in syms:
+        if mon.integer(syms["RETICLE_PENDING_VISIBLE"], 1):
+            raise RuntimeError("Paused frame retained pending aiming state")
+        mon.run_until(syms["reticle_restore_done"], failures)
+        mon.run_until(syms["reticle_arm_done"], failures)
+        hidden = sprite_state(mon, syms)
+        sprite_phase_check(hidden)
+        if hidden["instances"][8]["enabled"]:
+            raise RuntimeError("Paused frame retained a reticle after the frame latch")
+        result["reticle_hidden_while_paused"] = True
+        clean(observe("paused-reticle-hidden"), baseline, frozen=True)
     for bits in (16, 0, 16, 0, 4, 0, 4, 0, 8, 0, 8, 0):
         mon.command(f"jpdb 1 ${31 ^ bits:02x}")
         clean(observe(f"paused-input-{bits}"), baseline, frozen=True)
@@ -2071,15 +2433,13 @@ def hud_checks(mon, syms, failures, elf, dwarf_tool, output, result):
     def observe():
         mon.run_until(syms["frame_complete"], failures)
         sample = counters(mon, syms)
-        sprites = sprite_state(mon)
-        registers = sprites["registers"]
-        if (registers[0x15] != 255 or registers[0x1c] != 255 or
-                any(registers[index] for index in (0x17, 0x1b, 0x1d)) or
-                [registers[0x25] & 15, registers[0x26] & 15] != [12, 1] or
-                sprites["pointers"] != list(range(0x30, 0x38))):
-            raise RuntimeError("HUD sprites lost enable, multicolour, priority, expansion, colours, or image pointers")
+        sprites = sprite_state(mon, syms)
+        sample["phase"] = sprite_phase_check(sprites)
+        if not all(instance["enabled"] for instance in sprite_instances(sprites)[:8]):
+            raise RuntimeError("HUD fixture disabled a logical HUD sprite")
         sample["alignment"] = sprite_shake_alignment(sprites)
-        sample["image_hashes"] = [hashlib.sha256(bytes.fromhex(image)).hexdigest() for image in sprites["images"]]
+        sample["image_hashes"] = [hashlib.sha256(bytes.fromhex(instance["image"])).hexdigest()
+                                  for instance in sprite_instances(sprites)[:8]]
         if any(sample.get(key, 0) for key in ("input_overflows", "frame_dropped", "music_underruns")):
             raise RuntimeError("HUD fixture lost input, geometry, or music")
         return sample
@@ -2789,18 +3149,22 @@ def weapon_checks(mon, syms, failures, elf, dwarf_tool, output, result, video, p
         mon.command("bank io")
         state.update(x=mon.integer(0xd016, 1) & 7, y=mon.integer(0xd011, 1) & 7,
                      border=mon.integer(0xd020, 1) & 15)
-        if "HUD_IMAGE_WRITES" in syms:
-            state["sprite_alignment"] = sprite_shake_alignment({"registers": list(mon.read(0xd000, 0x2f))})
         mon.command("bank cpu")
+        if "HUD_IMAGE_WRITES" in syms:
+            sprites = sprite_state(mon, syms)
+            state["sprite_alignment"] = sprite_shake_alignment(sprites)
+            state["sprite_phase"] = sprite_phase_check(sprites)
         scenario.setdefault("irq_samples", []).append(state)
         return state
 
     def await_effect(scenario, predicate):
-        for _ in range(120):
+        # Two raster IRQs per video frame plus the independent 50-Hz CIA:
+        # 36 audio ticks can require 123 IRQ entries on NTSC.
+        for _ in range(200):
             state = observe_effect(scenario)
             if predicate(state):
                 return state
-        raise RuntimeError("Bomb effect did not reach its expected countdown state within 120 IRQs")
+        raise RuntimeError("Bomb effect did not reach its expected countdown state within 200 IRQs")
 
     def verify_bomb_trace(scenario, trace_path, expected_triggers):
         mon.command("log off")  # Flush complete records before parsing.
@@ -2836,6 +3200,11 @@ def weapon_checks(mon, syms, failures, elf, dwarf_tool, output, result, video, p
                 if value != applied[2]:
                     raise RuntimeError("Bomb border differs from its white/yellow/orange/red/black phase")
             elif 0xd000 <= address <= 0xd010 and "HUD_IMAGE_WRITES" in syms:
+                if "RETICLE_ACTIVE_VISIBLE" in syms and address in (0xd000, 0xd001):
+                    # Slot zero alternates between HUD and reticle origins.
+                    # observe_effect checks its actual phase-specific position;
+                    # this trace retains exact scroll checks for the other seven.
+                    continue
                 if address == 0xd010:
                     expected = 0xcc
                 else:
@@ -3217,6 +3586,8 @@ def main():
             mon.command(f"trace store {syms['PROF_PHASE']:04x}")
         if "PROF_DETAIL" in syms:
             mon.command(f"trace store {syms['PROF_DETAIL']:04x}")
+        if "RETICLE_ACTIVE_VISIBLE" in syms:
+            mon.command("trace store bfc0 bfff")
         mon.command("jpdb 1 $0f")  # Physical joystick port 2: active-low FIRE.
         previous = report["title"]
         for index in range(args.frames):
@@ -3232,6 +3603,12 @@ def main():
         mon.command("jpdb 1 $1f")
         mon.command("log off")
         events = stores(monitor_log)
+        if "RETICLE_ACTIVE_VISIBLE" in syms:
+            writes = [event for event in events if 0xbfc0 <= event["address"] <= 0xbfff]
+            if writes:
+                raise RuntimeError("Runtime CPU stores rewrote the resident reticle image")
+            report["reticle_residency"] = dict(cpu_image_writes=0, trace=str(monitor_log),
+                                               scope="CPU stores during the ordinary gameplay timing sample, after BOOT initialization.")
         report["sid"] = sid_summary(monitor_log, events, sid_count)
         frames = report["frames"]
         if "PROF_PHASE" in syms:
@@ -3266,6 +3643,12 @@ def main():
         report["timing"]["audio_tick_hz_model"] = report["timing"]["audio_ticks"]*bus_hz/total_cycles
         if abs(report["timing"]["audio_ticks"] - total_cycles*50/bus_hz) > 2:
             raise RuntimeError("The independent audio clock drifted by more than two 50-Hz ticks")
+        if "RETICLE_ACTIVE_VISIBLE" in syms:
+            report["reticle_checks"] = reticle_checks(mon, syms, failures, output)
+            if args.hud_checks:
+                report["reticle_silhouette_checks"] = reticle_silhouette_checks(
+                    mon, syms, failures, elf,
+                    args.llvm_dwarfdump or args.llvm_nm.with_name("llvm-dwarfdump"), output)
         if args.control_checks:
             report["control_checks"] = {}
             control_checks(mon, syms, failures, elf,
@@ -3301,6 +3684,12 @@ def main():
             attract_checks(mon, syms, failures, elf, reu,
                            args.llvm_dwarfdump or args.llvm_nm.with_name("llvm-dwarfdump"),
                            output, report["attract_checks"])
+        if "RETICLE_MISSES" in syms:
+            mon.command("bank ram")
+            report["reticle_final_misses"] = mon.integer(syms["RETICLE_MISSES"], 2)
+            mon.command("bank cpu")
+            if report["reticle_final_misses"]:
+                raise RuntimeError("Reticle scheduling missed a deadline during the full functional test run")
         report["passed"] = True
     except (OSError, RuntimeError, subprocess.CalledProcessError) as exc:
         report["error"] = str(exc)

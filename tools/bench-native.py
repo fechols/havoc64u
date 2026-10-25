@@ -1118,7 +1118,7 @@ def main():
             end["stack_guards"] = {name: mon.integer(syms[name], 1) for name in ("__stack_bottom", "__irq_stack_bottom")}
             mon.command("bank cpu")
             native = native_bytes(mon, syms, inspection)
-            sprites = vice.sprite_state(mon)
+            sprites = vice.sprite_state(mon, syms)
             # Renderer-private classification flags are not geometry: bits
             # 2/4 identify cached sky/orientation, 32/64 identify the terrain
             # visibility pass. Compare every coordinate, color, depth and
@@ -1133,7 +1133,7 @@ def main():
                        native_screen_sha256=digest(native[8000:9000]), native_color_sha256=digest(native[9000:10000]),
                        native_background=native[10000],
                        sprite_state_sha256=semantic_hash(vice.sprite_visual_state(sprites)),
-                       sprite_images_sha256=digest(b"".join(bytes.fromhex(image) for image in sprites["images"])),
+                       sprite_images_sha256=digest(vice.sprite_images(sprites)),
                        composited_pixels_sha256=digest(vice.composite_pixels(decoded_pixels(native), sprites)),
                        clear_color=clear_color)
             if capture_image:
