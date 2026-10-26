@@ -126,7 +126,9 @@ The white single-pixel reticle marks your straight firing line at a fixed distan
 
 Wait fifteen seconds at the title for a scenery tour. The digital track continues across every attract map and the return to the title. Move or press fire to return, then release and press fire to start. Release held fire before restarting after a run, too. Completing the campaign starts Galactic Dash with the gold-medal reveal; a fresh fire press returns to the title with that track still playing.
 
-Secret music preview: press **CTRL + C= (Commodore) + DEL** at the title or during attract mode to cycle through all 21 soundtrack songs, even before winning. Hold the modifiers and tap DEL again for the next song; the selection wraps after the last track. Each switch starts the chosen song from the beginning; the selection stays until you switch again, complete the campaign, or reload.
+Secret soundtrack player: press **CTRL + C= (Commodore) + DEL** at the title or during attract mode to toggle between title music and the **entire soundtrack on repeat**, even before winning. Soundtrack mode plays Hammond Rocker, all eighteen stage songs in campaign order, Mission Failed, then Galactic Dash, and repeats automatically. Press **comma (,)** for the previous song or **period (.)** for the next; new songs start from the beginning, and both directions wrap. Returning to the song still playing cancels a pending switch. Holding a key does not repeat the action.
+
+The top of the screen shows **NOW PLAYING SOUNDTRACK...** or **NOW PLAYING TITLE MUSIC...**. The mode stays selected through the attract tour and new runs; gameplay keeps its normal stage music. Toggle soundtrack mode off to return to Hammond Rocker. After winning, Galactic Dash continues at the title, with **NOW PLAYING VICTORY MUSIC...** when soundtrack mode is off; the toggle remains available. Reloading restores title music.
 
 ## Help
 

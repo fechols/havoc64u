@@ -1305,7 +1305,13 @@ def menu_music_fixture(package_format, fields, cue):
     name = menu_music_field(fields)
     if cue not in (0, 5):
         raise RuntimeError("Menu music must select title or victory")
-    return {name: (0 if cue == 5 else 1) if name == "menu_music_track" else int(cue == 5)}
+    result = {name: (0 if cue == 5 else 1) if name == "menu_music_track" else int(cue == 5)}
+    if "menu_soundtrack" in fields:
+        if fields["menu_soundtrack"].get("type") != "bool":
+            raise RuntimeError("Digital menu fixtures require Game::menu_soundtrack bool")
+        fields["menu_soundtrack"]["size"] = 1
+        result["menu_soundtrack"] = 0
+    return result
 
 
 def check_menu_music(frame, cue, previous=None, pages=None, *, track=None):
@@ -1407,7 +1413,7 @@ def streaming_checks(mon, syms, failures, elf, reu, dwarf_tool, output, result):
         if "stage_id" in layout["fields"]:
             observed += ["stage_id"]
         if format["digital"]:
-            observed += [menu_music_field(layout["fields"])]
+            observed += list(menu_music_fixture(format, layout["fields"], 5))
         frame["game"] = read_game_state(mon, layout, observed)
         frame["stack_guards"] = {name: mon.integer(syms[name], 1) for name in ("__stack_bottom", "__irq_stack_bottom")}
         mon.command("bank cpu")
@@ -1747,8 +1753,7 @@ def attract_checks(mon, syms, failures, elf, reu, dwarf_tool, output, result):
     data = reu.read_bytes()
     format = package_model_layout(data, symbols=syms)
     if format["digital"]:
-        menu_music_fixture(format, fields, 0)
-        observed += (menu_music_field(fields),)
+        observed += tuple(menu_music_fixture(format, fields, 0))
         result["scope"] += (" Selected menu cue remains continuous across the tour with DAC disabled; no DAC playback is validated."
                             if format.get("quad_sfx") else
                             " Selected menu cue and SID score pages remain continuous across the tour; emulator SID substitution does not validate DAC playback.")

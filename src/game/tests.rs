@@ -573,7 +573,7 @@ fn music_follows_stage_boss_crossing_and_result_identity() {
 }
 
 #[test]
-fn menu_music_cycles_every_recording_without_changing_the_scene() {
+fn menu_soundtrack_navigates_campaign_order_without_changing_the_scene() {
     use crate::digital::Track;
     fn scene(mode: Mode) -> Game {
         let mut game = Game::new();
@@ -591,9 +591,21 @@ fn menu_music_cycles_every_recording_without_changing_the_scene() {
         let mut expected = scene(mode);
         assert_eq!(game.music_state(), MusicState::Title);
         assert_eq!(game.menu_music_override(), Track::HammondRocker as u8);
+        game.step_menu_music(false);
+        game.step_menu_music(true);
+        assert_eq!(game, expected, "navigation is disabled in title-only mode");
+        game.toggle_menu_music();
+        expected.menu_soundtrack = true;
+        assert_eq!(game, expected, "enabling must preserve the playing song");
+        assert_eq!(game.hud().menu_music, MenuMusicStatus::Soundtrack);
+        let mut order = Vec::new();
+        for stage in 0..assets::SEGMENT_COUNT {
+            order.push(crate::digital::track_for_scene(MusicState::Lowlands, stage));
+        }
+        order.extend([Track::MissionFailed, Track::GalacticDash, Track::HammondRocker]);
         let mut visited = Vec::new();
-        for track in Track::ALL.iter().cycle().skip(2).take(Track::ALL.len()) {
-            game.toggle_menu_music();
+        for track in &order {
+            game.step_menu_music(false);
             assert_eq!(game.menu_music_override(), *track as u8);
             assert_eq!(
                 game.music_state(),
@@ -611,6 +623,18 @@ fn menu_music_cycles_every_recording_without_changing_the_scene() {
         assert_eq!(visited.len(), Track::ALL.len());
         assert_eq!(game.menu_music_override(), Track::HammondRocker as u8);
         assert_eq!(game.music_state(), MusicState::Title);
+        for track in order.iter().rev().skip(1).chain(core::iter::once(&Track::HammondRocker)) {
+            game.step_menu_music(true);
+            expected.menu_music_track = *track as u8;
+            assert_eq!(game, expected, "reverse navigation must preserve the scene");
+        }
+        game.step_menu_music(true);
+        assert_eq!(game.menu_music_override(), Track::GalacticDash as u8);
+        game.toggle_menu_music();
+        expected.menu_soundtrack = false;
+        expected.menu_music_track = Track::HammondRocker as u8;
+        assert_eq!(game, expected, "disabling restores the title track only");
+        assert_eq!(game.hud().menu_music, MenuMusicStatus::Title);
     }
 }
 
@@ -628,13 +652,18 @@ fn menu_music_toggle_is_ignored_outside_title_and_attract() {
             game.mode = mode;
             game.menu_ticks = crate::victory::FADE_TICKS;
             game.menu_music_track = track as u8;
+            game.menu_soundtrack = true;
             let mut expected = Game::new();
             expected.mode = mode;
             expected.menu_ticks = crate::victory::FADE_TICKS;
             expected.menu_music_track = track as u8;
+            expected.menu_soundtrack = true;
             let cue = game.music_state();
             assert_eq!(game.menu_music_override(), 255);
             game.toggle_menu_music();
+            game.step_menu_music(false);
+            game.step_menu_music(true);
+            game.sync_menu_music(crate::digital::Track::LowlandApproach);
             assert_eq!(game.music_state(), cue);
             assert_eq!(game.menu_music_override(), 255);
             assert_eq!(game, expected, "ignored toggle changed {mode:?}");
@@ -646,18 +675,21 @@ fn menu_music_toggle_is_ignored_outside_title_and_attract() {
 fn menu_music_selection_survives_scene_and_run_resets_until_reload() {
     use crate::digital::Track;
     let mut game = Game::new();
-    for track in Track::ALL.iter().cycle().skip(2).take(Track::ALL.len()) {
-        game.toggle_menu_music();
+    game.toggle_menu_music();
+    for track in &Track::ALL {
+        game.sync_menu_music(*track);
         assert_eq!(game.menu_music_override(), *track as u8);
         let cue = game.music_state();
         for stage in [0, 1, 6, 10, 12, 14, 16] {
             game.reset_scene(Mode::Attract, stage, 0);
             assert_eq!(game.music_state(), cue);
             assert_eq!(game.menu_music_override(), *track as u8);
+            assert!(game.menu_soundtrack_enabled());
         }
         game.reset_run();
         assert_eq!(game.music_state(), MusicState::Lowlands);
         assert_eq!(game.menu_music_override(), 255);
+        assert!(!game.menu_soundtrack_enabled());
         game.mode = Mode::GameOver;
         assert_eq!(game.music_state(), MusicState::Defeat);
         assert_eq!(game.menu_music_override(), 255);
@@ -665,8 +697,10 @@ fn menu_music_selection_survives_scene_and_run_resets_until_reload() {
         game.reset_scene(Mode::Title, 0, 0);
         assert_eq!(game.music_state(), cue);
         assert_eq!(game.menu_music_override(), *track as u8);
+        assert!(game.menu_soundtrack_enabled());
         assert_eq!(Game::new().music_state(), MusicState::Title);
         assert_eq!(Game::new().menu_music_override(), Track::HammondRocker as u8);
+        assert!(!Game::new().menu_soundtrack_enabled());
     }
 }
 
@@ -2290,6 +2324,7 @@ fn victory_freezes_the_run_and_consumes_inputs_through_all_four_hundred_ticks() 
     // subsequent run must select Galactic again for the reveal and menus.
     game.menu_music_track = crate::digital::Track::GalacticDash as u8;
     game.toggle_menu_music();
+    game.toggle_menu_music();
     assert_eq!(game.music_state(), MusicState::Title);
     game.reset_run();
     game.invulnerability = 0;
@@ -2404,6 +2439,18 @@ fn victory_freezes_the_run_and_consumes_inputs_through_all_four_hundred_ticks() 
     }
     game.reset_scene(Mode::Title, 0, 0);
     assert_eq!(game.music_state(), MusicState::Victory);
+    assert_eq!(game.hud().menu_music, MenuMusicStatus::Victory);
+    game.toggle_menu_music();
+    assert!(game.menu_soundtrack_enabled(), "winning must not lock the toggle");
+    assert_eq!(game.menu_music_override(), crate::digital::Track::GalacticDash as u8);
+    assert_eq!(game.hud().menu_music, MenuMusicStatus::Soundtrack);
+    game.step_menu_music(false);
+    assert_eq!(game.menu_music_override(), crate::digital::Track::HammondRocker as u8);
+    game.step_menu_music(true);
+    assert_eq!(game.menu_music_override(), crate::digital::Track::GalacticDash as u8);
+    game.toggle_menu_music();
+    assert_eq!(game.hud().menu_music, MenuMusicStatus::Title);
+    assert_eq!(game.music_state(), MusicState::Title);
     assert_eq!(Game::new().music_state(), MusicState::Title);
 }
 #[test]
@@ -5509,4 +5556,32 @@ fn reticle_probe_covers_pixels_added_by_afterburner_exhaust() {
             }
         }
     }
+}
+
+#[test]
+fn victory_preserves_enabled_soundtrack_mode_and_returns_with_galactic_dash() {
+    use crate::digital::Track;
+
+    let bytes = empty_segment(assets::SEGMENT_COUNT - 1);
+    let segment = Segment::new(&bytes).unwrap();
+    let bank = test_bank(assets::SEGMENT_COUNT - 1);
+    let mut game = Game::new();
+    game.toggle_menu_music();
+    game.reset_run();
+    set_rail(&mut game, MISSION_TICKS - 1);
+    game.boss_started = true;
+    game.boss_defeated = true;
+    game.bosses[0].left = 0;
+    game.bosses[0].right = 0;
+    game.bosses[0].core = 0;
+    game.tick(&segment, &bank);
+
+    assert_eq!(game.mode, Mode::Victory);
+    assert!(game.menu_soundtrack);
+    assert!(!game.menu_soundtrack_enabled(), "results keep their own music");
+    assert_eq!(game.menu_music_track, Track::GalacticDash as u8);
+    game.reset_scene(Mode::Title, 0, 0);
+    assert!(game.menu_soundtrack_enabled());
+    assert_eq!(game.menu_music_override(), Track::GalacticDash as u8);
+    assert_eq!(game.hud().menu_music, MenuMusicStatus::Soundtrack);
 }

@@ -413,6 +413,27 @@ unsafe fn request(state: &mut backend::State, track: asset::Track) {
     );
 }
 
+unsafe fn request_menu(state: &mut backend::State, track: asset::Track, enabled: bool) {
+    let pending = if enabled && state.is_running() && track == state.track {
+        track.soundtrack_next()
+    } else {
+        track
+    };
+    if pending != state.track {
+        let slot = if state.is_running() {
+            (((hardware().voices[0].starts.last().unwrap().start - asset::RING_OFFSET) >> 16)
+                as usize)
+                ^ 1
+        } else {
+            0
+        };
+        hardware().slot_channels[slot] = pending.descriptor().metadata.channels as usize;
+    }
+    let before = hardware().pcm_writes.len();
+    backend::request_menu(state, track, enabled);
+    assert_eq!(hardware().pcm_writes.len(), before);
+}
+
 unsafe fn service(state: &mut backend::State) -> Result<(), backend::Fault> {
     let before = hardware().pcm_writes.len();
     let active_slot = state.is_running().then(|| {
@@ -740,7 +761,7 @@ fn mixed_rate_handoffs_share_the_quarter_second_budget() {
 #[test]
 fn actual_backend_loops_all_profiles_through_shared_scratch_reuse() {
     let _serial = SERIAL.lock().unwrap();
-    assert!(core::mem::size_of::<backend::State>() <= 392);
+    assert!(core::mem::size_of::<backend::State>() <= 432);
     unsafe {
         HARDWARE = Some(Hardware::new());
         let mut calibration = backend::Calibration::new();
@@ -807,6 +828,177 @@ fn actual_backend_loops_all_profiles_through_shared_scratch_reuse() {
                 "{track:?}: codebook address must not wrap at 64 KiB"
             );
         }
+        HARDWARE = None;
+    }
+}
+
+#[test]
+fn soundtrack_plays_every_complete_recording_and_wraps_without_recalibration() {
+    let _serial = SERIAL.lock().unwrap();
+    unsafe {
+        HARDWARE = Some(Hardware::new());
+        let mut state = backend::State::new();
+        let mut track = asset::Track::HammondRocker;
+        init(&mut state, &mut backend::Calibration::new(), true, track).unwrap();
+        prime(&mut state);
+        let calibrations = hardware().calibration_starts;
+        for index in 0..asset::Track::ALL.len() {
+            let expected = reference(track);
+            let start = hardware().voices[0].starts[index];
+            let began = hardware().voices[0].playback_start;
+            let history = hardware().sampler_writes.len();
+            let next = track.soundtrack_next();
+            let frames = track.descriptor().metadata.total_samples as usize;
+            let second = track.descriptor().metadata.sample_rate as usize;
+            loop {
+                request_menu(&mut state, track, true);
+                hardware().wait(98_525);
+                service(&mut state).unwrap();
+                if let Some(advanced) = backend::take_auto_advance(&mut state) {
+                    assert_eq!(advanced, next);
+                    assert_eq!(backend::take_auto_advance(&mut state), None);
+                    break;
+                }
+                assert_eq!(state.track, track);
+                assert_eq!(hardware().voices[0].starts.len(), index + 1);
+                assert!(hardware().voices[0].played < frames as u64 + second as u64);
+            }
+            assert_eq!(state.track, next);
+            assert_eq!(hardware().voices[0].starts.len(), index + 2);
+            let emitted = hardware().voices[0].starts[index + 1].emitted_at - start.emitted_at;
+            assert!(emitted >= frames, "{track:?}: handoff clipped the ending");
+            assert!(
+                emitted < frames + second / 4,
+                "{track:?}: handoff missed the boundary"
+            );
+            let first_drop = hardware().sampler_writes[history..]
+                .iter()
+                .find(|&&(_, address, value)| address == 0xdf21 && value < 32)
+                .unwrap()
+                .0;
+            let faded_frame =
+                (first_drop - began) * 6_250_000 / ((start.divider + 2) * hardware().bus_hz);
+            assert!(
+                faded_frame >= (frames - second) as u64,
+                "{track:?}: faded too early"
+            );
+            assert!(
+                faded_frame < (frames - second + second / 4) as u64,
+                "{track:?}: failed to fade in the final second"
+            );
+            assert_playback(track, index, &expected);
+            assert_eq!(hardware().ram[0xdf21], 32);
+            assert_eq!(state.underruns, 0);
+            track = next;
+        }
+        assert_eq!(track, asset::Track::HammondRocker);
+        assert_eq!(hardware().calibration_starts, calibrations);
+        backend::stop(&mut state);
+        HARDWARE = None;
+    }
+}
+
+#[test]
+fn soundtrack_late_enable_waits_a_full_loop_and_manual_requests_cancel_automatic_work() {
+    let _serial = SERIAL.lock().unwrap();
+    unsafe {
+        HARDWARE = Some(Hardware::new());
+        let mut state = backend::State::new();
+        let track = asset::Track::MissionFailed;
+        let next = track.soundtrack_next();
+        let metadata = track.descriptor().metadata;
+        let frames = metadata.total_samples as u64;
+        let second = metadata.sample_rate as u64;
+        init(&mut state, &mut backend::Calibration::new(), true, track).unwrap();
+        prime(&mut state);
+        // Enable after one ordinary loop, too late to prepare the next song.
+        // Decoder-loop counters are already ahead of this audible position.
+        while hardware().voices[0].played < 2 * frames - second / 2 {
+            visit(&mut state);
+        }
+        for _ in 0..30 {
+            request_menu(&mut state, track, true);
+            hardware().wait(98_525);
+            service(&mut state).unwrap();
+            assert_eq!(backend::take_auto_advance(&mut state), None);
+            assert_eq!(state.track, track);
+            assert_eq!(hardware().ram[0xdf21], 32);
+        }
+        assert!(hardware().voices[0].played > 2 * frames);
+        // Disable after the automatic successor is ready: the active stream
+        // stays at its current position and the prepared song never starts.
+        request_menu(&mut state, track, false);
+        for _ in 0..8 {
+            visit(&mut state);
+        }
+        assert_eq!(hardware().voices[0].starts.len(), 1);
+        request_menu(&mut state, track, true);
+        while hardware().voices[0].played < 3 * frames - second / 2 {
+            request_menu(&mut state, track, true);
+            hardware().wait(98_525);
+            service(&mut state).unwrap();
+        }
+        assert!(hardware().ram[0xdf21] < 32 && hardware().ram[0xdf21] > 0);
+        request_menu(&mut state, track, false);
+        assert_eq!(
+            hardware().ram[0xdf21],
+            32,
+            "cancelling auto fade restores gain"
+        );
+        assert_eq!(hardware().voices[0].starts.len(), 1);
+        // Skip explicitly to the same successor: this is a manual handoff and
+        // must not publish the cursor-sync event used by natural advancement.
+        for _ in 0..100 {
+            request_menu(&mut state, next, true);
+            visit(&mut state);
+            assert_eq!(backend::take_auto_advance(&mut state), None);
+            if state.track == next {
+                break;
+            }
+        }
+        assert_eq!(state.track, next);
+        assert_eq!(hardware().voices[0].starts.len(), 2);
+        assert_eq!(state.underruns, 0);
+        backend::stop(&mut state);
+        HARDWARE = None;
+    }
+}
+
+#[test]
+fn soundtrack_countdown_survives_ntsc_timer_wrap_and_sample_rebase() {
+    let _serial = SERIAL.lock().unwrap();
+    unsafe {
+        HARDWARE = Some(Hardware::new());
+        hardware().bus_hz = 1_022_727;
+        let mut state = backend::State::new();
+        let track = asset::Track::LowlandApproach;
+        init(&mut state, &mut backend::Calibration::new(), false, track).unwrap();
+        hardware().ticks = (1u64 << 32) - hardware().bus_hz / 2;
+        prime(&mut state);
+        let frames = track.descriptor().metadata.total_samples as usize;
+        let mut visits = 0;
+        loop {
+            request_menu(&mut state, track, true);
+            // Exercise the rebase repeatedly, including during the tail fade.
+            if visits % 31 == 0 {
+                state.force_sample_rebase();
+            }
+            hardware().wait(if visits % 2 == 0 { 61_364 } else { 173_864 });
+            service(&mut state).unwrap();
+            visits += 1;
+            if let Some(next) = backend::take_auto_advance(&mut state) {
+                assert_eq!(next, track.soundtrack_next());
+                break;
+            }
+            assert!(hardware().voices[0].played < frames as u64 + 4000);
+        }
+        let emitted = hardware().voices[0].starts[1].emitted_at;
+        assert!(emitted >= frames && emitted < frames + 4000);
+        assert!(hardware().ticks > 1u64 << 32);
+        assert_eq!(hardware().voices[0].starts.len(), 2);
+        assert_playback(track, 0, &reference(track));
+        assert_eq!(state.underruns, 0);
+        backend::stop(&mut state);
         HARDWARE = None;
     }
 }

@@ -2,7 +2,7 @@
 //! Persistent cockpit readouts are independent sprites in `hud_sprites`.
 
 use crate::assets::SEGMENT_COUNT;
-use crate::game::{Hud, Mode};
+use crate::game::{Hud, MenuMusicStatus, Mode};
 use crate::render::{draw_bar, draw_text, draw_text_scaled, Canvas, HUD_INK};
 use crate::victory::REVEAL_TICKS;
 
@@ -44,7 +44,9 @@ pub fn draw(band: u8, canvas: &mut impl Canvas, hud: &Hud, frame: u16) -> bool {
     if band == 0 {
         // Black is explicit ink: the VIC background still belongs to the sky.
         rect(band, canvas, 0, 0, 160, 8, 0);
-        if hud.mode == Mode::Playing && hud.boss_shield != 0 {
+        if hud.mode == Mode::Title {
+            centered(band, canvas, 2, music_caption(hud.menu_music), 3);
+        } else if hud.mode == Mode::Playing && hud.boss_shield != 0 {
             draw_bar(band, canvas, 4, 2, 152, 4, hud.boss_shield as u16, 100, 2);
         } else if !matches!(hud.mode, Mode::Title | Mode::Victory) {
             // The simulation retains the outgoing section until arrival.
@@ -57,6 +59,11 @@ pub fn draw(band: u8, canvas: &mut impl Canvas, hud: &Hud, frame: u16) -> bool {
     }
     // The map tour adds a dismissal cue below the persistent level name.
     if hud.mode == Mode::Attract {
+        if band == 1 {
+            rect(band, canvas, 0, 8, 160, 8, 0);
+            centered(band, canvas, 10, music_caption(hud.menu_music), 3);
+            return true;
+        }
         if band >= 23 {
             centered(band, canvas, 189, b"MOVE OR FIRE FOR MENU", blink(frame));
             return true;
@@ -120,6 +127,25 @@ pub fn draw(band: u8, canvas: &mut impl Canvas, hud: &Hud, frame: u16) -> bool {
         }
     }
 }
+
+#[inline(never)]
+#[cfg_attr(target_arch = "mos", link_section = ".phase.pixels")]
+fn music_caption(status: MenuMusicStatus) -> &'static [u8] {
+    let index = status as usize;
+    // The three-value enum bounds both offsets. Keep the labels and lookup
+    // bytes in PIXELS rather than emitting resident slice/switch tables.
+    unsafe {
+        let start = *MUSIC_CAPTION_OFFSETS.get_unchecked(index) as usize;
+        let end = *MUSIC_CAPTION_OFFSETS.get_unchecked(index + 1) as usize;
+        core::slice::from_raw_parts(MUSIC_CAPTIONS.as_ptr().add(start), end - start)
+    }
+}
+
+#[cfg_attr(target_arch = "mos", link_section = ".phase.pixels.data")]
+static MUSIC_CAPTIONS: [u8; 79] = *b"NOW PLAYING TITLE MUSIC...\
+NOW PLAYING SOUNDTRACK...NOW PLAYING VICTORY MUSIC...";
+#[cfg_attr(target_arch = "mos", link_section = ".phase.pixels.data")]
+static MUSIC_CAPTION_OFFSETS: [u8; 4] = [0, 26, 51, 79];
 
 #[inline(never)]
 #[cfg_attr(target_arch = "mos", link_section = ".phase.pixels")]

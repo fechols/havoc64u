@@ -28,6 +28,8 @@ const fn available_codes() -> [u8; 264] {
 }
 #[link_section = ".phase.audio.data"]
 static AVAILABLE_CODES: [u8; 264] = available_codes();
+#[link_section = ".phase.audio.data"]
+static SOUNDTRACK_NEXT: [Track; 21] = asset::SOUNDTRACK_NEIGHBORS[0];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
@@ -156,8 +158,11 @@ pub struct State {
     fade_step: u16,
     volume: u8,
     fading: bool,
+    remaining: u32,
+    auto_pending: bool,
+    auto_advance: u8,
 }
-const _: () = assert!(core::mem::size_of::<State>() <= 392);
+const _: () = assert!(core::mem::size_of::<State>() <= 432);
 #[cfg(not(target_arch = "mos"))]
 impl State {
     pub const fn new() -> Self {
@@ -178,6 +183,9 @@ impl State {
             fade_step: 0,
             volume: 0,
             fading: false,
+            remaining: 0,
+            auto_pending: false,
+            auto_advance: NONE,
         }
     }
 }
@@ -186,6 +194,14 @@ impl State {
     #[inline(always)]
     pub fn is_running(&self) -> bool {
         self.transport == Transport::Running
+    }
+
+    /// Preserve reader/producer ring positions while exercising the long-run
+    /// rebase path without decoding hours of otherwise identical PCM.
+    #[cfg(test)]
+    pub fn force_sample_rebase(&mut self) {
+        self.clock.samples += timing::REBASE_SAMPLES;
+        self.decoders[self.active as usize].produced += timing::REBASE_SAMPLES;
     }
 }
 
@@ -243,6 +259,8 @@ pub unsafe fn stop(state: &mut State) {
     state.transport = Transport::Stopped;
     state.volume = 0;
     state.fading = false;
+    state.auto_pending = false;
+    state.auto_advance = NONE;
 }
 #[inline(never)]
 #[link_section = ".phase.audio"]
@@ -703,7 +721,11 @@ unsafe fn advance(state: &mut State) -> Result<u32, Fault> {
     let now = timer_read();
     let ticks = state.last_tick.wrapping_sub(now);
     state.last_tick = now;
+    let before = state.clock.samples as u16;
     state.clock.advance(ticks);
+    // Audible time, before whole-ring rebasing. The decoder loops ahead of
+    // playback, so its loop count cannot identify a natural song ending.
+    let elapsed = (state.clock.samples as u16).wrapping_sub(before);
     let d = &mut state.decoders[state.active as usize];
     if timing::underrun(d.produced, state.clock.samples) {
         return Err(Fault::Underrun);
@@ -712,7 +734,8 @@ unsafe fn advance(state: &mut State) -> Result<u32, Fault> {
     state.minimum_lead = state
         .minimum_lead
         .min((d.produced - state.clock.samples) as u16);
-    if state.fading && state.volume != 0 {
+    advance_soundtrack(state, elapsed);
+    if state.fading && !state.auto_pending && state.volume != 0 {
         // Reuse this wrap-safe clock observation; PCM samples remain untouched.
         let mut elapsed = state.fade_tick.wrapping_sub(now);
         let mut next = state.volume;
@@ -724,6 +747,48 @@ unsafe fn advance(state: &mut State) -> Result<u32, Fault> {
         volume(state, next);
     }
     Ok(state.clock.samples)
+}
+
+#[inline(never)]
+#[link_section = ".phase.audio"]
+unsafe fn advance_soundtrack(state: &mut State, elapsed: u16) {
+    // The underrun guard bounds each valid advance below one 32768-frame ring,
+    // so a narrow delta is sufficient even when the sample counter wraps.
+    let d = state.decoders.get_unchecked(state.active as usize);
+    if state.remaining < 65536 {
+        let tail = state.remaining as u16;
+        let second = d.metadata.sample_rate;
+        if state.auto_pending && !state.fading && tail > second && tail <= elapsed + second {
+            // A late preparation waits for another complete loop. Never shorten
+            // the ending or begin a fade that its replacement cannot finish.
+            state.fading = state
+                .decoders
+                .get_unchecked(state.pending as usize)
+                .produced
+                == RING_SAMPLES;
+        }
+        if tail <= elapsed {
+            if state.auto_pending && state.fading {
+                state.remaining = elapsed as u32;
+            } else {
+                state.remaining += d.metadata.total_samples;
+            }
+        }
+    }
+    state.remaining -= elapsed as u32;
+    if state.auto_pending && state.fading {
+        // Both supported sample rates divide into 32 exact gain steps.
+        // Only the final second reaches this path. Narrow repeated subtraction
+        // avoids a general 32-bit quotient and is bounded to 32 iterations.
+        let step = d.metadata.sample_rate >> 5;
+        let mut tail = state.remaining as u16;
+        let mut level = 0;
+        while tail != 0 {
+            tail = tail.saturating_sub(step);
+            level += 1;
+        }
+        volume(state, level);
+    }
 }
 #[inline(never)]
 #[link_section = ".phase.audio"]
@@ -793,6 +858,7 @@ pub unsafe fn bootstrap(saved: &mut Calibration, pal: bool) -> Result<(), Fault>
 pub unsafe fn clear(state: *mut State) {
     core::ptr::write_bytes(state, 0, 1);
     (*state).pending = NONE;
+    (*state).auto_advance = NONE;
     (*state).minimum_lead = RING_SAMPLES as u16;
 }
 /// Prepare without decoding PCM. service() primes the ring over bounded visits.
@@ -838,6 +904,7 @@ unsafe fn start(state: &mut State) {
     state.last_tick = timer_read();
     state.fade_tick = state.last_tick;
     state.fading = false;
+    state.remaining = state.decoders[state.active as usize].metadata.total_samples;
     let control = if channels == 2 { 0x43 } else { 0x03 };
     poke(SAMPLER, control);
     poke(RIGHT, control);
@@ -849,6 +916,13 @@ pub unsafe fn request(state: &mut State, track: Track) {
     if state.transport == Transport::Stopped {
         return;
     }
+    if state.auto_pending {
+        // Explicit changes retain the current gain when replacing an ongoing
+        // automatic fade, then use the ordinary timer-based fade from here.
+        state.fade_tick = state.last_tick;
+        state.auto_pending = false;
+    }
+    state.auto_advance = NONE;
     if state.track == track {
         if state.pending != NONE && state.is_running() {
             volume(state, FULL_VOLUME);
@@ -873,6 +947,31 @@ pub unsafe fn request(state: &mut State, track: Track) {
     let slot = state.active ^ 1;
     prepare(&mut state.decoders[slot as usize], slot, track);
     state.pending = slot;
+}
+
+/// Repeated menu requests preserve an automatic successor while it primes.
+/// Explicit skips and disabling soundtrack mode use the ordinary handoff.
+#[inline(never)]
+#[link_section = ".phase.audio"]
+pub unsafe fn request_menu(state: &mut State, track: Track, enabled: bool) {
+    if enabled && state.is_running() && track == state.track {
+        if !state.auto_pending {
+            request(state, track);
+            request(state, *SOUNDTRACK_NEXT.get_unchecked(track as usize));
+            state.auto_pending = true;
+        }
+    } else {
+        request(state, track);
+    }
+}
+
+/// Only natural handoffs publish an event; manual requests already own the
+/// menu cursor. The foreground consumes this before drawing the next frame.
+#[inline(always)]
+pub fn take_auto_advance(state: &mut State) -> Option<Track> {
+    let track = Track::from_id(state.auto_advance);
+    state.auto_advance = NONE;
+    track
 }
 #[inline(never)]
 #[link_section = ".phase.audio"]
@@ -947,7 +1046,7 @@ pub unsafe fn service(state: &mut State) -> Result<(), Fault> {
         }
         if state.pending != NONE && state.decoders[state.pending as usize].produced == RING_SAMPLES
         {
-            if !state.fading {
+            if !state.fading && !state.auto_pending {
                 // Decode the full new ring within the shared budget before the
                 // old music fades. The DAC keeps consuming only the old ring.
                 state.fade_tick = timer_read();
@@ -958,6 +1057,7 @@ pub unsafe fn service(state: &mut State) -> Result<(), Fault> {
             && state.volume == 0
             && state.decoders[state.pending as usize].produced == RING_SAMPLES
         {
+            let automatic = state.auto_pending;
             #[cfg(not(test))]
             super::disable_irq();
             stop(state);
@@ -966,6 +1066,9 @@ pub unsafe fn service(state: &mut State) -> Result<(), Fault> {
             state.track = state.decoders[state.active as usize].track;
             state.minimum_lead = RING_SAMPLES as u16;
             start(state);
+            if automatic {
+                state.auto_advance = state.track as u8;
+            }
             #[cfg(not(test))]
             super::enable_irq();
         }

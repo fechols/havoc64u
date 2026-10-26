@@ -20,12 +20,15 @@ SMOKE = runpy.run_path(str(ROOT / "tools/vice-smoke.py"))
 Cpu, KernelError, load_elf = (KERNEL[name] for name in ("Cpu", "KernelError", "load_elf"))
 IRQ_MASK, UNUSED, SENTINEL = 4, 32, 0xffff
 SELECTOR = "menu_music_track"
+SOUNDTRACK = "menu_soundtrack"
 TRACK_COUNT = len(json.loads((ROOT / "assets/music/catalog.json").read_text())["tracks"])
+PLAYLIST = [1, 3, 4, 5, 6, 7, 8, 9, 17, 10, 11, 12, 13, 14, 15, 16, 18, 19, 20, 2, 0]
 STORY = "story_mode"
 # Standard C64 matrix: CTRL and C= share row 7; DEL is row 0, column 0.
 KEYS = {"ctrl": (7, 2), "cbm": (7, 5), "del": (0, 0),
         "space": (7, 4), "f": (2, 5), "d": (2, 2), "five": (2, 0),
-        "s": (1, 5), "shift": (1, 7)}
+        "s": (1, 5), "shift": (1, 7), "rshift": (6, 4),
+        "comma": (5, 7), "period": (5, 4), "x": (2, 7), "c": (2, 4)}
 CHORD_KEYS = ("ctrl", "cbm", "del")
 CHORD = frozenset(CHORD_KEYS)
 
@@ -50,13 +53,15 @@ class Machine(Cpu):
         self.game_start = layout["address"]
         self.game_end = symbols["__game_state_end"].address
         self.selector = self.game_start + layout["fields"][SELECTOR]["offset"]
+        self.soundtrack = self.game_start + layout["fields"][SOUNDTRACK]["offset"]
         self.story = self.game_start + layout["fields"][STORY]["offset"]
         self.activity = self.game_start + layout["fields"]["menu_activity"]["offset"]
         self.mode_address = self.game_start + layout["fields"]["mode"]["offset"]
         self.stack_bottom = symbols["__stack_bottom"].address
         self.stack_top = symbols["__stack"].address
         writable = [(0, 0x200), (self.stack_bottom, self.stack_top),
-                    (self.selector, self.selector + 1), (self.story, self.story + 1),
+                    (self.selector, self.selector + 1), (self.soundtrack, self.soundtrack + 1),
+                    (self.story, self.story + 1),
                     (self.activity, self.activity + 1), (0xdc00, 0xdc01), (0xdc02, 0xdc03)]
         for name in (".data", ".bss", ".noinit"):
             section = sections[name]
@@ -108,7 +113,7 @@ class Machine(Cpu):
         return self.mem[self.addresses[name]]
 
     def scan(self, keys=(), mode="Title", expected=False, joy1=0, joy2=0,
-             pause=False, fps=False, story=False, label="scan"):
+             pause=False, fps=False, story=False, skip=0, label="scan"):
         self.keys = frozenset(keys)
         self.joy1, self.joy2 = joy1, joy2
         self.mem[self.mode_address] = self.layout["modes"][mode]
@@ -138,7 +143,11 @@ class Machine(Cpu):
         offset = self.selector - self.game_start
         want = bytearray(before)
         if expected:
-            want[offset] = (want[offset] + 1) % TRACK_COUNT
+            want[self.soundtrack - self.game_start] ^= 1
+            if not want[self.soundtrack - self.game_start]:
+                want[offset] = 1
+        if skip:
+            want[offset] = PLAYLIST[(PLAYLIST.index(want[offset]) + skip) % len(PLAYLIST)]
         want[self.story - self.game_start] ^= int(story)
         if story:
             want[self.activity - self.game_start] = 1
@@ -154,8 +163,10 @@ def exercise(elf, symbols, layout, budget):
     machines = []
     scenarios = []
 
-    def fresh():
+    def fresh(soundtrack=False, selected=1):
         cpu = Machine(elf, symbols, layout, budget)
+        cpu.mem[cpu.soundtrack] = int(soundtrack)
+        cpu.mem[cpu.selector] = selected
         machines.append(cpu)
         return cpu
 
@@ -178,15 +189,22 @@ def exercise(elf, symbols, layout, budget):
                 cpu.scan(CHORD, mode, expected=True, label=f"{mode}: repress {key}")
     scenarios.append("partial chords, all press orders, held chord and individual-key rearming in Title/Attract")
 
-    cpu = fresh()
-    visited = []
-    for index in range(TRACK_COUNT):
-        cpu.scan(CHORD, expected=True, label=f"full catalog cycle {index}")
-        visited.append(cpu.mem[cpu.selector])
-        cpu.scan(CHORD, label=f"full catalog held {index}")
-        cpu.scan((), label=f"full catalog release {index}")
-    require(visited == [*range(2, TRACK_COUNT), 0, 1], "catalog cycle skipped or repeated a song")
-    scenarios.append("physical chord edges visit every catalog song once and wrap back to Hammond Rocker")
+    require(sorted(PLAYLIST) == list(range(TRACK_COUNT)), "campaign playlist is not a complete catalog permutation")
+    for mode in ("Title", "Attract"):
+        for key, direction in (("period", 1), ("comma", -1)):
+            cpu = fresh()
+            cpu.scan(CHORD, mode, expected=True)
+            cpu.scan((), mode)
+            visited = []
+            for index in range(TRACK_COUNT):
+                cpu.scan((key,), mode, skip=direction, label=f"{mode}: {key} cycle {index}")
+                visited.append(cpu.mem[cpu.selector])
+                cpu.scan((key,), mode, label=f"{mode}: held {key} {index}")
+                cpu.scan((), mode)
+            expected = [PLAYLIST[(direction * (index + 1)) % TRACK_COUNT] for index in range(TRACK_COUNT)]
+            require(visited == expected, f"{key}: campaign cycle skipped, repeated or reordered a song")
+            require(cpu.mem[cpu.selector] == 1, f"{key}: full cycle did not return to Hammond Rocker")
+    scenarios.append("comma/period edges traverse every campaign-order recording in both directions and wrap")
 
     for mode in layout["modes"]:
         for selected in (0, 1, TRACK_COUNT - 1):
@@ -307,6 +325,78 @@ def exercise(elf, symbols, layout, budget):
     cpu.scan(CHORD | {"s", "f", "space"}, label="held simultaneous shortcuts")
     scenarios.append("S idle filtering, both joystick ports, cross-row impostors and simultaneous shortcuts")
 
+    for mode in layout["modes"]:
+        for enabled in (False, True):
+            for key, direction in (("comma", -1), ("period", 1)):
+                cpu = fresh(soundtrack=enabled, selected=0)
+                allowed = enabled and mode in ("Title", "Attract")
+                cpu.scan((key,), mode, skip=direction if allowed else 0,
+                         label=f"{mode}: {key}, soundtrack {enabled}")
+                cpu.scan((key,), mode, label=f"{mode}: held {key}")
+                cpu.mem[cpu.soundtrack] = 1
+                cpu.scan((key,), "Title", label=f"{mode}: {key} held into enabled title")
+                cpu.scan((), "Title")
+                cpu.scan((key,), "Title", skip=direction, label=f"{mode}: fresh title {key}")
+    scenarios.append("skip guards in every scene/mode and no new edge on entering enabled soundtrack mode")
+
+    for mode in ("Title", "Attract"):
+        for key, direction in (("comma", -1), ("period", 1)):
+            for shift in ("shift", "rshift"):
+                cpu = fresh(soundtrack=True)
+                cpu.scan((key, shift), mode, skip=direction, label=f"{mode}: {shift}+{key}")
+                cpu.scan((key,), mode, label=f"{mode}: releasing {shift} keeps {key} held")
+            for enabled in (False, True):
+                cpu = fresh(soundtrack=enabled, selected=0)
+                cpu.scan(CHORD | {key}, mode, expected=True,
+                         label=f"{mode}: toggle takes priority over {key}, enabled {enabled}")
+                cpu.scan((key,), mode, label=f"{mode}: skip remains held after toggle")
+                cpu.scan((), mode)
+                cpu.scan((key,), mode, skip=direction if not enabled else 0,
+                         label=f"{mode}: new skip after toggle")
+            cpu = fresh(soundtrack=True)
+            cpu.scan((key,), mode, skip=direction)
+            cpu.scan(("comma", "period"), mode, label=f"{mode}: opposite skip pressed while {key} held")
+            cpu.scan(({"comma", "period"} - {key}), mode,
+                     label=f"{mode}: releasing {key} does not synthesize opposite edge")
+            cpu.scan((), mode)
+        cpu = fresh(soundtrack=True)
+        cpu.scan(("comma", "period"), mode, label=f"{mode}: simultaneous skips cancel")
+        cpu.scan(("comma", "period"), mode, label=f"{mode}: held simultaneous skips")
+        cpu.scan(("comma",), mode, label=f"{mode}: releasing period leaves comma held")
+        cpu.scan((), mode)
+        cpu.scan(("comma",), mode, skip=-1)
+        cpu = fresh(soundtrack=True)
+        cpu.scan(("period",), "Title", skip=1)
+        cpu.scan(("period",), "Attract", label="skip held across title/attract cut")
+    scenarios.append("shifted skips, toggle priority, simultaneous skip suppression and held scene transitions")
+
+    for key, direction, substitute in (("comma", -1, "x"), ("period", 1, "c")):
+        for joy in (1, 2, 4, 8, 16, 31):
+            for joy1, joy2 in ((joy, 0), (0, joy), (joy, joy)):
+                fresh(soundtrack=True).scan((), joy1=joy1, joy2=joy2,
+                    label=f"joystick {joy1}/{joy2} cannot fake {key}")
+                fresh(soundtrack=True).scan((substitute,), joy1=joy1, joy2=joy2 | 4,
+                    label=f"joystick-selected {substitute} cannot fake {key}")
+        fresh(soundtrack=True).scan((key,), joy2=16, skip=direction,
+                                   label=f"{key} and joystick 2 FIRE coexist")
+    # Port 1 FIRE grounds period's column. Comma's column is outside the five
+    # joystick pins, but a joystick-selected X shares column 7 with comma.
+    for key, direction, contaminants, extra_keys in (
+            ("period", 1, ((16, 0), (31, 31)), ()),
+            ("comma", -1, ((0, 4), (31, 31)), ("x",))):
+        for joy1, joy2 in contaminants:
+            for initial in (False, True):
+                cpu = fresh(soundtrack=True)
+                keys = (key, *extra_keys)
+                if not initial:
+                    cpu.scan(keys, skip=direction, label=f"{key}: clean initial press")
+                cpu.scan(keys, joy1=joy1, joy2=joy2, label=f"{key}: contaminated baseline")
+                cpu.scan(keys, label=f"{key}: clearing contamination does not rearm")
+                cpu.scan(keys, label=f"{key}: still held after contamination")
+                cpu.scan(())
+                cpu.scan((key,), skip=direction, label=f"{key}: physical repress after contamination")
+    scenarios.append("skip joystick isolation, cross-row impostors and contamination cannot manufacture edges")
+
     return {"scenarios": scenarios, "fixtures": len(machines),
             "scanner_calls": sum(cpu.calls for cpu in machines),
             "maximum_cpu_cycles_per_call": max(cpu.max_cycles for cpu in machines),
@@ -328,7 +418,7 @@ def main():
     elf, symbols = load_elf(args.elf)
     raw_symbols = {symbol.name: symbol.address for symbol in elf.symbols}
     layout = SMOKE["dwarf_game_layout"](args.elf, args.llvm_dwarfdump, raw_symbols, args.report.parent)
-    for name, kind in ((SELECTOR, "u8"), (STORY, "bool"), ("menu_activity", "bool")):
+    for name, kind in ((SELECTOR, "u8"), (SOUNDTRACK, "bool"), (STORY, "bool"), ("menu_activity", "bool")):
         field = layout["fields"].get(name)
         require(field is not None and field["type"] == kind, f"missing native Game::{name} {kind}")
         require(layout["address"] + field["offset"] < symbols["__game_state_end"].address,

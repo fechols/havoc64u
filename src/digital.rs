@@ -57,6 +57,76 @@ pub struct Descriptor {
 }
 include!("digital_catalog.rs");
 
+impl Track {
+    /// Listening order is independent of the stable on-disk catalog IDs.
+    /// Inline into the owning AUDIO or PIXELS overlay.
+    #[inline(always)]
+    pub const fn soundtrack_next(self) -> Self {
+        match self {
+            Self::HammondRocker => Self::LowlandApproach,
+            Self::LowlandApproach => Self::CrystalCave,
+            Self::CrystalCave => Self::IronCanyon,
+            Self::IronCanyon => Self::CanyonGate,
+            Self::CanyonGate => Self::AshenWastes,
+            Self::AshenWastes => Self::FoundryBelt,
+            Self::FoundryBelt => Self::FortressRun,
+            Self::FortressRun => Self::CitadelCore,
+            Self::CitadelCore => Self::StormFront,
+            Self::StormFront => Self::MeteorReach,
+            Self::MeteorReach => Self::CarrierCoast,
+            Self::CarrierCoast => Self::CarrierAssault,
+            Self::CarrierAssault => Self::AsteroidBelt,
+            Self::AsteroidBelt => Self::LunarAwe,
+            Self::LunarAwe => Self::ShipGraveyard,
+            Self::ShipGraveyard => Self::OrbitalShipyard,
+            Self::OrbitalShipyard => Self::SpaceCarrier,
+            Self::SpaceCarrier => Self::JumpGate,
+            Self::JumpGate => Self::MissionFailed,
+            Self::MissionFailed => Self::GalacticDash,
+            Self::GalacticDash => Self::HammondRocker,
+        }
+    }
+
+    #[inline(always)]
+    pub const fn soundtrack_previous(self) -> Self {
+        match self {
+            Self::HammondRocker => Self::GalacticDash,
+            Self::LowlandApproach => Self::HammondRocker,
+            Self::CrystalCave => Self::LowlandApproach,
+            Self::IronCanyon => Self::CrystalCave,
+            Self::CanyonGate => Self::IronCanyon,
+            Self::AshenWastes => Self::CanyonGate,
+            Self::FoundryBelt => Self::AshenWastes,
+            Self::FortressRun => Self::FoundryBelt,
+            Self::CitadelCore => Self::FortressRun,
+            Self::StormFront => Self::CitadelCore,
+            Self::MeteorReach => Self::StormFront,
+            Self::CarrierCoast => Self::MeteorReach,
+            Self::CarrierAssault => Self::CarrierCoast,
+            Self::AsteroidBelt => Self::CarrierAssault,
+            Self::LunarAwe => Self::AsteroidBelt,
+            Self::ShipGraveyard => Self::LunarAwe,
+            Self::OrbitalShipyard => Self::ShipGraveyard,
+            Self::SpaceCarrier => Self::OrbitalShipyard,
+            Self::JumpGate => Self::SpaceCarrier,
+            Self::MissionFailed => Self::JumpGate,
+            Self::GalacticDash => Self::MissionFailed,
+        }
+    }
+}
+
+/// Materialize in each caller's overlay rather than in resident constant RAM.
+pub const SOUNDTRACK_NEIGHBORS: [[Track; Track::ALL.len()]; 2] = {
+    let mut result = [[Track::HammondRocker; Track::ALL.len()]; 2];
+    let mut id = 0;
+    while id < Track::ALL.len() {
+        result[0][id] = Track::ALL[id].soundtrack_next();
+        result[1][id] = Track::ALL[id].soundtrack_previous();
+        id += 1;
+    }
+    result
+};
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DigitalError {
     Truncated,

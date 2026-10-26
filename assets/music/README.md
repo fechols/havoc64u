@@ -35,8 +35,18 @@ recording; invalid stage indices use the cue mapping.
 
 Hammond Rocker uses true stereo. Galactic Dash, Mission Failed, and all eighteen
 stage recordings use mono decoding with the right output delayed by 160 samples
-(10 ms at 16 kHz). Songs retain their full lengths and loop until the selected
-track changes.
+(10 ms at 16 kHz). Songs retain their full lengths. Normal scene music loops
+until the selected track changes. At the title or during attract mode,
+CTRL + Commodore + DEL toggles a repeating playlist: Hammond Rocker, all
+eighteen stage songs in campaign order, Mission Failed, then Galactic Dash.
+Each song completes before the playlist advances; the final song returns to
+Hammond Rocker. This playback order is separate from the stable catalog IDs.
+In soundtrack mode, comma selects the previous song and period the next,
+wrapping in either direction. New songs start from the beginning; returning to
+the song still playing cancels a pending switch. The latest selection wins.
+The selection mode persists through scene changes and new runs; gameplay
+retains its scene mapping. Turning soundtrack mode off restores Hammond
+Rocker. Victory still selects Galactic Dash and carries it back to the title.
 
 Each track's `codebook_count` is an explicit encoding input. DLT5 stores eight
 little-endian signed-16 deltas per channel and balances packing groups across

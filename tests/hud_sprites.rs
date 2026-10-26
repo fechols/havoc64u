@@ -1,5 +1,5 @@
 use havoc::{
-    game::{Hud, Mode},
+    game::{Hud, MenuMusicStatus, Mode},
     hud_sprites::{render_corner, DisplayState, CORNER_POSITIONS},
     render::{draw_text, HUD_INK},
 };
@@ -8,6 +8,7 @@ fn hud(mode: Mode) -> Hud {
     Hud {
         mode,
         story_mode: false,
+        menu_music: MenuMusicStatus::Title,
         shield: 75,
         charge: 128,
         boost: 255,
@@ -35,8 +36,10 @@ fn image(corner: u8, state: &DisplayState) -> [u8; 128] {
             // Grey is functional ink only: spent bombs or empty gauge space.
             let bomb = corner == 1 && (9..14).contains(&y) && x % 8 != 0 && x % 8 != 7;
             let gauge = match corner {
-                2 => ((10..13).contains(&y) && (1..23).contains(&x))
-                    || ((16..19).contains(&y) && (7..22).contains(&x)),
+                2 => {
+                    ((10..13).contains(&y) && (1..23).contains(&x))
+                        || ((16..19).contains(&y) && (7..22).contains(&x))
+                }
                 3 => (12..15).contains(&y) && (1..23).contains(&x),
                 _ => false,
             };
@@ -273,7 +276,10 @@ fn boost_gauge_tracks_burst_and_cooldown_without_replacing_the_shield() {
                 assert_eq!(pixel(&picture, 6 + column, 19), 3);
             }
             for column in 0..15 {
-                assert_eq!(pixel(&picture, 7 + column, 17), if column < fill { 2 } else { 1 });
+                assert_eq!(
+                    pixel(&picture, 7 + column, 17),
+                    if column < fill { 2 } else { 1 }
+                );
             }
             for y in 0..15 {
                 for x in 0..24 {
@@ -307,7 +313,10 @@ fn boost_pixels_and_active_flash_dirty_only_the_shield_corner() {
     for y in 0..21 {
         for x in 0..24 {
             if !(15..20).contains(&y) || !(1..4).contains(&x) {
-                assert_eq!(pixel(&image(2, &flashing), x, y), pixel(&image(2, &full), x, y));
+                assert_eq!(
+                    pixel(&image(2, &flashing), x, y),
+                    pixel(&image(2, &full), x, y)
+                );
             }
         }
     }
@@ -391,6 +400,34 @@ fn fps_preserves_tenths_and_is_the_only_sprite_content_in_menu_modes() {
             }
             for corner in 1..4 {
                 assert_eq!(image(corner, &shown), [0; 128]);
+            }
+        }
+    }
+}
+
+#[test]
+fn music_status_keeps_menu_fps_clear_and_does_not_change_sprite_content() {
+    for mode in [Mode::Title, Mode::Attract] {
+        let mut status = hud(mode);
+        for fps in [None, Some(123)] {
+            let baseline = DisplayState::from_hud(&status, 0, fps);
+            for music in [
+                MenuMusicStatus::Title,
+                MenuMusicStatus::Soundtrack,
+                MenuMusicStatus::Victory,
+            ] {
+                status.menu_music = music;
+                let display = DisplayState::from_hud(&status, 0, fps);
+                assert_eq!(display, baseline);
+                let chip = image(0, &display);
+                for y in 0..21 {
+                    for x in 0..24 {
+                        if pixel(&chip, x, y) != 0 {
+                            let screen_y = CORNER_POSITIONS[0].1 as usize + y;
+                            assert!(screen_y >= 16, "FPS overlaps a music status strip");
+                        }
+                    }
+                }
             }
         }
     }

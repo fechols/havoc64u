@@ -77,6 +77,8 @@ static mut REQUESTED_CUE: MusicState = MusicState::Title;
 static mut REQUESTED_STAGE: u8 = 255;
 #[no_mangle]
 static mut REQUESTED_MENU_TRACK: u8 = 255;
+#[no_mangle]
+static mut REQUESTED_MENU_SOUNDTRACK: bool = false;
 static mut DIGITAL_CALIBRATION: digital::Calibration = digital::Calibration::new();
 #[no_mangle]
 static mut AUDIO_READY: bool = false;
@@ -742,15 +744,16 @@ unsafe fn take_input(until: u16) -> Option<InputSample> {
     enable_irq();
     result
 }
-// Benchmark instrumentation consumes the production SIM headroom. Its audio
-// publisher runs only from SIM and can use spare resident space in that build.
-#[cfg_attr(not(feature = "benchmarks"), link_section = ".phase.sim")]
+// The publisher runs only from SIM, whose extra helpers are loaded with every
+// profile. Benchmark instrumentation uses spare resident space in that build.
+#[cfg_attr(not(feature = "benchmarks"), link_section = ".phase.sim_extra")]
 #[inline(never)]
 unsafe fn send_audio(game: &mut Game) {
     disable_irq();
     REQUESTED_CUE = game.music_state();
     REQUESTED_STAGE = game.segment_index();
     REQUESTED_MENU_TRACK = game.menu_music_override();
+    REQUESTED_MENU_SOUNDTRACK = game.menu_soundtrack_enabled();
     if EMULATOR_SFX_ONLY != 0 { MUSIC_CUE = REQUESTED_CUE as u8; }
     while let Some(e) = game.pop_audio() {
         if AUDIO_READY {
@@ -776,7 +779,7 @@ unsafe fn service_audio() {
         AUDIO_READY = true;
         return;
     }
-    let track = havoc::digital::Track::from_id(REQUESTED_MENU_TRACK)
+    let mut track = havoc::digital::Track::from_id(REQUESTED_MENU_TRACK)
         .unwrap_or_else(|| havoc::digital::track_for_scene(REQUESTED_CUE, REQUESTED_STAGE));
     let state = AUDIO.as_mut_ptr();
     if MUSIC_BACKEND != BACKEND_DAC {
@@ -786,12 +789,23 @@ unsafe fn service_audio() {
         }
         // Keep the boot splash visible while the initial ring is primed.
         MUSIC_BACKEND = BACKEND_DAC;
-    } else { digital::request(&mut *state, track); }
+    }
+    digital::request_menu(&mut *state, track, REQUESTED_MENU_SOUNDTRACK);
     loop {
         if let Err(fault) = digital::service(&mut *state) { digital_failure(fault); }
         // Only startup waits for a complete ring. Once ready, each foreground
         // visit keeps the existing bounded refill/track-transition budget.
         if AUDIO_READY || (*state).is_running() { break; }
+    }
+    if let Some(next) = digital::take_auto_advance(&mut *state) {
+        GAME.assume_init_mut().sync_menu_music(next);
+        REQUESTED_MENU_TRACK = next as u8;
+        REQUESTED_CUE = if next == havoc::digital::Track::GalacticDash {
+            MusicState::Victory
+        } else {
+            MusicState::Title
+        };
+        track = next;
     }
     DIGITAL_LOOPS = (*state).loops;
     DIGITAL_MINIMUM_LEAD = (*state).minimum_lead;
@@ -908,7 +922,8 @@ unsafe fn update_fps_overlay(mode: havoc::game::Mode) {
         FPS_WINDOW_FRAMES = 0;
     }
     // Row 7: Space column 4, CTRL column 2, Commodore column 5.
-    // F is row 2 column 5; S is row 1 column 5; DEL is row 0 column 0. CIA 1 port A
+    // F is row 2 column 5; S is row 1 column 5; DEL is row 0 column 0.
+    // Comma/< and period/> are row 5, columns 7 and 4. CIA 1 port A
     // doubles as joystick port 2, so drive it as key rows only briefly with
     // the sampling IRQ masked, then restore joystick inputs and paddle port 2.
     // A column counts as a key only if it also reads high with no row selected:
@@ -926,13 +941,19 @@ unsafe fn update_fps_overlay(mode: havoc::game::Mode) {
     let story_key = peek(0xdc01) & 0x20 == 0;
     poke(0xdc00, 0xfe);
     let delete = peek(0xdc01) & 1 == 0;
+    poke(0xdc00, 0xdf);
+    let row5 = !peek(0xdc01);
+    let previous = row5 & 0x80 != 0;
+    let next = row5 & 0x10 != 0;
     restore_controls();
     enable_irq();
     let music_chord = row7 & 0x24 == 0x24 && delete;
     let keys = space as u8
         | (f_key as u8) << 1
         | (music_chord as u8) << 2
-        | (story_key as u8) << 3;
+        | (story_key as u8) << 3
+        | (previous as u8) << 4
+        | (next as u8) << 5;
     let pressed = keys & !KEYS_HELD;
     // Pause only has meaning while flying; elsewhere the key is ignored and
     // a stale pause cannot survive, because no tick runs while it is set.
@@ -950,12 +971,18 @@ unsafe fn update_fps_overlay(mode: havoc::game::Mode) {
     if pressed & 4 != 0 && idle & 0x25 == 0x25 {
         // Inlines into PIXELS; the next SIM/AUDIO pass publishes the selection.
         GAME.assume_init_mut().toggle_menu_music();
+    } else if !(previous && next) {
+        if pressed & 0x10 != 0 && idle & 0x80 != 0 {
+            GAME.assume_init_mut().step_menu_music(true);
+        } else if pressed & 0x20 != 0 && idle & 0x10 != 0 {
+            GAME.assume_init_mut().step_menu_music(false);
+        }
     }
     if pressed & 8 != 0 && idle & 0x20 != 0 {
         // Title-only selection; the ordinary Fire edge still launches in SIM.
         GAME.assume_init_mut().toggle_story_mode();
     }
-    // Latch the raw chord and S even when idle filtering suppresses them. Releasing
+    // Latch raw music/S keys even when idle filtering or mode guards suppress them. Releasing
     // joystick interference or changing modes must not rearm held keys.
     KEYS_HELD = keys;
 }
@@ -1226,8 +1253,8 @@ unsafe fn draw_pixels() {
     );
     // Simulation is complete and no intervening render phase changes its
     // visible status. Build the readout only after its PIXELS code is loaded.
+    update_fps_overlay(GAME.assume_init_ref().mode());
     let status = GAME.assume_init_ref().hud();
-    update_fps_overlay(status.mode);
     if RETICLE_FRAME_VISIBLE == 0 || RETICLE_RETIRE_OLD || PAUSED {
         // Retire old aiming before new hull pixels or captions are published. Position
         // changes still wait for present; only hiding can take effect early.

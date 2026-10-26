@@ -1,6 +1,6 @@
 use havoc::{
     assets::SEGMENT_COUNT,
-    game::{Hud, Mode},
+    game::{Hud, MenuMusicStatus, Mode},
     hud,
     render::{draw_text, pack_band, HUD_INK},
     victory::REVEAL_TICKS,
@@ -31,6 +31,7 @@ fn state(mode: Mode) -> Hud {
     Hud {
         mode,
         story_mode: false,
+        menu_music: MenuMusicStatus::Title,
         shield: 75,
         bombs: 2,
         lives: 3,
@@ -130,6 +131,93 @@ fn title_names_the_selected_mode_without_moving_the_other_rows() {
 }
 
 #[test]
+fn menu_music_status_is_centered_persistent_and_leaves_other_rows_unchanged() {
+    for (mode, y) in [(Mode::Title, 2), (Mode::Attract, 10)] {
+        let mut status = state(mode);
+        let baseline = frame(&status, 0);
+        for (music, caption) in [
+            (
+                MenuMusicStatus::Title,
+                b"NOW PLAYING TITLE MUSIC...".as_slice(),
+            ),
+            (
+                MenuMusicStatus::Soundtrack,
+                b"NOW PLAYING SOUNDTRACK...".as_slice(),
+            ),
+            (
+                MenuMusicStatus::Victory,
+                b"NOW PLAYING VICTORY MUSIC...".as_slice(),
+            ),
+        ] {
+            status.menu_music = music;
+            let pixels = frame(&status, 0);
+            assert_centered_caption(&pixels, y, caption, 3, (0, 160));
+            assert_eq!(&pixels[..y * 160], &baseline[..y * 160]);
+            assert_eq!(&pixels[(y + 5) * 160..], &baseline[(y + 5) * 160..]);
+            let blinking = frame(&status, 16);
+            assert_eq!(
+                &pixels[y * 160..(y + 5) * 160],
+                &blinking[y * 160..(y + 5) * 160]
+            );
+        }
+    }
+    for mode in [
+        Mode::Playing,
+        Mode::Transition,
+        Mode::Respawning,
+        Mode::GameOver,
+        Mode::Victory,
+    ] {
+        let mut status = state(mode);
+        let baseline = frame(&status, 0);
+        for music in [MenuMusicStatus::Soundtrack, MenuMusicStatus::Victory] {
+            status.menu_music = music;
+            assert_eq!(
+                frame(&status, 0),
+                baseline,
+                "music status leaked into {mode:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn menu_music_strips_survive_cell_packing_over_every_sky_and_retained_palette() {
+    use havoc::cells::{unpack_band, CellBand};
+
+    for (mode, band) in [(Mode::Title, 0), (Mode::Attract, 1)] {
+        for music in [
+            MenuMusicStatus::Title,
+            MenuMusicStatus::Soundtrack,
+            MenuMusicStatus::Victory,
+        ] {
+            let mut status = state(mode);
+            status.menu_music = music;
+            for background in 0..16 {
+                let mut pixels = [background; 1280];
+                assert!(hud::draw(band, &mut pixels, &status, 0));
+                let mut cells = CellBand::new();
+                cells.clear(background);
+                assert!(hud::draw(band, &mut cells, &status, 0));
+                let expected = pixels.map(|pixel| pixel & 15);
+                for (old_screen, old_color) in [(0, 0), (0x12, 3), (0x8b, 2), (0xff, 15)] {
+                    let (mut bitmap, mut screen, mut color) = ([0; 320], [0; 40], [0; 40]);
+                    cells.finish(
+                        &[old_screen; 40],
+                        &[old_color; 40],
+                        &mut bitmap,
+                        &mut screen,
+                        &mut color,
+                    );
+                    assert_eq!(unpack_band(&bitmap, &screen, &color, background), expected);
+                }
+                assert_eq!(cells.stats.overflow_cells, 0);
+            }
+        }
+    }
+}
+
+#[test]
 fn respawn_and_defeat_show_status_and_restart_cues() {
     let respawn = frame(&state(Mode::Respawning), 0);
     assert!(respawn[84 * 160..89 * 160]
@@ -221,7 +309,8 @@ fn attract_labels_identify_each_map_without_cockpit_or_boss_panels() {
         assert!(pixels[189 * 160..194 * 160]
             .iter()
             .any(|&p| p == HUD_INK | 1));
-        for y in 8..200 {
+        assert_centered_caption(&pixels, 10, b"NOW PLAYING TITLE MUSIC...", 3, (0, 160));
+        for y in 16..200 {
             if !(189..194).contains(&y) {
                 assert!(pixels[y * 160..(y + 1) * 160].iter().all(|&p| p == 6));
             }
@@ -270,7 +359,7 @@ fn attract_names_survive_native_packing_and_previous_cell_palettes() {
 
 #[test]
 fn every_mode_survives_native_bitmap_packing_with_readable_ink() {
-    for (mode, story_mode) in [
+    for (mode, story_mode, music) in [
         Mode::Title,
         Mode::Playing,
         Mode::Respawning,
@@ -281,11 +370,19 @@ fn every_mode_survives_native_bitmap_packing_with_readable_ink() {
     ]
     .into_iter()
     .flat_map(|mode| [false, true].map(|story_mode| (mode, story_mode)))
-    {
+    .flat_map(|(mode, story_mode)| {
+        [
+            MenuMusicStatus::Title,
+            MenuMusicStatus::Soundtrack,
+            MenuMusicStatus::Victory,
+        ]
+        .map(|music| (mode, story_mode, music))
+    }) {
         for band in 0..25 {
             let mut pixels = [6; 1280];
             let mut status = state(mode);
             status.story_mode = story_mode;
+            status.menu_music = music;
             status.lives = if story_mode { 99 } else { 3 };
             status.victory_ticks = REVEAL_TICKS;
             hud::draw(band, &mut pixels, &status, 0);
@@ -313,7 +410,7 @@ fn every_mode_survives_native_bitmap_packing_with_readable_ink() {
                 assert_eq!(
                     packed,
                     pixel & 15,
-                    "mode {mode:?}, story {story_mode}, band {band}, pixel {x},{y}"
+                    "mode {mode:?}, story {story_mode}, music {music:?}, band {band}, pixel {x},{y}"
                 );
             }
         }
@@ -378,9 +475,14 @@ fn boss_bar_is_red_proportional_and_replaces_the_name_only_during_combat() {
         status.boss_shield = 100;
         assert_eq!(&frame(&status, 0)[..1280], &level_strip(0));
     }
-    for mode in [Mode::Title, Mode::Victory] {
-        assert_eq!(&frame(&state(mode), 0)[..1280], &[0; 1280]);
-    }
+    assert_eq!(&frame(&state(Mode::Victory), 0)[..1280], &[0; 1280]);
+    assert_centered_caption(
+        &frame(&state(Mode::Title), 0),
+        2,
+        b"NOW PLAYING TITLE MUSIC...",
+        3,
+        (0, 160),
+    );
 }
 
 #[cfg(feature = "host-tools")]

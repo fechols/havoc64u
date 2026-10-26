@@ -158,10 +158,23 @@ pub enum PresentationEvent {
     Hit,
 }
 
+#[repr(u8)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MenuMusicStatus {
+    Title,
+    Soundtrack,
+    Victory,
+}
+
+#[cfg_attr(target_arch = "mos", link_section = ".phase.pixels.data")]
+static MENU_TRACK_NEIGHBORS: [[crate::digital::Track; crate::digital::Track::ALL.len()]; 2] =
+    crate::digital::SOUNDTRACK_NEIGHBORS;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Hud {
     pub mode: Mode,
     pub story_mode: bool,
+    pub menu_music: MenuMusicStatus,
     pub shield: u8,
     pub bombs: u8,
     pub lives: u8,
@@ -404,6 +417,8 @@ pub struct Game {
     menu_activity: bool,
     /// Menu track selection survives scene resets; victory selects Galactic.
     menu_music_track: u8,
+    /// Playlist preference survives scene resets and new runs.
+    menu_soundtrack: bool,
     /// Title selection persists until the program restarts.
     story_mode: bool,
     audio_head: u8,
@@ -477,6 +492,7 @@ impl Game {
             menu_ticks: 0,
             menu_activity: false,
             menu_music_track: crate::digital::Track::HammondRocker as u8,
+            menu_soundtrack: false,
             story_mode: false,
             actors: [Actor::EMPTY; ACTORS],
             shots: [Shot::EMPTY; SHOTS],
@@ -771,6 +787,13 @@ impl Game {
         Hud {
             mode: self.mode,
             story_mode: self.story_mode,
+            menu_music: if self.menu_soundtrack {
+                MenuMusicStatus::Soundtrack
+            } else if self.menu_music_track == crate::digital::Track::GalacticDash as u8 {
+                MenuMusicStatus::Victory
+            } else {
+                MenuMusicStatus::Title
+            },
             shield: self.shield,
             bombs: self.bombs,
             lives: self.lives,
@@ -786,15 +809,38 @@ impl Game {
             victory_ticks: self.victory_ticks(),
         }
     }
-    /// Switch menu tracks without affecting the scene or its inactivity timer.
+    /// Toggle playlist playback without affecting the scene or inactivity timer.
     /// Inlined so the native PIXELS keyboard scan needs no other overlay.
     #[inline(always)]
     pub fn toggle_menu_music(&mut self) {
         if matches!(self.mode, Mode::Title | Mode::Attract) {
-            self.menu_music_track += 1;
-            if self.menu_music_track as usize == crate::digital::Track::ALL.len() {
-                self.menu_music_track = 0;
+            self.menu_soundtrack = !self.menu_soundtrack;
+            if !self.menu_soundtrack {
+                self.menu_music_track = crate::digital::Track::HammondRocker as u8;
             }
+        }
+    }
+    /// Physical comma/period edges select a song only in playlist menus.
+    #[inline(always)]
+    pub fn step_menu_music(&mut self, previous: bool) {
+        if self.menu_soundtrack_enabled() {
+            let track = crate::digital::Track::from_id(self.menu_music_track)
+                .unwrap_or(crate::digital::Track::HammondRocker);
+            // Both indices are bounded by the bool and validated Track enum.
+            self.menu_music_track = unsafe {
+                *MENU_TRACK_NEIGHBORS.get_unchecked(previous as usize).get_unchecked(track as usize)
+            } as u8;
+        }
+    }
+    #[inline(always)]
+    pub fn menu_soundtrack_enabled(&self) -> bool {
+        self.menu_soundtrack && matches!(self.mode, Mode::Title | Mode::Attract)
+    }
+    /// AUDIO publishes only completed automatic handoffs, before rendering.
+    #[inline(always)]
+    pub fn sync_menu_music(&mut self, track: crate::digital::Track) {
+        if self.menu_soundtrack_enabled() {
+            self.menu_music_track = track as u8;
         }
     }
     /// Menus preview recordings directly; gameplay retains its scene mapping.
@@ -912,10 +958,12 @@ impl Game {
         let bits = self.controls.bits;
         let now = self.controls.now;
         let menu_music_track = self.menu_music_track;
+        let menu_soundtrack = self.menu_soundtrack;
         let story_mode = self.story_mode;
         let encounter_seed = self.encounter_seed;
         self.reset_in_place();
         self.menu_music_track = menu_music_track;
+        self.menu_soundtrack = menu_soundtrack;
         self.story_mode = story_mode;
         self.lives = if story_mode { 99 } else { 3 };
         self.encounter_seed = encounter_seed;

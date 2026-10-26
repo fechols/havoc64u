@@ -230,6 +230,7 @@ class Machine(Cpu):
         self.put("MUSIC_BACKEND", 2)
         self.put("havoc_c64::REQUESTED_CUE", 0)
         self.put("havoc_c64::REQUESTED_MENU_TRACK", 255)
+        self.put("havoc_c64::REQUESTED_MENU_SOUNDTRACK", 0)
         self.put("havoc_c64::AUDIO_READY", 0)
         self.put("havoc_c64::CLOCK_KHZ", 985 if standard == "pal" else 1023, 2)
         self.stack_bottom = symbols["__stack_bottom"].address
@@ -1080,6 +1081,133 @@ def exercise_menu_routing(elf, symbols, image, standard, budget):
                 scope="Native AUDIO catalog overrides and decoded prefixes; initialized-backend requests replaced before playback")
 
 
+def exercise_soundtrack(elf, symbols, image, standard, budget, game_layout):
+    """Native automatic handoffs with shortened audible-end countdown fixtures.
+
+    PCM decoding, sampler reads, priming, fades and the Game/request handshake
+    execute normally. Only the remaining song duration is seeded, so this is
+    boundary integration coverage rather than full-recording timing evidence.
+    """
+    cpu = Machine(elf, symbols, image, standard)
+    game_base = game_layout["address"]
+    fields = game_layout["fields"]
+
+    def game(name, value=None):
+        address = game_base + fields[name]["offset"]
+        if value is not None:
+            cpu.mem[address] = value
+        return cpu.mem[address]
+
+    def request(track, enabled=True):
+        game("mode", game_layout["modes"]["Title"])
+        game("menu_music_track", track)
+        game("menu_soundtrack", int(enabled))
+        cpu.put("havoc_c64::REQUESTED_MENU_TRACK", track)
+        cpu.put("havoc_c64::REQUESTED_MENU_SOUNDTRACK", int(enabled))
+        cpu.put("havoc_c64::REQUESTED_CUE", 5 if track == 0 else 0)
+
+    def visit(seconds=0.06):
+        cpu.delay(seconds)
+        cpu.call("havoc_c64::service_audio", budget)
+        require(cpu.get("DIGITAL_FAULT") == 0 and cpu.get("MUSIC_UNDERRUNS", 2) == 0,
+                "soundtrack service faulted or underrun occurred")
+
+    def ready_successor():
+        starts, active = cpu.starts.copy(), cpu.active_name()
+        for _ in range(100):
+            visit()
+            require(cpu.active_name() == active and cpu.starts == starts and cpu.volume == [32, 32],
+                    "preparing automatic successor interrupted the current song")
+            if cpu.pending_frames() == FRAMES:
+                break
+        else:
+            raise KernelError("automatic successor did not finish bounded preparation")
+        require(cpu.state_value("auto_pending") and not cpu.state_value("fading"),
+                "prepared successor did not wait for the audible song ending")
+
+    request(1, False)
+    cpu.boot(budget)
+    cpu.prime(budget)
+    calibration_count = cpu.calibrations
+    request(1)
+    boundaries = []
+
+    def finish(expected):
+        ready_successor()
+        old = cpu.active_name()
+        starts = cpu.starts.copy()
+        entry = next(entry for entry in cpu.references if entry["name"] == old)
+        remaining = entry["metadata"]["sample_rate"] * 5 // 4
+        address = cpu.state_address("remaining")
+        cpu.mem[address:address + 4] = remaining.to_bytes(4, "little")
+        began = cpu.ticks
+        expected_seconds = remaining * (cpu.be16(0xdf2e) + 2) / 6250000
+        fade_seen = False
+        for _ in range(50):
+            visit(0.08)
+            if cpu.active_name() != old:
+                break
+            fade_seen |= 0 < cpu.volume[0] < 32
+        else:
+            raise KernelError("automatic boundary never advanced")
+        elapsed = (cpu.ticks - began) / cpu.bus_hz
+        require(cpu.active_name() == cpu.references[expected]["name"], "wrong automatic playlist successor")
+        require(cpu.starts == [value + 1 for value in starts] and fade_seen,
+                "automatic ending did not perform one faded handoff")
+        require(expected_seconds - 0.02 <= elapsed <= expected_seconds + 0.4,
+                f"automatic boundary ignored the audible countdown: {elapsed} vs {expected_seconds}")
+        require(game("menu_music_track") == cpu.get("havoc_c64::REQUESTED_MENU_TRACK") == expected,
+                "automatic handoff did not synchronize Game and the published menu cursor")
+        require(game("menu_soundtrack") == 1 and cpu.get("havoc_c64::REQUESTED_MENU_SOUNDTRACK") == 1,
+                "automatic handoff disabled soundtrack mode")
+        require(cpu.state_value("auto_advance") == 255 and cpu.volume == [32, 32],
+                "automatic handoff event was not consumed or new song gain was wrong")
+        stable = cpu.starts.copy()
+        visit()
+        require(cpu.starts == stable, "next foreground request undid or restarted automatic selection")
+        boundaries.append(dict(previous=old, next=cpu.active_name(), seeded_remaining_frames=remaining,
+                               elapsed_seconds=elapsed, cursor_synced=True))
+
+    finish(3)  # Stereo title -> mono first stage.
+    finish(4)  # Mono -> mono.
+    request(0)  # The post-victory Galactic Dash cursor remains selectable.
+    for _ in range(100):
+        visit()
+        if cpu.active_name() == "galactic-dash":
+            break
+    else:
+        raise KernelError("manual soundtrack selection did not replace prepared successor")
+    finish(1)  # Last playlist song -> first; mono -> stereo.
+    ready_successor()
+    starts = cpu.starts.copy()
+    request(1, False)
+    visit()
+    require(cpu.state_value("pending") == 255 and not cpu.state_value("auto_pending")
+            and cpu.starts == starts and cpu.volume == [32, 32],
+            "disabling soundtrack mode did not cancel its prepared successor")
+    request(1)
+    ready_successor()
+    game("mode", game_layout["modes"]["Playing"])
+    cpu.put("havoc_c64::REQUESTED_MENU_TRACK", 255)
+    cpu.put("havoc_c64::REQUESTED_MENU_SOUNDTRACK", 0)
+    cpu.put("havoc_c64::REQUESTED_CUE", 1)
+    cpu.put("havoc_c64::REQUESTED_STAGE", 1)
+    for _ in range(100):
+        visit()
+        if cpu.active_name() == "crystal-cave":
+            break
+    else:
+        raise KernelError("gameplay did not replace the automatic menu successor")
+    require(game("menu_music_track") == 1 and game("menu_soundtrack") == 1,
+            "scene handoff mutated the saved menu soundtrack selection")
+    require(not cpu.state_value("auto_pending") and cpu.state_value("pending") == 255,
+            "gameplay retained an automatic menu successor")
+    require(cpu.calibrations == calibration_count, "soundtrack changes recalibrated the sampler")
+    return dict(passed=True, boundaries=boundaries, calibration_reused=True,
+                cancellation_and_gameplay_override=True, decoded_samples=cpu.pcm_samples,
+                scope="Native PCM/priming/fade/handshake with seeded end countdowns, not complete song durations")
+
+
 def exercise_startup(elf, symbols, image, standard, budget):
     """Observe actual first-call readiness for both decoder channel profiles."""
     results = {}
@@ -1131,6 +1259,7 @@ def main():
                         help="maximum emulated instructions per native entry, not the runtime decode budget")
     parser.add_argument("--emulator-only", action="store_true")
     parser.add_argument("--menu-only", action="store_true", help="only check menu track routing and decoded prefixes")
+    parser.add_argument("--soundtrack-only", action="store_true", help="check automatic soundtrack boundaries and cursor synchronization")
     parser.add_argument("--kernel-only", action="store_true", help="only execute directed assembly decoder cases")
     parser.add_argument("--startup-only", action="store_true", help="check first-call music readiness, bounded refills, and emulator/fatal paths")
     parser.add_argument("--llvm-dwarfdump", type=Path,
@@ -1141,7 +1270,7 @@ def main():
     report = dict(model="NMOS6502 at64x bus; DMA1byte/bus tick; sampler6.25MHz/(divider+2)",
                   elf_sha256=hashlib.sha256(args.elf.read_bytes()).hexdigest(),
                   instruction_budget_per_call=args.budget, standards={})
-    if not args.emulator_only and not args.menu_only and not args.startup_only:
+    if not args.emulator_only and not args.menu_only and not args.startup_only and not args.soundtrack_only:
         report["assembly_kernel"] = exercise_decode_kernel(elf, symbols)
     if not args.kernel_only:
         preview = runpy.run_path(str(ROOT / "tools/sfx-previews.py"))
@@ -1153,7 +1282,16 @@ def main():
         image = args.reu.read_bytes()
         require(len(image) == symbols["__reu_size"].address, "REU/ELF size mismatch")
         report["reu_sha256"] = hashlib.sha256(image).hexdigest()
+        game_layout = None
+        if args.soundtrack_only or not (args.emulator_only or args.menu_only or args.startup_only):
+            args.report.parent.mkdir(parents=True, exist_ok=True)
+            smoke = runpy.run_path(str(ROOT / "tools/vice-smoke.py"))
+            game_layout = smoke["dwarf_game_layout"](args.elf, args.llvm_dwarfdump,
+                {symbol.name: symbol.address for symbol in elf.symbols}, args.report.parent)
         for standard in ("pal", "ntsc") if args.standard == "both" else (args.standard,):
+            if args.soundtrack_only:
+                report["standards"][standard] = exercise_soundtrack(elf, symbols, image, standard, args.budget, game_layout)
+                continue
             if args.menu_only:
                 report["standards"][standard] = exercise_menu_routing(elf, symbols, image, standard, args.budget)
                 continue
@@ -1162,6 +1300,7 @@ def main():
             result["emulator_sfx_only"] = exercise_emulator_sfx_only(elf, symbols, image, standard, args.budget)
             if not args.emulator_only and not args.startup_only:
                 result["corruption_faults"] = exercise_corruption(elf, symbols, image, standard, args.budget)
+                result["soundtrack"] = exercise_soundtrack(elf, symbols, image, standard, args.budget, game_layout)
             result["fatal_shutdown"] = exercise_fatal_shutdown(elf, symbols, image, standard)
             report["standards"][standard] = result
     report["passed"] = True
