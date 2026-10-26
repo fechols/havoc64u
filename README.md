@@ -61,6 +61,12 @@ Screenshots: matching scenes from the **physical C64 Ultimate playthrough record
 | **Space Carrier** | **Jump Gate** |
 | ![Ship flying above the Dreadnought's broad deck](docs/media/space-carrier.png) | ![Ship approaching the Gate Guardian's open aperture](docs/media/jump-gate.png) |
 
+## Soundtrack
+
+**[Download the H.A.V.O.C. MP3 soundtrack (ZIP)](https://github.com/fechols/havoc64u/releases/download/soundtrack-v1/havoc-soundtrack-mp3.zip)** — all 21 original recordings by **William Echols**, with an ordered playlist and the music license.
+
+Extract the ZIP, then open `H.A.V.O.C. OST.m3u8` in a music player that supports M3U playlists. The playlist follows the album's track numbers: the eighteen stage songs, then Hammond Rocker, Galactic Dash, and Mission Failed.
+
 ## Download and launch
 
 **[Download H.A.V.O.C. v0.1.5](https://github.com/fechols/havoc64u/releases/download/v0.1.5/havoc-v0.1.5.zip)** — the complete eighteen-stage campaign with twenty-one digital songs, four-SID combat effects, and optional 99-life Story mode. It uses the C64 Ultimate's built-in audio; no extra chips or hardware installation needed.
