@@ -830,9 +830,23 @@ The bootstrap structure was informed by the neighboring `doomc64u` repository. `
 
 ## Reproduce the README showcase
 
-### Current physical hardware capture (2026-10-24)
+### Current physical hardware capture (2026-10-26)
 
-The README gallery and teaser now use `HAVOC complete playthrough 10-24-2026.mp4`, supplied as a physical C64 Ultimate recording. Its SHA-256 is `dea37ce30aeb3b0542b0d567609e6d2639dfa5ed81d9f51bddcbdab131e9a3aa`; the source is 640×480 at 60 capture frames per second, with 48 kHz stereo audio. The recorded game build is not independently identified, so the media is labeled by hardware and recording date rather than a release version.
+The README gallery and teaser use `HAVOC V0.1.5 Playthrough 10-26-2026.mp4`, supplied by the user as the latest v0.1.5 physical C64 Ultimate recording. Its SHA-256 is `55405c8bced0dcd2dc65aaacdcc452d152b772f039c11ef1342ba9677352a136`; the source is 640x480 at 60 capture frames per second, with 48 kHz stereo audio. The version attribution comes from the supplied recording; the video does not independently identify package hashes.
+
+All thirteen PNGs use the exact decoded RGB crop `format=rgb24,crop=534:300:53:90:exact=1`, producing 534x300 images with square pixels. The trailer uses the same rectangle and converts it to YUV420p for video encoding. There is no scaling, stretching, retouching, color grading, scanline filtering, interpolation, or gameplay retiming. The 60 fps output preserves the capture cadence and does not claim a 60 fps game renderer. All twelve gallery scenes and the title preview have been replaced.
+
+The reproducible editing recipe and evidence are under `target/readme-hardware-20261026/`: `assemble.py` records source hashes and exact frame intervals in `manifest.json`; `gallery/finalize_gallery.py` records still timestamps, source-frame identifiers, crop verification, and output hashes in `gallery/gallery-selection.json`; and `review/` retains the visual contact sheets. Run these with Python 3 and Pillow, using FFmpeg/FFprobe from `C:/ffmpeg-8.1/bin/`. Generated media remains under `target/`; the selected public PNGs are in `docs/media/`.
+
+The 91.2-second edit retains title (4), Lowland Approach (12), Crystal Cave (12), Iron Canyon (12), Foundry Belt (12), Storm Front (12), complete orbital ascent (10), Asteroid Belt (4), Shattered Moon (4), Space Carrier (4), and title outro (5.2). The source intervals are 20-24, 100-112, 144-156, 274-286, 470-482, 728-740, 1024-1034, 1062-1066, 1140-1144, 1484-1488, and 30-35.2 seconds, respectively. It includes a boss glimpse without a defeat or campaign ending.
+
+The full current `assets/music/source/Ashen Wastes.m4a` (SHA-256 `29b6b35850ffd17b33ce39901ae4b0ef6c56cc72b7fdd5ced2d2bb097100841b`) plays once from beginning to end at its original speed and gain. Captured game audio is muted. `final/report.json` verifies 5,472 H.264 frames, 48 kHz stereo AAC, 91.2 seconds, 6,167,527 bytes, and a decoded audio true peak of -1.6 dBTP. The CRF 16 master fits the 9.8 MB upload limit and is the published copy. The [v0.1.5 hardware teaser MP4](https://github.com/fechols/havoc64u/releases/download/v0.1.5/havoc-teaser-hardware-20261026.mp4) has SHA-256 `28ed6042e46e01b4a01dd8a7abe210e75da0b0b91bf489d5ac8d20622b06d4fd`.
+
+Validation includes independent decoded-pixel checks for every still, source checksums, complete-timeline sampled visual review, full-file video decoding, audio measurements, and MP4 fast-start checks. Both hosted video copies were downloaded anonymously and matched the reviewed file; `published-media.json` retains that evidence. Real-time audiovisual playback remains unverified because no browser was available in this session.
+
+### Historical physical hardware capture (2026-10-24)
+
+The previous README gallery and teaser used `HAVOC complete playthrough 10-24-2026.mp4`, supplied as a physical C64 Ultimate recording. Its SHA-256 is `dea37ce30aeb3b0542b0d567609e6d2639dfa5ed81d9f51bddcbdab131e9a3aa`; the source is 640×480 at 60 capture frames per second, with 48 kHz stereo audio. The recorded game build is not independently identified, so the media is labeled by hardware and recording date rather than a release version.
 
 All thirteen PNGs and the video use the fixed FFmpeg crop `crop=534:300:54:90`, producing 534×300 images with square pixels. There is no scaling, stretching, palette substitution, scanline filtering, interpolation, or gameplay retiming. The 60 fps output preserves the recording's cadence and does not claim a 60 fps game renderer. The gallery keeps its twelve scene names and order, plus the title preview.
 

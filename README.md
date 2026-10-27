@@ -37,15 +37,15 @@ The four-SID effects engine runs in resident assembly at 50 Hz. Each chip acts a
 
 ## See it in action
 
-**Sound on!** Fly from the lowlands into orbit with a glimpse of the late-game Space Carrier. This **91-second teaser** uses footage recorded on a **physical C64 Ultimate** on October 24, 2026, edited to the complete original recording of **Ashen Wastes**. The capture's black borders are cropped, with its colors, scanlines, proportions, and original gameplay speed preserved. The soundtrack replaces the captured game audio.
+**Sound on!** Fly from the lowlands into orbit with a glimpse of the late-game Space Carrier. This **91-second teaser** shows **H.A.V.O.C. v0.1.5**, recorded on a **physical C64 Ultimate** on October 26, 2026, edited to the complete original recording of **Ashen Wastes**. The capture's black borders are cropped, with its colors, scanlines, proportions, and original gameplay speed preserved. The soundtrack replaces the captured game audio.
 
 <!-- Keep the GitHub attachment URL on its own line for inline video playback. -->
 
-https://github.com/user-attachments/assets/e28c8650-1e2d-4470-9767-cf0c76257224
+https://github.com/user-attachments/assets/3c6046b8-8c42-484b-b490-6f2f3100ec52
 
-[Watch or download the hardware teaser (MP4)](https://github.com/fechols/havoc64u/releases/download/v0.1.4/havoc-teaser-hardware-20261024.mp4).
+[Watch or download the hardware teaser (MP4)](https://github.com/fechols/havoc64u/releases/download/v0.1.5/havoc-teaser-hardware-20261026.mp4).
 
-Screenshots: matching scenes from the **physical C64 Ultimate playthrough recorded October 24, 2026**, with the black capture borders cropped.
+Screenshots: scenes from **H.A.V.O.C. v0.1.5**, captured in the **physical C64 Ultimate playthrough recorded October 26, 2026**, with the black capture borders cropped.
 
 | Lowland Approach | Crystal Cave |
 | --- | --- |
