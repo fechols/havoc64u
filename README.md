@@ -67,6 +67,8 @@ Screenshots: scenes from **H.A.V.O.C. v0.1.5**, captured in the **physical C64 U
 
 Extract the ZIP, then open `H.A.V.O.C. OST.m3u8` in a music player that supports M3U playlists. The playlist follows the album's track numbers: the eighteen stage songs, then Hammond Rocker, Galactic Dash, and Mission Failed.
 
+Prefer to hear it on the hardware? The official **[H.A.V.O.C. Music Disk](https://github.com/fechols/havocmd)** plays all 21 recordings in 16 kHz stereo on the 64 MHz C64 Ultimate, with a scrolling full-screen panoramic picture for every song.
+
 ## Download and launch
 
 **[Download H.A.V.O.C. v0.1.5](https://github.com/fechols/havoc64u/releases/download/v0.1.5/havoc-v0.1.5.zip)** — the complete eighteen-stage campaign with twenty-one digital songs, four-SID combat effects, and optional 99-life Story mode. It uses the C64 Ultimate's built-in audio; no extra chips or hardware installation needed.
