@@ -2,6 +2,8 @@
 use havoc::{assets::*, audio, digital};
 use std::{boxed::Box, format, fs, path::Path, println, vec, vec::Vec};
 
+include!("host/stage_props.rs");
+
 /// Reproducible compressed source; the original recordings are not required to build.
 pub use digital::TRACK_ASSETS as DIGITAL_TRACKS;
 
@@ -758,9 +760,12 @@ fn finish_model_surfaces(info: StageInfo, models: &mut [Model]) {
         if info.enemy_profile == 1 {
             backs(&mut models[DIVER as usize], 2..4);
         }
-        let rock = &mut models[ROCK as usize];
-        let color = rock.1[5][3];
-        cap(rock, color);
+        // Generated stage obstacles are already closed outward hulls.
+        if stage_prop(info.theme, ROCK).is_none() {
+            let rock = &mut models[ROCK as usize];
+            let color = rock.1[5][3];
+            cap(rock, color);
+        }
     }
 
     let turret = &mut models[TURRET as usize];
@@ -773,9 +778,11 @@ fn finish_model_surfaces(info: StageInfo, models: &mut [Model]) {
     let color = turret.1[2][3];
     cap(turret, color);
 
-    let building = &mut models[BUILDING as usize];
-    let color = building.1[2][3];
-    cap(building, color);
+    if stage_prop(info.theme, BUILDING).is_none() {
+        let building = &mut models[BUILDING as usize];
+        let color = building.1[2][3];
+        cap(building, color);
+    }
 
     let carrier = &mut models[CARRIER as usize];
     match info.boss_kind {
@@ -850,16 +857,6 @@ fn customize_stage_models(info: StageInfo, models: &mut [Model]) {
             for (i, face) in models[FIGHTER as usize].1.iter_mut().enumerate() {
                 face[3] = [3, 1, 14, 6][i % 4];
             }
-            // The cave's obstacles are translucent crystal spires. Their rock
-            // collision identity stays unchanged; only the checked mesh differs.
-            for vertex in &mut models[ROCK as usize].0 {
-                vertex[0] = vertex[0] * 3 / 4;
-                vertex[1] = vertex[1] * 3 / 2;
-                vertex[2] = vertex[2] * 3 / 4;
-            }
-            for (i, face) in models[ROCK as usize].1.iter_mut().enumerate() {
-                face[3] = [3, 1, 14, 6, 3, 14][i];
-            }
         }
         5 => {
             // Volcanic diver: high swept fins and a narrow ember-colored nose.
@@ -872,12 +869,6 @@ fn customize_stage_models(info: StageInfo, models: &mut [Model]) {
             ];
             for (i, face) in models[DIVER as usize].1.iter_mut().enumerate() {
                 face[3] = [2, 8, 9, 2, 10, 8][i];
-            }
-            for vertex in &mut models[ROCK as usize].0 {
-                vertex[1] = vertex[1] * 3 / 2;
-            }
-            for (i, face) in models[ROCK as usize].1.iter_mut().enumerate() {
-                face[3] = [11, 8, 0, 8, 11, 0][i];
             }
         }
         8 | 9 => {
@@ -903,6 +894,13 @@ fn customize_stage_models(info: StageInfo, models: &mut [Model]) {
         }
         10..=15 => customize_space_models(info.theme, models),
         _ => {}
+    }
+    // Obstacles traced from the stage paintings keep their collision
+    // identity; only the checked mesh differs (the cave's are crystal spires).
+    for kind in [ROCK, BUILDING] {
+        if let Some(model) = stage_prop(info.theme, kind) {
+            models[kind as usize] = model;
+        }
     }
     match info.boss_kind {
         1 => {

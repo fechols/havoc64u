@@ -412,7 +412,8 @@ fn stage_model_banks_keep_twenty_six_distinct_enemy_shapes_and_shared_player_ass
         for kind in [0, bank.enemy_count() + 1, 255] {
             assert_eq!(bank.enemy(kind), EnemySpec::default());
         }
-        for mesh in [PLAYER, CRYSTAL, BUILDING, MEDAL] {
+        // Obstacle buildings are traced per stage from its painting.
+        for mesh in [PLAYER, CRYSTAL, MEDAL] {
             if level == 17 && mesh == CRYSTAL {
                 continue; // The final stage reserves this unused slot for child Guardians.
             }
@@ -487,9 +488,24 @@ fn completed_enemy_surfaces_keep_ground_bases_and_original_vertex_bounds() {
         // Player, pickups and scenery preserve their original dimensions.
         check(&bank, PLAYER, (8, 12), [-36, -7, -27], [36, 12, 36]);
         check(&bank, CRYSTAL, (6, 8), [-13, -20, -13], [13, 20, 13]);
-        check(&bank, BUILDING, (8, 12), [-22, 0, -22], [22, 60, 22]);
-        if !matches!(level, 1 | 4) {
-            check(&bank, ROCK, (6, 8), [-32, 0, -30], [35, 42, 30]);
+        // Obstacles traced from the stage paintings fill the same boxes as
+        // the meshes they replace (the cave and ash spires stand taller);
+        // the rest keep the original shared meshes.
+        let traced = |mesh, min: [i16; 3], max: [i16; 3]| {
+            let (vertices, faces) = (bank.vertex_count(mesh), bank.face_count(mesh));
+            assert!(vertices <= 12 && faces <= 20, "level {level}/mesh {mesh}");
+            check(&bank, mesh, (vertices, faces), min, max);
+        };
+        match level {
+            5 | 6 | 10 | 11 => traced(BUILDING, [-22, 0, -22], [22, 60, 22]),
+            _ => check(&bank, BUILDING, (8, 12), [-22, 0, -22], [22, 60, 22]),
+        }
+        match level {
+            1 => traced(ROCK, [-24, 0, -22], [26, 63, 22]),
+            4 => traced(ROCK, [-32, 0, -30], [35, 63, 30]),
+            8 => traced(ROCK, [-32, 0, -30], [35, 56, 30]),
+            0 | 2 | 3 | 9 => traced(ROCK, [-32, 0, -30], [35, 42, 30]),
+            _ => check(&bank, ROCK, (6, 8), [-32, 0, -30], [35, 42, 30]),
         }
     }
 }
