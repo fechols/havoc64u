@@ -140,6 +140,90 @@
     "input": "t09_plate-1.png",
     "prompt": "Redraw this scene as a very simple flat-shaded low-poly game backdrop in the style of a Commodore 64 multicolor screen: a flat sky in one solid color, one band of distant angular mountain or skyline silhouettes in two flat colors along the horizon, three simple flat angular clouds in the sky, and flat ground in two colors. Large flat color areas only, no texture, no gradients, no small details, same colors and layout as the original."
    }
+  },
+  "t10_flat.png": {
+   "clean_plate": {
+    "command": "image edit",
+    "job_id": "800a1a98-babe-42e9-8b34-20699c18ae69",
+    "input": "src/Asteroid Belt Splash.png",
+    "prompt": "Remove the large chrome title lettering and the blue player spaceship with its orange engine flames. Fill those areas by seamlessly continuing the surrounding scenery and sky. Keep everything else, the composition and the colors unchanged."
+   },
+   "flat": {
+    "command": "image edit",
+    "job_id": "310d8e07-9b91-48c6-994f-47976d123604",
+    "input": "t10_plate-1.png",
+    "prompt": "Redraw this scene as a very simple flat-shaded low-poly game backdrop in the style of a Commodore 64 multicolor screen: a solid black space sky with a few small white stars, no nebula. A blue planet with flat green land and white cloud patches in the upper left, and a few chunky brown asteroids. Each object built from a few large flat-colored angular facets with clear light and shadow sides. Large flat color areas only, no texture, no gradients, no small details, same colors and layout as the original."
+   }
+  },
+  "t11_flat.png": {
+   "clean_plate": {
+    "command": "image edit",
+    "job_id": "22d76e01-174d-4a5a-8b89-bb08f7b3e024",
+    "input": "src/Shattered Moon Splash.png",
+    "prompt": "Remove the large chrome title lettering and the blue player spaceship with its orange engine flames. Fill those areas by seamlessly continuing the surrounding scenery and sky. Keep everything else, the composition and the colors unchanged."
+   },
+   "flat": {
+    "command": "image edit",
+    "job_id": "52e467a1-337a-4429-8043-3251d1bafa29",
+    "input": "t11_plate-1.png",
+    "prompt": "Redraw this scene as a very simple flat-shaded low-poly game backdrop in the style of a Commodore 64 multicolor screen: a solid black space sky with a few small white stars, no nebula. A large gray cratered moon split by one dark fracture, with a thin blue rim, and a few chunky gray rock fragments. Each object built from a few large flat-colored angular facets with clear light and shadow sides. Large flat color areas only, no texture, no gradients, no small details, same colors and layout as the original."
+   }
+  },
+  "t12_flat.png": {
+   "clean_plate": {
+    "command": "image edit",
+    "job_id": "2c03702d-7202-48dc-b7f8-32d484166cdf",
+    "input": "src/Ship Graveyard Splash.png",
+    "prompt": "Remove the large chrome title lettering and the blue player spaceship with its orange engine flames. Fill those areas by seamlessly continuing the surrounding scenery and sky. Keep everything else, the composition and the colors unchanged."
+   },
+   "flat": {
+    "command": "image edit",
+    "job_id": "e7023d72-f87e-49f1-bfa8-5d9f37e2f967",
+    "input": "t12_plate-1.png",
+    "prompt": "Redraw this scene as a very simple flat-shaded low-poly game backdrop in the style of a Commodore 64 multicolor screen: a solid black space sky with a few small white stars, no nebula. Derelict spaceship hulls in flat blue, gray and rust orange panels drifting in space. Each object built from a few large flat-colored angular facets with clear light and shadow sides. Large flat color areas only, no texture, no gradients, no small details, same colors and layout as the original."
+   }
+  },
+  "t13_flat.png": {
+   "clean_plate": {
+    "command": "image edit",
+    "job_id": "aa4e97f4-be5d-4cc9-8aae-ef4d776e6c10",
+    "input": "src/Orbital Shipyard Splash.png",
+    "prompt": "Remove the large chrome title lettering and the blue player spaceship with its orange engine flames. Fill those areas by seamlessly continuing the surrounding scenery and sky. Keep everything else, the composition and the colors unchanged."
+   },
+   "flat": {
+    "command": "image edit",
+    "job_id": "23c3ac04-7c76-461a-add7-e3d4ee276d3d",
+    "input": "t13_plate-1.png",
+    "prompt": "Redraw this scene as a very simple flat-shaded low-poly game backdrop in the style of a Commodore 64 multicolor screen: a solid black space sky with a few small white stars, no nebula. A space shipyard corridor of tall gray-white gantry frames with blue girders, cyan light strips and yellow lights. Each object built from a few large flat-colored angular facets with clear light and shadow sides. Large flat color areas only, no texture, no gradients, no small details, same colors and layout as the original."
+   }
+  },
+  "t14_flat.png": {
+   "clean_plate": {
+    "command": "image edit",
+    "job_id": "cee65186-4996-4f40-b7f4-06948877cea4",
+    "input": "src/Space Carrier Splash.png",
+    "prompt": "Remove the large chrome title lettering and the blue player spaceship with its orange engine flames. Fill those areas by seamlessly continuing the surrounding scenery and sky. Keep everything else, the composition and the colors unchanged."
+   },
+   "flat": {
+    "command": "image edit",
+    "job_id": "3cb3a280-669f-4743-8a82-f0207a74cb3e",
+    "input": "t14_plate-1.png",
+    "prompt": "Redraw this scene as a very simple flat-shaded low-poly game backdrop in the style of a Commodore 64 multicolor screen: a solid black space sky with a few small white stars, no nebula. A huge blue and gray space carrier hull with a red stripe and a flat gray flight deck. Each object built from a few large flat-colored angular facets with clear light and shadow sides. Large flat color areas only, no texture, no gradients, no small details, same colors and layout as the original."
+   }
+  },
+  "t15_flat.png": {
+   "clean_plate": {
+    "command": "image edit",
+    "job_id": "ce2402d8-a255-44e9-936f-f4a6e0a53e28",
+    "input": "src/Jump Gate Splash.png",
+    "prompt": "Remove the large chrome title lettering and the blue player spaceship with its orange engine flames. Fill those areas by seamlessly continuing the surrounding scenery and sky. Keep everything else, the composition and the colors unchanged."
+   },
+   "flat": {
+    "command": "image edit",
+    "job_id": "9f30dcfa-f4d0-4d7f-a66a-a21c54f87e7c",
+    "input": "t15_plate-1.png",
+    "prompt": "Redraw this scene as a very simple flat-shaded low-poly game backdrop in the style of a Commodore 64 multicolor screen: a solid black space sky with a few small white stars, no nebula. A huge ring-shaped jump gate made of alternating blue and white segments around a glowing cyan center. Each object built from a few large flat-colored angular facets with clear light and shadow sides. Large flat color areas only, no texture, no gradients, no small details, same colors and layout as the original."
+   }
   }
  },
  "props": {

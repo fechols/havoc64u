@@ -1,6 +1,6 @@
 # Stage art references
 
-The terrestrial backdrops, stage palettes and obstacle meshes are traced from the stage splash paintings (`havocmd/assets/splashes`) with [Ludo AI](https://ludo.ai)'s `ludo` CLI. `ludo-manifest.json` records every Ludo job behind these files: job IDs, inputs and prompts.
+The stage backdrops, palettes and obstacle meshes are traced from the stage splash paintings (`havocmd/assets/splashes`) with [Ludo AI](https://ludo.ai)'s `ludo` CLI. `ludo-manifest.json` records every Ludo job behind these files: job IDs, inputs and prompts.
 
 ## Backdrops and palettes (`tNN_flat.png`)
 
@@ -20,7 +20,19 @@ For each terrestrial theme (00 lowland … 09 meteor):
 
 Colors are art-directed per theme in the tool's `ART_DIRECTION` table, with the derived rankings printed alongside as candidates. Table sizes do not change, so only data moves in the C64 image.
 
-The orbital themes (10–15) keep their existing procedural scenery.
+## Orbital backdrops (`t10_flat.png` … `t15_flat.png`)
+
+The orbital themes (10 asteroid belt … 15 jump gate) draw their scenery in code, in `src/scenery/space.rs`, over a fixed black sky. They get the same clean plate and flat redraw, with a prompt asking for a black, starry sky and each painting's main objects as large flat facets.
+
+`python3 tools/derive-stage-art.py --orbital` ranks each flat reference's C64 colors. From those candidates, the space scenery takes these hand-picked colors and placements:
+- asteroid belt: a larger planet in the upper left with green land, brown debris
+- shattered moon: a larger moon on the right
+- ship graveyard: grey wrecks with rust undersides and light blue end caps
+- orbital shipyard: white gantries with cyan light strips
+- space carrier: light blue parked hulls with red undersides
+- jump gate: light blue and white ring segments with cyan conduits
+
+Only constants and table values change, so the C64 code size does not.
 
 ## Obstacles (`props/`)
 

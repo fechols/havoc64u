@@ -2164,7 +2164,7 @@ mod tests {
     }
 
     #[test]
-    fn graveyard_bodies_are_closed_and_use_visible_gray_orange_facets() {
+    fn graveyard_bodies_are_closed_and_use_visible_painted_facets() {
         use std::collections::{BTreeMap, BTreeSet};
         for camera in [24, 40, 56] {
             for tick in [0, 127, 128, 255, u16::MAX] {
@@ -2182,7 +2182,7 @@ mod tests {
                     let mut fins = 0;
                     let mut signed_volume = 0i64;
                     for (points, color, flags) in wreck.0 {
-                        assert!(matches!(color, 8 | 12 | 15), "wreck ink must stay visible");
+                        assert!(matches!(color, 8 | 12 | 14 | 15), "wreck ink must stay visible");
                         assert_eq!(flags, 0);
                         if points.iter().any(|p| p.y == highest) {
                             fins += 1;

@@ -133,7 +133,7 @@ const PLANET_POINTS: [[i16; 2]; 21] = body_points(
         [-111, 64],
         [-64, 111],
         [-38, 0],
-        // Broad turquoise land/cloud banks, following the lit hemisphere's curve.
+        // Broad green land banks, following the lit hemisphere's curve.
         [0, 84],
         [67, 88],
         [88, 60],
@@ -143,7 +143,7 @@ const PLANET_POINTS: [[i16; 2]; 21] = body_points(
         [55, -88],
         [12, -105],
     ],
-    760,
+    900,
 );
 
 const PLANET_FACES: [[u8; 4]; 16] = [
@@ -159,10 +159,10 @@ const PLANET_FACES: [[u8; 4]; 16] = [
     [12, 9, 10, 6],
     [12, 10, 11, 6],
     [12, 11, 0, 6],
-    [13, 14, 15, 3],
-    [13, 15, 16, 3],
-    [17, 18, 19, 3],
-    [17, 19, 20, 3],
+    [13, 14, 15, 5],
+    [13, 15, 16, 5],
+    [17, 18, 19, 5],
+    [17, 19, 20, 5],
 ];
 
 const MOON_POINTS: [[i16; 2]; 25] = body_points(
@@ -196,7 +196,7 @@ const MOON_POINTS: [[i16; 2]; 25] = body_points(
         [-24, 35],
         [0, 18],
     ],
-    560,
+    950,
 );
 
 const MOON_FACES: [[u8; 4]; 20] = [
@@ -394,7 +394,7 @@ fn asteroid_debris(sink: &mut SceneSink<'_>, ticks: u16, drop: i16) {
                 z,
             },
             0,
-            12,
+            9,
         );
     }
 }
@@ -416,7 +416,7 @@ pub fn scenic_ascent(sink: &mut SceneSink<'_>, context: &Decoration) {
         let arrival = (remaining * remaining >> 3) as i16;
         // Level out at orbital height: the curved planet enters from the left
         // and recedes below the ship, reaching the next scene's exact position.
-        planet(sink, -1040 - arrival, -540 + remaining as i16 * 4);
+        planet(sink, -2300 - arrival, 650 + remaining as i16 * 4);
         asteroid_debris(sink, tick.wrapping_sub(400), arrival + context.camera_y);
     }
     // Thin cloud wisps rush downward while passing through the upper atmosphere.
@@ -449,7 +449,7 @@ pub fn scenic_ascent(sink: &mut SceneSink<'_>, context: &Decoration) {
 pub fn scenic_asteroid(sink: &mut SceneSink<'_>, context: &Decoration) {
     stars(sink);
     let travel = drop(context);
-    planet(sink, -1040, -540 - travel);
+    planet(sink, -2300, 650 - travel);
     asteroid_debris(sink, clock(context), travel + context.camera_y);
 }
 
@@ -459,7 +459,7 @@ pub fn scenic_asteroid(sink: &mut SceneSink<'_>, context: &Decoration) {
 pub fn scenic_moon(sink: &mut SceneSink<'_>, context: &Decoration) {
     stars(sink);
     let travel = drop(context);
-    body(sink, 720, 680 - travel, &MOON);
+    body(sink, 1500, 250 - travel, &MOON);
     let ticks = clock(context);
     for i in 0..3u16 {
         let z = 2150 - ((ticks.wrapping_add(i * 85) & 255) * 8) as i16;
@@ -540,11 +540,11 @@ macro_rules! wreck {
     };
 }
 // Parked carrier hulls sit outside the flight deck, with no surface below them.
-wreck!(hull, ".phase.scenery.carrier", [15, 11, 8, 12, 12], false);
+wreck!(hull, ".phase.scenery.carrier", [15, 14, 2, 12, 12], false);
 wreck!(
     graveyard_hull,
     ".phase.scenery.graveyard",
-    [15, 12, 8, 12, 15],
+    [15, 12, 8, 14, 15],
     true
 );
 
@@ -626,7 +626,7 @@ pub fn scenic_shipyard(sink: &mut SceneSink<'_>, context: &Decoration) {
                         z: z + 30,
                     },
                 ],
-                12,
+                15,
             );
             // Blue photovoltaic wings project outwards from each gantry.
             panel(
@@ -680,7 +680,7 @@ pub fn scenic_shipyard(sink: &mut SceneSink<'_>, context: &Decoration) {
                     z: z + 30,
                 },
             ],
-            15,
+            3,
         );
     }
 }
@@ -800,7 +800,7 @@ pub fn scenic_gate(sink: &mut SceneSink<'_>, context: &Decoration) {
                 gate_point(b, 720, travel),
                 gate_point(a, 720, travel),
             ],
-            if i & 1 == 0 { 3 } else { 14 },
+            if i & 1 == 0 { 14 } else { 1 },
         );
     }
     // Twin power conduits lead toward the separate, destructible gate boss.
@@ -829,7 +829,7 @@ pub fn scenic_gate(sink: &mut SceneSink<'_>, context: &Decoration) {
                     z: 2300,
                 },
             ],
-            14,
+            3,
             0,
         );
     }
@@ -866,9 +866,9 @@ mod tests {
         for moon in [false, true] {
             let mut scene = Capture::default();
             if moon {
-                body(&mut scene, 720, 680, &MOON);
+                body(&mut scene, 1500, 250, &MOON);
             } else {
-                planet(&mut scene, -1040, -540);
+                planet(&mut scene, -2300, 650);
             }
             assert!(scene.0.len() <= 24);
             let mut colors = std::collections::BTreeSet::new();
@@ -884,7 +884,7 @@ mod tests {
                 if moon {
                     [0, 11, 12, 15].into_iter().collect()
                 } else {
-                    [3, 6, 14].into_iter().collect()
+                    [5, 6, 14].into_iter().collect()
                 }
             );
         }

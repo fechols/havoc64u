@@ -10,6 +10,7 @@ backdrop face count never change, so only data moves in the C64 image.
 
   python3 tools/derive-stage-art.py            # print the derived tables
   python3 tools/derive-stage-art.py --apply    # rewrite them in src/scenery.rs
+  python3 tools/derive-stage-art.py --orbital  # rank the orbital references' colors
 
 Requires Pillow and NumPy.
 """
@@ -337,7 +338,16 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--apply", action="store_true", help="rewrite the tables in src/scenery.rs")
     parser.add_argument("--json", type=Path, help="also write the derived values as JSON")
+    parser.add_argument("--orbital", action="store_true", help="rank the orbital references' colors instead")
     args = parser.parse_args()
+    if args.orbital:
+        # Orbital scenery is authored in src/scenery/space.rs; its colors are
+        # picked by hand from these candidates (black is the fixed sky).
+        for theme in range(len(THEMES), len(THEMES) + 6):
+            counts = np.bincount(indices(load(theme)).ravel(), minlength=16) / (WIDTH * HEIGHT)
+            ranked = [f"{c}:{counts[c]:.0%}" for c in np.argsort(-counts, kind="stable") if counts[c] >= 0.01]
+            print(f"t{theme}: {' '.join(ranked)}")
+        return
     results = [derive(theme) for theme in range(len(THEMES))]
     for r in results:
         print(json.dumps(r))
