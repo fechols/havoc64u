@@ -45,6 +45,14 @@ const BOSS_SIDE_HP: u8 = 40;
 const BOSS_CORE_HP: u8 = 120;
 pub const SECTION_TICKS: u16 = 3750;
 pub const MISSION_TICKS: u32 = SECTION_TICKS as u32 * assets::SEGMENT_COUNT as u32;
+/// Points per stored score unit: every award is a multiple of it.
+pub const SCORE_UNIT: u32 = 25;
+const _: () = assert!(25 % SCORE_UNIT == 0 && 50 % SCORE_UNIT == 0 && 5000 % SCORE_UNIT == 0);
+/// Score units for an award in points; tests state awards in points.
+#[cfg(test)]
+pub(crate) const fn units(points: u32) -> u16 {
+    (points / SCORE_UNIT) as u16
+}
 const BOSS_START_TICKS: u16 = 1000;
 const SPACE_BOSS_START_TICKS: u16 = 2500;
 const ATTRACT_TICKS: u16 = 750;
@@ -182,7 +190,8 @@ pub struct Hud {
     /// Boost gauge: full when ready, draining while active, refilling on cooldown.
     pub boost: u8,
     pub boost_active: bool,
-    pub score: u32,
+    /// In units of `SCORE_UNIT` points; the HUD prints `score * SCORE_UNIT`.
+    pub score: u16,
     /// Distance into the current section, 0..=30,000 world units.
     pub distance: u16,
     pub section: u8,
@@ -411,7 +420,9 @@ pub struct Game {
     stage_id: u8,
     stage_info: StageInfo,
     transition_ticks: u16,
-    score: u32,
+    /// Every award is a multiple of 25 points, so the score is counted in
+    /// 25-point units: 16-bit arithmetic still reaches past the 999,999 display.
+    score: u16,
     ticks: u16,
     menu_ticks: u16,
     menu_activity: bool,
@@ -614,7 +625,7 @@ impl Game {
         game.stage_info = assets::preview_stage_info(game.stage_id);
         game.menu_ticks = elapsed_ticks.min(crate::victory::REVEAL_TICKS);
         game.ticks = elapsed_ticks;
-        game.score = 24_000;
+        game.score = 24_000 / SCORE_UNIT as u16;
         game.shield = 76;
         game.bombs = 1;
         game.lives = 2;
@@ -719,7 +730,8 @@ impl Game {
     pub fn shadow_ground_y(&self) -> Option<i16> {
         if SHADOW_LEVELS[(self.stage_id / 8) as usize] & (1 << (self.stage_id & 7)) == 0
             || (self.mode == Mode::Transition
-                && (self.stage_info.bridge_profile == 3 || self.stage_info.theme >= 10))
+                && (self.stage_info.bridge_profile == 3
+                    || self.stage_info.theme >= assets::FIRST_ORBITAL_THEME))
             || (self.mode == Mode::Victory && self.menu_ticks >= crate::victory::FADE_TICKS)
         {
             None
@@ -1938,10 +1950,11 @@ impl Game {
         self.explode(a.pos, 7);
         self.sound_at(Effect::EnemyExplosion, a.pos.x, a.pos.z);
         if a.kind == assets::ROCK {
-            self.score += 25;
+            self.score = self.score.saturating_add(25 / SCORE_UNIT as u16);
             return;
         } else {
-            self.score += bank.enemy(a.kind).score as u32;
+            // Enemy specs are baked in score units.
+            self.score = self.score.saturating_add(bank.enemy(a.kind).score);
             self.kills = self.kills.wrapping_add(1);
             // Keep the 15-kill cadence independent of the wrapping total and
             // consume the milestone even when the three-bomb inventory is full.
@@ -1974,7 +1987,9 @@ impl Game {
         self.sound(Effect::Bomb, 0);
         self.clear_hostile_shots();
         for i in 0..ACTORS {
-            if self.actors[i].kind == assets::ROCK && self.stage_info.theme >= 10 {
+            if self.actors[i].kind == assets::ROCK
+                && self.stage_info.theme >= assets::FIRST_ORBITAL_THEME
+            {
                 self.kill_actor(i, bank);
             } else if self.actors[i].kind != 0 && self.actors[i].hp != 255 {
                 if self.damage_actor(i, 8) == 0 {
@@ -2116,7 +2131,7 @@ impl Game {
                     } else {
                         self.bombs = (self.bombs + 1).min(3);
                     }
-                    self.score += 50;
+                    self.score = self.score.saturating_add(50 / SCORE_UNIT as u16);
                     self.sound_at(Effect::Pickup, x, z);
                     continue;
                 }
@@ -2290,7 +2305,8 @@ impl Game {
                 if actor.kind != 0
                     && actor.pos.z >= ACTOR_RETIRE_Z
                     && (matches!(actor.kind, assets::FIGHTER | assets::DIVER)
-                        || (self.stage_info.theme >= 10 && actor.kind == assets::ROCK))
+                        || (self.stage_info.theme >= assets::FIRST_ORBITAL_THEME
+                            && actor.kind == assets::ROCK))
                 {
                     let position = if actor.kind == assets::ROCK {
                         actor_center(*actor, bank)
@@ -2544,7 +2560,7 @@ impl Game {
                 // Ground hazards and mounted enemies stay visible over terrain,
                 // including their shallow embedded bases and diamond proxies.
                 // Orbital hazards and boss-mounted units keep normal ordering.
-                sink.extra_flags = if self.stage_info.theme < 10
+                sink.extra_flags = if self.stage_info.theme < assets::FIRST_ORBITAL_THEME
                     && (matches!(a.kind, assets::ROCK | assets::BUILDING)
                         || (a.kind == assets::TURRET && self.stage_info.boss_kind == 0))
                 {
@@ -2565,7 +2581,8 @@ impl Game {
                     };
                     // Rotate space rocks around their scaled center, preserving
                     // collision alignment while keeping terrestrial meshes still.
-                    let space_rock = self.stage_info.theme >= 10 && a.kind == assets::ROCK;
+                    let space_rock = self.stage_info.theme >= assets::FIRST_ORBITAL_THEME
+                        && a.kind == assets::ROCK;
                     let pitch = if space_rock { (a.age as u8) >> 1 } else { 0 };
                     let position = if space_rock {
                         actor_center(*a, bank)

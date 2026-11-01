@@ -3,6 +3,7 @@ use havoc::{assets::*, audio, digital};
 use std::{boxed::Box, format, fs, path::Path, println, vec, vec::Vec};
 
 include!("host/stage_props.rs");
+include!("host/space_art.rs");
 
 /// Reproducible compressed source; the original recordings are not required to build.
 pub use digital::TRACK_ASSETS as DIGITAL_TRACKS;
@@ -78,7 +79,7 @@ const CAMPAIGN: [StageDesign; SEGMENT_COUNT as usize] = [
             (21600, [F, D, 0], 105, -10, 320, 255),
             (26700, [D, F, 0], 90, 30, 250, 0),
         ],
-        obstacle: 0,
+        obstacle: ROCK,
     },
     StageDesign {
         name: "Ashen Wastes",
@@ -146,7 +147,7 @@ const CAMPAIGN: [StageDesign; SEGMENT_COUNT as usize] = [
             (22200, [F, D, 0], 75, -15, 320, 255),
             (27200, [D, D, 0], 95, 35, 220, 0),
         ],
-        obstacle: 0,
+        obstacle: BUILDING,
     },
     StageDesign {
         name: "Storm Front",
@@ -215,7 +216,7 @@ const CAMPAIGN: [StageDesign; SEGMENT_COUNT as usize] = [
             (23500, [D, F, 0], 95, 30, 220, 0),
             (27800, [F, D, 0], 80, 15, 180, 1),
         ],
-        obstacle: 0,
+        obstacle: BUILDING,
     },
     StageDesign {
         name: "Asteroid Belt",
@@ -446,7 +447,10 @@ pub fn model_bank(level: u8) -> [u8; MODEL_SIZE] {
         b[at + 1] = (pivot_y + enemy_scale(id, center_y - pivot_y)) as u8;
         b[at + 2] = enemy_scale(id, 19) as u8;
         b[at + 3] = enemy_scale(id, 18) as u8;
-        put16(&mut b, at + 4, if slot == 2 { 250 } else { 100 });
+        // Kill awards in score units: 250 and 100 points.
+        let points: u32 = if slot == 2 { 250 } else { 100 };
+        assert_eq!(points % havoc::game::SCORE_UNIT, 0);
+        put16(&mut b, at + 4, (points / havoc::game::SCORE_UNIT) as u16);
         b[at + 6] = speed[slot];
         b[at + 7] = u8::from(slot == 1 && profile != 2);
     }
@@ -680,7 +684,7 @@ pub fn model_bank(level: u8) -> [u8; MODEL_SIZE] {
             FIGHTER => (1, 2),
             DIVER => (3, 2),
             CARRIER => (2, 0),
-            ROCK if info.theme >= 10 => (3, 0),
+            ROCK if info.theme >= FIRST_ORBITAL_THEME => (3, 0),
             _ => (0, 0),
         };
         if family != 0 {
@@ -742,7 +746,7 @@ fn finish_model_surfaces(info: StageInfo, models: &mut [Model]) {
     reverse(&mut models[PLAYER as usize]);
     reverse(&mut models[CRYSTAL as usize]);
 
-    if info.theme < 10 {
+    if info.theme < FIRST_ORBITAL_THEME {
         let fighter = &mut models[FIGHTER as usize];
         match info.enemy_profile {
             1 => backs(fighter, 4..10),
@@ -892,7 +896,7 @@ fn customize_stage_models(info: StageInfo, models: &mut [Model]) {
                 };
             }
         }
-        10..=15 => customize_space_models(info.theme, models),
+        FIRST_ORBITAL_THEME..=LAST_THEME => customize_space_models(info.theme, models),
         _ => {}
     }
     // Obstacles traced from the stage paintings keep their collision
@@ -1108,7 +1112,7 @@ fn flight_mesh(vertices: [[i16; 3]; 6], colors: [u8; 4]) -> Model {
 /// Bake a chipped, uneven rock with closed facets and fixed mineral shading.
 /// The extrema stay exact so tumbling, fragment scaling and shadow bounds keep
 /// the original obstacle dimensions. Relief and lighting are baked on the host.
-fn asteroid_mesh(original: [[i16; 3]; 6], variant: usize) -> Model {
+fn asteroid_mesh(original: [[i16; 3]; 6], relief: [u16; 6], variant: usize) -> Model {
     // The runtime's coarse mesh uses this original vertex prefix and the same
     // eight-face connectivity as flight_mesh. Close rocks raise six uneven
     // face centers, replacing each of those faces with three chipped facets.
@@ -1126,7 +1130,8 @@ fn asteroid_mesh(original: [[i16; 3]; 6], variant: usize) -> Model {
             let weighted = (0..3)
                 .map(|i| i32::from(corners[i][axis]) * weights[i])
                 .sum::<i32>();
-            (weighted * (10 + variation) / 96) as i16
+            // Relief is in 1/64ths of the weighted centroid (weights sum to 12).
+            (weighted * relief[index] as i32 / (12 * 64)) as i16
         });
         let raised = vertices.len() as u8;
         vertices.push(center);
@@ -1269,62 +1274,14 @@ fn customize_space_models(theme: u8, models: &mut [Model]) {
         [6, 14, 15, 3],
         [4, 3, 14, 1],
     ];
-    let index = theme as usize - 10;
+    let index = (theme - FIRST_ORBITAL_THEME) as usize;
     models[FIGHTER as usize] = flight_mesh(fighters[index], palettes[index]);
     models[DIVER as usize] = flight_mesh(divers[index], palettes[(index + 2) % 6]);
     // Center every orbital obstacle around its origin: the runtime tumbles
     // these and scales only the flagged small fragments around that center.
-    let rocks = [
-        [
-            [0, 0, -35],
-            [-38, -5, 0],
-            [31, 5, 0],
-            [0, 37, 0],
-            [0, -37, 0],
-            [0, 0, 35],
-        ],
-        [
-            [0, 0, -27],
-            [-34, 0, 0],
-            [34, 0, 0],
-            [0, 46, 4],
-            [0, -46, -4],
-            [0, 0, 27],
-        ],
-        [
-            [-8, 0, -43],
-            [-45, 0, -12],
-            [45, 0, 12],
-            [0, 19, 5],
-            [0, -19, -5],
-            [8, 0, 43],
-        ],
-        [
-            [0, 0, -38],
-            [-28, 0, 0],
-            [28, 0, 0],
-            [0, 29, 0],
-            [0, -29, 0],
-            [0, 0, 38],
-        ],
-        [
-            [0, 0, -45],
-            [-35, 0, -10],
-            [35, 0, 10],
-            [0, 22, 0],
-            [0, -22, 0],
-            [0, 0, 45],
-        ],
-        [
-            [0, 0, -32],
-            [-40, 0, 0],
-            [40, 0, 0],
-            [0, 40, 0],
-            [0, -40, 0],
-            [0, 0, 32],
-        ],
-    ];
-    models[ROCK as usize] = asteroid_mesh(rocks[index], index);
+    // Shapes come from Ludo AI models of each painting (space_art.rs).
+    let (rock, relief) = SPACE_ROCKS[index];
+    models[ROCK as usize] = asteroid_mesh(rock, relief, index);
 }
 
 /// A closed twelve-sided coin with a raised relief of the player's Kestrel.
@@ -1832,9 +1789,16 @@ pub fn segment_bank(index: u8) -> [u8; SEGMENT_SIZE] {
         }
     }
     if design.obstacle != 0 {
-        for i in 0..6u16 {
+        // Boss sections place three obstacles on the approach and keep the
+        // encounter itself clear (bosses arrive at local distance 8000).
+        let (count, first, step) = if design.info.boss_kind != 0 {
+            (3, 1800, 2000)
+        } else {
+            (6, 2200, 4300)
+        };
+        for i in 0..count {
             events.push(Spawn {
-                distance: 2200 + i * 4300 + u16::from(index != 0) * index as u16 * 40,
+                distance: first + i * step + u16::from(index != 0) * index as u16 * 40,
                 kind: design.obstacle,
                 x: if (i + index as u16) % 2 == 0 { -70 } else { 70 },
                 y: -110,

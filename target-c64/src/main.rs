@@ -151,8 +151,10 @@ pub static mut FRAME_TRIANGLES: u16 = 0;
 pub static mut FRAME_DROPPED: u16 = 0;
 #[no_mangle]
 pub static mut GAME_MODE: u8 = 0;
+/// Section-local distance for the monitor tools, which combine it with
+/// GAME_STAGE (section × 30,000 + local); no 32-bit sum is formed here.
 #[no_mangle]
-pub static mut GAME_DISTANCE: u32 = 0;
+pub static mut GAME_LOCAL_DISTANCE: u16 = 0;
 #[no_mangle]
 pub static mut GAME_STAGE: u8 = 0;
 #[no_mangle]
@@ -396,29 +398,58 @@ unsafe fn fail(message: &[u8]) -> ! {
     }
     loop {}
 }
-unsafe fn dma(mut reu: u32, mut cpu: u16, mut count: u16) {
-    if cpu as u32 + count as u32 > 0x10000 {
+/// REU -> RAM in bounded chunks. The address arrives as a u32 but is only
+/// split into bytes: the loop runs on a bank byte and a 16-bit offset, which
+/// keeps 32-bit arithmetic out of this resident, per-frame routine.
+#[inline(never)]
+unsafe fn dma(reu: u32, cpu: u16, count: u16) {
+    let [low, middle, mut bank, top] = reu.to_le_bytes();
+    // The installed REU holds 16 MiB: any 24-bit address is valid.
+    const _: () = assert!(assets::REU_SIZE == 0x100_0000);
+    if top != 0 {
+        fail(b"INVALID REU TRANSFER")
+    }
+    // The destination may end exactly at $FFFF but never wrap past it.
+    let (end, wrapped) = cpu.overflowing_add(count);
+    if wrapped && end != 0 {
         fail(b"REU DESTINATION WOULD WRAP")
     }
-    while count != 0 {
+    let mut offset = u16::from_le_bytes([low, middle]);
+    // Count up to the total, as load_phase does: llvm-mos miscompiled a
+    // `while count != 0 { count -= n }` form of this loop, skipping any
+    // transfer whose low count byte was zero (such as every 512-byte segment).
+    let mut done = 0u16;
+    while done < count {
         // Keep foreground transfers short enough for the independent 50 Hz
-        // audio IRQ, including the SIM helper image and model/cache loads.
-        let n = assets::dma_chunk(reu, cpu, count).min(1024);
-        if n == 0 {
-            fail(b"INVALID REU TRANSFER")
+        // audio IRQ, and never let one cross a 64 KiB REU bank (so none can
+        // cross the controller's 512 KiB pages either).
+        let bank_left = 0u16.wrapping_sub(offset);
+        let mut n = (count - done).min(1024);
+        if bank_left != 0 && bank_left < n {
+            n = bank_left;
         }
-        word(0xdf02, cpu);
-        poke(0xdf04, reu as u8);
-        poke(0xdf05, (reu >> 8) as u8);
-        poke(0xdf06, (reu >> 16) as u8);
+        word(0xdf02, cpu.wrapping_add(done));
+        word(0xdf04, offset);
+        poke(0xdf06, bank);
         word(0xdf07, n);
         poke(0xdf09, 0);
         poke(0xdf0a, 0);
         poke(0xdf01, 0x91);
-        reu += n as u32;
-        cpu = cpu.wrapping_add(n);
-        count -= n;
+        offset = offset.wrapping_add(n);
+        if offset == 0 {
+            bank = bank.wrapping_add(1);
+        }
+        done += n;
     }
+}
+/// The REU address `add` bytes into a 2 KiB code page, without 32-bit or
+/// branching arithmetic: page × 2048 + add = (page × 8 + add_high) × 256 +
+/// add_low, and the bracketed sum (at most 2,295) always fits 16 bits.
+#[inline(always)]
+fn page_address(page: u8, add: u16) -> u32 {
+    let [add_low, add_high] = add.to_le_bytes();
+    let [middle, bank] = ((page as u16) * 8 + add_high as u16).to_le_bytes();
+    u32::from_le_bytes([add_low, middle, bank, 0])
 }
 #[inline(never)]
 unsafe fn load_phase(page: u8, size: u16) {
@@ -455,14 +486,14 @@ unsafe fn load_sim(profile: u8) {
     // GEOMETRY, PIXELS and AUDIO reuse this workspace after SIM returns.
     // Reload on every SIM entry; the IRQ never references these helpers.
     dma(
-        (__code_reu_pages[23] as u32) << 11,
+        page_address(__code_reu_pages[23], 0),
         0x8e00,
         core::ptr::addr_of!(__phase_sim_aux_prefix_size) as u16,
     );
     // Previous raster/shadow records are dead. SCENERY resets the shadow frame
     // later in this frame, after SIM and its extra helper code have returned.
     dma(
-        ((__code_reu_pages[23] as u32) << 11) + 0x500,
+        page_address(__code_reu_pages[23], 0x500),
         0xe000,
         core::ptr::addr_of!(__phase_sim_extra_size) as u16,
     );
@@ -987,17 +1018,28 @@ unsafe fn update_fps_overlay(mode: havoc::game::Mode) {
     KEYS_HELD = keys;
 }
 
+/// The empty frame SCENERY would start after the victory fade: no staged
+/// faces, the faded (black) sky, a cleared shadow frame. The transition
+/// sounds were already cancelled during the fade, so nothing else changes.
+#[inline(never)]
+unsafe fn begin_empty_scenery(current: u8) -> u8 {
+    RENDER_SEGMENT = segment_data(current)[4];
+    RENDERER.assume_init_mut().begin(0);
+    havoc::shadow::native_frame().clear();
+    0
+}
+
 #[link_section = ".phase.scenery"]
 #[inline(never)]
 unsafe fn prepare_scenery(current: u8, sounds: &mut TransitionAudio) -> u8 {
     io_on();
     dma(
-        (__code_reu_pages[33] as u32) << 11,
+        page_address(__code_reu_pages[33], 0),
         0x8e00,
         core::ptr::addr_of!(__phase_scenery_aux_prefix_size) as u16,
     );
     dma(
-        ((__code_reu_pages[33] as u32) << 11) + 0x500,
+        page_address(__code_reu_pages[33], 0x500),
         0xe000,
         core::ptr::addr_of!(__phase_scenery_extra_size) as u16,
     );
@@ -1017,8 +1059,10 @@ unsafe fn prepare_scenery(current: u8, sounds: &mut TransitionAudio) -> u8 {
         };
         io_on();
         dma(
-            ((__code_reu_pages[page] as u32) << 11)
-                + core::ptr::addr_of!(__phase_scenery_base_size) as u32,
+            page_address(
+                __code_reu_pages[page],
+                core::ptr::addr_of!(__phase_scenery_base_size) as u16,
+            ),
             core::ptr::addr_of!(__phase_scenery_base_end) as u16,
             core::ptr::addr_of!(__phase_scenery_earth_tail_size) as u16,
         );
@@ -1061,7 +1105,7 @@ unsafe fn prepare_scenery(current: u8, sounds: &mut TransitionAudio) -> u8 {
 unsafe fn benchmark_load_projection() {
     io_on();
     dma(
-        ((__code_reu_pages[3] as u32) << 11) + 0x3f20,
+        page_address(__code_reu_pages[3], 0x3f20),
         0x6f20,
         core::ptr::addr_of!(__phase_render_aux_size) as u16,
     );
@@ -1077,7 +1121,7 @@ unsafe fn prepare_geometry(scenery_count: u8, bank: &AssetBank<'_>) {
     {
         io_on();
         dma(
-            ((__code_reu_pages[3] as u32) << 11) + 0x3f20,
+            page_address(__code_reu_pages[3], 0x3f20),
             0x6f20,
             core::ptr::addr_of!(__phase_render_aux_size) as u16,
         );
@@ -1246,8 +1290,12 @@ unsafe fn draw_pixels() {
     // VIC background takes the frame's clear colour (the cell writer's code 0).
     io_on();
     dma(
-        ((core::ptr::addr_of!(__phase_pixels_aux_reu_bank) as u8 as u32) << 16)
-            | (core::ptr::addr_of!(__phase_pixels_aux_reu_offset) as u32),
+        {
+            let offset = core::ptr::addr_of!(__phase_pixels_aux_reu_offset) as u16;
+            let [low, middle] = offset.to_le_bytes();
+            let bank = core::ptr::addr_of!(__phase_pixels_aux_reu_bank) as u8;
+            u32::from_le_bytes([low, middle, bank, 0])
+        },
         0x6f20,
         core::ptr::addr_of!(__phase_pixels_aux_size) as u16,
     );
@@ -1421,8 +1469,12 @@ struct Runtime {
 #[link_section = ".phase.sim"]
 #[inline(never)]
 unsafe fn load_segment(slot: u8, index: u8) {
+    // Every segment slot lies in the REU's first 64 KiB: build it in 16 bits.
+    const _: () = assert!(
+        assets::SEGMENTS_OFFSET + assets::SEGMENT_COUNT as u32 * 2048 <= 0x10000
+    );
     dma(
-        assets::SEGMENTS_OFFSET + index as u32 * 2048,
+        (assets::SEGMENTS_OFFSET as u16 + ((index as u16) << 11)) as u32,
         segment_address(slot),
         512,
     );
@@ -1543,11 +1595,9 @@ unsafe fn simulate(runtime: &mut Runtime, now: u16) -> Option<()> {
     enable_irq();
     send_audio(game);
     GAME_MODE = game.mode() as u8;
-    // The campaign distance for the monitor tools: section × 30,000 as a
-    // 16-bit product of 1,875 shifted by four, plus the section-local part.
-    let section = game.segment_index();
-    GAME_DISTANCE = (((section as u16 * 1_875) as u32) << 4) + game.local_distance() as u32;
-    GAME_STAGE = section;
+    // The monitor tools derive the campaign distance from these two.
+    GAME_LOCAL_DISTANCE = game.local_distance();
+    GAME_STAGE = game.segment_index();
     Some(())
 }
 #[no_mangle]
@@ -1630,13 +1680,13 @@ pub unsafe extern "C" fn main() -> i32 {
         // Crossings clear to shared stars before the midpoint tail change.
         let info = GAME.assume_init_ref().stage_info();
         let crossing = GAME.assume_init_ref().transition_progress();
-        let scenery_page = if info.theme >= 10 {
+        let scenery_page = if info.theme >= assets::FIRST_ORBITAL_THEME {
             let theme = if crossing.map_or(false, |(_, tick)| tick >= 200) {
                 info.next_theme
             } else {
                 info.theme
             };
-            0x19 + theme - 10
+            0x19 + theme - assets::FIRST_ORBITAL_THEME
         } else {
             match info.bridge_profile {
                 1 => 0x15,
@@ -1650,11 +1700,19 @@ pub unsafe extern "C" fn main() -> i32 {
         } else {
             core::ptr::addr_of!(__phase_scenery_terrain_size) as u16
         };
-        load_phase(scenery_page, scenery_size);
-        wr(core::ptr::addr_of_mut!(PROF_PHASE), 11);
-        io_off();
-        let scenery_count = prepare_scenery(runtime.current, &mut runtime.transition_audio);
-        io_on();
+        // Once the victory fade completes the world emits nothing, so the
+        // medal frames skip the SCENERY overlay and its helpers entirely
+        // (about 17k bus cycles of REU transfer per frame).
+        let scenery_count = if GAME.assume_init_ref().victory_ticks() >= havoc::victory::FADE_TICKS {
+            begin_empty_scenery(runtime.current)
+        } else {
+            load_phase(scenery_page, scenery_size);
+            wr(core::ptr::addr_of_mut!(PROF_PHASE), 11);
+            io_off();
+            let count = prepare_scenery(runtime.current, &mut runtime.transition_audio);
+            io_on();
+            count
+        };
         wr(core::ptr::addr_of_mut!(PROF_PHASE), 2);
         // Bridges keep the common player/projectile renderer and replace enemy
         // presentation with SCENERY wildlife. SIM remains a separate overlay.

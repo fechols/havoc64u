@@ -123,7 +123,6 @@ class Layouts:
 
 STAGE_FIELDS = ("enemy_profile", "music_cue", "bridge_profile", "boss_kind",
                 "theme", "next_theme", "previous_theme", "reserved")
-SKY_COLORS = (6, 8, 11, 4, 0, 11, 8, 11, 6, 4, 0, 0, 0, 0, 0, 0)
 STAGE_LABELS = ("lowlands", "crystal", "canyon", "gorge", "ash", "foundry",
                 "fortress", "citadel", "storm", "meteor", "coast", "carrier",
                 "asteroid-belt", "shattered-moon", "ship-graveyard", "orbital-shipyard",
@@ -387,7 +386,7 @@ def fixtures(include_victory=True, campaign=False, space=False, boss_health=None
         for name, elapsed in (("start", 0), ("midfade", 50), ("arrival", 400), ("hold", 600)):
             patch = dict(result[1]["patch"], mode=3, rail_ticks=count*3750, ticks=elapsed,
                          menu_ticks=min(elapsed, 400), spawn_segment=count-1,
-                         boss_started=1, boss_defeated=1, score=24000,
+                         boss_started=1, boss_defeated=1, score=960,  # 24,000 points in 25-point units
                          shield=76, lives=2, bombs=1, invulnerability=0)
             result.append({"name": f"victory-{name}", "patch": patch,
                            "section": count-1, "cache_miss": False, "input_bits": 0})

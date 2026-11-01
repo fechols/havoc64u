@@ -7,15 +7,16 @@
 ;           pitch @8 (Q8 of 256ths of a turn)
 ; Per axis: target = stick (RIGHT/LEFT ±768, UP/DOWN ±704, or ±1152/±1056
 ; while BOOST bit $20 is set) plus the unchanged push × 640 on x;
-; the velocity moves 3/32 of the way to the target (the shifted
+; the velocity moves 3/16 of the way to the target (the shifted
 ; magnitude, at least one unit while any error remains, so it settles
 ; exactly); then the wall: on the near side of the arena (sign of the
 ; position) v <= (EDGE + 7 - q) >> 3 or v >= -((EDGE + 7 + q) >> 3) with
 ; EDGE 25600 (x) / 16640 (y); q += v; player gets the sign-extended high
-; byte, frac the low byte. The bank target is -dv_x (units of 1/256 turn)
-; unless |dv_x| <= 1, clamped to ±20, times 256; the pitch target is
-; -(unboosted target_y << 2); both angles move 1/8 of their error per tick, with
-; the same magnitude rule. Only caller-saved rc2..19 and A/X/Y change;
+; byte, frac the low byte. The bank target is the held stick's bank (LEFT
+; +12, RIGHT -12, none or both 0) plus -dv_x (0 while |dv_x| <= 1) clamped
+; to ±8, all in units of 1/256 turn times 256; the pitch target is
+; -(unboosted target_y << 2); both angles move 1/4 of their error per tick,
+; with the same magnitude rule. Only caller-saved rc2..19 and A/X/Y change;
 ; no scratch RAM or stack frame beyond three JSR levels.
 .zeropage __rc2
 .zeropage __rc3
@@ -82,7 +83,7 @@ fast_flight_step:
     lda #$64                    ; EDGE_X + 7 = $6407
     sta FL_EDGE_HI
     jsr .Lfl_axis
-    ; ---- bank target from dv_x: 0 while |dv| <= 1, else clamp(-dv, ±20) << 8
+    ; ---- bank target: (stick bank + (0 while |dv| <= 1, else clamp(-dv, ±8))) << 8
     lda FL_DV
     sta FL_E
     lda FL_DV+1
@@ -96,23 +97,32 @@ fast_flight_step:
     lda FL_E                    ; n in -256..-1
     cmp #$ff
     beq .Lfl_n_zero             ; -1
-    cmp #$ec
-    bcs .Lfl_n_set              ; -20..-2
+    cmp #$f8
+    bcs .Lfl_n_set              ; -8..-2
 .Lfl_n_minus:
-    lda #$ec
+    lda #$f8
     bne .Lfl_n_set
 .Lfl_n_small_pos:
     lda FL_E
     cmp #2
     bcc .Lfl_n_zero             ; 0 or 1
-    cmp #21
-    bcc .Lfl_n_set              ; 2..20
+    cmp #9
+    bcc .Lfl_n_set              ; 2..8
 .Lfl_n_plus:
-    lda #20
+    lda #8
     bne .Lfl_n_set
 .Lfl_n_zero:
     lda #0
 .Lfl_n_set:
+    tay                         ; plus the held stick's bank by bits 3:2
+    lda FL_BITS
+    lsr
+    lsr
+    and #3
+    tax
+    tya
+    clc
+    adc .Lfl_bank_stick,x
     sta FL_T+1
     lda #0
     sta FL_T
@@ -162,9 +172,9 @@ fast_flight_step:
     lda FL_T+1
     sbc FL_V+1
     sta FL_E+1
-    ldx #4
-    jsr .Lfl_delta_mag          ; FL_E = |e| >> 4 (or 1)
-    lda FL_E                    ; plus half of it: 3/32 of the error
+    ldx #3
+    jsr .Lfl_delta_mag          ; FL_E = |e| >> 3 (or 1)
+    lda FL_E                    ; plus half of it: 3/16 of the error
     sta FL_Q
     lda FL_E+1
     sta FL_Q+1
@@ -282,7 +292,7 @@ fast_flight_step:
     sta (FL_FLIGHT),y
     rts
 
-; angle at flight offset Y (6 bank, 8 pitch) moves toward FL_T by 1/8 of
+; angle at flight offset Y (6 bank, 8 pitch) moves toward FL_T by 1/4 of
 ; the error (magnitude rule). Y is preserved across the delta routines.
 .Lfl_angle:
     sec
@@ -294,7 +304,7 @@ fast_flight_step:
     sbc (FL_FLIGHT),y
     sta FL_E+1
     dey
-    ldx #3
+    ldx #2
     jsr .Lfl_delta_mag
     jsr .Lfl_apply_sign
     clc
@@ -372,6 +382,8 @@ fast_flight_step:
     .byte $00, $c0, $40, $00, $00, $20, $e0, $00
 .Lfl_y_targets_hi:
     .byte $00, $02, $fd, $00, $00, $04, $fb, $00
+.Lfl_bank_stick:
+    .byte $00, $0c, $f4, $00    ; none, LEFT +12, RIGHT -12, both
 .Lfl_pitch_targets_hi:
     .byte $00, $f5, $0b, $00    ; normal climb command × -4; low byte is zero
 .Lfl_push_lo:

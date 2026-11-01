@@ -57,7 +57,7 @@ fn segment_bytes() -> [u8; SEGMENT_SIZE] {
 }
 fn fixture_stage(stage: u8) -> StageInfo {
     let index = stage as usize;
-    let themes = [0, 4, 1, 1, 5, 6, 2, 7, 8, 9, 3, 3, 10, 11, 12, 13, 14, 15];
+    let themes = [0, 4, 1, 10, 5, 6, 2, 7, 8, 9, 3, 11, 12, 13, 14, 15, 16, 17];
     StageInfo {
         enemy_profile: [0, 0, 1, 1, 0, 2, 2, 2, 3, 3, 3, 3, 0, 1, 3, 2, 3, 2][index],
         music_cue: [1, 7, 2, 2, 8, 8, 3, 3, 9, 9, 4, 4, 13, 14, 15, 16, 17, 18][index],
@@ -721,8 +721,9 @@ fn chase_camera_reveals_carrier_and_keeps_controlled_hull_on_screen() {
     for direction in [UP, DOWN, UP | LEFT, UP | RIGHT, DOWN | LEFT, DOWN | RIGHT] {
         let mut game = started(&segment);
         // The flight model settles exactly on the arena corner within 120
-        // ticks: velocity zero, the coordinated bank level again, and the
-        // commanded climb or dive held as 11/256 of a turn of pitch.
+        // ticks: velocity zero, the held stick's 12/256-turn bank (none for
+        // a pure climb or dive), and the commanded climb or dive held as
+        // 11/256 of a turn of pitch.
         for tick in 1..=150 {
             input(&mut game, direction, tick * 20);
             game.tick(&segment, &test_bank(game.segment_index()));
@@ -734,12 +735,12 @@ fn chase_camera_reveals_carrier_and_keeps_controlled_hull_on_screen() {
         } else {
             (-65, 11)
         };
-        let world_x = if direction & LEFT != 0 {
-            -100
+        let (world_x, roll) = if direction & LEFT != 0 {
+            (-100, 12u8)
         } else if direction & RIGHT != 0 {
-            100
+            (100, (-12i8) as u8)
         } else {
-            0
+            (0, 0)
         };
         let mut expected = CapturedGeometry::default();
         emit_mesh(
@@ -753,7 +754,7 @@ fn chase_camera_reveals_carrier_and_keeps_controlled_hull_on_screen() {
             },
             0,
             pitch,
-            0,
+            roll,
             false,
         );
         let eye_y = 40 + world_y / 4;

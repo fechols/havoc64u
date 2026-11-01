@@ -162,6 +162,12 @@ pub unsafe extern "C" fn main() -> i32 {
     };
     screen.text(28, status);
     screen.newline();
+    // The C64 Ultimate takes about two seconds to change speed after the
+    // request; spin at least three seconds before timing anything.
+    let mut settled = 0u32;
+    while settled < 3_000_000 {
+        settled += measure(|| probe_cpu_loop());
+    }
     let turbo = measure(|| probe_cpu_loop());
     screen.line(b"CPU LOOP, TURBO", turbo);
     if turbo != 0 {

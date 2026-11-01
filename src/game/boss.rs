@@ -168,7 +168,7 @@ impl Game {
         self.boss_defeated = true;
         self.shield = 100;
         self.bombs = 3;
-        self.score += 5000;
+        self.score = self.score.saturating_add(5000 / super::SCORE_UNIT as u16);
         self.sound(Effect::BossExplosion, 0);
         for x in [-80, -40, 0, 40, 80] {
             self.explode(Vec3 { x, y: 0, z: self.bosses[0].pos.z }, 7);

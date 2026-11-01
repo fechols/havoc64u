@@ -121,7 +121,7 @@ fn final_core_kills_retire_later_hostile_shots_before_they_can_take_a_life() {
                 assert_eq!(game.boss_defeated, !splitting);
                 assert_eq!(game.boss_phase, wave + u8::from(splitting));
                 assert_eq!(game.boss_split_ticks, if splitting { 50 } else { 0 });
-                let score = if splitting { 77 } else { 5077 };
+                let score = if splitting { 77 } else { 77 + units(5000) };
                 assert_eq!(game.score, score);
                 game.shield = 73;
                 game.bombs = 2;
@@ -516,7 +516,7 @@ fn only_the_last_small_core_awards_the_final_score_and_unlocks_victory() {
     assert!(game.boss_defeated);
     assert_eq!(
         (game.score, game.shield, game.bombs, game.lives),
-        (5077, 100, 3, 2)
+        (77 + units(5000), 100, 3, 2)
     );
     assert_eq!(game.hud().boss_shield, 0);
     game.shield = 71;
@@ -526,10 +526,10 @@ fn only_the_last_small_core_awards_the_final_score_and_unlocks_victory() {
     }
     assert_eq!(
         (game.score, game.shield, game.bombs, game.lives),
-        (5077, 71, 2, 2)
+        (77 + units(5000), 71, 2, 2)
     );
     game.tick(&segment, &bank);
     assert_eq!(game.mode, Mode::Victory);
     game.tick(&segment, &bank);
-    assert_eq!(game.score, 5077);
+    assert_eq!(game.score, 77 + units(5000));
 }

@@ -59,9 +59,12 @@ TARGETS = {
     "t05_rock": (5, "ROCK", (-32, 0, -30), (35, 63, 30), 10),
     "t08_rock": (8, "ROCK", (-32, 0, -30), (35, 56, 30), 10),
     "t09_rock": (9, "ROCK", *ROCK_BOX, 10),
+    "t10_rock": (10, "ROCK", (-32, 0, -30), (35, 63, 30), 10),
     "t02_building": (2, "BUILDING", *BUILDING_BOX, 12),
     "t03_building": (3, "BUILDING", *BUILDING_BOX, 12),
     "t06_building": (6, "BUILDING", *BUILDING_BOX, 12),
+    "t07_building": (7, "BUILDING", *BUILDING_BOX, 12),
+    "t11_building": (11, "BUILDING", *BUILDING_BOX, 12),
 }
 LIGHT = np.array([-0.45, 0.8, -0.4]) / np.linalg.norm([-0.45, 0.8, -0.4])
 # Lit, middle and dark colors per prop, picked from each painting. Three
@@ -73,9 +76,12 @@ RAMPS = {
     "t05_rock": (12, 11, 0),      # ash-dusted basalt
     "t08_rock": (15, 11, 6),      # slate spire with pale edges
     "t09_rock": (8, 2, 0),        # charred meteorite, glowing cracks
+    "t10_rock": (8, 9, 11),       # rust-faced spire at the canyon gate
     "t02_building": (15, 12, 6),  # steel tower with blue panels
     "t03_building": (15, 12, 11),  # concrete coastal bunker
     "t06_building": (8, 11, 0),   # furnace glow on dark iron
+    "t07_building": (15, 11, 2),  # citadel reactor block, red-lit seams
+    "t11_building": (2, 14, 6),   # carrier deck turret, red roof on blue armor
 }
 
 

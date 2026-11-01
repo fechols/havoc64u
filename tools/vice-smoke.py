@@ -103,9 +103,11 @@ def symbols(elf, llvm_nm):
                 result[fields[2]] = int(fields[0], 16)
             except ValueError:
                 pass
-    for name in ("frame_complete", "FRAME_SERIAL", "FRONT_BANK", "GAME_MODE", "GAME_DISTANCE"):
+    for name in ("frame_complete", "FRAME_SERIAL", "FRONT_BANK", "GAME_MODE"):
         if name not in result:
             raise RuntimeError(f"Missing target symbol {name}; use the matching unstripped ELF")
+    if "GAME_LOCAL_DISTANCE" not in result and "GAME_DISTANCE" not in result:
+        raise RuntimeError("Missing target symbol GAME_LOCAL_DISTANCE; use the matching unstripped ELF")
     return result
 
 
@@ -675,7 +677,8 @@ def counters(mon, syms):
     result = {}
     for name, width in (("FRAME_SERIAL", 2), ("VIDEO_FRAMES", 2), ("AUDIO_TICKS", 2),
                         ("FRAME_TRIANGLES", 2), ("FRAME_DROPPED", 2), ("STREAM_BYTES", 2),
-                        ("INPUT_OVERFLOWS", 2), ("GAME_MODE", 1), ("GAME_DISTANCE", 4), ("GAME_STAGE", 1),
+                        ("INPUT_OVERFLOWS", 2), ("GAME_MODE", 1), ("GAME_DISTANCE", 4),
+                        ("GAME_LOCAL_DISTANCE", 2), ("GAME_STAGE", 1),
                         ("FRONT_BANK", 1), ("TEST_INPUT", 1), ("RENDER_SEGMENT", 1),
                         ("ENEMY_CODE_PROFILE", 1), ("ENEMY_MODEL_PROFILE", 1), ("MODEL_STREAM_BYTES", 2),
                         ("MUSIC_CUE", 1), ("MUSIC_ACTIVE_CUE", 1),
@@ -683,6 +686,10 @@ def counters(mon, syms):
                         ("RETICLE_MISSES", 2)):
         if name in syms:
             result[name.lower()] = mon.integer(syms[name], width)
+    # Current packages export the section-local distance beside the stage
+    # (no 32-bit sum on the C64); older ones exported GAME_DISTANCE directly.
+    if "game_local_distance" in result:
+        result["game_distance"] = result.get("game_stage", 0) * 30000 + result.pop("game_local_distance")
     if any("REQUESTED_MENU_TRACK" in name for name in syms):
         result["requested_menu_track"] = mon.integer(resident_symbol(syms, "REQUESTED_MENU_TRACK")[1], 1)
     mon.command("bank io")
@@ -898,6 +905,10 @@ def dwarf_game_layout(elf, tool, syms, output, controls=False):
                 "boss_started": "bool", "boss_defeated": "bool", "score": "u32",
                 "shield": "u8", "lives": "u8", "bombs": "u8", "respawn_ticks": "u8",
                 "menu_ticks": "u16", "boss_left": "u8", "boss_right": "u8", "boss_core": "u8"}
+    # Current packages count the score in 16-bit 25-point units; older
+    # packages stored points in a u32.
+    if fields.get("score", {}).get("type") == "u16":
+        required["score"] = "u16"
     if "Transition" in modes:
         required.update(transition_ticks="u16", ticks="u16")
     if "repeat_spawn_cursor" in fields:

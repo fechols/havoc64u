@@ -38,8 +38,10 @@ PALETTE = np.array([[int(h[i:i + 2], 16) for i in (0, 2, 4)] for h in _splash.PA
 PALETTE_LAB = _splash.linear_to_oklab(_splash.srgb_to_linear(PALETTE))
 
 # Theme order matches scenery.rs: lowland, canyon, fortress, coast, crystal,
-# ash, foundry, citadel, storm, meteor. Cities use block silhouettes.
-THEMES = ("lowland", "canyon", "fortress", "coast", "crystal", "ash", "foundry", "citadel", "storm", "meteor")
+# ash, foundry, citadel, storm, meteor, then the gate canyon and the assault
+# coast (Canyon Gate and Carrier Assault). Cities use block silhouettes.
+THEMES = ("lowland", "canyon", "fortress", "coast", "crystal", "ash", "foundry", "citadel", "storm", "meteor",
+          "gate", "assault")
 SKYLINE = {2: "blocks", 6: "blocks", 7: "blocks"}
 CAVE = 4
 # Final color choices, picked from each painting with the derived rankings as
@@ -58,6 +60,8 @@ ART_DIRECTION = {
     7: (11, [10, 2], [15, 12], 12, 15, [12, 2]),  # red-lit grey citadel
     8: (6, [11, 0], [1, 15], 14, 15, [11, 14]),   # dark peaks above a cloud sea
     9: (6, [10, 4], [15, 4], 12, 9, [9, 11]),     # violet dusk, glowing horizon
+    10: (10, [8, 2], [7, 15], 9, 2, [8, 9]),      # red sunset, rust gate cliffs, far ridges
+    11: (6, [10, 4], [1, 15], 14, 15, [9, 11]),   # violet sunset ranges, white clouds, rough sea
 }
 WIDTH, HEIGHT = 176, 132  # Analysis grid: one column per horizon table x unit.
 CLOUD_DEPTHS = (96, 112, 127)
@@ -314,15 +318,20 @@ def replace_table(text: str, name: str, rows: list[str | None], one_line: bool =
     return text[: match.start(2)] + replacement + text[match.end(2):]
 
 
+def one_line_bytes(text: str, name: str) -> str:
+    """Fold a one-line byte table back onto its declaration line."""
+    return re.sub(rf"static {name}: \[u8; (\w+)\] = \[\n    (.*?),\n\];", rf"static {name}: [u8; \1] = [\2];", text)
+
+
 def apply(results: list[dict]) -> None:
     text = SCENERY.read_text(encoding="utf-8").replace("\r\n", "\n")
     text = replace_table(text, "SKY_COLORS", [str(r["sky"]) for r in results], one_line=True)
-    text = re.sub(r"static SKY_COLORS: \[u8; 10\] = \[\n    (.*?),\n\];", r"static SKY_COLORS: [u8; 10] = [\1];", text)
+    text = one_line_bytes(text, "SKY_COLORS")
     text = replace_table(text, "TERRAIN_PALETTES", [f"0x{r['terrain'][1]:02x}{r['terrain'][0]:02x}" for r in results], one_line=True)
     text = replace_table(text, "GROUND_COLORS", [str(r["ground"]) for r in results], one_line=True)
-    text = re.sub(r"static GROUND_COLORS: \[u8; 10\] = \[\n    (.*?),\n\];", r"static GROUND_COLORS: [u8; 10] = [\1];", text)
+    text = one_line_bytes(text, "GROUND_COLORS")
     text = replace_table(text, "GROUND_SHADES", [str(r["ground_shade"]) for r in results], one_line=True)
-    text = re.sub(r"static GROUND_SHADES: \[u8; 10\] = \[\n    (.*?),\n\];", r"static GROUND_SHADES: [u8; 10] = [\1];", text)
+    text = one_line_bytes(text, "GROUND_SHADES")
     text = replace_table(text, "HORIZON_COLORS", [f"[{a}, {b}]" for a, b in (r["horizon_colors"] for r in results)])
     text = replace_table(text, "CLOUD_COLORS", [f"[{a}, {b}]" for a, b in (r["cloud_colors"] for r in results)])
     text = replace_table(text, "HORIZONS", [f"[{pairs(r['horizon'])}]" if "horizon" in r else None for r in results])

@@ -327,7 +327,7 @@ fn attract_names_survive_native_packing_and_previous_cell_palettes() {
         for section in 0..SEGMENT_COUNT {
             let mut status = state(mode);
             status.section = section;
-            status.score = u32::MAX;
+            status.score = u16::MAX;
             status.lives = u8::MAX;
             let mut pixels = [6; 1280];
             hud::draw(0, &mut pixels, &status, 0);

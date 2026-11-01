@@ -170,6 +170,7 @@ pub struct EnemySpec {
     pub center_y: i8,
     pub shot_radius: u8,
     pub ram_radius: u8,
+    /// Kill award in score units (`game::SCORE_UNIT` points each).
     pub score: u16,
     pub speed: u8,
     pub render_mode: u8,
@@ -473,6 +474,12 @@ pub struct Spawn {
     pub y: i16,
     pub flags: u8,
 }
+/// Themes 0..12 are terrestrial landscapes; 12..=17 are the orbital scenes,
+/// numbered like their sections.
+pub const FIRST_ORBITAL_THEME: u8 = 12;
+pub const LAST_THEME: u8 = 17;
+/// Terrestrial themes: every backdrop, palette and terrain table has this length.
+pub const TERRESTRIAL_THEMES: usize = FIRST_ORBITAL_THEME as usize;
 /// Active stage identity copied from the checked encounter header. The full
 /// campaign authoring table belongs to the host, never the resident C64 image.
 #[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]
@@ -534,22 +541,22 @@ pub const STAGE_INFOS: [StageInfo; SEGMENT_COUNT as usize] = {
     [
         StageInfo::FIRST,
         info(0, 7, 0, 0, 4, 1, 0),
-        info(1, 2, 1, 0, 1, 1, 4),
-        info(1, 2, 1, 1, 1, 5, 1),
-        info(0, 8, 2, 0, 5, 6, 1),
+        info(1, 2, 1, 0, 1, 10, 4),
+        info(1, 2, 1, 1, 10, 5, 1),
+        info(0, 8, 2, 0, 5, 6, 10),
         info(2, 8, 1, 0, 6, 2, 5),
         info(2, 3, 1, 0, 2, 7, 6),
         info(2, 3, 2, 2, 7, 8, 2),
         info(3, 9, 2, 0, 8, 9, 7),
         info(3, 9, 2, 0, 9, 3, 8),
-        info(3, 4, 2, 0, 3, 3, 9),
-        info(3, 4, 3, 3, 3, 10, 3),
-        info(0, 13, 4, 0, 10, 11, 3),
-        info(1, 14, 4, 0, 11, 12, 10),
-        info(3, 15, 4, 0, 12, 13, 11),
-        info(2, 16, 4, 0, 13, 14, 12),
-        info(3, 17, 4, 4, 14, 15, 13),
-        info(2, 18, 4, 5, 15, 15, 14),
+        info(3, 4, 2, 0, 3, 11, 9),
+        info(3, 4, 3, 3, 11, 12, 3),
+        info(0, 13, 4, 0, 12, 13, 11),
+        info(1, 14, 4, 0, 13, 14, 12),
+        info(3, 15, 4, 0, 14, 15, 13),
+        info(2, 16, 4, 0, 15, 16, 14),
+        info(3, 17, 4, 4, 16, 17, 15),
+        info(2, 18, 4, 5, 17, 17, 16),
     ]
 };
 #[cfg(any(test, feature = "host-tools"))]
@@ -578,9 +585,9 @@ impl<'a> Segment<'a> {
             || data[9] >= crate::audio::CUE_COUNT as u8
             || data[10] > 4
             || data[11] > 5
-            || data[12] > 15
-            || data[13] > 15
-            || data[14] > 15
+            || data[12] > LAST_THEME
+            || data[13] > LAST_THEME
+            || data[14] > LAST_THEME
             || data[15] != 0
         {
             return Err(AssetError::Bounds);
@@ -596,7 +603,7 @@ impl<'a> Segment<'a> {
                 || !matches!(kind, 1 | 2 | 3 | 5 | 6 | 7)
                 || (data[11] != 0 && kind == TURRET)
                 || flags & !3 != 0
-                || (flags & SMALL_DEBRIS != 0 && (kind != ROCK || data[12] < 10))
+                || (flags & SMALL_DEBRIS != 0 && (kind != ROCK || data[12] < FIRST_ORBITAL_THEME))
             {
                 return Err(AssetError::Bounds);
             }

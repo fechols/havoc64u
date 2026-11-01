@@ -1,6 +1,6 @@
 //! World-anchored scenery, emitted before projection by the SCENERY overlay.
 //! Decorative crossings deliberately have no gameplay objects or collision state.
-use crate::assets::{Segment, StageInfo};
+use crate::assets::{Segment, StageInfo, TERRESTRIAL_THEMES};
 use crate::game::STATIC_SKY;
 use crate::{GeometrySink, Vec3, EXTERIOR_TERRAIN};
 #[cfg(test)]
@@ -17,17 +17,17 @@ pub type SceneSink<'a> = dyn GeometrySink + 'a;
 
 pub(crate) const BACKDROP_CAMERA_Y: i16 = 40;
 #[cfg_attr(target_arch = "mos", link_section = ".tables.scenery_data")]
-pub(crate) static SKY_COLORS: [u8; 10] = [14, 8, 11, 6, 0, 12, 8, 11, 6, 6];
+pub(crate) static SKY_COLORS: [u8; TERRESTRIAL_THEMES] = [14, 8, 11, 6, 0, 12, 8, 11, 6, 6, 10, 6];
 
 /// Frame setup selects this color while the SCENERY overlay is loaded.
 #[inline(never)]
 #[cfg_attr(target_arch = "mos", link_section = ".phase.scenery_extra")]
 pub fn sky_color(theme: u8, transition: Option<(u8, u16)>) -> u8 {
-    if theme >= 10 {
+    if theme >= crate::assets::FIRST_ORBITAL_THEME {
         return 0;
     }
     if let Some((next, elapsed)) = transition {
-        if next >= 10 {
+        if next >= crate::assets::FIRST_ORBITAL_THEME {
             return if elapsed < 80 {
                 SKY_COLORS[theme as usize]
             } else if elapsed < 180 {
@@ -124,18 +124,18 @@ pub(crate) fn terrain_palette(style: u8) -> u16 {
 // These small, immutable lookups use resident table space instead of being
 // transferred with every scenery frame. The linker checks their shared budget.
 #[cfg_attr(target_arch = "mos", link_section = ".tables.scenery_data")]
-static TERRAIN_PALETTES: [u16; 10] = [
-    0x0d05, 0x080c, 0x060c, 0x0c0b, 0x060b, 0x0b0f, 0x0908, 0x020c, 0x0e0b, 0x0b09,
+static TERRAIN_PALETTES: [u16; TERRESTRIAL_THEMES] = [
+    0x0d05, 0x080c, 0x060c, 0x0c0b, 0x060b, 0x0b0f, 0x0908, 0x020c, 0x0e0b, 0x0b09, 0x0908, 0x0b09,
 ];
 #[cfg_attr(target_arch = "mos", link_section = ".tables.scenery_data")]
-static GROUND_COLORS: [u8; 10] = [5, 9, 12, 14, 6, 11, 11, 12, 14, 12];
+static GROUND_COLORS: [u8; TERRESTRIAL_THEMES] = [5, 9, 12, 14, 6, 11, 11, 12, 14, 12, 9, 14];
 #[cfg_attr(target_arch = "mos", link_section = ".tables.scenery_data")]
-static GROUND_SHADES: [u8; 10] = [13, 11, 11, 6, 14, 12, 12, 15, 15, 9];
+static GROUND_SHADES: [u8; TERRESTRIAL_THEMES] = [13, 11, 11, 6, 14, 12, 12, 15, 15, 9, 2, 15];
 static PROFILE: [u8; 16] = [0, 1, 3, 2, 1, 0, 2, 4, 3, 1, 0, 1, 2, 4, 2, 1];
 #[cfg_attr(target_arch = "mos", link_section = ".tables.scenery_data")]
-static HEIGHT_BASE: [i16; 10] = [-105, 96, -105, -105, -70, -80, -60, -40, -90, -100];
+static HEIGHT_BASE: [i16; TERRESTRIAL_THEMES] = [-105, 96, -105, -105, -70, -80, -60, -40, -90, -100, 72, -105];
 #[cfg_attr(target_arch = "mos", link_section = ".phase.scenery.data")]
-static HEIGHT_RISE: [u8; 50] = [
+static HEIGHT_RISE: [u8; TERRESTRIAL_THEMES * 5] = [
     0, 32, 64, 96, 128, // lowland
     0, 16, 32, 48, 64, // canyon
     0, 16, 32, 48, 64, // fortress
@@ -146,6 +146,8 @@ static HEIGHT_RISE: [u8; 50] = [
     0, 32, 64, 96, 128, // citadel
     0, 40, 80, 120, 160, // storm
     0, 48, 96, 144, 192, // meteor
+    0, 22, 44, 66, 88, // gate canyon: deeper notches up to the same rim
+    0, 24, 48, 72, 96, // assault coast: choppier swell
 ];
 
 #[inline(never)]
@@ -172,13 +174,14 @@ fn row_at(row: u16, start: u16, info: &StageInfo, legacy: bool) -> Row {
             from = info.previous_theme;
             to = info.theme;
             amount = weight(tick.saturating_sub(start - 400));
-        } else if info.next_theme < 10 && tick >= start + 3750 {
+        } else if info.next_theme < crate::assets::FIRST_ORBITAL_THEME && tick >= start + 3750 {
             to = info.next_theme;
             amount = weight(tick - start - 3750);
         }
     }
-    let lane = |theme| if !legacy && theme == 3 { 320 } else { 145 };
-    let edge = |theme| if theme == 1 { 190 } else { 640 };
+    // The carrier themes fly over open water; both canyons keep their walls.
+    let lane = |theme| if !legacy && (theme == 3 || theme == 11) { 320 } else { 145 };
+    let edge = |theme| if theme == 1 || theme == 10 { 190 } else { 640 };
     // Most frames contain one terrain style. Avoid duplicate samples and blends.
     if from == to {
         return Row {
@@ -365,7 +368,7 @@ pub fn emit(
         ground_color: segment.ground_color(),
         legacy,
     };
-    if context.info.theme >= 10 || (transition.is_some() && context.info.bridge_profile == 3) {
+    if context.info.theme >= crate::assets::FIRST_ORBITAL_THEME || (transition.is_some() && context.info.bridge_profile == 3) {
         decoration(sink, &context);
         return;
     }
@@ -402,7 +405,7 @@ fn land(sink: &mut SceneSink<'_>, context: &Decoration, drop: i16) {
     let stage_start = stage_origin(section, legacy);
     let scene_ticks = stage_start + local;
     let camera_y = camera_y + drop;
-    let transition = elapsed < 400 && info.next_theme < 10;
+    let transition = elapsed < 400 && info.next_theme < crate::assets::FIRST_ORBITAL_THEME;
     let row = scene_ticks >> 6;
     let offset = ((scene_ticks & 63) * 8) as i16;
     let mut first = row_at(row, stage_start, &info, legacy);
@@ -452,7 +455,7 @@ fn land(sink: &mut SceneSink<'_>, context: &Decoration, drop: i16) {
 #[inline(never)]
 #[cfg_attr(target_arch = "mos", link_section = ".phase.scenery")]
 fn backdrop(sink: &mut SceneSink<'_>, info: &StageInfo, elapsed: u16, drop: i16) {
-    let transition = elapsed < 400 && info.next_theme < 10;
+    let transition = elapsed < 400 && info.next_theme < crate::assets::FIRST_ORBITAL_THEME;
     if transition && (info.theme == 4 || info.next_theme == 4) && elapsed > 0 && elapsed < 399 {
         cave_backdrop(sink, info, elapsed);
         return;
@@ -612,7 +615,7 @@ fn cave_backdrop(sink: &mut SceneSink<'_>, info: &StageInfo, elapsed: u16) {
 }
 
 #[cfg_attr(target_arch = "mos", link_section = ".phase.scenery.data")]
-pub(crate) static HORIZON_COLORS: [[u8; 2]; 10] = [
+pub(crate) static HORIZON_COLORS: [[u8; 2]; TERRESTRIAL_THEMES] = [
     [15, 6],
     [12, 11],
     [15, 12],
@@ -623,9 +626,11 @@ pub(crate) static HORIZON_COLORS: [[u8; 2]; 10] = [
     [10, 2],
     [11, 0],
     [10, 4],
+    [8, 2],
+    [10, 4],
 ];
 #[cfg_attr(target_arch = "mos", link_section = ".phase.scenery.data")]
-pub(crate) static CLOUD_COLORS: [[u8; 2]; 10] = [
+pub(crate) static CLOUD_COLORS: [[u8; 2]; TERRESTRIAL_THEMES] = [
     [1, 15],
     [7, 10],
     [15, 12],
@@ -636,10 +641,12 @@ pub(crate) static CLOUD_COLORS: [[u8; 2]; 10] = [
     [15, 12],
     [1, 15],
     [15, 4],
+    [7, 15],
+    [1, 15],
 ];
 #[cfg_attr(target_arch = "mos", link_section = ".phase.scenery.data")]
 #[rustfmt::skip]
-pub(crate) static HORIZONS: [[[i8; 2]; 15]; 10] = [
+pub(crate) static HORIZONS: [[[i8; 2]; 15]; TERRESTRIAL_THEMES] = [
     [[-88, -34], [-67, 25], [-43, -34], [-88, -34], [-41, 17], [-16, -34], [-32, -34], [28, 16], [52, -34], [1, -34], [61, 16], [88, -34], [62, -34], [87, 16], [88, -34]],
     [[-88, -34], [-88, 36], [-72, -34], [-88, -34], [-62, 36], [-2, -34], [-77, -34], [-17, 36], [29, -34], [-51, -34], [9, 14], [69, -34], [25, -34], [85, 36], [88, -34]],
     [[-88, -34], [-50, 10], [-50, -34], [-88, -34], [-88, 10], [-50, 10], [-30, -34], [88, 10], [88, -34], [-30, -34], [-30, 10], [88, 10], [-56, -34], [-40, 24], [-24, -34]],
@@ -652,9 +659,11 @@ pub(crate) static HORIZONS: [[[i8; 2]; 15]; 10] = [
     [[-88, -34], [18, 11], [18, -34], [-88, -34], [-88, 11], [18, 11], [38, -34], [88, 10], [88, -34], [38, -34], [38, 10], [88, 10], [12, -34], [28, 36], [44, -34]],
     [[-88, -34], [-79, 33], [-19, -34], [-88, -34], [-45, 36], [15, -34], [-79, -34], [-19, 10], [41, -34], [-15, -34], [28, 16], [88, -34], [1, -34], [61, 9], [88, -34]],
     [[-88, -34], [-88, 17], [-63, -34], [-88, -34], [-62, 17], [-2, -34], [-66, -34], [-6, 22], [54, -34], [-38, -34], [22, 23], [82, -34], [32, -34], [55, 26], [88, -34]],
+    [[-88, -34], [-83, 17], [-59, -34], [-88, -34], [-57, 3], [3, -34], [-33, -34], [27, 3], [87, -34], [-7, -34], [53, 8], [88, -34], [19, -34], [79, 36], [88, -34]],
+    [[-88, -34], [-70, 21], [-10, -34], [-88, -34], [-44, 5], [16, -34], [-74, -34], [-14, 20], [46, -34], [-15, -34], [45, 9], [88, -34], [11, -34], [71, 3], [88, -34]],
 ];
 #[cfg_attr(target_arch = "mos", link_section = ".phase.scenery.data")]
-pub(crate) static CLOUD_CENTERS: [[[i8; 3]; 3]; 10] = [
+pub(crate) static CLOUD_CENTERS: [[[i8; 3]; 3]; TERRESTRIAL_THEMES] = [
     [[-70, 48, 96], [-85, 109, 112], [99, 65, 127]],
     [[-56, 91, 96], [-34, 109, 112], [32, 70, 127]],
     [[-42, 91, 96], [-27, 109, 112], [-10, 126, 127]],
@@ -665,9 +674,11 @@ pub(crate) static CLOUD_CENTERS: [[[i8; 3]; 3]; 10] = [
     [[-50, 91, 96], [27, 109, 112], [57, 126, 127]],
     [[-50, 91, 96], [-11, 56, 112], [79, 126, 127]],
     [[-63, 91, 96], [78, 109, 112], [92, 40, 127]],
+    [[-62, 54, 96], [-76, 109, 112], [43, 70, 127]],
+    [[-60, 59, 96], [11, 95, 112], [95, 87, 127]],
 ];
 #[cfg_attr(target_arch = "mos", link_section = ".phase.scenery.data")]
-pub(crate) static CLOUD_OUTLINES: [[[i8; 2]; 5]; 10] = [
+pub(crate) static CLOUD_OUTLINES: [[[i8; 2]; 5]; TERRESTRIAL_THEMES] = [
     [[-18, 0], [-11, 11], [4, 16], [18, 1], [14, -8]],
     [[-18, 0], [-11, 11], [4, 16], [18, 1], [14, -8]],
     [[-46, 0], [-28, 11], [9, 16], [46, 1], [34, -8]],
@@ -680,6 +691,8 @@ pub(crate) static CLOUD_OUTLINES: [[[i8; 2]; 5]; 10] = [
     [[-18, 0], [-11, 11], [4, 16], [18, 1], [14, -8]],
     [[-38, 0], [-23, 11], [8, 16], [38, 1], [28, -8]],
     [[-25, 0], [-15, 11], [5, 16], [25, 1], [18, -8]],
+    [[-26, 0], [-16, 11], [5, 16], [26, 1], [20, -8]],
+    [[-18, 0], [-11, 9], [4, 13], [18, 1], [14, -6]],
 ];
 
 #[inline(never)]
@@ -703,7 +716,7 @@ pub(crate) fn backdrop_face(section: u8, face: u8) -> ([Vec3; 3], u8) {
         // All themes contain exactly 15 contiguous vertices. Multiplying the
         // bounded theme in a byte avoids the native wide multiply by 30.
         let vertices = section * 15;
-        // SAFETY: theme < 10 above; each selected row contains 15 [i8; 2]s.
+        // SAFETY: theme < FIRST_ORBITAL_THEME above; each selected row contains 15 [i8; 2]s.
         outline = unsafe {
             core::slice::from_raw_parts(
                 HORIZONS.as_ptr().cast::<[i8; 2]>().add(vertices as usize),
@@ -727,7 +740,7 @@ pub(crate) fn backdrop_face(section: u8, face: u8) -> ([Vec3; 3], u8) {
         let facet = face - 5 - cloud * 3;
         let outline_offset = section * 10;
         let center_offset = section * 9 + cloud * 3;
-        // SAFETY: theme < 10 and cloud is 0..=2. Array rows are contiguous,
+        // SAFETY: theme < FIRST_ORBITAL_THEME and cloud is 0..=2. Array rows are contiguous,
         // byte-aligned, and the bounded offsets select complete rows/centers.
         unsafe {
             outline = core::slice::from_raw_parts(
@@ -790,18 +803,18 @@ fn decoration(sink: &mut SceneSink<'_>, context: &Decoration) {
     }
     #[cfg(not(target_arch = "mos"))]
     {
-        if context.info.theme >= 10 {
+        if context.info.theme >= crate::assets::FIRST_ORBITAL_THEME {
             let theme = if context.elapsed >= 200 && context.elapsed < 400 {
                 context.info.next_theme
             } else {
                 context.info.theme
             };
             match theme {
-                10 => space::scenic_asteroid(sink, context),
-                11 => space::scenic_moon(sink, context),
-                12 => space::scenic_graveyard(sink, context),
-                13 => space::scenic_shipyard(sink, context),
-                14 => space::scenic_carrier(sink, context),
+                12 => space::scenic_asteroid(sink, context),
+                13 => space::scenic_moon(sink, context),
+                14 => space::scenic_graveyard(sink, context),
+                15 => space::scenic_shipyard(sink, context),
+                16 => space::scenic_carrier(sink, context),
                 _ => space::scenic_gate(sink, context),
             }
         } else {
@@ -1220,8 +1233,8 @@ mod tests {
 
     #[test]
     fn byte_height_arithmetic_preserves_all_signed_profiles() {
-        let scales = [32, 16, 16, 16, 48, 48, 24, 32, 40, 48];
-        for style in 0..10u8 {
+        let scales = [32, 16, 16, 16, 48, 48, 24, 32, 40, 48, 22, 24];
+        for style in 0..crate::assets::FIRST_ORBITAL_THEME {
             for row in [0u16, 1, 7, 15, 16, 1023, 65528, 65535] {
                 for side in [false, true] {
                     let phase = row.wrapping_add(if side { 7 } else { 0 }) & 15;
@@ -1240,7 +1253,7 @@ mod tests {
 
     #[test]
     fn compact_backdrop_addresses_match_every_authored_face() {
-        for theme in 0..10usize {
+        for theme in 0..TERRESTRIAL_THEMES {
             for face in 0..14usize {
                 // Frozen safe indexing oracle, independent of the compact
                 // byte offsets used by the native table decoder.
@@ -1281,7 +1294,7 @@ mod tests {
     #[test]
     #[should_panic]
     fn compact_backdrop_rejects_invalid_theme_before_table_reads() {
-        backdrop_face(10, 0);
+        backdrop_face(crate::assets::FIRST_ORBITAL_THEME, 0);
     }
 
     #[test]
@@ -1340,7 +1353,7 @@ mod tests {
         bytes[..4].copy_from_slice(b"SMS2");
         bytes[4] = stage;
         bytes[5] = info.enemy_profile;
-        bytes[6] = if info.theme < 10 {
+        bytes[6] = if info.theme < crate::assets::FIRST_ORBITAL_THEME {
             GROUND_COLORS[info.theme as usize]
         } else {
             0
@@ -2031,9 +2044,9 @@ mod tests {
     }
 
     #[test]
-    fn ten_themes_have_distinct_fixed_backdrops_and_fit_ordinary_geometry() {
+    fn every_terrestrial_theme_has_a_distinct_fixed_backdrop_and_fits_ordinary_geometry() {
         let mut backgrounds = Vec::new();
-        for theme in 0..10 {
+        for theme in 0..crate::assets::FIRST_ORBITAL_THEME {
             let background: Vec<_> = (0..14).map(|face| backdrop_face(theme, face)).collect();
             assert!(
                 !backgrounds.contains(&background),
@@ -2405,7 +2418,7 @@ mod tests {
                 let scene = orbital_capture(11, 3750 + tick, Some(tick), camera);
                 assert!(scene.0.len() <= 80, "ascent tick {tick}");
                 let mut renderer = crate::render::Renderer::new();
-                renderer.begin(sky_color(3, Some((10, tick))));
+                renderer.begin(sky_color(11, Some((12, tick))));
                 for &(p, color, flags) in &scene.0 {
                     renderer.triangle(p[0], p[1], p[2], color, flags);
                 }
@@ -2413,8 +2426,8 @@ mod tests {
                 assert!(renderer.triangle_count <= 96, "ascent tick {tick}");
             }
         }
-        assert_eq!(sky_color(3, Some((10, 0))), SKY_COLORS[3]);
-        assert_eq!(sky_color(3, Some((10, 180))), 0);
+        assert_eq!(sky_color(11, Some((12, 0))), SKY_COLORS[11]);
+        assert_eq!(sky_color(11, Some((12, 180))), 0);
         assert_eq!(
             pixels(&orbital_capture(11, 3999, Some(249), 40)),
             pixels(&orbital_capture(11, 4000, Some(250), 40)),
@@ -2433,7 +2446,7 @@ mod tests {
             camera_y: 24,
             stage: 11,
             info: STAGE_INFOS[11],
-            ground_color: 6,
+            ground_color: GROUND_COLORS[11],
             legacy: false,
         };
         super::land(&mut land, &context, 249 * 24);

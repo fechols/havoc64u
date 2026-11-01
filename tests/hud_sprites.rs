@@ -76,7 +76,8 @@ fn assert_text(image: &[u8; 128], x: usize, y: usize, value: &[u8], color: u8) {
 
 #[test]
 fn six_digit_score_crosses_sprite_boundary_and_clamps_without_losing_glyphs() {
-    for (value, expected) in [(0, b"000000"), (12345, b"012345"), (u32::MAX, b"999999")] {
+    // Scores are stored in 25-point units: 493 units are 12,325 points.
+    for (value, expected) in [(0, b"000000"), (493, b"012325"), (39_999, b"999975"), (u16::MAX, b"999999")] {
         let mut status = hud(Mode::Playing);
         status.score = value;
         let state = DisplayState::from_hud(&status, 0, None);
@@ -135,7 +136,8 @@ fn resource_labels_and_bomb_rectangles_fit_their_four_corner_footprints() {
         assert!(x as usize + 24 <= 160);
         assert!(y as usize + 21 <= 200);
     }
-    assert_eq!(core::mem::size_of::<DisplayState>(), 12);
+    // The score is stored in 16-bit units, two bytes smaller than before.
+    assert_eq!(core::mem::size_of::<DisplayState>(), 10);
 }
 
 #[test]

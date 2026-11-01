@@ -96,9 +96,9 @@ fn delayed_waves_repeat_each_enemy_once_with_its_properties_and_rewards() {
     }
     assert_eq!(game.kills, 6);
     assert_eq!((game.bombs, game.bomb_kills), (0, 6));
-    let expected_score: u32 = [assets::FIGHTER, assets::DIVER, assets::TURRET]
+    let expected_score: u16 = [assets::FIGHTER, assets::DIVER, assets::TURRET]
         .into_iter()
-        .map(|kind| u32::from(bank.enemy(kind).score) * 2)
+        .map(|kind| bank.enemy(kind).score * 2)
         .sum();
     assert_eq!(game.score, expected_score);
     assert!(game.pickups.iter().any(|p| p.kind == 2));
@@ -561,6 +561,7 @@ fn all_campaign_enemies_repeat_without_exhausting_actor_slots() {
             assert_eq!(game.repeat_spawn_cursor, segment.spawn_count());
         }
     }
-    assert!(totals.iter().all(|&count| count == [890, 102]));
+    // Obstacles include three approach props in each terrestrial boss stage.
+    assert!(totals.iter().all(|&count| count == [890, 111]));
     assert!(peak <= ACTORS);
 }

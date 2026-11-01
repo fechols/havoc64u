@@ -133,8 +133,8 @@ def main():
     metadata = {
         "enemy-profile": (8, 4), "music-cue": (9, cue_count),
         "bridge-profile": (10, 5 if space else 3), "boss-kind": (11, 6 if space else 4),
-        "theme": (12, 16 if space else 10), "next-theme": (13, 16 if space else 10),
-        "previous-theme": (14, 16 if space else 10), "reserved": (15, 1),
+        "theme": (12, 18 if space else 12), "next-theme": (13, 18 if space else 12),
+        "previous-theme": (14, 18 if space else 12), "reserved": (15, 1),
     }
     for field, (offset, _value) in metadata.items():
         cases.append((f"metadata-{field}", 0x2800 + offset, "INVALID MISSION SEGMENT"))

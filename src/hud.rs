@@ -118,9 +118,7 @@ pub fn draw(band: u8, canvas: &mut impl Canvas, hud: &Hud, frame: u16) -> bool {
             centered_scaled(band, canvas, 77, b"MISSION LOST", 10, 2);
             centered(band, canvas, 96, b"NO SHIPS REMAIN", 15);
             if band == 13 || band == 14 {
-                let mut score = *b"SCORE 000000";
-                digits(hud.score, &mut score[6..]);
-                centered(band, canvas, 109, &score, 1);
+                centered(band, canvas, 109, &score_line(hud.score), 1);
             }
             centered(band, canvas, 124, b"FIRE: RETRY MISSION", blink(frame));
             true
@@ -160,9 +158,7 @@ fn victory(band: u8, canvas: &mut impl Canvas, hud: &Hud, frame: u16) -> bool {
     }
     if band >= 22 {
         rect(band, canvas, 36, 177, 88, 22, 0);
-        let mut score = *b"SCORE 000000";
-        digits(hud.score, &mut score[6..]);
-        centered(band, canvas, 180, &score, 1);
+        centered(band, canvas, 180, &score_line(hud.score), 1);
         centered(
             band,
             canvas,
@@ -289,20 +285,42 @@ fn rect(band: u8, canvas: &mut impl Canvas, x: i16, y: i16, width: i16, height: 
 
 #[inline(never)]
 #[cfg_attr(target_arch = "mos", link_section = ".phase.pixels")]
-pub(crate) fn digits(mut value: u32, output: &mut [u8]) {
-    // Saturation preserves the display width instead of wrapping high scores.
-    value = value.min(999_999);
-    const POWERS: [u32; 6] = [100_000, 10_000, 1000, 100, 10, 1];
-    for i in 0..output.len().min(6) {
-        let power = POWERS[i];
-        let mut digit = b'0';
-        while value >= power {
-            value -= power;
-            digit += 1;
-        }
-        output[i] = digit;
+pub(crate) fn digits(units: u16, output: &mut [u8; 6]) {
+    // A score of u units is 25u = 100q + 25r points (u = 4q + r): print q,
+    // then "00", "25", "50" or "75", all in 16-bit arithmetic. Saturation
+    // preserves the display width instead of wrapping high scores.
+    const _: () = assert!(crate::game::SCORE_UNIT == 25);
+    if units >= SCORE_DISPLAY_UNITS {
+        *output = *b"999999";
+        return;
     }
+    let mut hundreds = units >> 2;
+    for (slot, power) in output.iter_mut().zip([1000u16, 100, 10, 1]) {
+        *slot = b'0';
+        while hundreds >= power {
+            hundreds -= power;
+            *slot += 1;
+        }
+    }
+    // 25r points: tens digit 5r/2 (0, 2, 5, 7), ones digit 5 when r is odd.
+    let quarters = (units & 3) as u8;
+    output[4] = b'0' + ((quarters * 5) >> 1);
+    output[5] = if quarters & 1 != 0 { b'5' } else { b'0' };
 }
+
+/// "SCORE " and the six-digit score, for the game-over and victory screens.
+#[inline(never)]
+#[cfg_attr(target_arch = "mos", link_section = ".phase.pixels")]
+fn score_line(units: u16) -> [u8; 12] {
+    let mut value = [0; 6];
+    digits(units, &mut value);
+    let mut line = *b"SCORE 000000";
+    line[6..].copy_from_slice(&value);
+    line
+}
+
+/// The first score (in units) whose points no longer fit six digits.
+pub(crate) const SCORE_DISPLAY_UNITS: u16 = 40_000;
 
 /// Two decimal places for the life counter, with a blank leading zero.
 #[inline(never)]
@@ -354,8 +372,14 @@ mod tests {
     fn decimal_score_is_fixed_width_and_saturates() {
         let mut output = [0; 6];
         digits(42, &mut output);
-        assert_eq!(&output, b"000042");
-        digits(u32::MAX, &mut output);
+        assert_eq!(&output, b"001050");
+        digits(1, &mut output);
+        assert_eq!(&output, b"000025");
+        digits(SCORE_DISPLAY_UNITS - 1, &mut output);
+        assert_eq!(&output, b"999975");
+        digits(SCORE_DISPLAY_UNITS, &mut output);
+        assert_eq!(&output, b"999999");
+        digits(u16::MAX, &mut output);
         assert_eq!(&output, b"999999");
     }
 }
