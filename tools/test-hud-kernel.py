@@ -38,7 +38,7 @@ class Machine(publisher.Machine):
         self.irq_call = False
         self.cia_reads = 0
         self.late_raster = False
-        self.start, self.end = (52, 92) if corner < 2 else (212, 254)
+        self.start, self.end = (54, 87) if corner < 2 else (217, 250)
         self.destination = 0x8c00 + corner * 128
         self.mem[0x8e80] = 3
         self.mem[WRITES:WRITES + 2] = (255).to_bytes(2, "little")
@@ -412,7 +412,7 @@ def test_multiplexer(code, symbols):
 def main():
     BUILD.mkdir(parents=True, exist_ok=True)
     linker = "ENTRY(publish_hud_corner)\n__rc0 = 2; INCLUDE imag-regs.ld\n"
-    linker += "SECTIONS { . = 0x3000; .text : { *(.phase.pixels.hud_publish) *(.phase.pixels.reticle_hide) *(.text.hud_apply_scroll) *(.text.reticle*) *(.text.irq_entry) *(.text.__havoc_copy_bytes) *(.text.mock_irq_body) *(.text.hud_positions) } /DISCARD/ : { *(.comment) *(.init.*) *(.text.*) } }\n"
+    linker += "SECTIONS { . = 0x3000; .text : { *(.phase.pixels.hud_publish) *(.phase.pixels.reticle_hide) *(.text.hud_apply_scroll) *(.text.reticle*) *(.text.irq_entry) *(.text.__havoc_copy_bytes) *(.text.mock_irq_body) *(.text.hud_positions) } /DISCARD/ : { *(.comment) *(.init.*) *(.splash_init) *(.text.*) } }\n"
     linker += f"HUD_IMAGE_WRITES = {WRITES}; HUD_COMMITS = {COMMITS}; HUD_SCROLL = {SCROLL};\n"
     linker += "".join(f"{name} = {address};\n" for name, address in STATE.items())
     linker += "__irq_stack = 0x7600;\n"
@@ -456,7 +456,7 @@ mock_done:
     cases = max_mask = rollover_retries = 0
     for lines in (312, 263):
         for corner in range(4):
-            start, end = (52, 92) if corner < 2 else (212, 254)
+            start, end = (54, 87) if corner < 2 else (217, 250)
             positions = {0, lines - .01, 255.98, 256.02, 250.8, 251.01}
             positions.update(boundary + delta for boundary in (start, end - 1, end) for delta in (-.02, .02, .98))
             for position in sorted(positions):

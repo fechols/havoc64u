@@ -101,7 +101,7 @@ fn assert_centered_caption(pixels: &[u8], y: usize, text: &[u8], color: u8, pane
 #[test]
 fn title_has_large_lettering_and_keeps_the_ship_visible() {
     let pixels = frame(&state(Mode::Title), 0);
-    assert_centered_caption(&pixels, 134, b"PORT2: FIRE2/LSHIFT BOOST", 12, (10, 150));
+    assert_centered_caption(&pixels, 134, b"2P: FIRE TO JOIN ANYTIME", 12, (10, 150));
     assert!(
         pixels[31 * 160..46 * 160]
             .iter()
@@ -121,10 +121,10 @@ fn title_names_the_selected_mode_without_moving_the_other_rows() {
     for (tick, color) in [(0, 1), (16, 3)] {
         let mut status = state(Mode::Title);
         let normal = frame(&status, tick);
-        assert_centered_caption(&normal, 189, b"S: NORMAL 3 / FIRE: START", color, (10, 150));
+        assert_centered_caption(&normal, 189, b"Y: NORMAL 3 / FIRE: START", color, (10, 150));
         status.story_mode = true;
         let story = frame(&status, tick);
-        assert_centered_caption(&story, 189, b"S: STORY 99 / FIRE: START", color, (10, 150));
+        assert_centered_caption(&story, 189, b"Y: STORY 99 / FIRE: START", color, (10, 150));
         assert_eq!(&normal[..189 * 160], &story[..189 * 160]);
         assert_eq!(&normal[194 * 160..], &story[194 * 160..]);
     }

@@ -88,7 +88,7 @@ def main():
             ("__phase_sim_aux_start", 0x8dff, "SIM helpers must start after HUD sprites"),
             ("__phase_sim_aux_end", 0x9301, "SIM helpers exceed shared workspace"),
             ("__phase_sim_extra_start", 0xdfff, "SIM extra helpers must start at $E000"),
-            ("__phase_sim_extra_end", 0xf801, "SIM extra helpers exceed retired raster workspace"),
+            ("__phase_sim_extra_end", 0xfb01, "SIM extra helpers exceed retired raster workspace"),
             ("__phase_sim_aux_size", 0x500, "incorrect composed SIM helper size"),
             ("__pixel_band_start", 0x8dff, "pixel band must occupy $8E00-$92FF after HUD sprites"),
             ("__pixel_band_end", 0x9301, "pixel band must occupy $8E00-$92FF after HUD sprites"),

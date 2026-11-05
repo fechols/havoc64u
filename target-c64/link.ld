@@ -17,7 +17,9 @@ MEMORY {
     phase (rwx) : ORIGIN = 0x3000, LENGTH = 0x4200
     startup_checks (rx) : ORIGIN = 0x8E00, LENGTH = 0x0500
     sim_aux (rx) : ORIGIN = 0x8E00, LENGTH = 0x0500
-    sim_extra (rx) : ORIGIN = 0xE000, LENGTH = 0x1800
+    /* SIM helpers may use the PIXELS/SHADOW scratch through $FAFF: nothing
+     * there is live during SIM, and 0x500 + 0x1B00 fills the 8 KiB REU slot. */
+    sim_extra (rx) : ORIGIN = 0xE000, LENGTH = 0x1B00
     scenery_extra (rx) : ORIGIN = 0xE000, LENGTH = 0x0800
     constants (r) : ORIGIN = 0x7800, LENGTH = 0x0800
     tables (r) : ORIGIN = 0x9900, LENGTH = 0x0700
@@ -103,9 +105,9 @@ __reu_scenery_carrier_end = 0x075800;
 __reu_scenery_gate = 0x075800;
 __reu_scenery_gate_end = 0x07A000;
 __reu_shadow = 0x07A000;
-__reu_shadow_end = 0x07D800;
-__reu_scenery_helpers = 0x07D800;
-__reu_scenery_helpers_end = 0x07E800;
+__reu_shadow_end = 0x07E000;
+__reu_scenery_helpers = 0x07E000;
+__reu_scenery_helpers_end = 0x07F000;
 
 SECTIONS {
     /* The stock C64 .init.250 case-mode hook calls KERNAL CHROUT. Our BSS
@@ -560,7 +562,7 @@ ASSERT(__reu_digital_music == 0x80000 && __reu_digital_victory == __reu_digital_
 ASSERT(__code_reu_pages_end - __code_reu_pages == 34, "incorrect logical REU page table size")
 ASSERT(__reu_probe_start == 0xC00 && __reu_probe_end == 0x1000, "incorrect probe scratch reservation")
 ASSERT(__reu_models == 0xB000 && __reu_models_end - __reu_models == 0x9000, "incorrect model bank reservation")
-ASSERT(__reu_models_end == __reu_boot && __reu_scenery_helpers_end == 0x7E800 &&
+ASSERT(__reu_models_end == __reu_boot && __reu_scenery_helpers_end == 0x7F000 &&
        __reu_scenery_helpers_end <= __reu_digital_music, "compact code/assets exceed the music boundary")
 ASSERT((__reu_boot & 0x7FF) == 0 && __reu_boot < __reu_boot_end && __reu_boot_end <= __reu_digital_music, "boot REU reservation exceeds the 2 KiB address table")
 ASSERT(__phase_boot_size > 0 && __phase_boot_size <= __reu_code_slot_size && __reu_boot + __phase_boot_size <= __reu_boot_end, "boot image exceeds its REU reservation")
@@ -664,7 +666,7 @@ ASSERT(SIZEOF(.tables) <= 0x0700, "resident tables exceed $9900-$9FFF")
 ASSERT(SIZEOF(.phase.boot) <= 0x4200, "BOOT overlay exceeds $3000-$71FF")
 ASSERT(__phase_sim_size <= 0x4200, "composed SIM overlay exceeds $3000-$71FF")
 ASSERT(__phase_sim_aux_prefix_size > 0 && __phase_sim_aux_prefix_size <= 0x0500, "SIM helpers exceed retired startup / renderer workspace")
-ASSERT(__phase_sim_extra_size > 0 && __phase_sim_extra_size <= 0x1800, "SIM extra helpers exceed retired raster / shadow workspace")
+ASSERT(__phase_sim_extra_size > 0 && __phase_sim_extra_size <= 0x1B00, "SIM extra helpers exceed retired raster / shadow workspace")
 ASSERT(encounter_lowlands == encounter_step && encounter_canyon == encounter_step && encounter_fortress == encounter_step && encounter_carrier == encounter_step && encounter_warden == encounter_step && encounter_citadel == encounter_step && encounter_flagship == encounter_step, "encounter ABI entries must start every SIM tail")
 ASSERT(SIZEOF(.phase.enemy.lowlands) > 0 && SIZEOF(.phase.enemy.canyon) > 0 && SIZEOF(.phase.enemy.fortress) > 0 && SIZEOF(.phase.enemy.carrier) > 0, "all four enemy tails are required")
 ASSERT(__phase_geometry_prefix_size <= 0x3F20, "GEOMETRY overlaps shared projection helpers at $6F20")

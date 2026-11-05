@@ -2057,9 +2057,10 @@ fn crystal_cave_has_an_unbroken_roof_side_walls_and_visible_hanging_crystals() {
 #[test]
 fn resident_state_fits_budget() {
     assert_eq!(core::mem::size_of::<PresentationEvent>(), 1);
-    // Host C alignment adds eight bytes relative to the byte-aligned MOS
-    // layout. The native compile-time assertion and ELF audit enforce 768.
-    let alignment_padding = if cfg!(target_arch = "mos") { 0 } else { 8 };
+    // Host C alignment and its eight-byte pointer add bytes relative to the
+    // byte-aligned MOS layout. The native compile-time assertion and ELF
+    // audit enforce 768.
+    let alignment_padding = if cfg!(target_arch = "mos") { 0 } else { 24 };
     assert!(
         core::mem::size_of::<Game>() <= 768 + alignment_padding,
         "{}",

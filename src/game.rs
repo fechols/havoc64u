@@ -24,6 +24,8 @@ pub const TRANSITION_TICKS: u16 = 400;
 pub(crate) const STATIC_SKY: u8 = 2;
 const PLAYER_Z: i16 = 180;
 const SPEED: i16 = 8;
+/// The second player's ship joins and returns to the right of the first's lane.
+const SECOND_SHIP_X: i16 = 48;
 /// Nearest whole-unit radius to a three-quarter-size hostile projectile.
 const ENEMY_SHOT_RADIUS: i16 = 4;
 /// Actors fly past the camera instead of vanishing: they stay alive and drawn
@@ -134,6 +136,7 @@ pub unsafe extern "C" fn game_terminal(game: *mut (), bank: *const ()) {
 }
 
 #[derive(Clone, Copy, Default, Debug)]
+#[cfg_attr(test, derive(PartialEq, Eq))]
 pub struct InputSample {
     pub bits: u8,
     /// Rising edges accumulated since the previous sample, if any.
@@ -143,6 +146,7 @@ pub struct InputSample {
     pub ms: u16,
 }
 
+#[repr(u8)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Mode {
     Title,
@@ -403,26 +407,136 @@ impl Controls {
     }
 }
 
+/// One player's ship. The first player's ship opens `Game` field by field in
+/// exactly this order; the second player's waits in `Game::reserve`.
+/// `Game::swap_seats` exchanges the two, so every ship routine (controls,
+/// flight, weapons, damage, scoring) serves either player unchanged.
+#[repr(C)]
+#[derive(Clone, Copy)]
+#[cfg_attr(test, derive(Debug, PartialEq, Eq))]
+pub(crate) struct Ship {
+    controls: Controls,
+    player: Vec3,
+    flight: Flight,
+    score: u16,
+    kills: u16,
+    boost_cycle: u16,
+    shield: u8,
+    bombs: u8,
+    bomb_kills: u8,
+    lives: u8,
+    shot_cooldown: u8,
+    invulnerability: u8,
+    hit_flash_ticks: u8,
+    roll_ticks: u8,
+    roll_cooldown: u8,
+    roll_direction: i8,
+    respawn_ticks: u8,
+    // Keeps the record an even length, so no padding byte joins the swap.
+    spare: u8,
+}
+impl Ship {
+    const EMPTY: Self = Self {
+        controls: Controls::NEW,
+        player: Vec3 { x: 0, y: 0, z: 0 },
+        flight: Flight::ZERO,
+        score: 0,
+        kills: 0,
+        boost_cycle: 0,
+        shield: 0,
+        bombs: 0,
+        bomb_kills: 0,
+        lives: 0,
+        shot_cooldown: 0,
+        invulnerability: 0,
+        hit_flash_ticks: 0,
+        roll_ticks: 0,
+        roll_cooldown: 0,
+        roll_direction: 0,
+        respawn_ticks: 0,
+        spare: 0,
+    };
+}
+
+/// Input devices, numbered from one in `Game::devices`: the low nibble is
+/// the first player's device, the high nibble the second's (zero: none).
+pub const DEVICE_JOY2: u8 = 0;
+pub const DEVICE_JOY1: u8 = 1;
+pub const DEVICE_KEYBOARD: u8 = 2;
+
+/// One controller sample of every device: port 2, port 1 and the keyboard.
+#[repr(C)]
+#[derive(Clone, Copy, Default, Debug)]
+pub struct DeviceSample {
+    pub bits: [u8; 3],
+    pub pressed: [u8; 3],
+    pub ms: u16,
+}
+
 /// All simulation state is resident; no heap, filesystem, or REU access occurs
 /// here. Asset records and meshes are supplied by the platform's prefetched views.
 #[cfg_attr(test, derive(Debug, PartialEq, Eq))]
 #[repr(C)]
 pub struct Game {
+    // The first player's ship: these fields stay first, matching `Ship`.
     controls: Controls,
-    mode: Mode,
-    presentation_event: PresentationEvent,
     player: Vec3,
     /// Fractional position, velocity and attitude of the ship (flight.rs).
     flight: Flight,
+    /// Every award is a multiple of 25 points, so the score is counted in
+    /// 25-point units: 16-bit arithmetic still reaches past the 999,999 display.
+    score: u16,
+    kills: u16,
+    // 300..201 active, 200..1 cooling, 0 ready. Both phases use real 50 Hz ticks.
+    boost_cycle: u16,
+    shield: u8,
+    bombs: u8,
+    // Low nibble: kills toward a bomb; high nibble: pickup opportunities (0..2).
+    bomb_kills: u8,
+    lives: u8,
+    shot_cooldown: u8,
+    invulnerability: u8,
+    hit_flash_ticks: u8,
+    roll_ticks: u8,
+    roll_cooldown: u8,
+    roll_direction: i8,
+    // Respawning mode's delay; in co-op, also a downed ship's return delay.
+    respawn_ticks: u8,
+    spare: u8,
+    // Kept beside the leading ship so co-op code addresses both with
+    // short offsets.
+    /// The second player's ship while the first player's occupies the
+    /// leading fields (and the first's while `swapped`).
+    reserve: Ship,
+    /// Device numbers (one-based) of the first (low nibble) and second
+    /// (high nibble) player; zero when a seat is empty.
+    devices: u8,
+    /// True while `swap_seats` has the second player's ship in front.
+    swapped: bool,
+    /// Co-op camera target: the flying ships' mean x and y.
+    view: [i16; 2],
+    /// Arguments of the closure passed to `each_ship`.
+    hit_amount: u8,
+    hit_dodge: bool,
+    hit_at: Vec3,
+    /// The bank `update_ships` hands to each ship's controls (an address).
+    ship_bank: usize,
+    /// The point enemy fire aims at; on the target it alternates between
+    /// the flying ships each tick (updated with the ships).
+    aim: [i16; 2],
+    aim_turn: u8,
+    /// Lives for a new or rejoining ship: 99 in Story mode, else 3.
+    start_lives: u8,
+    /// Each seat's sample, staged natively by coop_route.
+    staged: [InputSample; 2],
+    mode: Mode,
+    presentation_event: PresentationEvent,
     // Each rail unit is eight world units; a boost advances two per tick. Duration
     // may exceed 65535 ticks without widening the hot simulation arithmetic.
     stage_ticks: u16,
     stage_id: u8,
     stage_info: StageInfo,
     transition_ticks: u16,
-    /// Every award is a multiple of 25 points, so the score is counted in
-    /// 25-point units: 16-bit arithmetic still reaches past the 999,999 display.
-    score: u16,
     ticks: u16,
     menu_ticks: u16,
     menu_activity: bool,
@@ -438,41 +552,52 @@ pub struct Game {
     repeat_spawn_cursor: u8,
     encounter_seed: u8,
     spawn_segment: u8,
-    shield: u8,
-    bombs: u8,
-    // Low nibble: kills toward a bomb; high nibble: pickup opportunities (0..2).
-    bomb_kills: u8,
-    lives: u8,
-    shot_cooldown: u8,
-    invulnerability: u8,
-    hit_flash_ticks: u8,
-    roll_ticks: u8,
-    roll_cooldown: u8,
-    roll_direction: i8,
-    respawn_ticks: u8,
     bosses: [BossInstance; 4],
     boss_phase: u8,
     boss_split_ticks: u8,
     boss_started: bool,
     boss_defeated: bool,
-    kills: u16,
     actors: [Actor; ACTORS],
     shots: [Shot; SHOTS],
     pickups: [Pickup; 4],
     explosions: [Explosion; 6],
     audio: [AudioEvent; AUDIO_CAPACITY],
-    // One lock per shot: 0 none, 1..12 actors, 13..24 boss parts.
+    // One lock per shot: 0 none, 1..12 actors, 13..24 boss parts. Bit 7
+    // marks a projectile fired by the second player.
     missile_targets: [u8; SHOTS],
     missile_rng: u8,
     // Separate feedback state preserves the native 16-byte Actor ABI:
     // 0 ready, 1..10 normal recovery, 11..20 white, 21 awaiting its first frame.
     actor_hit_flash_ticks: [u8; ACTORS],
     damage_feedback_tick: u16,
-    // 300..201 active, 200..1 cooling, 0 ready. Both phases use real 50 Hz ticks.
-    boost_cycle: u16,
     // Adds only boosted travel to the continuous dust clock, never combat time.
     extra_travel_ticks: u16,
 }
+
+// The leading ship fields must match `Ship` byte for byte.
+const _: () = {
+    use core::mem::offset_of;
+    assert!(offset_of!(Game, controls) == offset_of!(Ship, controls));
+    assert!(offset_of!(Game, player) == offset_of!(Ship, player));
+    assert!(offset_of!(Game, flight) == offset_of!(Ship, flight));
+    assert!(offset_of!(Game, score) == offset_of!(Ship, score));
+    assert!(offset_of!(Game, kills) == offset_of!(Ship, kills));
+    assert!(offset_of!(Game, boost_cycle) == offset_of!(Ship, boost_cycle));
+    assert!(offset_of!(Game, shield) == offset_of!(Ship, shield));
+    assert!(offset_of!(Game, bombs) == offset_of!(Ship, bombs));
+    assert!(offset_of!(Game, bomb_kills) == offset_of!(Ship, bomb_kills));
+    assert!(offset_of!(Game, lives) == offset_of!(Ship, lives));
+    assert!(offset_of!(Game, shot_cooldown) == offset_of!(Ship, shot_cooldown));
+    assert!(offset_of!(Game, invulnerability) == offset_of!(Ship, invulnerability));
+    assert!(offset_of!(Game, hit_flash_ticks) == offset_of!(Ship, hit_flash_ticks));
+    assert!(offset_of!(Game, roll_ticks) == offset_of!(Ship, roll_ticks));
+    assert!(offset_of!(Game, roll_cooldown) == offset_of!(Ship, roll_cooldown));
+    assert!(offset_of!(Game, roll_direction) == offset_of!(Ship, roll_direction));
+    assert!(offset_of!(Game, respawn_ticks) == offset_of!(Ship, respawn_ticks));
+    assert!(offset_of!(Game, spare) == offset_of!(Ship, spare));
+    assert!(offset_of!(Game, spare) + 1 == core::mem::size_of::<Ship>());
+    assert!(offset_of!(Game, mode) >= core::mem::size_of::<Ship>());
+};
 
 #[cfg(target_arch = "mos")]
 const _: () = assert!(core::mem::size_of::<Game>() <= 768);
@@ -542,6 +667,19 @@ impl Game {
             boss_started: false,
             boss_defeated: false,
             kills: 0,
+            spare: 0,
+            reserve: Ship::EMPTY,
+            devices: 0,
+            swapped: false,
+            view: [0; 2],
+            hit_amount: 0,
+            hit_dodge: false,
+            hit_at: Vec3 { x: 0, y: 0, z: 0 },
+            ship_bank: 0,
+            aim: [0; 2],
+            aim_turn: 0,
+            start_lives: 3,
+            staged: [InputSample { bits: 0, pressed: 0, ms: 0 }; 2],
         }
     }
     #[inline(never)]
@@ -564,6 +702,395 @@ impl Game {
             && matches!(self.mode, Mode::Playing | Mode::Transition) {
             self.sound(Effect::MissileReady, 0);
         }
+    }
+    /// Feed one sample of every device. In menus the devices act as one
+    /// controller and the device that presses fire becomes the first player's.
+    /// In flight each player reads their own device; any other device's fire
+    /// press seats the second player (or returns a retired player to play).
+    #[cfg(target_arch = "mos")]
+    #[inline(never)]
+    #[link_section = ".phase.sim_extra"]
+    pub fn sample_devices(&mut self, sample: &DeviceSample) {
+        // SAFETY: coop.S decides the seats of the one resident Game and stages
+        // each seat's sample in `staged`.
+        let plan = unsafe { coop_route(self, sample) };
+        self.sample_input(self.staged[0]);
+        if plan & 1 != 0 {
+            self.join_ship();
+        }
+        if plan & 2 != 0 {
+            self.swap_seats();
+            if plan & 4 != 0 {
+                self.join_ship();
+            }
+            self.sample_input(self.staged[1]);
+            self.swap_seats();
+        }
+    }
+    #[cfg(not(target_arch = "mos"))]
+    pub fn sample_devices(&mut self, sample: &DeviceSample) {
+        let ms = sample.ms;
+        let first = self.devices & 15;
+        let flying = matches!(self.mode, Mode::Playing | Mode::Transition | Mode::Respawning);
+        if !flying || first == 0 {
+            let mut bits = 0;
+            let mut pressed = 0;
+            for device in (0..3).rev() {
+                bits |= sample.bits[device];
+                pressed |= sample.pressed[device];
+                if !flying && sample.pressed[device] & FIRE != 0 {
+                    self.devices = device as u8 + 1;
+                }
+            }
+            self.sample_input(InputSample { bits, pressed, ms });
+            return;
+        }
+        let joinable = matches!(self.mode, Mode::Playing | Mode::Transition);
+        let one = (first - 1) as usize;
+        let keys = DEVICE_KEYBOARD + 1;
+        let shift = if first == keys || self.devices >> 4 == keys { 0 } else { BOOST };
+        self.sample_input(InputSample {
+            bits: sample.bits[one] | sample.bits[DEVICE_KEYBOARD as usize] & shift,
+            pressed: sample.pressed[one] | sample.pressed[DEVICE_KEYBOARD as usize] & shift,
+            ms,
+        });
+        if joinable && self.lives == 0 && sample.pressed[one] & FIRE != 0 {
+            // A retired first player returns while the second still flies.
+            self.join_ship();
+        }
+        let second = self.devices >> 4;
+        if second != 0 {
+            let two = (second - 1) as usize;
+            self.swap_seats();
+            self.sample_input(InputSample { bits: sample.bits[two], pressed: sample.pressed[two], ms });
+            self.swap_seats();
+        } else if joinable {
+            for device in 0..3u8 {
+                if device + 1 != first && sample.pressed[device as usize] & FIRE != 0 {
+                    self.devices |= (device + 1) << 4;
+                    self.swap_seats();
+                    self.join_ship();
+                    // The joining press seats the ship; a held button fires next.
+                    self.sample_input(InputSample { bits: sample.bits[device as usize], pressed: 0, ms });
+                    self.swap_seats();
+                    break;
+                }
+            }
+        }
+    }
+    /// `sample_paused_input` for every seated player's device.
+    #[cfg(target_arch = "mos")]
+    #[inline(never)]
+    #[link_section = ".phase.sim_extra"]
+    pub fn sample_paused_devices(&mut self, bits: &[u8; 3], ms: u16) {
+        // SAFETY: coop.S only reads the seats and the three held bytes.
+        let held = unsafe { coop_held(self, bits) };
+        self.sample_paused_input(held as u8, ms);
+        if self.coop() {
+            self.swap_seats();
+            self.sample_paused_input((held >> 8) as u8, ms);
+            self.swap_seats();
+        }
+    }
+    #[cfg(not(target_arch = "mos"))]
+    pub fn sample_paused_devices(&mut self, bits: &[u8; 3], ms: u16) {
+        let first = self.devices & 15;
+        let held = if first == 0 { bits[0] | bits[1] | bits[2] } else { bits[first as usize - 1] };
+        self.sample_paused_input(held, ms);
+        let second = self.devices >> 4;
+        if second != 0 {
+            self.swap_seats();
+            self.sample_paused_input(bits[second as usize - 1], ms);
+            self.swap_seats();
+        }
+    }
+    /// Exchange the leading ship fields with `reserve` (coop.S natively,
+    /// resident, so simulation and the HUD both use it): bring the other
+    /// seat's ship to the front (call again to restore), so the second
+    /// player's readouts come from the ordinary `hud`.
+    #[cfg_attr(target_arch = "mos", inline(always))]
+    #[cfg_attr(not(target_arch = "mos"), inline(never))]
+    pub fn swap_seats(&mut self) {
+        #[cfg(target_arch = "mos")]
+        // SAFETY: the native body (coop.S) swaps the same leading bytes of
+        // the one resident Game, whose offsets are checked below.
+        unsafe {
+            coop_swap(self)
+        }
+        #[cfg(not(target_arch = "mos"))]
+        {
+            // SAFETY: `Game` is repr(C) and its leading fields match the
+            // repr(C) `Ship` exactly (checked above): both regions are
+            // `size_of::<Ship>()` bytes of plain integers and fieldless enums
+            // that do not overlap.
+            unsafe {
+                let front = (self as *mut Self).cast::<u8>();
+                let back = core::ptr::addr_of_mut!(self.reserve).cast::<u8>();
+                for index in 0..core::mem::size_of::<Ship>() {
+                    let byte = *front.add(index);
+                    *front.add(index) = *back.add(index);
+                    *back.add(index) = byte;
+                }
+            }
+            self.swapped = !self.swapped;
+        }
+    }
+    /// A second player is seated.
+    #[inline(always)]
+    pub fn coop(&self) -> bool {
+        self.devices >> 4 != 0
+    }
+    /// One ship slot, or two while a second player is seated.
+    #[inline(always)]
+    fn ship_slots(&self) -> u8 {
+        1 + self.coop() as u8
+    }
+    /// Ship `index` (0: first player, 1: second) if it is flying now.
+    #[inline(always)]
+    fn flying_ship(&self, index: u8) -> Option<&Ship> {
+        let ship = if index == 0 { self.front() } else { &self.reserve };
+        ship_flying(ship).then_some(ship)
+    }
+    /// The chase camera follows the flying ships' mean position, which
+    /// simulation caches in `view` while a second player is seated.
+    #[inline(always)]
+    fn view_y(&self) -> i16 {
+        if self.coop() { self.view[1] } else { self.player.y }
+    }
+    #[inline(always)]
+    fn view_x(&self) -> i16 {
+        if self.coop() { self.view[0] } else { self.player.x }
+    }
+    /// The reserve ship holds a seated player: the second player, or the
+    /// first player while swapped.
+    #[inline(always)]
+    fn reserve_present(&self) -> bool {
+        self.swapped || self.coop()
+    }
+    #[inline(always)]
+    fn reserve_has_lives(&self) -> bool {
+        self.reserve_present() && self.reserve.lives != 0
+    }
+    #[inline(always)]
+    fn reserve_alive(&self) -> bool {
+        self.reserve_has_lives() && self.reserve.respawn_ticks == 0
+    }
+    /// In co-op, the ship an enemy selected by `select` pursues or aims at:
+    /// odd selections take the second player whenever both ships fly.
+    #[cfg(target_arch = "mos")]
+    #[inline(always)]
+    fn ship_target(&self, select: u8) -> *const Vec3 {
+        // SAFETY: coop.S only reads the resident Game's ship fields (see
+        // `ships_near`) and returns the address of one of its two ship
+        // positions.
+        unsafe { coop_target(select) as *const Vec3 }
+    }
+    #[cfg(not(target_arch = "mos"))]
+    fn ship_target(&self, select: u8) -> *const Vec3 {
+        let second = self.reserve_alive()
+            && (select & 1 != 0 || self.lives == 0 || self.respawn_ticks != 0);
+        if second {
+            &self.reserve.player
+        } else {
+            &self.player
+        }
+    }
+    /// Bit 0: the first ship is flying within `radius` of `pos` (in X and Y);
+    /// bit 1: likewise the second ship.
+    #[inline(always)]
+    fn ships_near(&self, pos: Vec3, radius: u8) -> u8 {
+        #[cfg(target_arch = "mos")]
+        // SAFETY: coop.S reads only the position and the resident Game's
+        // ship fields, which no caller has pending writes to. Unlike
+        // `coop_hit_ships`, the Game pointer is not passed: reloading it
+        // costs ~16 B at each call site in the full SIM overlays.
+        unsafe {
+            coop_near(&pos, radius)
+        }
+        #[cfg(not(target_arch = "mos"))]
+        {
+            ship_near(self.front(), &pos, radius as i16) as u8
+                | (self.coop() && ship_near(&self.reserve, &pos, radius as i16)) as u8 * 2
+        }
+    }
+    #[inline(always)]
+    fn front(&self) -> &Ship {
+        // SAFETY: the leading fields are a `Ship` (checked above).
+        unsafe { &*(self as *const Self).cast::<Ship>() }
+    }
+    /// Run `action` for the first ship (bit 0 of `ships`) and, swapped into
+    /// front, the second (bit 1). Every two-ship operation goes through here.
+    #[inline(never)]
+    #[cfg_attr(target_arch = "mos", link_section = ".phase.sim_extra")]
+    fn each_ship(&mut self, ships: u8, action: unsafe extern "C" fn(&mut Game)) {
+        #[cfg(target_arch = "mos")]
+        // SAFETY: coop.S calls `action` with this (the only) Game.
+        unsafe {
+            coop_each(self, action, ships)
+        }
+        #[cfg(not(target_arch = "mos"))]
+        {
+            // SAFETY: host actions are ordinary Rust functions.
+            if ships & 1 != 0 {
+                unsafe { action(self) };
+            }
+            if ships & 2 != 0 {
+                self.swap_seats();
+                unsafe { action(self) };
+                self.swap_seats();
+            }
+        }
+    }
+    /// Bit 1 when a second player is seated (bit 0 is always the first).
+    #[inline(always)]
+    fn seated(&self) -> u8 {
+        1 | self.coop() as u8 * 2
+    }
+    /// Damage every ship in `ships` (see `ships_near`) by `hit_amount`; with
+    /// `hit_dodge`, a rolling ship deflects the projectile at `hit_at`.
+    #[cfg(target_arch = "mos")]
+    #[inline(always)]
+    fn hit_ships(&mut self, ships: u8, amount: u8, pos: Vec3, dodge: bool) {
+        debug_assert!(amount < 128);
+        // SAFETY: coop.S damages the ships of the one resident Game.
+        unsafe { coop_hit_ships(self, &pos, ships, amount | (dodge as u8) << 7) }
+    }
+    #[cfg(not(target_arch = "mos"))]
+    fn hit_ships(&mut self, ships: u8, amount: u8, pos: Vec3, dodge: bool) {
+        self.hit_amount = amount;
+        self.hit_at = pos;
+        self.hit_dodge = dodge;
+        self.each_ship(ships, hit_ship);
+    }
+    /// The leading ship has lost its shield. Returns 1 when its partner keeps
+    /// flying, so play continues: the ship returns after a delay, or retires
+    /// without lives. Otherwise 0: both ships wait for the checkpoint, or 2:
+    /// neither ship has a life left.
+    #[cfg(target_arch = "mos")]
+    #[inline(always)]
+    fn ship_down(&mut self) -> u8 {
+        // SAFETY: coop.S updates the seats of the one resident Game.
+        unsafe { coop_ship_down(self) }
+    }
+    #[cfg(not(target_arch = "mos"))]
+    fn ship_down(&mut self) -> u8 {
+        if self.lives == 0 && self.swapped {
+            // A retired second player frees their seat to rejoin later.
+            self.devices &= 15;
+        }
+        if !self.reserve_alive() {
+            if self.reserve_present() {
+                self.reserve.respawn_ticks = 75;
+            }
+            return if self.lives == 0 && !self.reserve_has_lives() { 2 } else { 0 };
+        }
+        if self.lives != 0 {
+            self.respawn_ticks = 75;
+        }
+        1
+    }
+    /// Control both seated ships for one tick (when `fly`), then retire this
+    /// tick's gestures. A downed co-op ship waits out its return delay.
+    #[cfg(target_arch = "mos")]
+    #[inline(always)]
+    fn update_ships(&mut self, bank: &AssetBank<'_>, fly: bool) {
+        // SAFETY: coop.S updates the ships of the one resident Game.
+        unsafe { coop_update_ships(self, bank, fly) }
+    }
+    #[cfg(not(target_arch = "mos"))]
+    fn update_ships(&mut self, bank: &AssetBank<'_>, fly: bool) {
+        self.ship_bank = bank as *const AssetBank<'_> as usize;
+        self.each_ship(self.seated(), if fly { fly_ship } else { settle_ship });
+        // The camera frames the flying ships (their mean when both fly).
+        let mut view = [self.player.x, self.player.y];
+        if ship_flying(&self.reserve) && self.coop() {
+            let second = [self.reserve.player.x, self.reserve.player.y];
+            view = if ship_flying(self.front()) {
+                [(view[0] + second[0]) >> 1, (view[1] + second[1]) >> 1]
+            } else {
+                second
+            };
+        }
+        self.view = view;
+        // Enemy fire alternates between the flying ships each tick.
+        self.aim_turn = self.aim_turn.wrapping_add(1);
+        // SAFETY: `ship_target` returns one of this Game's ship positions.
+        let aim = unsafe { *self.ship_target(self.aim_turn) };
+        self.aim = [aim.x, aim.y];
+    }
+    /// Advance both ships' afterburners and the boosted travel clock.
+    #[inline(never)]
+    #[cfg_attr(target_arch = "mos", link_section = ".phase.sim_extra")]
+    fn tick_boosts(&mut self) {
+        self.each_ship(self.seated(), boost_ship);
+        if self.boost_active() {
+            self.extra_travel_ticks = self.extra_travel_ticks.wrapping_add(1);
+        }
+    }
+    /// Clearing a boss section awards each flying player a life.
+    #[inline(never)]
+    #[cfg_attr(target_arch = "mos", link_section = ".phase.sim_aux")]
+    fn award_lives(&mut self) {
+        let cap = if self.story_mode { 99 } else { 3 };
+        #[cfg(target_arch = "mos")]
+        // SAFETY: coop.S updates the lives of the one resident Game.
+        unsafe {
+            coop_award_lives(self, cap)
+        }
+        #[cfg(not(target_arch = "mos"))]
+        {
+            // Lives stay at most `cap` (99 in Story mode); a retired ship
+            // (no lives) stays retired.
+            if self.lives != 0 {
+                self.lives = (self.lives + 1).min(cap);
+            }
+            if self.reserve_has_lives() {
+                self.reserve.lives = (self.reserve.lives + 1).min(cap);
+            }
+        }
+    }
+    /// A boss refill reaches both ships.
+    #[cfg(target_arch = "mos")]
+    #[inline(always)]
+    fn refill_ships(&mut self) {
+        // SAFETY: coop.S updates the ships of the one resident Game.
+        unsafe { coop_refill_ships(self) }
+    }
+    #[cfg(not(target_arch = "mos"))]
+    fn refill_ships(&mut self) {
+        self.shield = 100;
+        self.bombs = 3;
+        if self.reserve_has_lives() {
+            self.reserve.shield = 100;
+            self.reserve.bombs = 3;
+        }
+    }
+    /// Seat a fresh ship in front: the starting shield, bombs and lives.
+    #[cfg(target_arch = "mos")]
+    #[inline(always)]
+    fn join_ship(&mut self) {
+        // SAFETY: coop.S seats a fresh front ship in the one resident Game.
+        unsafe { coop_join_ship(self) }
+    }
+    #[cfg(not(target_arch = "mos"))]
+    fn join_ship(&mut self) {
+        let now = self.reserve.controls.now;
+        // SAFETY: the leading `size_of::<Ship>()` bytes are the ship fields
+        // (checked above); all are integers, and all-zero is a valid state.
+        unsafe {
+            core::ptr::write_bytes((self as *mut Self).cast::<u8>(), 0, core::mem::size_of::<Ship>());
+        }
+        self.controls.now = now;
+        self.controls.released_at = now;
+        self.player = Vec3 {
+            x: if self.swapped { SECOND_SHIP_X } else { 0 },
+            y: 0,
+            z: PLAYER_Z,
+        };
+        self.shield = 100;
+        self.bombs = 3;
+        self.lives = self.start_lives;
+        self.invulnerability = 50;
     }
     /// Keep held controls and charge timing current while paused, discarding
     /// actions and tap history so gestures cannot cross the pause boundary.
@@ -673,8 +1200,14 @@ impl Game {
     pub fn travel_ticks(&self) -> u16 {
         self.ticks.wrapping_add(self.extra_travel_ticks)
     }
+    /// The world travels at boost speed while either ship is boosting.
     #[inline(always)]
     pub fn boost_active(&self) -> bool {
+        (self.controls.flags | self.reserve.controls.flags) & BOOST_ACTIVE != 0
+    }
+    /// The leading ship's own afterburner.
+    #[inline(always)]
+    fn ship_boost(&self) -> bool {
         self.controls.flags & BOOST_ACTIVE != 0
     }
     #[inline(always)]
@@ -684,6 +1217,7 @@ impl Game {
     // Resident: shared by all SIM tails without enlarging their common prefix.
     #[inline(never)]
     #[cfg_attr(target_arch = "mos", link_section = ".phase.sim_extra")]
+    #[cfg_attr(target_arch = "mos", allow(dead_code))]
     fn tick_boost(&mut self) {
         if !matches!(self.mode, Mode::Playing | Mode::Transition) {
             self.boost_cycle = 0;
@@ -699,13 +1233,12 @@ impl Game {
         self.controls.flags &= !BOOST_ACTIVE;
         if self.boost_cycle > BOOST_COOLDOWN_TICKS {
             self.controls.flags |= BOOST_ACTIVE;
-            self.extra_travel_ticks = self.extra_travel_ticks.wrapping_add(1);
         }
     }
     #[inline(never)]
     #[cfg_attr(target_arch = "mos", link_section = ".phase.pixels")]
     fn boost_gauge(&self) -> u8 {
-        if self.boost_active() {
+        if self.ship_boost() {
             ((self.boost_cycle - BOOST_COOLDOWN_TICKS) * 255 / BOOST_TICKS) as u8
         } else {
             ((BOOST_COOLDOWN_TICKS - self.boost_cycle) * 255 / BOOST_COOLDOWN_TICKS) as u8
@@ -736,7 +1269,7 @@ impl Game {
         {
             None
         } else {
-            Some(-105 - scene_camera_y(self.mode, self.player.y, self.ticks))
+            Some(-105 - scene_camera_y(self.mode, self.view_y(), self.ticks))
         }
     }
     /// Black separates shadows from the Space Carrier's gray flight deck.
@@ -776,7 +1309,7 @@ impl Game {
     #[inline(never)]
     #[cfg_attr(target_arch = "mos", link_section = ".phase.scenery")]
     pub fn scenery_camera_y(&self) -> i16 {
-        scene_camera_y(self.mode, self.player.y, self.ticks)
+        scene_camera_y(self.mode, self.view_y(), self.ticks)
     }
     /// Sky color follows the active mission section in every camera mode.
     #[inline(never)]
@@ -811,7 +1344,7 @@ impl Game {
             lives: self.lives,
             charge: self.controls.charge(),
             boost: self.boost_gauge(),
-            boost_active: self.boost_active(),
+            boost_active: self.ship_boost(),
             score: self.score,
             distance: self.local_distance(),
             section: self.segment_index(),
@@ -941,9 +1474,10 @@ impl Game {
     fn sound_at(&mut self, effect: Effect, x: i16, z: i16) {
         self.sound(effect, crate::audio::spatial_pan(x, z));
     }
-    // Resident leaf shared by all simulation profiles.
+    // Resident leaf shared by all simulation profiles (and coop.S).
     #[inline(never)]
-    fn sound_player(&mut self, effect: Effect) {
+    #[cfg_attr(target_arch = "mos", export_name = "game_sound_player")]
+    extern "C" fn sound_player(&mut self, effect: Effect) {
         // The ship and its muzzle (Z=180/198) share the same integer-X
         // center band, [-9,9]. Player movement changes X/Y only.
         let x = self.player.x;
@@ -963,6 +1497,10 @@ impl Game {
         self.reset_scene(Mode::Playing, 0, 0);
         self.encounter_seed = seed;
         self.invulnerability = 50;
+        // Every run starts with the starting device alone: whichever device
+        // pressed fire in the menu takes the first seat (`sample_devices`),
+        // so co-op seats are chosen afresh on each restart; others may join.
+        self.devices &= 15;
     }
     #[inline(never)]
     #[cfg_attr(target_arch = "mos", link_section = ".phase.terminal")]
@@ -973,11 +1511,14 @@ impl Game {
         let menu_soundtrack = self.menu_soundtrack;
         let story_mode = self.story_mode;
         let encounter_seed = self.encounter_seed;
+        let devices = self.devices;
         self.reset_in_place();
+        self.devices = devices;
         self.menu_music_track = menu_music_track;
         self.menu_soundtrack = menu_soundtrack;
         self.story_mode = story_mode;
         self.lives = if story_mode { 99 } else { 3 };
+        self.start_lives = self.lives;
         self.encounter_seed = encounter_seed;
         self.presentation_event = PresentationEvent::Reset;
         self.mode = mode;
@@ -1016,6 +1557,7 @@ impl Game {
         self.shield = 100;
         self.bombs = 3;
         self.lives = 3;
+        self.start_lives = 3;
         self.reset_bosses();
         self.stage_info = StageInfo::FIRST;
         self.missile_rng = MISSILE_SEED;
@@ -1025,7 +1567,7 @@ impl Game {
     /// Each phase gets ten 20 ms ticks from its first rendered frame; catch-up
     /// may extend a phase, but cannot skip white or the normal-color recovery.
     #[inline(never)]
-    #[cfg_attr(target_arch = "mos", link_section = ".phase.geometry")]
+    #[cfg_attr(target_arch = "mos", link_section = ".phase.sim")]
     pub fn prepare_damage_feedback_frame(&mut self) {
         let elapsed = self
             .ticks
@@ -1058,7 +1600,7 @@ impl Game {
     #[cfg_attr(target_arch = "mos", link_section = ".phase.sim")]
     pub fn tick(&mut self, segment: &Segment<'_>, bank: &AssetBank<'_>) {
         self.bind_stage(segment);
-        self.tick_boost();
+        self.tick_boosts();
         self.ticks = self.ticks.wrapping_add(1);
         if self.simulation_profile() == 7 {
             #[cfg(target_arch = "mos")]
@@ -1085,9 +1627,7 @@ impl Game {
                 self.mode = Mode::Transition;
                 self.transition_ticks = 0;
                 if self.stage_info.boss_kind != 0 {
-                    let cap = if self.story_mode { 99 } else { 3 };
-                    // Run initialization and this cap keep lives at most 99.
-                    self.lives = (self.lives + 1).min(cap);
+                    self.award_lives();
                 }
                 self.actors = [Actor::EMPTY; ACTORS];
                 self.actor_hit_flash_ticks = [0; ACTORS];
@@ -1100,8 +1640,7 @@ impl Game {
                         *shot = Shot::EMPTY;
                     }
                 }
-                self.update_player_controls(bank);
-                self.controls.clear_pending();
+                self.update_ships(bank, true);
                 self.update_shots(bank);
                 self.update_explosions();
                 return;
@@ -1110,10 +1649,7 @@ impl Game {
             self.menu_ticks += 1;
         }
         let splitting = self.boss_split_ticks != 0;
-        if self.mode == Mode::Playing {
-            self.update_player_controls(bank);
-        }
-        self.controls.clear_pending();
+        self.update_ships(bank, self.mode == Mode::Playing);
         if self.boss_split_ticks != 0 {
             if splitting { self.advance_boss_split(); }
             self.update_explosions();
@@ -1214,12 +1750,13 @@ impl Game {
                 if self.respawn_ticks == 0 {
                     self.respawn();
                 }
+                // Neither seat's gestures survive the wait.
                 self.controls.clear_pending();
+                self.reserve.controls.clear_pending();
                 return;
             }
             Mode::Transition => {
-                self.update_player_controls(bank);
-                self.controls.clear_pending();
+                self.update_ships(bank, true);
                 self.update_shots(bank);
                 self.update_explosions();
                 self.transition_ticks = (self.transition_ticks + 1 + self.boost_active() as u16)
@@ -1265,7 +1802,9 @@ impl Game {
     }
     #[inline(never)]
     #[cfg_attr(target_arch = "mos", link_section = ".phase.sim")]
-    fn update_player_controls(&mut self, bank: &AssetBank<'_>) {
+    #[cfg_attr(target_arch = "mos", export_name = "game_update_player_controls")]
+    #[allow(improper_ctypes_definitions)]
+    extern "C" fn update_player_controls(&mut self, bank: &AssetBank<'_>) {
         self.invulnerability = self.invulnerability.saturating_sub(1);
         self.hit_flash_ticks = self.hit_flash_ticks.saturating_sub(1);
         self.roll_ticks = self.roll_ticks.saturating_sub(1);
@@ -1301,7 +1840,7 @@ impl Game {
         } else {
             0
         };
-        let bits = (self.controls.bits & !BOOST) | if self.boost_active() { BOOST } else { 0 };
+        let bits = (self.controls.bits & !BOOST) | if self.ship_boost() { BOOST } else { 0 };
         flight::step(&mut self.player, &mut self.flight, bits, push);
     }
     #[inline(never)]
@@ -1330,13 +1869,11 @@ impl Game {
     #[inline(never)]
     #[cfg_attr(target_arch = "mos", link_section = ".phase.sim")]
     fn add_shot(&mut self, shot: Shot) {
-        if let Some(slot) = self.shots.iter().position(|s| s.kind == 0) {
-            self.shots[slot] = shot;
-            self.set_missile_lock(slot, 0);
+        let slot = if let Some(slot) = self.shots.iter().position(|s| s.kind == 0) {
+            slot
         } else if shot.kind == 1 || shot.kind == 3 {
             if let Some(slot) = self.shots.iter().position(|s| s.kind == 2) {
-                self.shots[slot] = shot;
-                self.set_missile_lock(slot, 0);
+                slot
             } else if shot.kind == 3 {
                 // A fully charged shot must not disappear in a saturated pool.
                 // Prefer replacing an ordinary laser nearest its range limit;
@@ -1354,10 +1891,16 @@ impl Game {
                         z = s.pos.z;
                     }
                 }
-                self.shots[farthest] = shot;
-                self.set_missile_lock(farthest, 0);
+                farthest
+            } else {
+                return;
             }
-        }
+        } else {
+            return;
+        };
+        self.shots[slot] = shot;
+        // The lock starts empty; bit 7 records a second-player shot.
+        self.missile_targets[slot] = (self.swapped as u8) << 7;
     }
     #[inline(never)]
     #[cfg_attr(target_arch = "mos", link_section = ".phase.sim")]
@@ -1368,8 +1911,10 @@ impl Game {
     #[cfg_attr(target_arch = "mos", link_section = ".phase.sim_aux")]
     fn enemy_attack(&mut self, position: Vec3, pattern: u8) {
         let dz = (position.z - PLAYER_Z).max(32);
-        let dx = enemy_velocity(self.player.x, position.x, dz);
-        let dy = enemy_velocity(self.player.y, position.y, dz);
+        // In co-op, successive ticks aim at alternate live ships.
+        let [x, y] = self.aim;
+        let dx = enemy_velocity(x, position.x, dz);
+        let dy = enemy_velocity(y, position.y, dz);
         // Enemy shots only use empty slots. Fill those slots in one pass,
         // retaining center/left/right priority when a fan only partly fits.
         let mut remaining = if pattern == 2 { 3u8 } else { 1 };
@@ -1500,7 +2045,8 @@ impl Game {
             // A reused slot is a new target, never an inherited lock.
             let target = slot as u8 + 1;
             for lock in &mut self.missile_targets {
-                if *lock == target { *lock = 0; }
+                // Bit 7 credits the shot's owner; keep it for a live shot.
+                if *lock & 0x7f == target { *lock &= 0x80; }
             }
             self.actors[slot] = Actor {
                 pos: Vec3 {
@@ -1549,7 +2095,7 @@ impl Game {
                 a.pos.z -= SPEED;
                 0
             } else {
-                unsafe { step(&mut a, &self.player, i as u8) }
+                unsafe { step(&mut a, self.ship_target(i as u8), i as u8) }
             };
             a.approach_speed = (old_z - a.pos.z).clamp(0, 31) as u8;
             if attack != 0 {
@@ -1562,7 +2108,7 @@ impl Game {
             } else {
                 bank.enemy(a.kind).ram_radius as i16
             };
-            if self.mode == Mode::Playing
+            let rammed = if self.mode == Mode::Playing
                 && (a.pos.z - PLAYER_Z).abs()
                     < if a.small_debris() {
                         16
@@ -1571,10 +2117,14 @@ impl Game {
                     } else {
                         ENEMY_RAM_DEPTH
                     }
-                && close_xy(actor_center_sim(&a, bank), self.player, radius)
             {
+                self.ships_near(actor_center_sim(&a, bank), radius as u8)
+            } else {
+                0
+            };
+            if rammed != 0 {
                 a.kind = 0;
-                self.damage_player(15);
+                self.hit_ships(rammed, 15, a.pos, false);
                 self.explode(a.pos, 8);
             } else if a.pos.z < ACTOR_RETIRE_Z {
                 a.kind = 0;
@@ -1670,7 +2220,13 @@ impl Game {
             {
                 s.kind = 0;
             }
+            let hostile_hit;
             if s.kind == 1 || s.kind == 3 {
+                // Credit the second player's projectiles to their own ship.
+                let second = self.missile_targets[i] & 0x80 != 0;
+                if second {
+                    self.swap_seats();
+                }
                 if let Some(a) = self.shot_target(old_z, &s.pos, bank) {
                     let missile = s.kind == 3;
                     s.kind = 0;
@@ -1701,17 +2257,20 @@ impl Game {
                         if effect == Effect::BossExplosion { self.explode(s.pos, 7); }
                     }
                 }
+                if second {
+                    self.swap_seats();
+                }
             } else if self.mode == Mode::Playing
                 && s.kind == 2
                 && swept_z(old_z, s.pos.z, PLAYER_Z, 10)
-                && close_xy(s.pos, self.player, 12)
+                && {
+                    hostile_hit = self.ships_near(s.pos, 12);
+                    hostile_hit != 0
+                }
             {
                 s.kind = 0;
-                if self.roll_ticks == 0 {
-                    self.damage_player(s.damage);
-                } else {
-                    self.explode(s.pos, 3);
-                }
+                // A rolling ship deflects the shot instead of taking damage.
+                self.hit_ships(hostile_hit, s.damage, s.pos, true);
             }
             self.shots[i] = s;
             if s.kind == 0 {
@@ -1780,9 +2339,11 @@ impl Game {
         }
     }
     #[inline(always)]
-    fn missile_lock(&self, index: usize) -> u8 { self.missile_targets[index] }
+    fn missile_lock(&self, index: usize) -> u8 { self.missile_targets[index] & 0x7f }
     #[inline(always)]
-    fn set_missile_lock(&mut self, index: usize, target: u8) { self.missile_targets[index] = target; }
+    fn set_missile_lock(&mut self, index: usize, target: u8) {
+        self.missile_targets[index] = (self.missile_targets[index] & 0x80) | target;
+    }
     #[cfg(not(target_arch = "mos"))]
     fn missile_candidate(
         &self,
@@ -2012,7 +2573,8 @@ impl Game {
     }
     #[inline(never)]
     #[cfg_attr(target_arch = "mos", link_section = ".phase.sim")]
-    fn damage_player(&mut self, amount: u8) {
+    #[cfg_attr(target_arch = "mos", export_name = "game_damage_player")]
+    extern "C" fn damage_player(&mut self, amount: u8) {
         if self.invulnerability > 0 || self.mode != Mode::Playing {
             return;
         }
@@ -2033,11 +2595,13 @@ impl Game {
             self.lives = self.lives.saturating_sub(1);
             self.explode(self.player, 7);
             self.sound(Effect::PlayerDeath, 0);
-            if self.lives == 0 {
-                self.mode = Mode::GameOver;
-            } else {
-                self.mode = Mode::Respawning;
-                self.respawn_ticks = 75;
+            match self.ship_down() {
+                1 => {}
+                2 => self.mode = Mode::GameOver,
+                _ => {
+                    self.mode = Mode::Respawning;
+                    self.respawn_ticks = 75;
+                }
             }
             // A held fire button cannot dismiss the result or trigger a restart.
             self.controls.clear_pending();
@@ -2060,8 +2624,24 @@ impl Game {
         self.missile_targets = [0; SHOTS];
         self.pickups = [Pickup::EMPTY; 4];
         self.explosions = [Explosion::EMPTY; 6];
+        self.each_ship(self.seated(), reset_ship);
+        self.mode = Mode::Playing;
+        self.boss_started = false;
+        self.boss_defeated = false;
+        self.reset_bosses();
+    }
+    /// Return the leading ship to its lane at the checkpoint (or, in co-op,
+    /// after being shot down): full shield, a spare bomb, brief invulnerability.
+    #[cfg(target_arch = "mos")]
+    #[inline(always)]
+    fn reset_ship(&mut self) {
+        // SAFETY: coop.S resets the front ship of the one resident Game.
+        unsafe { reset_ship(self) }
+    }
+    #[cfg(not(target_arch = "mos"))]
+    fn reset_ship(&mut self) {
         self.player = Vec3 {
-            x: 0,
+            x: if self.swapped { SECOND_SHIP_X } else { 0 },
             y: 0,
             z: PLAYER_Z,
         };
@@ -2074,11 +2654,8 @@ impl Game {
         self.roll_ticks = 0;
         self.roll_cooldown = 0;
         self.shot_cooldown = 0;
+        self.respawn_ticks = 0;
         self.bombs = self.bombs.max(1);
-        self.mode = Mode::Playing;
-        self.boss_started = false;
-        self.boss_defeated = false;
-        self.reset_bosses();
         self.controls.flags &= !FIRE_ARMED;
         self.controls.flags &= !LEFT_ARMED;
         self.controls.flags &= !RIGHT_ARMED;
@@ -2107,41 +2684,55 @@ impl Game {
     fn update_pickups(&mut self) {
         let speed = self.forward_speed();
         for i in 0..self.pickups.len() {
-            let p = &mut self.pickups[i];
-            if p.kind == 0 {
-                continue;
-            }
-            p.pos.z -= speed;
-            if self.mode == Mode::Playing {
-                let depth = p.pos.z.wrapping_sub(PLAYER_Z);
-                if depth as u16 <= PICKUP_MAGNET_DEPTH as u16
-                    && close_xy(p.pos, self.player, PICKUP_MAGNET_RANGE)
-                {
-                    // Move the visible pickup gently toward the ship, leaving the
-                    // collection hitbox unchanged and allowing steering to outrun it.
-                    p.pos.x = magnet_coordinate(p.pos.x, self.player.x);
-                    p.pos.y = magnet_coordinate(p.pos.y, self.player.y);
-                }
-                if depth.wrapping_add(24) as u16 <= 48 && close_xy(p.pos, self.player, 28) {
-                    let kind = p.kind;
-                    let (x, z) = (p.pos.x, p.pos.z);
-                    p.kind = 0;
-                    if kind == 1 {
-                        self.shield = self.shield.saturating_add(60).min(100);
-                    } else {
-                        self.bombs = (self.bombs + 1).min(3);
-                    }
-                    self.score = self.score.saturating_add(50 / SCORE_UNIT as u16);
-                    self.sound_at(Effect::Pickup, x, z);
+            // SAFETY: `p` is a raw pointer into `self.pickups`, used only
+            // between whole-Game accesses (`ships_near` reads, and
+            // `collect_pickup`/`sound_at` run after its last use), so no
+            // reference to the pickup is ever live across them.
+            let p: *mut Pickup = core::ptr::addr_of_mut!(self.pickups[i]);
+            unsafe {
+                if (*p).kind == 0 {
                     continue;
                 }
-            }
-            // Camera-facing pickups are flat: once behind the near plane they
-            // cannot be drawn, so the slot is released there.
-            if p.pos.z < crate::render::NEAR {
-                p.kind = 0;
+                (*p).pos.z -= speed;
+                if self.mode == Mode::Playing {
+                    let depth = (*p).pos.z.wrapping_sub(PLAYER_Z);
+                    if depth as u16 <= PICKUP_MAGNET_DEPTH as u16 {
+                        let near = self.ships_near((*p).pos, PICKUP_MAGNET_RANGE as u8);
+                        if near != 0 {
+                            // Move the visible pickup gently toward the (first) ship,
+                            // leaving the collection hitbox unchanged and allowing
+                            // steering to outrun it.
+                            let ship = if near & 1 != 0 { self.player } else { self.reserve.player };
+                            (*p).pos.x = magnet_coordinate((*p).pos.x, ship.x);
+                            (*p).pos.y = magnet_coordinate((*p).pos.y, ship.y);
+                        }
+                    }
+                    if depth.wrapping_add(24) as u16 <= 48 {
+                        let collected = self.ships_near((*p).pos, 28);
+                        if collected != 0 {
+                            let kind = (*p).kind;
+                            let (x, z) = ((*p).pos.x, (*p).pos.z);
+                            (*p).kind = 0;
+                            self.collect_pickup(kind, if collected & 1 != 0 { 1 } else { 2 });
+                            self.sound_at(Effect::Pickup, x, z);
+                            continue;
+                        }
+                    }
+                }
+                // Camera-facing pickups are flat: once behind the near plane they
+                // cannot be drawn, so the slot is released there.
+                if (*p).pos.z < crate::render::NEAR {
+                    (*p).kind = 0;
+                }
             }
         }
+    }
+    /// Award the collected pickup `hit_amount` (1 shield, 2 bomb) to `ships`.
+    #[inline(never)]
+    #[cfg_attr(target_arch = "mos", link_section = ".phase.sim_aux")]
+    fn collect_pickup(&mut self, kind: u8, ships: u8) {
+        self.hit_amount = kind;
+        self.each_ship(ships, collect_ship);
     }
     // Resident leaf shared by combat, damage, and terminal simulation.
     #[inline(never)]
@@ -2158,7 +2749,7 @@ impl Game {
         };
     }
     #[inline(never)]
-    #[cfg_attr(target_arch = "mos", link_section = ".phase.sim_extra")]
+    #[cfg_attr(target_arch = "mos", link_section = ".phase.sim")]
     fn update_explosions(&mut self) {
         let speed = self.forward_speed();
         for e in &mut self.explosions {
@@ -2269,17 +2860,21 @@ impl Game {
         if self.shadow_ground_y().is_none() {
             return;
         }
-        let camera_y = scene_camera_y(self.mode, self.player.y, self.ticks);
+        let camera_y = scene_camera_y(self.mode, self.view_y(), self.ticks);
         // Insert important gameplay objects ahead of the already-collected decorations.
         let mut priority = 0u8;
         if matches!(
             self.mode,
             Mode::Playing | Mode::Transition | Mode::Title | Mode::Victory
         ) {
-            priority += u8::from(frame.insert_caster(
-                priority,
-                shadow_model(bank, assets::PLAYER, self.player, false, camera_y),
-            ));
+            for ship in 0..self.ship_slots() {
+                if let Some(ship) = self.flying_ship(ship) {
+                    priority += u8::from(frame.insert_caster(
+                        priority,
+                        shadow_model(bank, assets::PLAYER, ship.player, false, camera_y),
+                    ));
+                }
+            }
         }
         if self.mode == Mode::Victory {
             return;
@@ -2409,7 +3004,7 @@ impl Game {
         }
         let point = Vec3 {
             x: self.player.x,
-            y: self.player.y - scene_camera_y(self.mode, self.player.y, self.ticks),
+            y: self.player.y - scene_camera_y(self.mode, self.view_y(), self.ticks),
             z: crate::reticle::DISTANCE,
         };
         #[cfg(target_arch = "mos")]
@@ -2446,7 +3041,7 @@ impl Game {
             // on its firing line. Menus float around their authored framing.
             // Follow a quarter of vertical movement so the lowest banked hull
             // stays above the cockpit while neutral targets remain exposed.
-            camera_y: scene_camera_y(self.mode, self.player.y, self.ticks),
+            camera_y: scene_camera_y(self.mode, self.view_y(), self.ticks),
             color_override: 0,
             extra_flags: 0,
         };
@@ -2455,27 +3050,34 @@ impl Game {
             self.mode,
             Mode::Playing | Mode::Transition | Mode::Title | Mode::Victory
         ) {
+            for index in 0..self.ship_slots() {
+            let Some(ship) = self.flying_ship(index) else { continue };
             let checkpoint = sink.begin_group();
-            let appearance = self.player_appearance();
+            let mut appearance = self.ship_appearance(ship);
+            if appearance < 256 {
+                // The second ship's palette ($80) unless it is flashing white.
+                appearance |= (index as u16) << 15;
+            }
             sink.extra_flags = TERRAIN_CLEAR_GEOMETRY | crate::PLAYER_GEOMETRY;
             sink.color_override = (appearance >> 8) as u8;
             emit_mesh(
                 sink,
                 bank,
                 assets::PLAYER,
-                self.player,
+                ship.player,
                 0,
-                self.player_pitch(),
+                self.ship_pitch(ship),
                 appearance as u8,
                 false,
             );
             sink.color_override = 0;
             // Each flat exhaust has an explicit underside for high climbs.
-            let exhaust = self.exhaust_appearance();
+            let exhaust = self.ship_exhaust(ship);
+            let ship = ship.player;
             for x in [-11, 11] {
                 let p = Vec3 {
-                    x: self.player.x + x,
-                    y: self.player.y - 3,
+                    x: ship.x + x,
+                    y: ship.y - 3,
                     z: PLAYER_Z - 20,
                 };
                 let left = Vec3 { x: p.x - 3, ..p };
@@ -2488,6 +3090,7 @@ impl Game {
                 tri(sink, right, left, tip, (exhaust >> 8) as u8);
             }
             sink.finish_group(checkpoint);
+            }
         }
         sink.extra_flags = 0;
         if self.mode == Mode::Victory {
@@ -2694,19 +3297,25 @@ impl Game {
                 crate::math::sin8((self.ticks >> 2) as u8) >> 5,
             ]
         } else {
-            [self.player.x, self.player.y >> 1]
+            #[cfg(target_arch = "mos")]
+            {
+                // Simulation keeps `view` on the flying ships every tick.
+                [self.view[0], self.view[1] >> 1]
+            }
+            #[cfg(not(target_arch = "mos"))]
+            [self.view_x(), self.view_y() >> 1]
         }
     }
     #[inline(never)]
     #[cfg_attr(target_arch = "mos", link_section = ".phase.render_aux")]
-    fn exhaust_appearance(&self) -> u16 {
+    fn ship_exhaust(&self, ship: &Ship) -> u16 {
         let phase = if self.mode == Mode::Victory {
             self.ticks.wrapping_sub(self.menu_ticks)
         } else {
             self.ticks
         };
         let length = 12 + (phase & 7);
-        if self.boost_active() {
+        if ship.controls.flags & BOOST_ACTIVE != 0 {
             // Keep both faces of each flame; white flicker needs no extra faces.
             let color = if phase & 4 == 0 { 14 } else { 1 };
             (color << 8) | (length * 2)
@@ -2715,30 +3324,32 @@ impl Game {
         }
     }
     #[inline(never)]
-    fn player_appearance(&self) -> u16 {
+    /// The ship's roll in the low byte; the high byte is its colour
+    /// override: 1 (white) while flashing.
+    fn ship_appearance(&self, ship: &Ship) -> u16 {
         // The barrel roll's linear spin rides on the coordinated bank, so the
         // end of the spin (a full turn) is continuous with the banked hull.
         // Negative angles lower the right wing (clockwise from the cockpit),
         // the bank's sense for a right turn, so a right roll spins negative.
-        let bank = (self.flight.bank >> 8) as u8;
-        let roll = if self.roll_ticks > 0 {
-            ((25 - self.roll_ticks) as i16 * 256 / 25 * -(self.roll_direction as i16)) as u8
+        let bank = (ship.flight.bank >> 8) as u8;
+        let roll = if ship.roll_ticks > 0 {
+            ((25 - ship.roll_ticks) as i16 * 256 / 25 * -(ship.roll_direction as i16)) as u8
         } else {
             0
         }
         .wrapping_add(bank);
         // 200 ms phases remain distinct at the current rendering cadence.
         let white = self.mode == Mode::Playing
-            && (self.hit_flash_ticks > 25
-                || (self.hit_flash_ticks > 5 && self.hit_flash_ticks <= 15));
+            && (ship.hit_flash_ticks > 25
+                || (ship.hit_flash_ticks > 5 && ship.hit_flash_ticks <= 15));
         roll as u16 | ((white as u16) << 8)
     }
     /// The flight model's pitch (nose up while climbing) plus the authored
     /// ascent of the orbital bridge.
     #[inline(never)]
     #[cfg_attr(target_arch = "mos", link_section = ".phase.render_aux")]
-    fn player_pitch(&self) -> u8 {
-        let flight = (self.flight.pitch >> 8) as u8;
+    fn ship_pitch(&self, ship: &Ship) -> u8 {
+        let flight = (ship.flight.pitch >> 8) as u8;
         if self.mode != Mode::Transition || self.stage_info.bridge_profile != 3 {
             return flight;
         }
@@ -2751,6 +3362,18 @@ impl Game {
             (400 - tick) / 5
         };
         flight.wrapping_sub(amount as u8)
+    }
+    #[cfg(test)]
+    fn player_appearance(&self) -> u16 {
+        self.ship_appearance(self.front())
+    }
+    #[cfg(test)]
+    fn player_pitch(&self) -> u8 {
+        self.ship_pitch(self.front())
+    }
+    #[cfg(test)]
+    fn exhaust_appearance(&self) -> u16 {
+        self.ship_exhaust(self.front())
     }
     #[cfg(test)]
     fn terrain(&self, sink: &mut impl GeometrySink, segment: &Segment<'_>) {
@@ -2862,7 +3485,9 @@ impl<S: GeometrySink> GeometrySink for SceneBudget<'_, S> {
                 camera_point(a, camera_y),
                 camera_point(b, camera_y),
                 camera_point(c, camera_y),
-                if self.color_override != 0 {
+                if self.color_override & 0x80 != 0 {
+                    SECOND_SHIP_COLORS[color as usize & 15]
+                } else if self.color_override != 0 {
                     self.color_override
                 } else {
                     color
@@ -3027,7 +3652,7 @@ fn close_xy(a: Vec3, b: Vec3, radius: i16) -> bool {
     (a.x - b.x).abs() <= radius && (a.y - b.y).abs() <= radius
 }
 #[inline(never)]
-#[cfg_attr(target_arch = "mos", link_section = ".phase.sim_aux")]
+#[cfg_attr(target_arch = "mos", link_section = ".phase.sim_extra")]
 fn magnet_coordinate(current: i16, target: i16) -> i16 {
     // The caller has proved both axes are within 64 units. Narrow only that
     // bounded difference, keeping the coordinates and result fully signed.
@@ -3053,6 +3678,147 @@ fn missile_velocity(error: i16, closing: i16, dz: i16) -> i8 {
     // the native kernel reproduces them.
     ((error.clamp(-512, 512).wrapping_mul(closing)) / dz).clamp(-12, 12) as i8
 }
+/// The ship has lives and is not waiting to return.
+#[inline(always)]
+fn ship_flying(ship: &Ship) -> bool {
+    ship.lives != 0 && ship.respawn_ticks == 0
+}
+/// The ship is flying within `radius` of `pos` in X and Y.
+#[cfg(not(target_arch = "mos"))]
+fn ship_near(ship: &Ship, pos: &Vec3, radius: i16) -> bool {
+    ship_flying(ship) && close_xy(*pos, ship.player, radius)
+}
+#[cfg(target_arch = "mos")]
+#[allow(improper_ctypes)]
+extern "C" {
+    fn coop_swap(game: *mut Game);
+    fn coop_each(game: *mut Game, action: unsafe extern "C" fn(&mut Game), ships: u8);
+    fn coop_near(pos: *const Vec3, radius: u8) -> u8;
+    fn coop_update_ships(game: *mut Game, bank: &AssetBank<'_>, fly: bool);
+    fn coop_ship_down(game: *mut Game) -> u8;
+    fn coop_target(select: u8) -> u16;
+    fn coop_award_lives(game: *mut Game, cap: u8);
+    fn coop_refill_ships(game: *mut Game);
+    fn coop_hit_ships(game: *mut Game, pos: *const Vec3, ships: u8, amount: u8);
+    fn coop_route(game: *mut Game, sample: *const DeviceSample) -> u8;
+    fn coop_join_ship(game: *mut Game);
+    fn coop_held(game: *const Game, bits: *const [u8; 3]) -> u16;
+    // `each_ship` actions, sharing their host names below.
+    #[link_name = "coop_collect_ship"]
+    fn collect_ship(game: &mut Game);
+    #[link_name = "coop_boost_ship"]
+    fn boost_ship(game: &mut Game);
+    #[link_name = "coop_reset_ship"]
+    fn reset_ship(game: &mut Game);
+}
+// coop.S addresses these fields absolutely in the resident Game.
+#[cfg(target_arch = "mos")]
+const _: () = {
+    use core::mem::{offset_of, size_of};
+    assert!(size_of::<Ship>() == 49);
+    assert!(offset_of!(Game, reserve) == 49);
+    assert!(offset_of!(Game, devices) == 98);
+    assert!(offset_of!(Game, swapped) == 99);
+    assert!(offset_of!(Game, view) == 100);
+    assert!(offset_of!(Game, hit_amount) == 104);
+    assert!(offset_of!(Game, ship_bank) == 112);
+    assert!(offset_of!(Game, hit_at) == 106);
+    assert!(offset_of!(Game, aim) == 114);
+    assert!(offset_of!(Game, aim_turn) == 118);
+    assert!(offset_of!(Game, start_lives) == 119);
+    assert!(offset_of!(Game, staged) == 120);
+    assert!(offset_of!(Game, mode) == 128);
+    assert!(offset_of!(InputSample, ms) == 0 && offset_of!(InputSample, bits) == 2);
+    assert!(offset_of!(InputSample, pressed) == 3 && size_of::<InputSample>() == 4);
+    assert!(Mode::Respawning as u8 == 2);
+    assert!(DEVICE_KEYBOARD == 2 && FIRE == 0x10 && BOOST == 0x20);
+
+    assert!(Mode::Playing as u8 == 1 && Mode::Transition as u8 == 6);
+    assert!(BOOST_TICKS + BOOST_COOLDOWN_TICKS == 300 && BOOST_COOLDOWN_TICKS == 200);
+    assert!(Effect::Roll as u8 == 5);
+    assert!(offset_of!(Controls, now) == 0);
+    assert!(offset_of!(Controls, released_at) == 2);
+    assert!(offset_of!(Controls, flags) == 11);
+    assert!(offset_of!(Controls, cached_charge) == 12);
+    assert!(offset_of!(Controls, roll_pending) == 14);
+    assert!(offset_of!(Ship, player) == 15);
+    assert!(offset_of!(Ship, flight) == 21);
+    assert!(size_of::<Flight>() == 10);
+    assert!(offset_of!(Ship, score) == 31);
+    assert!(offset_of!(Ship, boost_cycle) == 35);
+    assert!(offset_of!(Ship, shield) == 37);
+    assert!(offset_of!(Ship, bombs) == 38);
+    assert!(offset_of!(Ship, lives) == 40);
+    assert!(offset_of!(Ship, shot_cooldown) == 41);
+    assert!(offset_of!(Ship, invulnerability) == 42);
+    assert!(offset_of!(Ship, hit_flash_ticks) == 43);
+    assert!(offset_of!(Ship, roll_ticks) == 44);
+    assert!(offset_of!(Ship, roll_cooldown) == 45);
+    assert!(offset_of!(Ship, respawn_ticks) == 47);
+    assert!(SECOND_SHIP_X == 48 && PLAYER_Z == 180 && SCORE_UNIT == 25);
+    assert!(FIRE_ARMED | LEFT_ARMED | RIGHT_ARMED | BOOST_ACTIVE == 0x87);
+    assert!(BOOST_PENDING | BOOST_ACTIVE == 0xc0);
+};
+/// coop.S: a rolling front ship deflects the projectile at `hit_at`.
+#[cfg(target_arch = "mos")]
+#[link_section = ".phase.sim_extra"]
+#[export_name = "game_explode_hit"]
+extern "C" fn explode_hit(game: &mut Game) {
+    game.explode(game.hit_at, 3);
+}
+// `each_ship` actions: each acts on the ship currently in front.
+#[cfg(not(target_arch = "mos"))]
+extern "C" fn hit_ship(game: &mut Game) {
+    if game.hit_dodge && game.roll_ticks != 0 {
+        game.explode(game.hit_at, 3);
+    } else {
+        game.damage_player(game.hit_amount);
+    }
+}
+#[cfg(not(target_arch = "mos"))]
+extern "C" fn collect_ship(game: &mut Game) {
+    if game.hit_amount == 1 {
+        game.shield = game.shield.saturating_add(60).min(100);
+    } else {
+        game.bombs = (game.bombs + 1).min(3);
+    }
+    game.score = game.score.saturating_add(50 / SCORE_UNIT as u16);
+}
+#[cfg(not(target_arch = "mos"))]
+extern "C" fn fly_ship(game: &mut Game) {
+    if game.respawn_ticks != 0 {
+        game.respawn_ticks -= 1;
+        if game.respawn_ticks == 0 {
+            game.reset_ship();
+        }
+    } else if game.lives != 0 {
+        // SAFETY: update_ships stored the caller's bank for this call.
+        let bank = unsafe { &*(game.ship_bank as *const AssetBank<'_>) };
+        game.update_player_controls(bank);
+    }
+    game.controls.clear_pending();
+}
+#[cfg(not(target_arch = "mos"))]
+extern "C" fn settle_ship(game: &mut Game) {
+    game.controls.clear_pending();
+}
+/// A downed or retired co-op ship cannot light its afterburner.
+#[cfg(not(target_arch = "mos"))]
+extern "C" fn boost_ship(game: &mut Game) {
+    if ship_flying(game.front()) {
+        game.tick_boost();
+    } else {
+        game.boost_cycle = 0;
+        game.controls.flags &= !(BOOST_PENDING | BOOST_ACTIVE);
+    }
+}
+#[cfg(not(target_arch = "mos"))]
+extern "C" fn reset_ship(game: &mut Game) {
+    game.reset_ship();
+}
+/// The second player's ship colours: its blue trim (6, 14) turns red (2, 10).
+/// `fast_emit_mesh` applies the same table, `SHIP2_COLORS`, natively.
+pub(crate) const SECOND_SHIP_COLORS: [u8; 16] = [0, 1, 2, 3, 4, 5, 2, 7, 8, 9, 10, 11, 12, 13, 10, 15];
 #[inline(never)]
 #[cfg_attr(target_arch = "mos", link_section = ".phase.geometry")]
 fn tri(sink: &mut impl GeometrySink, a: Vec3, b: Vec3, c: Vec3, color: u8) {
@@ -3186,6 +3952,9 @@ mod balance_tests;
 
 #[cfg(test)]
 mod boost_tests;
+
+#[cfg(test)]
+mod coop_tests;
 
 #[cfg(test)]
 mod damage_flash_tests;

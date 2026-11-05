@@ -1,5 +1,8 @@
 use crate::Vec3;
-const QUARTER: [i16; 65] = [
+/// sin(a) for a quarter turn in Q8, shared with the native
+/// `fast_mesh_matrix_angles` (resident, so every phase can read it).
+#[no_mangle]
+pub static QUARTER_WAVE: [i16; 65] = [
     0, 6, 13, 19, 25, 31, 38, 44, 50, 56, 62, 68, 74, 80, 86, 92, 98, 104, 109, 115, 121, 126, 132,
     137, 142, 147, 152, 157, 162, 167, 172, 177, 181, 185, 190, 194, 198, 202, 206, 209, 213, 216,
     220, 223, 226, 229, 231, 234, 237, 239, 241, 243, 245, 247, 248, 250, 251, 252, 253, 254, 255,
@@ -10,10 +13,10 @@ pub fn sin8(a: u8) -> i16 {
     let q = a >> 6;
     let p = (a & 63) as usize;
     match q {
-        0 => QUARTER[p],
-        1 => QUARTER[64 - p],
-        2 => -QUARTER[p],
-        _ => -QUARTER[64 - p],
+        0 => QUARTER_WAVE[p],
+        1 => QUARTER_WAVE[64 - p],
+        2 => -QUARTER_WAVE[p],
+        _ => -QUARTER_WAVE[64 - p],
     }
 }
 // Keep this small, phase-independent arithmetic helper resident so the
@@ -52,31 +55,29 @@ impl RotationMatrix {
     #[inline(never)]
     #[cfg_attr(target_arch = "mos", link_section = ".phase.geometry")]
     pub fn new(yaw: u8, pitch: u8, roll: u8) -> Self {
-        // Six out-of-line sin8 calls: iterator forms and inlined lookups both
-        // compiled to several hundred bytes more on the target.
-        let sincos = [
-            sin8(yaw),
-            sin8(yaw.wrapping_add(64)),
-            sin8(pitch),
-            sin8(pitch.wrapping_add(64)),
-            sin8(roll),
-            sin8(roll.wrapping_add(64)),
-        ];
         #[cfg(target_arch = "mos")]
         {
             extern "C" {
-                fn fast_mesh_matrix(sincos: *const [i16; 6], out: *mut [[i16; 3]; 3]);
+                fn fast_mesh_matrix_angles(angles: *const [u8; 3], out: *mut [[i16; 3]; 3]);
             }
             let mut m = [[0i16; 3]; 3];
-            // SAFETY: the kernel performs exactly `compose` with the resident
-            // product core; BOOT built its multiply table. It uses the free
-            // scratch at $9300 that no interrupt touches.
-            unsafe { fast_mesh_matrix(&sincos, &mut m) };
+            // SAFETY: the kernel takes the six sin8 values from QUARTER_WAVE
+            // and performs exactly `compose` with the resident product core;
+            // BOOT built its multiply table. It uses the free scratch at
+            // $9300 that no interrupt touches.
+            unsafe { fast_mesh_matrix_angles(&[yaw, pitch, roll], &mut m) };
             Self { m }
         }
         #[cfg(not(target_arch = "mos"))]
         {
-            Self::compose(&sincos)
+            Self::compose(&[
+                sin8(yaw),
+                sin8(yaw.wrapping_add(64)),
+                sin8(pitch),
+                sin8(pitch.wrapping_add(64)),
+                sin8(roll),
+                sin8(roll.wrapping_add(64)),
+            ])
         }
     }
 

@@ -373,7 +373,7 @@ def audit(path):
             and symbols["__phase_sim_aux_prefix_size"].address == auxiliary.size,
             "SIM helper section disagrees with its ownership boundaries")
     sim_extra = phases[SIM_EXTRA_SECTION]
-    require(sim_extra.address == 0xE000 and 0 < sim_extra.size <= 0x1800
+    require(sim_extra.address == 0xE000 and 0 < sim_extra.size <= 0x1B00
             and symbols['__phase_sim_extra_start'].address == sim_extra.address
             and symbols['__phase_sim_extra_end'].address == sim_extra.address + sim_extra.size
             and symbols['__phase_sim_extra_size'].address == sim_extra.size

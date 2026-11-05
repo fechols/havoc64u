@@ -169,7 +169,67 @@ fast_mul8:
 .set RM_OUT, $9324
 .set RM_INDEX, $9326
 .set RM_PROD, $9327
+; void fast_mesh_matrix_angles(const uint8_t angles[3], int16_t out[9])
+; C ABI: angles rc2/3 (yaw, pitch, roll), out rc4/5. RotationMatrix::new:
+; the six sin8 values (sin, cos = sin(a + 64) per angle) from the resident
+; quarter-wave table QUARTER_WAVE, then exactly fast_mesh_matrix.
+; Defined by math.rs; weak so standalone kernel tests link without it.
+.weak QUARTER_WAVE
 .section .phase.geometry,"ax",@progbits
+.globl fast_mesh_matrix_angles
+.type fast_mesh_matrix_angles,@function
+fast_mesh_matrix_angles:
+    lda __rc4
+    sta RM_OUT
+    lda __rc5
+    sta RM_OUT+1
+    ldx #0
+    ldy #0
+.Lra_angle:
+    lda (__rc2),y
+    jsr .Lra_sin
+    lda (__rc2),y
+    clc
+    adc #64
+    jsr .Lra_sin
+    iny
+    cpy #3
+    bne .Lra_angle
+    jmp .Lrm_constants
+; RM_SLOTS[X] = sin8(A); X += 2. Y is preserved; rc6/7 are scratch.
+.Lra_sin:
+    sta __rc6
+    and #63
+    bit __rc6
+    bvc .Lra_index
+    ; Odd quadrants read the table backwards: QUARTER[64 - p].
+    eor #$ff
+    sec
+    adc #64
+.Lra_index:
+    asl
+    sty __rc7
+    tay
+    lda QUARTER_WAVE,y
+    sta RM_SLOTS,x
+    lda QUARTER_WAVE+1,y
+    sta RM_SLOTS+1,x
+    ldy __rc7
+    bit __rc6
+    bpl .Lra_done
+    sec
+    lda #0
+    sbc RM_SLOTS,x
+    sta RM_SLOTS,x
+    lda #0
+    sbc RM_SLOTS+1,x
+    sta RM_SLOTS+1,x
+.Lra_done:
+    inx
+    inx
+    rts
+.size fast_mesh_matrix_angles, .-fast_mesh_matrix_angles
+
 .globl fast_mesh_matrix
 .type fast_mesh_matrix,@function
 fast_mesh_matrix:
@@ -183,6 +243,7 @@ fast_mesh_matrix:
     sta RM_SLOTS,y
     dey
     bpl .Lrm_copy
+.Lrm_constants:
     lda #0
     sta RM_SLOTS+12
     sta RM_INDEX
@@ -314,10 +375,14 @@ fast_mesh_matrix:
 ; C ABI: v rc2/3, m rc4/5 (row-major Q8, entries within +-256), out rc6/7,
 ; shift in A (4..9). The native body of RotationMatrix::apply:
 ; out[i] = (sum_j m[i][j] * v[j]) >> shift with the arithmetic shift's floor.
-; Each product is |m| * |v| from the quarter-square core (|m| = 256 is
-; |v| << 8), added to or subtracted from a 24-bit accumulator by the XOR of the
-; two signs. The shift takes the accumulator's upper two bytes and ORs in the
-; shifted low byte, so only 8 - shift single-bit shifts run per row.
+; fast_rotate_prepare decodes the nine entries once per mesh (magnitude low
+; byte; flags: bit 0 nonzero, bit 6 |m| = 256, bit 7 negative), and
+; fast_rotate_prepared then rotates each vertex: each product is |m| * |v|
+; from the quarter-square core (|m| = 256 is |v| << 8), added to or
+; subtracted from a 24-bit accumulator by the XOR of the two signs. The shift
+; takes the accumulator's upper two bytes and ORs in the shifted low byte, so
+; only 8 - shift single-bit shifts run per row. The prepared entries live in
+; the matrix composer's slots, idle while a mesh's vertices are rotated.
 .set RV_SHIFT, $9330
 .set RV_AV, $9331
 .set RV_SV, $9334
@@ -327,15 +392,76 @@ fast_mesh_matrix:
 .set RV_ROW, $933c
 .set RV_AM, $933d
 .set RV_NEG, $933f
+.set RP_MAG, $9300
+.set RP_FLAGS, $9309
 .section .phase.geometry,"ax",@progbits
 .globl fast_rotate_vertex
 .type fast_rotate_vertex,@function
 fast_rotate_vertex:
+    pha
+    jsr fast_rotate_prepare
+    pla
+    jmp fast_rotate_prepared
+.size fast_rotate_vertex, .-fast_rotate_vertex
+
+; void fast_rotate_prepare(const int16_t m[9]) with m in rc4/5.
+.globl fast_rotate_prepare
+.type fast_rotate_prepare,@function
+fast_rotate_prepare:
+    ldx #0
+    ldy #0
+.Lrp_entry:
+    lda (__rc4),y
+    sta RV_AM
+    iny
+    lda (__rc4),y
+    iny
+    sta RV_AM+1
+    ora RV_AM
+    beq .Lrp_store
+    lda RV_AM+1
+    and #$80
+    ora #1
+    sta RV_NEG
+    bpl .Lrp_magnitude
+    sec
+    lda #0
+    sbc RV_AM
+    sta RV_AM
+    lda #0
+    sbc RV_AM+1
+    sta RV_AM+1
+.Lrp_magnitude:
+    lda RV_AM+1
+    beq .Lrp_flags
+    lda RV_NEG
+    ora #$40
+    sta RV_NEG
+.Lrp_flags:
+    lda RV_NEG
+.Lrp_store:
+    sta RP_FLAGS,x
+    lda RV_AM
+    sta RP_MAG,x
+    inx
+    cpx #9
+    bne .Lrp_entry
+    rts
+.size fast_rotate_prepare, .-fast_rotate_prepare
+
+; void fast_rotate_prepared(const int8_t v[3], Vec3 *out, uint8_t shift) with
+; v rc2/3, out rc6/7, shift in A, after fast_rotate_prepare.
+.globl fast_rotate_prepared
+.type fast_rotate_prepared,@function
+fast_rotate_prepared:
     sta RV_SHIFT
     ldy #0
 .Lrv_abs:
     lda (__rc2),y
+    tax
+    and #$80
     sta RV_SV,y
+    txa
     bpl .Lrv_abs_ok
     eor #$ff
     clc
@@ -356,40 +482,24 @@ fast_rotate_vertex:
     sta RV_J
 .Lrv_col:
     ldy RV_MIDX
-    lda (__rc4),y
-    sta RV_AM
-    iny
-    lda (__rc4),y
-    sta RV_AM+1
-    iny
-    sty RV_MIDX
-    ldx RV_J
-    eor RV_SV,x
-    sta RV_NEG
+    inc RV_MIDX
     ; Zero entries (most of any single-axis or identity matrix) add nothing.
-    lda RV_AM
-    ora RV_AM+1
+    lda RP_FLAGS,y
     beq .Lrv_next
-    lda RV_AM+1
-    bpl .Lrv_m_magnitude
-    sec
-    lda #0
-    sbc RV_AM
-    sta RV_AM
-    lda #0
-    sbc RV_AM+1
-    sta RV_AM+1
-.Lrv_m_magnitude:
-    lda RV_AM+1
+    ldx RP_MAG,y
+    ldy RV_J
+    eor RV_SV,y
+    sta RV_NEG
+    and #$40
     beq .Lrv_small_m
     ; |m| = 256: the product is |v| << 8.
-    lda RV_AV,x
+    lda RV_AV,y
     tax
     lda #0
     beq .Lrv_accumulate
 .Lrv_small_m:
-    ldy RV_AV,x
-    ldx RV_AM
+    lda RV_AV,y
+    tay
     jsr .Lmq_mul8
 .Lrv_accumulate:
     bit RV_NEG
@@ -418,9 +528,7 @@ fast_rotate_vertex:
     inc RV_J
     lda RV_J
     cmp #3
-    beq .Lrv_row_done
-    jmp .Lrv_col
-.Lrv_row_done:
+    bne .Lrv_col
     lda RV_SHIFT
     cmp #9
     bcc .Lrv_shift_small
@@ -463,4 +571,4 @@ fast_rotate_vertex:
     jmp .Lrv_row
 .Lrv_done:
     rts
-.size fast_rotate_vertex, .-fast_rotate_vertex
+.size fast_rotate_prepared, .-fast_rotate_prepared

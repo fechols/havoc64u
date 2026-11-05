@@ -107,8 +107,7 @@ impl Game {
         let parents = [self.bosses[0].pos, self.bosses[1].pos];
         self.boss_phase += 1;
         self.boss_split_ticks = BOSS_SPLIT_TICKS;
-        self.shield = 100;
-        self.bombs = 3;
+        self.refill_ships();
         self.shots = [Shot::EMPTY; SHOTS];
         self.missile_targets = [0; SHOTS];
         self.actors = [Actor::EMPTY; ACTORS];
@@ -166,8 +165,7 @@ impl Game {
             return;
         }
         self.boss_defeated = true;
-        self.shield = 100;
-        self.bombs = 3;
+        self.refill_ships();
         self.score = self.score.saturating_add(5000 / super::SCORE_UNIT as u16);
         self.sound(Effect::BossExplosion, 0);
         for x in [-80, -40, 0, 40, 80] {

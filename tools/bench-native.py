@@ -52,7 +52,7 @@ def checkout_metadata():
 
 class Layouts:
     """Resolve named fields, including arrays, without assuming Rust offsets."""
-    primitive = {"u8": 1, "i8": 1, "bool": 1, "u16": 2, "i16": 2, "u32": 4, "i32": 4}
+    primitive = {"u8": 1, "i8": 1, "bool": 1, "u16": 2, "i16": 2, "u32": 4, "i32": 4, "usize": 2}
 
     def __init__(self, elf, tool, output):
         self.elf, self.tool, self.output, self.structs = elf, tool, output, {}
@@ -643,6 +643,8 @@ def main():
                         help="continuous controlled SFX run at each of three CIA phases; minimum30 seconds")
     parser.add_argument("--max-frame-regression", type=float, default=5.0, help="maximum median frame-time increase in percent")
     parser.add_argument("--palettes", default="cold,retained")
+    parser.add_argument("--coop", action="store_true",
+                        help="seat a second player (keyboard) beside the first in every fixture")
     parser.add_argument("--real-time-ticks", type=int, default=400)
     # Accepted for older command lines: the game no longer caches sky bands.
     parser.add_argument("--skip-cache-checks", action="store_true", help=argparse.SUPPRESS)
@@ -885,6 +887,12 @@ def main():
                 values.update((f"stage_info.{field}", value) for field, value in info.items())
             else:
                 info = {"enemy_profile": fixture["section"], "boss_kind": 0}
+            if args.coop:
+                # Port 2 and the keyboard: the second ship flies in its lane.
+                values.update({"devices": 0x31, "start_lives": 3, "reserve.lives": 3,
+                               "reserve.shield": 100, "reserve.bombs": 3,
+                               "reserve.player.x": 48, "reserve.player.z": 180,
+                               "reserve.invulnerability": 255, "view[0]": 24})
             values = vice.clock_fixture(values, layouts.load("Game")["fields"], package_format["count"])
             for field, value in values.items():
                 layouts.patch(game, "Game", field, value)

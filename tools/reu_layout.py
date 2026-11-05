@@ -26,14 +26,14 @@ CODE_IMAGES = (
     ('shadow', 'shadow', 31), ('scenery-helpers', 'scenery_helpers', 33),
 )
 RESERVATIONS = dict.fromkeys((name for name, _, _ in CODE_IMAGES), 0x4800)
-RESERVATIONS.update(boot=0x3000, audio=0x3800, victory=0x3800, shadow=0x3800)
+RESERVATIONS.update(boot=0x3000, audio=0x3800, victory=0x3800, shadow=0x4000)
 RESERVATIONS.update({'sim-helpers': 0x2000, 'scenery-helpers': 0x1000})
 OFFSETS = {}
 CODE_END = CODE_BASE
 for _name, _symbol, _logical_id in CODE_IMAGES:
     OFFSETS[_name] = CODE_END
     CODE_END += RESERVATIONS[_name]
-assert CODE_END == 0x7e800
+assert CODE_END == 0x7f000
 
 
 def image_size_symbol(name):

@@ -55,7 +55,7 @@ assert symbols['__phase_sim_aux_start']==0x8e00, 'SIM helpers must start after H
 assert 0x8e00<symbols['__phase_sim_aux_end']<=0x9300, 'SIM helpers exceed shared workspace'
 assert symbols['__phase_sim_aux_prefix_size']==symbols['__phase_sim_aux_end']-symbols['__phase_sim_aux_start']
 assert symbols['__phase_sim_extra_start']==0xe000, 'SIM extra helpers must start at $E000'
-assert 0xe000<symbols['__phase_sim_extra_end']<=0xf800, 'SIM extra helpers exceed retired raster workspace'
+assert 0xe000<symbols['__phase_sim_extra_end']<=0xfb00, 'SIM extra helpers exceed retired raster workspace'
 assert symbols['__phase_sim_extra_size']==symbols['__phase_sim_extra_end']-symbols['__phase_sim_extra_start']
 assert symbols['__phase_sim_aux_size']==0x500+symbols['__phase_sim_extra_size'], 'incorrect composed SIM helper size'
 low_end=symbols['__segment0_start']
@@ -140,7 +140,7 @@ for line in listing.splitlines():
         assert address == 0x8e00 and 0 < size <= 0x500, name
         assert size == symbols['__phase_sim_aux_prefix_size' if name == '.phase.sim_aux' else '__phase_scenery_aux_prefix_size'], name
     elif name == '.phase.sim_extra':
-        assert address == 0xe000 and 0 < size <= 0x1800, 'SIM extra helpers exceed retired raster workspace'
+        assert address == 0xe000 and 0 < size <= 0x1b00, 'SIM extra helpers exceed retired raster workspace'
         assert size == symbols['__phase_sim_extra_size'], name
     elif name == '.phase.scenery_extra':
         assert address == 0xe000 and 0 < size <= 0x800, 'SCENERY extra helpers overlap shadow frame'

@@ -353,6 +353,145 @@ read_controls:
     pla
     rts
 
+; void read_devices(void): device_bits[0..3] = port 2, port 1, keyboard, in
+; the logical bit layout (UP, DOWN, LEFT, RIGHT, FIRE, BOOST). Port 2 is
+; read_controls' joystick with POTX second fire; port 1 is the idle column
+; read; the keyboard is W/S/A/D, Space (fire) and Left Shift (boost).
+; Both joysticks share CIA 1 with the matrix: port 2 grounds rows 0..4
+; (G, its own direction/fire bits) and port 1 grounds columns. A key whose
+; row is not grounded is exact unless its column already reads low with no
+; row selected (U); a key in the only grounded row reads directly from U.
+; Any other key keeps its previous state. IRQ only (masked).
+.section .bss.devices,"aw",@nobits
+.globl device_bits
+device_bits:
+    .space 3
+devices_idle:
+    .space 1
+devices_rows:
+    .space 3
+
+.section .text.read_devices,"ax",@progbits
+.globl read_devices
+read_devices:
+    jsr read_controls
+    and #$1f
+    ora controls_pot_held
+    sta device_bits
+    lda #$ff
+    sta $dc00
+    sta $dc02
+    lda $dc01
+    eor #$ff
+    sta devices_idle
+    and #$1f
+    sta device_bits+1
+    ldx #2
+.Ldevices_scan:
+    lda .Ldevices_row_select,x
+    sta $dc00
+    lda $dc01
+    eor #$ff
+    sta devices_rows,x
+    dex
+    bpl .Ldevices_scan
+    jsr restore_controls
+    ; Decode the six keys into controls_tmp, starting from all released.
+    lda #0
+    sta controls_tmp
+    ldx #5
+.Ldevices_key:
+    ldy .Ldevices_key_scan,x
+    lda device_bits
+    and #$1f
+    and .Ldevices_row_mask,y
+    beq .Ldevices_free_row
+    ; Grounded row: exact only when it is the only grounded row.
+    lda device_bits
+    and #$1f
+    cmp .Ldevices_row_mask,y
+    bne .Ldevices_freeze
+    lda devices_idle
+    jmp .Ldevices_test
+.Ldevices_free_row:
+    lda .Ldevices_key_column,x
+    and devices_idle
+    bne .Ldevices_freeze
+    lda devices_rows,y
+.Ldevices_test:
+    and .Ldevices_key_column,x
+    beq .Ldevices_next
+    lda .Ldevices_key_bit,x
+    bne .Ldevices_merge
+.Ldevices_freeze:
+    lda device_bits+2
+    and .Ldevices_key_bit,x
+.Ldevices_merge:
+    ora controls_tmp
+    sta controls_tmp
+.Ldevices_next:
+    dex
+    bpl .Ldevices_key
+    lda controls_tmp
+    sta device_bits+2
+    rts
+; void queue_devices(uint16_t ms): append device_bits, their new presses
+; against LAST_BITS, and ms to the INPUTS ring (32 eight-byte records), or
+; count an overflow. IRQ only.
+.globl queue_devices
+queue_devices:
+    sta controls_tmp
+    lda INPUT_HEAD
+    clc
+    adc #1
+    and #31
+    cmp INPUT_TAIL
+    beq .Lqueue_full
+    pha
+    lda INPUT_HEAD
+    asl
+    asl
+    asl
+    tay
+    lda controls_tmp
+    sta INPUTS+6,y
+    txa
+    sta INPUTS+7,y
+    ldx #0
+.Lqueue_device:
+    lda LAST_BITS,x
+    eor #$ff
+    and device_bits,x
+    sta INPUTS+3,y
+    lda device_bits,x
+    sta INPUTS,y
+    sta LAST_BITS,x
+    iny
+    inx
+    cpx #3
+    bne .Lqueue_device
+    pla
+    sta INPUT_HEAD
+    rts
+.Lqueue_full:
+    inc INPUT_OVERFLOWS
+    bne .Lqueue_done
+    inc INPUT_OVERFLOWS+1
+.Lqueue_done:
+    rts
+; Scanned rows 1, 2 and 7; their row bits as port 2 grounds them.
+.Ldevices_row_select:
+    .byte $fd, $fb, $7f
+.Ldevices_row_mask:
+    .byte $02, $04, $80
+; W, S, A, Left Shift (row 1), D (row 2), Space (row 7).
+.Ldevices_key_scan:
+    .byte 0, 0, 0, 0, 1, 2
+.Ldevices_key_column:
+    .byte $02, $20, $04, $80, $04, $10
+.Ldevices_key_bit:
+    .byte $01, $02, $04, $20, $08, $10
+
 ; External-call barriers keep compiler-generated triangle accesses on the
 ; intended side of the processor-port change. The IRQ preserves this setting.
 .section .text.io_off,"ax",@progbits

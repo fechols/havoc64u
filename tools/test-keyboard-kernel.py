@@ -28,6 +28,7 @@ STORY = "story_mode"
 KEYS = {"ctrl": (7, 2), "cbm": (7, 5), "del": (0, 0),
         "space": (7, 4), "f": (2, 5), "d": (2, 2), "five": (2, 0),
         "s": (1, 5), "shift": (1, 7), "rshift": (6, 4),
+        "runstop": (7, 7), "y": (3, 1), "w": (1, 1), "r": (2, 1),
         "comma": (5, 7), "period": (5, 4), "x": (2, 7), "c": (2, 4)}
 CHORD_KEYS = ("ctrl", "cbm", "del")
 CHORD = frozenset(CHORD_KEYS)
@@ -269,10 +270,10 @@ def exercise(elf, symbols, layout, budget):
     for mode in layout["modes"]:
         cpu = fresh()
         pause = mode in ("Playing", "Transition")
-        cpu.scan(("space",), mode, pause=pause, label=f"{mode}: SPACE")
-        cpu.scan(("space",), mode, label=f"{mode}: held SPACE")
+        cpu.scan(("runstop",), mode, pause=pause, label=f"{mode}: RUN/STOP")
+        cpu.scan(("runstop",), mode, label=f"{mode}: held RUN/STOP")
         cpu.scan((), mode)
-        cpu.scan(("space",), mode, pause=pause, label=f"{mode}: fresh SPACE")
+        cpu.scan(("runstop",), mode, pause=pause, label=f"{mode}: fresh RUN/STOP")
         cpu.scan(("f",), mode, fps=True, label=f"{mode}: F")
         cpu.scan(("f",), mode, label=f"{mode}: held F")
         cpu.scan((), mode)
@@ -281,49 +282,50 @@ def exercise(elf, symbols, layout, budget):
     cpu.scan(CHORD | {"f"}, expected=True, fps=True, label="chord plus F")
     cpu.scan(CHORD | {"f"}, label="held chord plus F")
     cpu.scan(())
-    cpu.scan(CHORD | {"space"}, expected=True, label="title chord plus SPACE")
-    scenarios.append("existing SPACE/F edge behavior and simultaneous shortcuts")
+    cpu.scan(CHORD | {"runstop"}, expected=True, label="title chord plus RUN/STOP")
+    scenarios.append("RUN/STOP/F edge behavior and simultaneous shortcuts")
 
     for mode in layout["modes"]:
         for selected in (0, 1):
             cpu = fresh()
             cpu.mem[cpu.story] = selected
-            cpu.scan(("s",), mode, story=mode == "Title", label=f"{mode}: S, selected {selected}")
-            # SIM consumes activity; holding S must not continually defer attract.
+            cpu.scan(("y",), mode, story=mode == "Title", label=f"{mode}: Y, selected {selected}")
+            # SIM consumes activity; holding Y must not continually defer attract.
             cpu.mem[cpu.activity] = 0
-            cpu.scan(("s",), mode, label=f"{mode}: held S")
-            cpu.scan(("s",), "Title", label=f"{mode}: held into Title")
+            cpu.scan(("y",), mode, label=f"{mode}: held Y")
+            cpu.scan(("y",), "Title", label=f"{mode}: held into Title")
             cpu.scan((), "Title")
-            cpu.scan(("s",), "Title", story=True, label=f"{mode}: fresh Title S")
-    fresh().scan(("s", "shift"), story=True, label="shifted S selects story")
-    scenarios.append("Title-only S toggles both ways, activity once, held-key and mode-change guards")
+            cpu.scan(("y",), "Title", story=True, label=f"{mode}: fresh Title Y")
+    fresh().scan(("y", "shift"), story=True, label="shifted Y selects story")
+    scenarios.append("Title-only Y toggles both ways, activity once, held-key and mode-change guards")
 
     for joy in (1, 2, 4, 8, 16, 31):
         for joy1, joy2 in ((joy, 0), (0, joy), (joy, joy)):
-            fresh().scan((), joy1=joy1, joy2=joy2, label=f"joystick {joy1}/{joy2} cannot fake S")
-            # S shares column 5 with F and C=. Joystick-selected rows must not
-            # let either real key impersonate S through the matrix.
-            for substitute, row in (("f", 4), ("cbm", 128)):
+            fresh().scan((), joy1=joy1, joy2=joy2, label=f"joystick {joy1}/{joy2} cannot fake Y")
+            # Y shares column 1 with W and R, in rows a port-2 joystick can
+            # select. Neither real key may impersonate Y through the matrix.
+            for substitute, row in (("w", 2), ("r", 4)):
                 fresh().scan((substitute,), joy1=joy1, joy2=joy2 | row,
-                             label=f"joystick-selected {substitute} cannot fake S")
-    for joy1, joy2 in ((0, 2), (31, 31)):
+                             label=f"joystick-selected {substitute} cannot fake Y")
+    # Port 2 RIGHT grounds Y's row 3; port 1 DOWN grounds its column 1.
+    for joy1, joy2 in ((0, 8), (2, 0), (31, 31)):
         cpu = fresh()
-        cpu.scan(("s",), story=True)
-        cpu.scan(("s",), joy1=joy1, joy2=joy2, label="S held with contaminated idle")
-        cpu.scan(("s",), label="joystick release does not rearm S")
+        cpu.scan(("y",), story=True)
+        cpu.scan(("y",), joy1=joy1, joy2=joy2, label="Y held with contaminated idle")
+        cpu.scan(("y",), label="joystick release does not rearm Y")
         cpu.scan(())
-        cpu.scan(("s",), story=True)
+        cpu.scan(("y",), story=True)
         cpu = fresh()
-        cpu.scan(("s",), joy1=joy1, joy2=joy2, label="S initially contaminated")
-        cpu.scan(("s",), label="initial contamination clears without an edge")
+        cpu.scan(("y",), joy1=joy1, joy2=joy2, label="Y initially contaminated")
+        cpu.scan(("y",), label="initial contamination clears without an edge")
         cpu.scan(())
-        cpu.scan(("s",), story=True)
-    fresh().scan(("s",), joy2=16, story=True, label="S and joystick FIRE may coexist")
+        cpu.scan(("y",), story=True)
+    fresh().scan(("y",), joy2=16, story=True, label="Y and joystick FIRE may coexist")
     cpu = fresh()
-    cpu.scan(CHORD | {"s", "f", "space"}, expected=True, fps=True, story=True,
-             label="S with existing shortcuts on Title")
-    cpu.scan(CHORD | {"s", "f", "space"}, label="held simultaneous shortcuts")
-    scenarios.append("S idle filtering, both joystick ports, cross-row impostors and simultaneous shortcuts")
+    cpu.scan(CHORD | {"y", "f", "runstop"}, expected=True, fps=True, story=True,
+             label="Y with existing shortcuts on Title")
+    cpu.scan(CHORD | {"y", "f", "runstop"}, label="held simultaneous shortcuts")
+    scenarios.append("Y idle filtering, both joystick ports, cross-row impostors and simultaneous shortcuts")
 
     for mode in layout["modes"]:
         for enabled in (False, True):

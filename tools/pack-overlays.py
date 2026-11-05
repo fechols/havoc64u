@@ -118,7 +118,7 @@ def main():
     auxiliary = extract('sim_aux')
     assert len(auxiliary) == symbols['__phase_sim_aux_prefix_size'] <= 0x500
     extra = extract('sim_extra')
-    assert len(extra) == symbols['__phase_sim_extra_size'] <= 0x1800
+    assert len(extra) == symbols['__phase_sim_extra_size'] <= 0x1b00
     auxiliary = auxiliary.ljust(0x500, b'\0') + extra
     assert len(auxiliary) == symbols['__phase_sim_aux_size']
     package('sim-helpers', auxiliary, 84, 86)

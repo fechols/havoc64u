@@ -1116,7 +1116,8 @@ fast_replay_scenery:
 ;   17 flags                        the sink's scene metadata flags
 ;   18 color                        colour override (0 = the face's own)
 ;   19 face_color (out), 20 indices[3] (out): the face handed back for clipping
-; With start = 0 every vertex is rotated with fast_rotate_vertex, translated
+; With start = 0 the matrix is decoded once (fast_rotate_prepare) and every
+; vertex is rotated with fast_rotate_prepared, translated
 ; with saturating adds, lowered by camera_y and stored as a 16-byte record at
 ; $E000 + 16 * index (x, y, z, screen x, screen y, projected flag): the raster
 ; tails live there but are idle until PIXELS. Every face runs from `start`:
@@ -1172,6 +1173,11 @@ fast_emit_mesh:
     sta EM_VPTR
     lda EM_VERT+1
     sta EM_VPTR+1
+    lda EM_MATRIX
+    sta __rc4
+    lda EM_MATRIX+1
+    sta __rc5
+    jsr fast_rotate_prepare
     lda #0
     sta EM_I
 .Lem_vertex:
@@ -1184,16 +1190,12 @@ fast_emit_mesh:
     sta __rc2
     lda EM_VPTR+1
     sta __rc3
-    lda EM_MATRIX
-    sta __rc4
-    lda EM_MATRIX+1
-    sta __rc5
     lda EM_I
     jsr .Lem_record_address
     sta __rc6
     sty __rc7
     lda EM_SHIFT
-    jsr fast_rotate_vertex
+    jsr fast_rotate_prepared
     ; record += position, each component saturating
     ldy #0
 .Lem_translate:
@@ -1278,6 +1280,13 @@ fast_emit_mesh:
     lda (__rc2),y
     ldx EM_OVERRIDE
     beq .Lem_face_color
+    bpl .Lem_solid_color
+    ; Override $80: the second player's palette (game.rs SECOND_SHIP_COLORS).
+    and #15
+    tax
+    lda .Lem_ship2_colors,x
+    jmp .Lem_face_color
+.Lem_solid_color:
     txa
 .Lem_face_color:
     sta EM_FCOLOR
@@ -1421,4 +1430,6 @@ fast_emit_mesh:
     asl
     asl
     rts
+.Lem_ship2_colors:
+    .byte 0, 1, 2, 3, 4, 5, 2, 7, 8, 9, 10, 11, 12, 13, 10, 15
 .size fast_emit_mesh, .-fast_emit_mesh

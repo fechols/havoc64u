@@ -3,9 +3,14 @@
 ; Staging: bitmap $9540..$967f, screen $7700..$7727, color $7728..$774f.
 ; The staging bytes and rc0/1, rc20..31 are preserved; rc2..15 are scratch.
 ;
-; For every Y-scroll 0..7, band b can be fetched on lines 48+8*b through
-; 62+8*b. Exclude [40+8*b,64+8*b): eight leading lines cover the bounded
-; copy, with a trailing line of margin. The last band's upper bound is 256.
+; With fine Y-scroll ys = $D011 & 7, band b is fetched on lines 48+8*b+ys
+; through 55+8*b+ys (its badline, then one bitmap line each). Exclude
+; [45+8*b+ys, 57+8*b+ys): three leading lines cover the bounded copy (at
+; most 2.1 PAL lines even with every VIC access at 1 MHz; about 1.3 on
+; hardware), with a trailing line of margin. Each sample reads ys afresh
+; from the same $D011 byte as the ninth raster bit. Only the line-251 IRQ
+; writes ys, and it cannot run between the masked sample and the last store.
+; Band 24 at ys=7 has no upper escape below 256.
 ; Poll with IRQs enabled, then mask and resample before the actual stores.
 ; Only this final sample and fixed copy delay audio/the line-251 effect IRQ.
 ; PHP/PLP preserve the caller's flags, including I and D; arithmetic uses CLD.
@@ -36,13 +41,8 @@ publish_staged_band:
     asl
     sta __rc14
     clc
-    adc #40
+    adc #45
     sta __rc8
-    adc #24
-    sta __rc9
-    lda #0
-    adc #0
-    sta __rc10
     lda #0
     sta __rc15
     lda __rc14
@@ -133,28 +133,34 @@ publish_done:
     rts
 
 ; Return carry set when the complete commit can finish outside the band's
-; fetch lifetime. Read high/low/high so crossing raster 255 or frame wrap
-; cannot fabricate a line. IRQs may run while this is used by the wait loop;
-; the masked second call always validates the current position afresh.
+; fetch lifetime. Read high/low/high so crossing raster 255, frame wrap or a
+; Y-scroll write cannot fabricate a line or window. IRQs may run while this
+; is used by the wait loop; the masked second call validates afresh.
 .Lpublish_safe:
     lda $d011
-    and #$80
     sta __rc12
     lda $d012
     sta __rc13
     lda $d011
-    and #$80
-    cmp __rc12
+    eor __rc12
+    and #$87
     bne .Lpublish_safe
     lda __rc12
-    bne .Lpublish_yes
+    bmi .Lpublish_yes
+    and #7
+    clc
+    adc __rc8
+    sta __rc11
     lda __rc13
-    cmp __rc8
+    cmp __rc11
     bcc .Lpublish_yes
-    lda __rc10
-    bne .Lpublish_no
+    ; Carry is set: upper bound = lower + 12, carrying out only at 256.
+    lda __rc11
+    adc #11
+    bcs .Lpublish_no
+    sta __rc11
     lda __rc13
-    cmp __rc9
+    cmp __rc11
     bcs .Lpublish_yes
 .Lpublish_no:
     clc

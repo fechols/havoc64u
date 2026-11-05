@@ -22,7 +22,7 @@ C, Z, I, D, B, U, V, N = (1 << n for n in range(8))
 
 
 class Machine:
-    def __init__(self, code, symbols, band, lines, position, flags=0x20, injection=None):
+    def __init__(self, code, symbols, band, lines, position, flags=0x20, injection=None, ys=0):
         self.mem = bytearray((i * 37 + (i >> 8) * 13) & 255 for i in range(65536))
         self.mem[ORIGIN:ORIGIN + len(code)] = code
         self.a, self.x, self.y, self.p, self.s = band, 0x57, 0x93, flags, 0xfd
@@ -30,7 +30,7 @@ class Machine:
         self.push(0xff)
         self.push(0xfe)
         self.before = self.mem[:]
-        self.band, self.lines, self.symbols = band, lines, symbols
+        self.band, self.lines, self.symbols, self.ys = band, lines, symbols, ys
         self.line_cycles = (63 if lines == 312 else 65) * 64
         self.now = int(position * self.line_cycles)
         self.started = self.now
@@ -64,7 +64,7 @@ class Machine:
             self.io += 1
             line = self.line
             self.raster_reads.append((address, line))
-            return (0x38 | (0x80 if line >= 256 else 0)) if address == 0xd011 else line & 255
+            return (0x30 | self.ys | (0x80 if line >= 256 else 0)) if address == 0xd011 else line & 255
         return self.mem[address]
 
     def write(self, address, value):
@@ -73,8 +73,9 @@ class Machine:
             self.io += 1
         if 0xa000 <= address < 0xbf40 or 0x8000 <= address < 0x83e8 or 0xd800 <= address < 0xdbe8:
             assert self.p & I, "visible store with IRQs enabled"
-            assert not 48 + 8 * self.band <= self.line < 63 + 8 * self.band, (
-                "visible store during a possible VIC fetch", self.band, self.line, hex(address))
+            fetch = 48 + 8 * self.band + self.ys
+            assert not fetch <= self.line < fetch + 8, (
+                "visible store during a VIC fetch", self.band, self.ys, self.line, hex(address))
             self.writes.append((address, value, self.now))
         self.mem[address] = value
 
@@ -95,10 +96,13 @@ class Machine:
         self.p = (self.p & ~C) | (C if left >= right else 0)
         self.nz(left - right)
 
-    def irq(self, bus_cycles):
+    def irq(self, bus_cycles, ys=None):
         assert not self.p & I
         self.irq_count += 1
         self.now += bus_cycles * 64
+        if ys is not None:
+            # The line-251 handler is the only Y-scroll writer (screen shake).
+            self.ys = ys
 
     def step(self):
         pc = self.pc
@@ -106,14 +110,15 @@ class Machine:
             self.wait_visits += 1
             self.wait_irqs_enabled &= not bool(self.p & I)
             if self.injection == "waiting" and not self.injected and self.wait_visits == 3:
-                self.irq(180)
+                self.irq(180, ys=(self.ys + 5) & 7)
                 self.injected = True
         if pc == self.symbols["publish_guard"]:
             self.final_checks += 1
             assert self.p & I
         if pc == self.symbols["publish_commit"]:
             self.commit_start = self.now
-            assert self.line < 40 + 8 * self.band or self.line >= 64 + 8 * self.band
+            lower = 45 + 8 * self.band + self.ys
+            assert self.line < lower or self.line >= lower + 12
             if self.injection == "deferred_251":
                 self.irq_due = 251 * self.line_cycles
                 assert self.now < self.irq_due
@@ -172,6 +177,9 @@ class Machine:
         elif op == 0x29:
             self.a = self.nz(self.a & self.byte())
             cycles = 2
+        elif op == 0x45:
+            self.a = self.nz(self.a ^ self.read(self.byte()))
+            cycles = 3
         elif op in (0xc5, 0xc0):
             self.compare(self.a if op == 0xc5 else self.y,
                          self.read(self.byte()) if op == 0xc5 else self.byte())
@@ -195,9 +203,10 @@ class Machine:
         elif op == 0xc8:
             self.y = self.nz(self.y + 1)
             cycles = 2
-        elif op in (0xd0, 0x90, 0xb0):
+        elif op in (0xd0, 0x90, 0xb0, 0x30):
             delta = self.byte()
-            take = not self.p & (Z if op == 0xd0 else C) if op != 0xb0 else self.p & C
+            take = {0xd0: not self.p & Z, 0x90: not self.p & C,
+                    0xb0: self.p & C, 0x30: self.p & N}[op]
             cycles = 2
             if take:
                 target = self.pc + (delta if delta < 128 else delta - 256)
@@ -281,29 +290,32 @@ def main():
     max_mask = max_commit = max_wait = 0
     rollover_retries = 0
     for lines in (312, 263):
-        for band in range(25):
-            start, end = 40 + 8 * band, 64 + 8 * band
-            positions = {0, lines - .01, 255.98, 256.02, 250.99, 251.01}
-            positions.update(x + delta for x in (start, start + 8, end - 1, end)
-                             for delta in (-.02, .02, .98))
-            for position in sorted(positions):
-                flags = U | (N | D | V | C | Z if cases & 1 else 0)
-                machine = Machine(code, symbols, band, lines, position, flags).run()
-                assert machine.p & ~(B | U) == flags & ~(B | U)
-                max_mask = max(max_mask, machine.max_mask)
-                max_commit = max(max_commit, machine.commit_end - machine.commit_start)
-                max_wait = max(max_wait, machine.commit_start - machine.started)
-                cases += 1
-            machine = Machine(code, symbols, band, lines, start - .8, injection="before_final").run()
-            assert machine.injected and machine.irq_count == 1 and machine.final_checks >= 2
-            machine = Machine(code, symbols, band, lines, start + 1, injection="waiting").run()
-            assert machine.injected and machine.irq_count == 1 and machine.wait_visits > 3
-            cases += 2
+        for ys in range(8):
+            for band in range(25):
+                start = 45 + 8 * band + ys
+                end = min(start + 12, 256)
+                positions = {0, lines - .01, 255.98, 256.02, 250.99, 251.01}
+                positions.update(x + delta for x in (start, start + 3, end - 1, end)
+                                 for delta in (-.02, .02, .98))
+                for position in sorted(positions):
+                    flags = U | (N | D | V | C | Z if cases & 1 else 0)
+                    machine = Machine(code, symbols, band, lines, position, flags, ys=ys).run()
+                    assert machine.p & ~(B | U) == flags & ~(B | U)
+                    max_mask = max(max_mask, machine.max_mask)
+                    max_commit = max(max_commit, machine.commit_end - machine.commit_start)
+                    max_wait = max(max_wait, machine.commit_start - machine.started)
+                    cases += 1
+                machine = Machine(code, symbols, band, lines, start - .8, injection="before_final", ys=ys).run()
+                assert machine.injected and machine.irq_count == 1 and machine.final_checks >= 2
+                # An IRQ while polling moves Y-scroll; the window must follow it.
+                machine = Machine(code, symbols, band, lines, start + 1, injection="waiting", ys=ys).run()
+                assert machine.injected and machine.irq_count == 1 and machine.wait_visits >= 3
+                cases += 2
         # Slide the polling instructions across both ninth-bit transitions,
         # including an actual mismatched high/low/high sample that must retry.
         for boundary in (256, lines):
             for phase in range(32):
-                machine = Machine(code, symbols, 24, lines, boundary - .15 + phase / 200).run()
+                machine = Machine(code, symbols, 24, lines, boundary - .15 + phase / 200, ys=7).run()
                 for n in range(0, len(machine.raster_reads) - 2, 3):
                     first, _, last = machine.raster_reads[n:n + 3]
                     rollover_retries += (first[1] >= 256) != (last[1] >= 256)
@@ -319,9 +331,10 @@ def main():
     copy_bound = (2 + 32 * (8 * (5 + 6 + 2) + 4) + 5
                   + 8 * (8 * (5 + 6 + 2) + 2 + 4) + 2
                   + 10 * (4 * (4 + 6 + 4 + 6 + 2) + 2 + 4) + 4)
-    sample_bound = 2 * 100 + 40
+    sample_bound = 2 * 120 + 40
     static_bound = copy_bound + sample_bound + 46 * 64
-    assert max_mask <= static_bound < 7 * 63 * 64
+    # The three-line lead must cover the whole masked operation.
+    assert max_mask <= static_bound < 3 * 63 * 64
     report = {"cases": cases, "kernel_sha256": hashlib.sha256(source.read_bytes()).hexdigest(),
               "assembled_bytes": len(code), "max_mask_cpu_cycles": max_mask,
               "max_commit_cpu_cycles": max_commit, "static_mask_bound_cpu_cycles": static_bound,
@@ -332,7 +345,7 @@ def main():
               "physical_hardware_timing": "not measured"}
     (BUILD / "report.json").write_text(json.dumps(report, indent=2) + "\n")
     print(f"PASS {cases} publication cases; {len(code)} assembled bytes; "
-          f"masked bound {static_bound / (63 * 64):.3f} PAL lines (<7)")
+          f"masked bound {static_bound / (63 * 64):.3f} PAL lines (<3 lead)")
 
 
 if __name__ == "__main__":

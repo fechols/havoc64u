@@ -187,7 +187,7 @@ fn title(band: u8, canvas: &mut impl Canvas, frame: u16, story_mode: bool) -> bo
         return true;
     }
     rect(band, canvas, 10, 131, 140, 67, 0);
-    centered(band, canvas, 134, b"PORT2: FIRE2/LSHIFT BOOST", 12);
+    centered(band, canvas, 134, b"2P: FIRE TO JOIN ANYTIME", 12);
     centered(band, canvas, 146, b"HOLD FIRE: SHOOT", 15);
     centered(band, canvas, 155, b"RELEASE: CHARGE", 15);
     centered(band, canvas, 164, b"DOUBLE FIRE: BOMB", 15);
@@ -198,9 +198,9 @@ fn title(band: u8, canvas: &mut impl Canvas, frame: u16, story_mode: bool) -> bo
         canvas,
         189,
         if story_mode {
-            b"S: STORY 99 / FIRE: START"
+            b"Y: STORY 99 / FIRE: START"
         } else {
-            b"S: NORMAL 3 / FIRE: START"
+            b"Y: NORMAL 3 / FIRE: START"
         },
         blink(frame),
     );
@@ -355,7 +355,7 @@ mod tests {
 
     #[test]
     fn title_mode_cues_use_visible_glyphs() {
-        for cue in [b"S: NORMAL 3 / FIRE: START", b"S: STORY 99 / FIRE: START"] {
+        for cue in [&b"Y: NORMAL 3 / FIRE: START"[..], b"Y: STORY 99 / FIRE: START", b"2P: FIRE TO JOIN ANYTIME"] {
             for &character in cue {
                 if character != b' ' {
                     assert!(

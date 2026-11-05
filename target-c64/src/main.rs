@@ -9,7 +9,7 @@ use core::{
 use havoc::{
     assets::{self, AssetBank, Segment},
     audio::{EffectsEngine, MusicState, SidBus, VideoStandard},
-    game::{Game, Hud, InputSample, PresentationEvent, INPUT_MASK},
+    game::{DeviceSample, Game, Hud, InputSample, PresentationEvent, INPUT_MASK},
     hud, hud_sprites,
     presentation::BombEffect,
     render::Renderer,
@@ -96,6 +96,9 @@ pub static mut AUDIO_TICKS: u16 = 0;
 pub static mut BOMB_EFFECT: BombEffect = BombEffect::new();
 // Image storage lives in the VIC bank; retain only the compact display key.
 static mut HUD_STATE: MaybeUninit<hud_sprites::DisplayState> = MaybeUninit::uninit();
+// The second seat's HUD values, and whether the last HUD showed two seats.
+static mut HUD_SECOND: MaybeUninit<hud_sprites::DisplayState> = MaybeUninit::uninit();
+static mut HUD_COOP: bool = false;
 static mut HUD_VALID: bool = false;
 // The first frame replaces the boot bitmap band by band. Keep HUD sprites
 // hidden until that publication finishes; this latch never repeats on wrap.
@@ -171,6 +174,9 @@ pub static mut RENDER_SEGMENT: u8 = 0;
 pub static mut INPUT_OVERFLOWS: u16 = 0;
 #[no_mangle]
 pub static mut TEST_INPUT: u8 = 0xff;
+/// With TEST_INPUT active, the synthetic port 1 joystick (second player).
+#[no_mangle]
+pub static mut TEST_INPUT2: u8 = 0;
 #[no_mangle]
 pub static mut PROF_PHASE: u8 = 0;
 #[no_mangle]
@@ -200,14 +206,22 @@ static mut PAUSED: bool = false;
 static mut FPS_WINDOW_START: u16 = 0;
 static mut FPS_WINDOW_FRAMES: u8 = 0;
 static mut FPS_TENTHS: u16 = 0;
-static mut INPUTS: [InputSample; 64] = [InputSample {
-    bits: 0,
-    pressed: 0,
+// One sample of all three devices per frame (port 2, port 1, keyboard).
+#[no_mangle]
+static mut INPUTS: [DeviceSample; INPUT_QUEUE] = [DeviceSample {
+    bits: [0; 3],
+    pressed: [0; 3],
     ms: 0,
-}; 64];
+}; INPUT_QUEUE];
+// queue_devices (platform.S) assumes 32 eight-byte records.
+const INPUT_QUEUE: usize = 32;
+const _: () = assert!(core::mem::size_of::<DeviceSample>() == 8);
+#[no_mangle]
 static mut INPUT_HEAD: u8 = 0;
+#[no_mangle]
 static mut INPUT_TAIL: u8 = 0;
-static mut LAST_BITS: u8 = 0;
+#[no_mangle]
+static mut LAST_BITS: [u8; 3] = [0; 3];
 static mut SEGMENT_CHECKSUMS: [u16; assets::SEGMENT_COUNT as usize] =
     [0; assets::SEGMENT_COUNT as usize];
 static mut MODEL_CHECKSUMS: [u16; assets::SEGMENT_COUNT as usize] =
@@ -217,7 +231,9 @@ extern "C" {
     fn nmi_entry();
     fn disable_irq();
     fn enable_irq();
-    fn read_controls() -> u8;
+    fn read_devices();
+    fn queue_devices(ms: u16);
+    static mut device_bits: [u8; 3];
     fn restore_controls();
     fn io_on();
     fn io_off();
@@ -302,11 +318,11 @@ pub unsafe extern "C" fn irq_body(frame_event: u8) {
         if !AUDIO_READY {
             return;
         }
-        let bits = if TEST_INPUT == 0xff {
-            read_controls()
+        if TEST_INPUT == 0xff {
+            read_devices();
         } else {
-            TEST_INPUT & INPUT_MASK
-        };
+            device_bits = [TEST_INPUT & INPUT_MASK, TEST_INPUT2 & INPUT_MASK, 0];
+        }
         let timer = loop {
             let hi = peek(0xdc05);
             let lo = peek(0xdc04);
@@ -328,18 +344,7 @@ pub unsafe extern "C" fn irq_body(frame_event: u8) {
             fraction += 1;
         }
         let ms = CLOCK_MS.wrapping_add(fraction as u16);
-        let next = (INPUT_HEAD + 1) & 63;
-        if next != INPUT_TAIL {
-            INPUTS[INPUT_HEAD as usize] = InputSample {
-                bits,
-                pressed: bits & !LAST_BITS,
-                ms,
-            };
-            INPUT_HEAD = next;
-            LAST_BITS = bits;
-        } else {
-            INPUT_OVERFLOWS = INPUT_OVERFLOWS.wrapping_add(1);
-        }
+        queue_devices(ms);
     }
 }
 #[inline(never)]
@@ -761,19 +766,14 @@ unsafe fn clock_ms() -> u16 {
 }
 #[link_section = ".phase.sim"]
 #[inline(never)]
-unsafe fn take_input(until: u16) -> Option<InputSample> {
+unsafe fn input_ready(until: u16) -> bool {
+    // The IRQ writes only the head slot, so the tail record stays stable
+    // until the caller advances INPUT_TAIL past it.
     disable_irq();
-    let result = if INPUT_TAIL != INPUT_HEAD
-        && INPUTS[INPUT_TAIL as usize].ms.wrapping_sub(until) as i16 <= 0
-    {
-        let value = INPUTS[INPUT_TAIL as usize];
-        INPUT_TAIL = (INPUT_TAIL + 1) & 63;
-        Some(value)
-    } else {
-        None
-    };
+    let ready = INPUT_TAIL != INPUT_HEAD
+        && INPUTS[INPUT_TAIL as usize].ms.wrapping_sub(until) as i16 <= 0;
     enable_irq();
-    result
+    ready
 }
 // The publisher runs only from SIM, whose extra helpers are loaded with every
 // profile. Benchmark instrumentation uses spare resident space in that build.
@@ -952,8 +952,10 @@ unsafe fn update_fps_overlay(mode: havoc::game::Mode) {
         FPS_WINDOW_START = ticks;
         FPS_WINDOW_FRAMES = 0;
     }
-    // Row 7: Space column 4, CTRL column 2, Commodore column 5.
-    // F is row 2 column 5; S is row 1 column 5; DEL is row 0 column 0.
+    // Row 7: RUN/STOP column 7, CTRL column 2, Commodore column 5.
+    // F is row 2 column 5; Y is row 3 column 1; DEL is row 0 column 0.
+    // Space and W/A/S/D are flight keys (read by the IRQ), so pause is
+    // RUN/STOP and the Story toggle is Y.
     // Comma/< and period/> are row 5, columns 7 and 4. CIA 1 port A
     // doubles as joystick port 2, so drive it as key rows only briefly with
     // the sampling IRQ masked, then restore joystick inputs and paddle port 2.
@@ -965,11 +967,11 @@ unsafe fn update_fps_overlay(mode: havoc::game::Mode) {
     let idle = peek(0xdc01);
     poke(0xdc00, 0x7f);
     let row7 = !peek(0xdc01);
-    let space = row7 & idle & 0x10 != 0;
+    let pause_key = row7 & idle & 0x80 != 0;
     poke(0xdc00, 0xfb);
     let f_key = peek(0xdc01) & 0x20 == 0 && idle & 0x20 != 0;
-    poke(0xdc00, 0xfd);
-    let story_key = peek(0xdc01) & 0x20 == 0;
+    poke(0xdc00, 0xf7);
+    let story_key = peek(0xdc01) & 0x02 == 0;
     poke(0xdc00, 0xfe);
     let delete = peek(0xdc01) & 1 == 0;
     poke(0xdc00, 0xdf);
@@ -979,7 +981,7 @@ unsafe fn update_fps_overlay(mode: havoc::game::Mode) {
     restore_controls();
     enable_irq();
     let music_chord = row7 & 0x24 == 0x24 && delete;
-    let keys = space as u8
+    let keys = pause_key as u8
         | (f_key as u8) << 1
         | (music_chord as u8) << 2
         | (story_key as u8) << 3
@@ -1009,11 +1011,11 @@ unsafe fn update_fps_overlay(mode: havoc::game::Mode) {
             GAME.assume_init_mut().step_menu_music(false);
         }
     }
-    if pressed & 8 != 0 && idle & 0x20 != 0 {
+    if pressed & 8 != 0 && idle & 0x02 != 0 {
         // Title-only selection; the ordinary Fire edge still launches in SIM.
         GAME.assume_init_mut().toggle_story_mode();
     }
-    // Latch raw music/S keys even when idle filtering or mode guards suppress them. Releasing
+    // Latch raw music/Y keys even when idle filtering or mode guards suppress them. Releasing
     // joystick interference or changing modes must not rearm held keys.
     KEYS_HELD = keys;
 }
@@ -1129,7 +1131,6 @@ unsafe fn prepare_geometry(scenery_count: u8, bank: &AssetBank<'_>) {
     }
     havoc::projection::begin_frame();
     let game = GAME.assume_init_mut();
-    game.prepare_damage_feedback_frame();
     let renderer = RENDERER.assume_init_mut();
     let [parallax_x, parallax_y] = game.sky_parallax();
     // Detail markers 5-8 split GEOMETRY work for the profilers; 0 ends it.
@@ -1257,19 +1258,39 @@ unsafe fn update_sprite_hud(status: &Hud) {
         FRAME_SERIAL,
         if FPS_SHOWN { Some(FPS_TENTHS) } else { None },
     );
-    let dirty = next.changed_corners(if HUD_VALID {
-        Some(HUD_STATE.assume_init_ref())
+    // In co-op the left corners show the first player's score and shield
+    // pairs, the right corners the second player's (read with the seats
+    // swapped); lives, bombs and charge show only in solo play.
+    let game = GAME.assume_init_mut();
+    let coop = game.coop();
+    let second = if coop {
+        game.swap_seats();
+        let hud = game.hud();
+        game.swap_seats();
+        hud_sprites::DisplayState::from_hud(&hud, FRAME_SERIAL, None)
     } else {
-        None
-    });
+        next
+    };
+    let valid = HUD_VALID && HUD_COOP == coop;
+    let dirty = next.changed_corners(if valid { Some(HUD_STATE.assume_init_ref()) } else { None });
+    let second_dirty =
+        second.changed_corners(if valid { Some(HUD_SECOND.assume_init_ref()) } else { None });
     for corner in 0..4u8 {
-        if dirty & (1 << corner) != 0 {
+        let (shown, state, changes) = if coop {
+            let seat = corner & 1 != 0;
+            (corner & 2, if seat { &second } else { &next }, if seat { second_dirty } else { dirty })
+        } else {
+            (corner, &next, dirty)
+        };
+        if changes & (1 << shown) != 0 {
             let images = &mut *(0x8e00 as *mut [u8; 128]);
-            hud_sprites::render_corner(corner, &next, images);
-            poke(0x8e80, next.accent(corner));
+            hud_sprites::render_corner(shown, state, images);
+            poke(0x8e80, state.accent(shown));
             publish_hud_corner(corner);
         }
     }
+    HUD_SECOND.write(second);
+    HUD_COOP = coop;
     // Byte publication is atomic; the line-251 IRQ latches the desired mask.
     // The first mask waits until present, after the splash has been covered.
     let enable = next.enabled_mask();
@@ -1549,14 +1570,15 @@ unsafe fn simulate(runtime: &mut Runtime, now: u16) -> Option<()> {
         let held = LAST_BITS;
         enable_irq();
         runtime.sim_ms = now;
-        game.sample_paused_input(held, now);
+        game.sample_paused_devices(&held, now);
         runtime.was_paused = PAUSED;
     }
     while now.wrapping_sub(runtime.sim_ms) >= 20 {
         let step_ms = runtime.sim_ms.wrapping_add(20);
         if bench_ticks == 255 {
-            while let Some(input) = take_input(step_ms) {
-                game.sample_input(input)
+            while input_ready(step_ms) {
+                game.sample_devices(&*core::ptr::addr_of!(INPUTS[INPUT_TAIL as usize]));
+                INPUT_TAIL = (INPUT_TAIL + 1) & (INPUT_QUEUE as u8 - 1);
             }
         } else {
             game.sample_input(InputSample {
@@ -1598,6 +1620,8 @@ unsafe fn simulate(runtime: &mut Runtime, now: u16) -> Option<()> {
     // The monitor tools derive the campaign distance from these two.
     GAME_LOCAL_DISTANCE = game.local_distance();
     GAME_STAGE = game.segment_index();
+    // Once per drawn frame, after catch-up, before GEOMETRY draws it.
+    game.prepare_damage_feedback_frame();
     Some(())
 }
 #[no_mangle]
