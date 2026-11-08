@@ -118,7 +118,7 @@ def main():
     auxiliary = extract('sim_aux')
     assert len(auxiliary) == symbols['__phase_sim_aux_prefix_size'] <= 0x500
     extra = extract('sim_extra')
-    assert len(extra) == symbols['__phase_sim_extra_size'] <= 0x1800
+    assert len(extra) == symbols['__phase_sim_extra_size'] <= 0x1b00
     auxiliary = auxiliary.ljust(0x500, b'\0') + extra
     assert len(auxiliary) == symbols['__phase_sim_aux_size']
     package('sim-helpers', auxiliary, 84, 86)
@@ -136,7 +136,9 @@ def main():
     put(26, checksum(span(0x7800, 0x8000)))
     put(28, checksum(span(0x9900, 0xa000)))
     put(30, checksum(span(symbols['__startup_checks_start'], symbols['__startup_checks_end'])))
-    directory[32] = 4
+    # SID count: the baked header carries havoc::audio::SID_COUNT, and the
+    # resident check requires both records to agree.
+    directory[32] = reu[17]
     put(120, 768)
     put(122, checksum(span(0x7200, 0x7500)))
     put(126, checksum(directory[:126]))

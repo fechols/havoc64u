@@ -60,7 +60,7 @@ fn sfx_fixtures(out: &Path) -> Result<(), Box<dyn std::error::Error>> {
     use havoc::audio::{AudioEvent, Effect, EffectsEngine, SidBus, VideoStandard, EFFECT_COUNT};
     #[derive(Clone)]
     struct Bus {
-        regs: [u8; 128],
+        regs: [u8; 256],
         writes: Vec<u8>,
     }
     impl SidBus for Bus {
@@ -71,7 +71,7 @@ fn sfx_fixtures(out: &Path) -> Result<(), Box<dyn std::error::Error>> {
     }
     std::fs::create_dir_all(out)?;
     for standard in [VideoStandard::Pal, VideoStandard::Ntsc] {
-        let mut bytes = b"SFX1".to_vec();
+        let mut bytes = b"SFX2".to_vec();
         bytes.extend_from_slice(&(core::mem::size_of::<EffectsEngine>() as u16).to_le_bytes());
         bytes.extend_from_slice(&0u32.to_le_bytes());
         let mut count = 0u32;
@@ -79,7 +79,7 @@ fn sfx_fixtures(out: &Path) -> Result<(), Box<dyn std::error::Error>> {
             for pan in [-100, 0, 100] {
                 let mut engine = EffectsEngine::new(standard);
                 let mut bus = Bus {
-                    regs: [0; 128],
+                    regs: [0; 256],
                     writes: Vec::new(),
                 };
                 engine.reset(&mut bus);
@@ -127,7 +127,7 @@ fn sfx_fixtures(out: &Path) -> Result<(), Box<dyn std::error::Error>> {
         // Dense combat exercises queue selection, preemption and cancellation.
         let mut engine = EffectsEngine::new(standard);
         let mut bus = Bus {
-            regs: [0; 128],
+            regs: [0; 256],
             writes: Vec::new(),
         };
         engine.reset(&mut bus);
@@ -207,12 +207,54 @@ fn sfx_fixtures(out: &Path) -> Result<(), Box<dyn std::error::Error>> {
             bytes.extend_from_slice(&bus.writes);
             count += 1;
         }
+        // Eight chips: fill both sides in one tick, steal from a saturated
+        // pool, restart a bomb found on a left slot other than the first,
+        // and take a pair while every pair is busy.
+        engine.reset(&mut bus);
+        for tick in 0..120 {
+            for (at, effect, pan) in [
+                (0, Effect::MissileLaunch, -100),
+                (0, Effect::Roll, -100),
+                (0, Effect::BossArrival, -100),
+                (0, Effect::MissileReady, -100),
+                (0, Effect::Meteor, 100),
+                (0, Effect::Transport, 100),
+                (0, Effect::TransportAway, 100),
+                (0, Effect::LowShield, 100),
+                (5, Effect::PlayerDeath, 0),
+                (6, Effect::EnemyHit, -100),
+                (6, Effect::BossHit, 100),
+                (18, Effect::Fire, 0),
+                (20, Effect::Bomb, 0),
+                (20, Effect::EnemyExplosion, -100),
+                (21, Effect::EnemyExplosion, 100),
+                (22, Effect::EnemyExplosion, -100),
+                (22, Effect::EnemyExplosion, 100),
+                (40, Effect::Bomb, 0),
+                (60, Effect::BossExplosion, 0),
+                (60, Effect::PlayerHit, 0),
+                (61, Effect::Pickup, 0),
+            ] {
+                if tick == at {
+                    engine.queue(AudioEvent { effect, pan });
+                }
+            }
+            bytes.extend_from_slice(engine.image());
+            bytes.extend_from_slice(&bus.regs);
+            bus.writes.clear();
+            engine.tick(&mut bus);
+            bytes.extend_from_slice(engine.image());
+            bytes.extend_from_slice(&bus.regs);
+            bytes.extend_from_slice(&(bus.writes.len() as u16).to_le_bytes());
+            bytes.extend_from_slice(&bus.writes);
+            count += 1;
+        }
         let mut groups = vec![format!(
             "{{\"name\":\"directed\",\"start\":0,\"count\":{count},\"continuous\":false}}"
         )];
         // Thirty seconds at the real 50 Hz effects cadence. Every tick is
         // captured so the native runner can check continuity as well as peaks.
-        for workload in ["sustained-idle", "sustained-busy", "sustained-centered"] {
+        for workload in ["sustained-idle", "sustained-busy", "sustained-centered", "sustained-saturated"] {
             let start = count;
             engine.reset(&mut bus);
             for tick in 0..1500 {
@@ -255,6 +297,26 @@ fn sfx_fixtures(out: &Path) -> Result<(), Box<dyn std::error::Error>> {
                         }
                     }
                     if tick % 251 == 0 || tick % 251 == 20 {
+                        engine.queue(AudioEvent { effect: Effect::Bomb, pan: 0 });
+                    }
+                } else if workload == "sustained-saturated" {
+                    // Four distinct cues per side every 13 ticks keep all
+                    // eight chips live, with a bomb stealing a pair.
+                    if tick % 13 == 0 {
+                        for (effect, pan) in [
+                            (Effect::MissileLaunch, side),
+                            (Effect::Roll, side),
+                            (Effect::BossArrival, side),
+                            (Effect::MissileReady, side),
+                            (Effect::Meteor, -side),
+                            (Effect::Transport, -side),
+                            (Effect::TransportAway, -side),
+                            (Effect::LowShield, -side),
+                        ] {
+                            engine.queue(AudioEvent { effect, pan });
+                        }
+                    }
+                    if tick % 251 == 0 {
                         engine.queue(AudioEvent { effect: Effect::Bomb, pan: 0 });
                     }
                 }

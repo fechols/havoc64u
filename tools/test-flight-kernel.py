@@ -4,11 +4,12 @@
 Usage: python3 tools/test-flight-kernel.py
 Requires LLVM-MOS's mos-sim-clang and mos-sim. The harness compares
 fast_flight_step (the native body of Game::move_player: the stick's target
-velocity (including BOOST's 1.5x steering targets), the 3/32 lag with its
+velocity (including BOOST's 1.5x steering targets), the 3/16 lag with its
 exact-settling magnitude rule, the soft
 arena wall, the Q8 position split over the player coordinate and its
-fraction, the coordinated bank from the lateral velocity change and the
-pitch from the unboosted vertical target) with a C transcription of the Rust
+fraction, the held stick's bank plus the clamped lateral velocity change,
+and the pitch from the unboosted vertical target, both angles following by
+a quarter of their error) with a C transcription of the Rust
 reference (src/game/flight.rs step_reference) in release-mode arithmetic:
 wrapping 16-bit differences, arithmetic shifts, truncating halves.
 Trajectories hold every stick pattern with every push from rest and
@@ -48,7 +49,7 @@ static int16_t wall(int16_t v, int16_t p, int16_t edge){
 }
 static int16_t axis(int16_t *pos, uint8_t *frac, int16_t *vel, int16_t target, int16_t edge){
   int16_t before = *vel;
-  int16_t d = delta(w16((int32_t)target - before), 4);
+  int16_t d = delta(w16((int32_t)target - before), 3);
   int16_t lagged = w16((int32_t)before + d + d / 2);
   int16_t q = (int16_t)(uint16_t)(((uint16_t)*pos << 8) | *frac);
   int16_t v = wall(lagged, q, edge);
@@ -58,7 +59,7 @@ static int16_t axis(int16_t *pos, uint8_t *frac, int16_t *vel, int16_t target, i
   *vel = v;
   return w16((int32_t)v - before);
 }
-static int16_t clamp20(int16_t v){ return v < -20 ? -20 : (v > 20 ? 20 : v); }
+static int16_t clamp8(int16_t v){ return v < -8 ? -8 : (v > 8 ? 8 : v); }
 static void reference(struct Vec3 *p, struct Flight *f, uint8_t bits, int8_t push){
   int16_t dx = (int16_t)(((bits & 8) != 0) - ((bits & 4) != 0));
   int16_t dy = (int16_t)(((bits & 1) != 0) - ((bits & 2) != 0));
@@ -66,10 +67,11 @@ static void reference(struct Vec3 *p, struct Flight *f, uint8_t bits, int8_t pus
   int16_t ty = w16(dy * ((bits & 32) ? 1056 : 704));
   int16_t dvx = axis(&p->x, &f->frac[0], &f->vel[0], tx, 25600);
   axis(&p->y, &f->frac[1], &f->vel[1], ty, 16640);
-  int16_t bt = (dvx >= -1 && dvx <= 1) ? 0 : w16((int32_t)clamp20(w16(-(int32_t)dvx)) << 8);
-  f->bank = w16((int32_t)f->bank + delta(w16((int32_t)bt - f->bank), 3));
+  int16_t accel = (dvx >= -1 && dvx <= 1) ? 0 : clamp8(w16(-(int32_t)dvx));
+  int16_t bt = w16((int32_t)(accel - dx * 12) << 8);
+  f->bank = w16((int32_t)f->bank + delta(w16((int32_t)bt - f->bank), 2));
   int16_t pt = w16(-(int32_t)w16((int32_t)(dy * 704) << 2));
-  f->pitch = w16((int32_t)f->pitch + delta(w16((int32_t)pt - f->pitch), 3));
+  f->pitch = w16((int32_t)f->pitch + delta(w16((int32_t)pt - f->pitch), 2));
 }
 static uint32_t state=0x2545F491u;
 static uint32_t next(void){ state=state*1664525u+1013904223u; return state; }

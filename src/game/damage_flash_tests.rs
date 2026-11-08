@@ -196,7 +196,7 @@ fn boss_bomb_flash_preserves_shielding_and_immediate_destruction() {
         game.bosses[0].core = 8;
         game.bomb(&bank);
         assert_eq!(game.boss_defeated, stage != 17);
-        assert_eq!(game.score, if stage == 17 { 0 } else { 5000 });
+        assert_eq!(game.score, if stage == 17 { 0 } else { units(5000) });
         assert!(game.explosions.iter().any(|effect| effect.ticks > 0));
         game.explosions = [Explosion::EMPTY; 6];
         if stage == 17 {

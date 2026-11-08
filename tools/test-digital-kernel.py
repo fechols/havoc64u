@@ -185,8 +185,8 @@ class Machine(Cpu):
         for name in KERNEL["RESIDENT_SECTIONS"]:
             section = self.sections[name]
             memory[section.address:section.address + section.size] = elf.contents(section)
-        writable = [(0, 0x200), (0x8e00, 0x9300), (0xd400, 0xd480), (0xdd00, 0xdd10), (0xdf00, 0xdf60)]
-        for name in (".data", ".bss", ".noinit", ".audio_state", ".game_state", ".sfx_state"):
+        writable = [(0, 0x200), (0x8e00, 0x9300), (0xd400, 0xd500), (0xdd00, 0xdd10), (0xdf00, 0xdf60)]
+        for name in (".data", ".bss", ".noinit", ".audio_state", ".game_state", ".sfx_state", ".hud_state"):
             section = self.sections.get(name)
             if section:
                 writable.append((section.address, section.address + section.size))
@@ -469,9 +469,9 @@ class Machine(Cpu):
         require(initial[0] > 30 and initial == [initial[0]] * 2
                 and self.effects_remaining() == [self.death_remaining] * 2,
                 "digital playback did not start one stereo SID pair")
-        gated = {sid for sid in range(4)
+        gated = {sid for sid in range(8)
                  if all(self.mem[0xd400 + sid * 32 + voice * 7 + 4] & 1 for voice in range(3))}
-        require(len(gated) == 2 and {sid & 1 for sid in gated} == {0, 1}, "stereo effect SID gates")
+        require(len(gated) == 2 and {sid >= 4 for sid in gated} == {False, True}, "stereo effect SID gates")
         return effects.address
 
     def effects_remaining(self):
@@ -479,7 +479,7 @@ class Machine(Cpu):
         base = self.symbols["EFFECTS"].address + layout["EffectsEngine"]["fields"]["instances"]["offset"]
         instance = layout["Instance"]
         return [self.mem[base + sid * instance["size"] + instance["fields"]["remaining"]["offset"]]
-                for sid in range(4)
+                for sid in range(8)
                 if self.mem[base + sid * instance["size"] + instance["fields"]["mask"]["offset"]] != 0]
 
     def flush_playback(self):
@@ -1030,7 +1030,7 @@ def exercise_emulator_sfx_only(elf, symbols, image, standard, budget):
         for _ in range(50):
             cpu.call("havoc_c64::audio_tick", budget)
             cpu.call("havoc_c64::service_audio", budget)
-            for sid in range(4):
+            for sid in range(8):
                 for voice in range(3):
                     base = 0xd400 + sid * 32 + voice * 7
                     if cpu.mem[base + 4] & 1 and any(cpu.mem[base:base + 2]):
@@ -1237,14 +1237,15 @@ def exercise_fatal_shutdown(elf, symbols, image, standard):
     cpu.control = [0x43, 0x43]
     for address in (1, 0xd031, 0xd01a, 0xd015, 0xdc0d, 0xdd0d):
         cpu.allowed[address] = True
-    for address in (0xd418, 0xd438, 0xd458, 0xd478):
+    volumes = tuple(0xd418 + sid * 32 for sid in range(8))
+    for address in volumes:
         cpu.mem[address] = 8
     cpu.pc = symbols["havoc_c64::fail"].address
     for _ in range(1000):
         cpu.step()
         if (cpu.volume == cpu.control == [0, 0]
-                and all(cpu.mem[address] == 0 for address in (0xd418, 0xd438, 0xd458, 0xd478))):
-            return dict(passed=True, muted_sids=4, muted_sampler_channels=2)
+                and all(cpu.mem[address] == 0 for address in volumes)):
+            return dict(passed=True, muted_sids=8, muted_sampler_channels=2)
     raise KernelError("fatal shutdown did not mute all SID and sampler outputs")
 
 

@@ -523,12 +523,20 @@ unsafe fn calibrate(channels: u8, pal: bool) -> Result<Rate, Fault> {
 
 #[inline(never)]
 #[link_section = ".phase.audio"]
+fn double(value: u32) -> u32 {
+    value << 1
+}
+
+#[inline(never)]
+#[link_section = ".phase.audio"]
 unsafe fn load_book(d: &mut Decoder) {
     let per = if d.kernel.channels == 2 { 32u16 } else { 16 };
     // Large book tables cross REU banks: widen before computing their offset.
     let offset = (d.segment as u32) << 4;
+    // LLVM folds a conditional doubling into a variable 32-bit shift, which
+    // links the resident __ashlsi3 helper; a separate constant shift cannot.
     let offset = if d.kernel.channels == 2 {
-        offset << 1
+        double(offset)
     } else {
         offset
     };
@@ -798,21 +806,16 @@ unsafe fn produce(state: &mut State, slot: u8, frames: u16) -> Result<(), Fault>
         advance(state)?;
     }
     let d = &mut state.decoders[slot as usize];
-    let offset = d.produced & (RING_SAMPLES - 1);
-    let bytes = if d.kernel.channels == 2 {
-        frames << 1
+    // The ring position is below 32768 samples, so its stereo byte offset
+    // still fits 16 bits; only the final REU address is widened.
+    const _: () = assert!(RING_SAMPLES <= 0x8000);
+    let offset = (d.produced as u16) & (RING_SAMPLES as u16 - 1);
+    let (bytes, offset) = if d.kernel.channels == 2 {
+        (frames + frames, offset + offset)
     } else {
-        frames
+        (frames, offset)
     };
-    stash(
-        ring(slot, d.kernel.channels)
-            + if d.kernel.channels == 2 {
-                offset << 1
-            } else {
-                offset
-            },
-        bytes,
-    );
+    stash(ring(slot, d.kernel.channels) + offset as u32, bytes);
     d.produced += frames as u32;
     Ok(())
 }

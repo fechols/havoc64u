@@ -489,3 +489,75 @@ fn camera_height_range_and_all_boss_components_remain_covered() {
         assert_eq!(game.bosses[0].pos.z, 680);
     }
 }
+
+#[test]
+fn every_obstacle_passes_the_camera_outside_its_near_rectangle() {
+    // Obstacles hold their spawn x/y and scroll straight through the near
+    // plane, so each mesh's box at that position must clear the union of all
+    // legal camera rectangles as it crosses z = NEAR; otherwise a face would
+    // be clipped while still on screen. Tumbling space rocks pitch around
+    // their center, so their y extent covers the whole y/z radius.
+    let mut crossings = Vec::new();
+    for stage in 0..assets::SEGMENT_COUNT {
+        let model_bytes = enemies::authored::model_bank(stage);
+        let segment_bytes = enemies::authored::segment_bank(stage);
+        let bank = AssetBank::new(&model_bytes).unwrap();
+        let segment = Segment::new(&segment_bytes).unwrap();
+        let orbital = segment.stage_info().theme >= assets::FIRST_ORBITAL_THEME;
+        for index in 0..segment.spawn_count() {
+            let spawn = segment.spawn(index);
+            if !matches!(spawn.kind, assets::ROCK | assets::BUILDING) {
+                continue;
+            }
+            let vertices: Vec<Vec3> = (0..bank.vertex_count(spawn.kind))
+                .map(|i| bank.vertex(spawn.kind, i))
+                .collect();
+            let x = |f: fn(i16, i16) -> i16| vertices.iter().map(|v| v.x).reduce(f).unwrap();
+            let mut bound = if orbital && spawn.kind == assets::ROCK {
+                let radius = vertices
+                    .iter()
+                    .map(|v| f64::from(v.y).hypot(f64::from(v.z)).ceil() as i32)
+                    .max()
+                    .unwrap();
+                let center = actor_center_y(spawn.kind, spawn.y, spawn.flags, &bank);
+                Bounds {
+                    min: [i32::from(x(i16::min)), i32::from(center) - radius, 0],
+                    max: [i32::from(x(i16::max)), i32::from(center) + radius, 0],
+                }
+                .at(Vec3 { x: spawn.x, y: 0, z: 0 })
+            } else {
+                let y = |f: fn(i16, i16) -> i16| vertices.iter().map(|v| v.y).reduce(f).unwrap();
+                Bounds {
+                    min: [i32::from(x(i16::min)), i32::from(y(i16::min)), 0],
+                    max: [i32::from(x(i16::max)), i32::from(y(i16::max)), 0],
+                }
+                .at(Vec3 { x: spawn.x, y: spawn.y, z: 0 })
+            };
+            bound.min[2] = i32::from(NEAR);
+            bound.max[2] = i32::from(NEAR);
+            if bound.clearance_133(CAMERA_LOW, CAMERA_HIGH) < MARGIN_133 {
+                crossings.push((stage, index));
+            }
+        }
+    }
+    // Every terrestrial obstacle (including the boss stages' approach props)
+    // clears the near rectangle. These orbital hazards are authored inside
+    // the flight lane to be dodged or shot; the list is pinned so new art or
+    // layouts cannot add more without a deliberate decision.
+    assert_eq!(
+        crossings,
+        [
+            (12, 9),
+            (13, 9),
+            (13, 19),
+            (14, 9),
+            (14, 19),
+            (14, 30),
+            (15, 9),
+            (15, 26),
+            (16, 10),
+            (17, 9),
+            (17, 20),
+        ]
+    );
+}

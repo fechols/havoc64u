@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compare the linked quad-SID IRQ player with exact host state/write fixtures."""
+"""Compare the linked eight-SID IRQ player with exact host state/write fixtures."""
 import argparse
 from collections import defaultdict
 import hashlib
@@ -44,7 +44,7 @@ class EffectsCpu(Cpu):
 
     def write(self, address, value):
         super().write(address, value)
-        if 0xd400 <= address < 0xd480:
+        if 0xd400 <= address < 0xd500:
             sid, reg = divmod(address-0xd400, 32)
             if reg >= 25:
                 raise KernelError(f"invalid SID register {reg}")
@@ -62,7 +62,7 @@ def irq_adapter(base, writable, symbols, idle, state):
     writable = list(writable)
     memory = base.copy()
     memory[state.address:state.address + state.size] = before
-    memory[0xd400:0xd480] = regs
+    memory[0xd400:0xd500] = regs
     memory[symbols['AUDIO_READY'].address] = 1
     memory[0xdc0d], memory[0xd019], memory[1] = 1, 0, 0x34
     memory[2:4] = (0xc800).to_bytes(2, 'little')
@@ -103,7 +103,7 @@ def irq_adapter(base, writable, symbols, idle, state):
     else:
         raise KernelError('audio-only IRQ did not return')
     if (cpu.mem[state.address:state.address + state.size] != after
-            or cpu.mem[0xd400:0xd480] != expected_regs or cpu.sid_writes != expected_writes):
+            or cpu.mem[0xd400:0xd500] != expected_regs or cpu.sid_writes != expected_writes):
         raise KernelError('audio-only IRQ differs from the direct worker fixture')
     dispatch = cpu.cycles + 7 - worker_cycles - entry_cycles - exit_cycles
     if dispatch < 0:
@@ -120,15 +120,15 @@ def run(elf, symbols, fixture, standard, layout, *, profile=True):
     base = bytearray(65536)
     for name in RESIDENT_SECTIONS:
         s=sections[name]; base[s.address:s.address+s.size]=elf.contents(s)
-    writable=[(0,0x200),(0xd400,0xd480),(0x7500,0x7600)]
+    writable=[(0,0x200),(0xd400,0xd500),(0x7500,0x7600)]
     for name in ('.data','.bss','.noinit','.sfx_state'):
         s=sections[name]; writable.append((s.address,s.address+s.size))
     state=symbols['EFFECTS']; ready=symbols['AUDIO_READY'].address
     entry=symbols['havoc_c64::audio_tick'].address
     data=fixture.read_bytes()
-    assert data[:4]==b'SFX1'
+    assert data[:4]==b'SFX2'
     size=int.from_bytes(data[4:6],'little'); count=int.from_bytes(data[6:10],'little')
-    assert size==state.size<=224
+    assert size==state.size<=512
     index_path = fixture.with_suffix('.json')
     index = fixture_index(index_path, count)
     groups = index['groups']
@@ -144,11 +144,11 @@ def run(elf, symbols, fixture, standard, layout, *, profile=True):
     def instance_value(image, sid, field):
         return image[instances_at + sid * instance['size'] + instance['fields'][field]['offset']]
     def category(before, after):
-        active = [instance_value(before, sid, 'mask') != 0 for sid in range(4)]
+        active = [instance_value(before, sid, 'mask') != 0 for sid in range(8)]
         queued = before[structure['event_count']['offset']] != 0
         if not queued:
             return 'active-no-events' if any(active) else 'idle'
-        started = [sid for sid in range(4) if instance_value(after, sid, 'mask') != 0
+        started = [sid for sid in range(8) if instance_value(after, sid, 'mask') != 0
                    and instance_value(after, sid, 'age') == 0]
         if not started:
             return 'events-rejected'
@@ -163,9 +163,9 @@ def run(elf, symbols, fixture, standard, layout, *, profile=True):
     at=10; maximum=maximum_writes=total_cycles=0; min_stack=0x7600
     for case in range(count):
         before=data[at:at+size]; at+=size
-        regs=data[at:at+128];at+=128
+        regs=data[at:at+256];at+=256
         after=data[at:at+size];at+=size
-        expected_regs=data[at:at+128];at+=128
+        expected_regs=data[at:at+256];at+=256
         length=int.from_bytes(data[at:at+2],'little');at+=2
         expected_writes=data[at:at+length];at+=length
         group = group_for_case[case]
@@ -173,7 +173,7 @@ def run(elf, symbols, fixture, standard, layout, *, profile=True):
             check_continuity(previous_after, previous_regs, before, regs, queue_begin, queue_end)
             links[group['name']] += 1
         mem=base.copy();mem[state.address:state.address+size]=before
-        mem[0xd400:0xd480]=regs;mem[ready]=1
+        mem[0xd400:0xd500]=regs;mem[ready]=1
         mem[2:4]=(0x7600).to_bytes(2,'little')
         cpu=EffectsCpu(mem,writable);cpu.pc=entry;cpu.push(0xff);cpu.push(0xfe)
         sample = Sample(attribution, entry) if profile else None
@@ -188,7 +188,7 @@ def run(elf, symbols, fixture, standard, layout, *, profile=True):
         if actual!=after:
             diff=next(i for i,(a,b) in enumerate(zip(actual,after)) if a!=b)
             raise KernelError(f'{standard} case{case}: state byte{diff}: {actual[diff]} != {after[diff]}')
-        if mem[0xd400:0xd480]!=expected_regs or cpu.sid_writes!=expected_writes:
+        if mem[0xd400:0xd500]!=expected_regs or cpu.sid_writes!=expected_writes:
             raise KernelError(f'{standard} case{case}: SID register trace differs')
         if sample is not None and (sample.frames or sum(sample.exclusive.values()) != cpu.cycles):
             raise KernelError('instruction/call attribution did not balance')
@@ -197,7 +197,7 @@ def run(elf, symbols, fixture, standard, layout, *, profile=True):
             idle = (before, regs, after, expected_regs, expected_writes, cpu.cycles)
         for aggregate in (total, categories[kind], workloads[group['name']]):
             aggregate.add(cpu, sample)
-        previous_group, previous_after, previous_regs = group['name'], actual, bytes(mem[0xd400:0xd480])
+        previous_group, previous_after, previous_regs = group['name'], actual, bytes(mem[0xd400:0xd500])
         modeled_cycles = cpu.cycles + 63 * (length // 3)
         maximum=max(maximum,modeled_cycles)
         total_cycles += modeled_cycles

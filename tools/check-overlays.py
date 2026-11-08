@@ -373,7 +373,7 @@ def audit(path):
             and symbols["__phase_sim_aux_prefix_size"].address == auxiliary.size,
             "SIM helper section disagrees with its ownership boundaries")
     sim_extra = phases[SIM_EXTRA_SECTION]
-    require(sim_extra.address == 0xE000 and 0 < sim_extra.size <= 0x1800
+    require(sim_extra.address == 0xE000 and 0 < sim_extra.size <= 0x1B00
             and symbols['__phase_sim_extra_start'].address == sim_extra.address
             and symbols['__phase_sim_extra_end'].address == sim_extra.address + sim_extra.size
             and symbols['__phase_sim_extra_size'].address == sim_extra.size
@@ -501,7 +501,7 @@ def audit(path):
     earth_tail_destinations = []
     relocations = list(elf.relocations())
     benchmark = next((section for section in elf.sections if section.name == '.benchmark_resident'), None)
-    benchmark_audio_calls = Counter()
+    publisher_calls = Counter()
     if benchmark is not None and benchmark.size:
         require(benchmark.address == 0xff20 and benchmark.size <= 218,
                 'benchmark helpers must stay below CPU vectors')
@@ -520,31 +520,32 @@ def audit(path):
         require(sequence.get('havoc_c64::initialize_benchmark_helpers', 65536)
                 < sequence.get('havoc_c64::initialize_irq', 0),
                 'benchmark helper copy must precede IRQ stack initialization')
-        # The benchmark alone moves its audio publisher to spare resident RAM.
-        # Its two SIM callees are safe only while its sole caller is simulate.
-        text_index = next(section.index for section in elf.sections if section.name == '.text')
-        publisher = next((function for function in elf.functions[text_index]
-                          if function.name == 'havoc_c64::send_audio'), None)
-        require(publisher is not None, 'benchmark audio publisher must be resident')
-        incoming = 0
-        for source, address, kind, symbol, addend in relocations:
-            if not source.flags & 2:
-                continue
-            destination = symbol.address + addend
-            if symbol.section != publisher.section or not (
-                    publisher.address <= destination < publisher.end):
-                continue
-            caller = elf.function_at(source.index, address) if source.executable else None
-            if caller == publisher:
-                continue
-            instruction = address - source.address - 1
-            require(source.name == '.phase.sim' and caller is not None
-                    and caller.name == 'havoc_c64::simulate' and kind == 3
-                    and destination == publisher.address and 0 <= instruction < source.size
-                    and elf.contents(source)[instruction] == 0x20,
-                    'benchmark audio publisher may only be called directly from SIM simulate')
-            incoming += 1
-        require(incoming == 1, 'benchmark audio publisher needs one SIM caller')
+    # The audio publisher is resident (the two-player build filled the SIM
+    # extra helpers). Its two SIM callees are safe only while its sole caller
+    # is simulate, with the common SIM prefix still loaded.
+    text_index = next(section.index for section in elf.sections if section.name == '.text')
+    publisher = next((function for function in elf.functions[text_index]
+                      if function.name == 'havoc_c64::send_audio'), None)
+    require(publisher is not None, 'audio publisher must be resident')
+    incoming = 0
+    for source, address, kind, symbol, addend in relocations:
+        if not source.flags & 2:
+            continue
+        destination = symbol.address + addend
+        if symbol.section != publisher.section or not (
+                publisher.address <= destination < publisher.end):
+            continue
+        caller = elf.function_at(source.index, address) if source.executable else None
+        if caller == publisher:
+            continue
+        instruction = address - source.address - 1
+        require(source.name == '.phase.sim' and caller is not None
+                and caller.name == 'havoc_c64::simulate' and kind == 3
+                and destination == publisher.address and 0 <= instruction < source.size
+                and elf.contents(source)[instruction] == 0x20,
+                'audio publisher may only be called directly from SIM simulate')
+        incoming += 1
+    require(incoming == 1, 'audio publisher needs one SIM caller')
     loader_refs = []
     loader_calls = defaultdict(list)
     pixels_loader_refs = []
@@ -871,12 +872,12 @@ def audit(path):
         # address that happens to fall inside a whitelisted entry function.
         instruction = address - source.address - 1
         is_jsr = kind == 3 and 0 <= instruction < source.size and elf.contents(source)[instruction] == 0x20
-        if (benchmark is not None and benchmark.size and source.name == '.text'
+        if (source.name == '.text'
                 and caller and caller.name == 'havoc_c64::send_audio'
                 and target.name == '.phase.sim' and callee and destination == callee.address
                 and callee.name in ('havoc::game::Game::music_state', 'havoc::game::Game::pop_audio')
                 and is_jsr):
-            benchmark_audio_calls[callee.name] += 1
+            publisher_calls[callee.name] += 1
             continue
         if source.name == ".text" and caller and caller.name == "main" and destination == expected.address and callee == expected and is_jsr:
             entry_references[target.name] += 1
@@ -893,17 +894,16 @@ def audit(path):
     for name in [".text", *ENTRIES, STARTUP_SECTION, *SIM_HELPERS, *SCENERY_HELPERS, PIXELS_AUX_SECTION, RENDER_AUX_SECTION]:
         require(sources[name] > 0, f"no retained relocations for {name}; link with --emit-relocs")
     require(not errors, "unsafe overlay references:\n  " + "\n  ".join(errors))
-    if benchmark is not None and benchmark.size:
-        expected_audio_calls = Counter()
-        for name in ('havoc::game::Game::music_state', 'havoc::game::Game::pop_audio'):
-            function = next((function for functions in elf.functions.values()
-                             for function in functions if function.name == name), None)
-            require(function is not None and elf.sections[function.section].name in ('.text', '.phase.sim'),
-                    'benchmark audio callee must be resident or in the common SIM prefix')
-            if elf.sections[function.section].name == '.phase.sim':
-                expected_audio_calls[name] = 1
-        require(benchmark_audio_calls == expected_audio_calls,
-                'benchmark audio publisher must call only its exact SIM entries')
+    expected_audio_calls = Counter()
+    for name in ('havoc::game::Game::music_state', 'havoc::game::Game::pop_audio'):
+        function = next((function for functions in elf.functions.values()
+                         for function in functions if function.name == name), None)
+        require(function is not None and elf.sections[function.section].name in ('.text', '.phase.sim'),
+                'audio publisher callee must be resident or in the common SIM prefix')
+        if elf.sections[function.section].name == '.phase.sim':
+            expected_audio_calls[name] = 1
+    require(publisher_calls == expected_audio_calls,
+            'audio publisher must call only its exact SIM entries')
     require(enemy_calls == 1, f"expected exactly one opaque SIM encounter call, got {enemy_calls}")
     require(scenery_calls == 1, f"expected exactly one opaque SCENERY decoration call, got {scenery_calls}")
     require(sorted(earth_tail_destinations) == [4, 5],

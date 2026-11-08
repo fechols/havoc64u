@@ -133,17 +133,18 @@ const PLANET_POINTS: [[i16; 2]; 21] = body_points(
         [-111, 64],
         [-64, 111],
         [-38, 0],
-        // Broad turquoise land/cloud banks, following the lit hemisphere's curve.
-        [0, 84],
-        [67, 88],
-        [88, 60],
-        [14, 48],
-        [-12, -65],
-        [32, -48],
-        [55, -88],
-        [12, -105],
+        // Land traced from the Asteroid Belt painting (t12_flat): a broad
+        // continent across the upper disc and a second mass on the left.
+        [-40, 95],
+        [55, 85],
+        [70, 25],
+        [-20, 35],
+        [-100, 30],
+        [-50, 20],
+        [-45, -25],
+        [-95, -35],
     ],
-    760,
+    900,
 );
 
 const PLANET_FACES: [[u8; 4]; 16] = [
@@ -159,10 +160,10 @@ const PLANET_FACES: [[u8; 4]; 16] = [
     [12, 9, 10, 6],
     [12, 10, 11, 6],
     [12, 11, 0, 6],
-    [13, 14, 15, 3],
-    [13, 15, 16, 3],
-    [17, 18, 19, 3],
-    [17, 19, 20, 3],
+    [13, 14, 15, 5],
+    [13, 15, 16, 5],
+    [17, 18, 19, 5],
+    [17, 19, 20, 5],
 ];
 
 const MOON_POINTS: [[i16; 2]; 25] = body_points(
@@ -180,23 +181,24 @@ const MOON_POINTS: [[i16; 2]; 25] = body_points(
         [-111, 64],
         [-64, 111],
         [-38, 0],
-        // A broad inset crater with a bright upper rim and a charcoal basin.
-        [40, 80],
-        [78, 78],
-        [94, 61],
-        [80, 38],
-        [44, 36],
-        [26, 55],
-        // A smaller foreshortened crater on the shadowed half.
-        [-91, -16],
-        [-64, -9],
-        [-47, -27],
-        [-76, -35],
-        // An offset fracture bends between the body's two poles.
-        [-24, 35],
-        [0, 18],
+        // Traced from the Shattered Moon painting (t13_flat): a broad crater
+        // on the upper right with a bright rim and a charcoal basin.
+        [44, 64],
+        [80, 62],
+        [92, 46],
+        [80, 24],
+        [48, 22],
+        [34, 42],
+        // A smaller foreshortened crater low on the shadowed half.
+        [-62, -30],
+        [-36, -24],
+        [-24, -44],
+        [-50, -52],
+        // The near-vertical fracture between the poles, leaning right below.
+        [-10, 30],
+        [10, 10],
     ],
-    560,
+    950,
 );
 
 const MOON_FACES: [[u8; 4]; 20] = [
@@ -286,49 +288,33 @@ fn planet(sink: &mut SceneSink<'_>, x: i16, y: i16) {
     body(sink, x, y, &PLANET);
 }
 
+/// Scenery rock shape in 1/128ths of its radius, fitted by
+/// tools/derive-space-art.py to the asteroid belt's Ludo AI model: a top and
+/// bottom point (0, 1) around a six-point ring (2..7). Compile-time only.
+const ROCK_SHAPE: [[i16; 3]; 8] = [
+    [-68, 128, -51],
+    [68, -128, -29],
+    [-128, 50, -48],
+    [-2, -1, 120],
+    [107, -27, 40],
+    [128, -65, -19],
+    [49, -21, -122],
+    [-126, 49, -51],
+];
+
 const fn rock_points(radius: i16) -> [Vec3; 8] {
-    [
-        Vec3 {
-            x: -radius / 4,
-            y: radius,
-            z: 0,
-        },
-        Vec3 {
-            x: radius / 4,
-            y: -radius,
-            z: 0,
-        },
-        Vec3 {
-            x: -radius,
-            y: radius / 8,
-            z: 0,
-        },
-        Vec3 {
-            x: -radius / 3,
-            y: -radius / 4,
-            z: radius,
-        },
-        Vec3 {
-            x: radius * 3 / 4,
-            y: 0,
-            z: radius / 2,
-        },
-        Vec3 {
-            x: radius,
-            y: -radius / 8,
-            z: 0,
-        },
-        Vec3 {
-            x: radius / 3,
-            y: radius / 4,
-            z: -radius,
-        },
-        Vec3 {
-            x: -radius * 3 / 4,
-            y: 0,
-            z: -radius / 2,
-        },
-    ]
+    let mut points = [Vec3 { x: 0, y: 0, z: 0 }; 8];
+    let mut i = 0;
+    while i < 8 {
+        let p = ROCK_SHAPE[i];
+        points[i] = Vec3 {
+            x: (p[0] as i32 * radius as i32 / 128) as i16,
+            y: (p[1] as i32 * radius as i32 / 128) as i16,
+            z: (p[2] as i32 * radius as i32 / 128) as i16,
+        };
+        i += 1;
+    }
+    points
 }
 
 #[cfg_attr(target_arch = "mos", link_section = ".phase.scenery_extra.data")]
@@ -394,7 +380,7 @@ fn asteroid_debris(sink: &mut SceneSink<'_>, ticks: u16, drop: i16) {
                 z,
             },
             0,
-            12,
+            9,
         );
     }
 }
@@ -416,7 +402,7 @@ pub fn scenic_ascent(sink: &mut SceneSink<'_>, context: &Decoration) {
         let arrival = (remaining * remaining >> 3) as i16;
         // Level out at orbital height: the curved planet enters from the left
         // and recedes below the ship, reaching the next scene's exact position.
-        planet(sink, -1040 - arrival, -540 + remaining as i16 * 4);
+        planet(sink, -2300 - arrival, 650 + remaining as i16 * 4);
         asteroid_debris(sink, tick.wrapping_sub(400), arrival + context.camera_y);
     }
     // Thin cloud wisps rush downward while passing through the upper atmosphere.
@@ -449,7 +435,7 @@ pub fn scenic_ascent(sink: &mut SceneSink<'_>, context: &Decoration) {
 pub fn scenic_asteroid(sink: &mut SceneSink<'_>, context: &Decoration) {
     stars(sink);
     let travel = drop(context);
-    planet(sink, -1040, -540 - travel);
+    planet(sink, -2300, 650 - travel);
     asteroid_debris(sink, clock(context), travel + context.camera_y);
 }
 
@@ -459,7 +445,7 @@ pub fn scenic_asteroid(sink: &mut SceneSink<'_>, context: &Decoration) {
 pub fn scenic_moon(sink: &mut SceneSink<'_>, context: &Decoration) {
     stars(sink);
     let travel = drop(context);
-    body(sink, 720, 680 - travel, &MOON);
+    body(sink, 1500, 250 - travel, &MOON);
     let ticks = clock(context);
     for i in 0..3u16 {
         let z = 2150 - ((ticks.wrapping_add(i * 85) & 255) * 8) as i16;
@@ -476,18 +462,30 @@ pub fn scenic_moon(sink: &mut SceneSink<'_>, context: &Decoration) {
     }
 }
 
-// Identical closed wreck geometry is authored once, using each environment's
-// original facet palette.
+// Both hull tables share one closed face list and are fitted by
+// tools/derive-space-art.py to Ludo AI models of each painting's ships: the
+// parked carrier hulls here, the graveyard wrecks in that tail's data.
 #[cfg_attr(target_arch = "mos", link_section = ".rodata.orbital_data")]
 static HULL_POINTS: [[i16; 3]; 8] = [
-    [-100, 0, 0],
-    [100, 0, 0],
-    [65, 90, 620],
-    [-65, 90, 620],
-    [65, -70, 620],
-    [-65, -70, 620],
-    [0, -120, -100],
-    [210, 140, 770],
+    [-20, -12, -61],
+    [20, -12, -61],
+    [49, 46, 513],
+    [-49, 46, 513],
+    [91, -56, 606],
+    [-91, -56, 606],
+    [0, -43, -97],
+    [210, 96, 663],
+];
+#[cfg_attr(target_arch = "mos", link_section = ".phase.scenery.graveyard.data")]
+static GRAVEYARD_HULL_POINTS: [[i16; 3]; 8] = [
+    [-67, -3, -23],
+    [67, -3, -23],
+    [70, 69, 582],
+    [-70, 69, 582],
+    [50, -69, 507],
+    [-50, -69, 507],
+    [0, -120, -43],
+    [210, 119, 732],
 ];
 #[cfg_attr(target_arch = "mos", link_section = ".rodata.orbital_data")]
 static HULL_FACES: [[u8; 4]; 12] = [
@@ -508,7 +506,7 @@ static HULL_FACES: [[u8; 4]; 12] = [
 // Each compact decoder remains in its own loaded tail. A shared decoder would
 // enlarge every terrestrial scenery image even though it never draws wrecks.
 macro_rules! wreck {
-    ($name:ident, $section:literal, $palette:expr, $casts_shadow:literal) => {
+    ($name:ident, $section:literal, $points:expr, $palette:expr, $casts_shadow:literal) => {
         #[inline(never)]
         #[cfg_attr(target_arch = "mos", link_section = $section)]
         fn $name(sink: &mut SceneSink<'_>, x: i16, y: i16, z: i16) {
@@ -526,7 +524,7 @@ macro_rules! wreck {
             }
             for face in HULL_FACES {
                 let points: [Vec3; 3] = core::array::from_fn(|corner| {
-                    let p = HULL_POINTS[face[corner] as usize];
+                    let p = $points[face[corner] as usize];
                     Vec3 {
                         x: x + p[0],
                         y: y + p[1],
@@ -540,11 +538,12 @@ macro_rules! wreck {
     };
 }
 // Parked carrier hulls sit outside the flight deck, with no surface below them.
-wreck!(hull, ".phase.scenery.carrier", [15, 11, 8, 12, 12], false);
+wreck!(hull, ".phase.scenery.carrier", HULL_POINTS, [15, 14, 2, 12, 12], false);
 wreck!(
     graveyard_hull,
     ".phase.scenery.graveyard",
-    [15, 12, 8, 12, 15],
+    GRAVEYARD_HULL_POINTS,
+    [15, 12, 8, 14, 15],
     true
 );
 
@@ -626,7 +625,7 @@ pub fn scenic_shipyard(sink: &mut SceneSink<'_>, context: &Decoration) {
                         z: z + 30,
                     },
                 ],
-                12,
+                15,
             );
             // Blue photovoltaic wings project outwards from each gantry.
             panel(
@@ -680,7 +679,7 @@ pub fn scenic_shipyard(sink: &mut SceneSink<'_>, context: &Decoration) {
                     z: z + 30,
                 },
             ],
-            15,
+            3,
         );
     }
 }
@@ -800,7 +799,7 @@ pub fn scenic_gate(sink: &mut SceneSink<'_>, context: &Decoration) {
                 gate_point(b, 720, travel),
                 gate_point(a, 720, travel),
             ],
-            if i & 1 == 0 { 3 } else { 14 },
+            if i & 1 == 0 { 14 } else { 1 },
         );
     }
     // Twin power conduits lead toward the separate, destructible gate boss.
@@ -829,7 +828,7 @@ pub fn scenic_gate(sink: &mut SceneSink<'_>, context: &Decoration) {
                     z: 2300,
                 },
             ],
-            14,
+            3,
             0,
         );
     }
@@ -866,9 +865,9 @@ mod tests {
         for moon in [false, true] {
             let mut scene = Capture::default();
             if moon {
-                body(&mut scene, 720, 680, &MOON);
+                body(&mut scene, 1500, 250, &MOON);
             } else {
-                planet(&mut scene, -1040, -540);
+                planet(&mut scene, -2300, 650);
             }
             assert!(scene.0.len() <= 24);
             let mut colors = std::collections::BTreeSet::new();
@@ -884,7 +883,7 @@ mod tests {
                 if moon {
                     [0, 11, 12, 15].into_iter().collect()
                 } else {
-                    [3, 6, 14].into_iter().collect()
+                    [5, 6, 14].into_iter().collect()
                 }
             );
         }

@@ -49,8 +49,8 @@ def release_contents(package_dir, root=ROOT):
         },
         "SID Addressing": {
             "SID Socket 1 Address": "Unmapped", "SID Socket 2 Address": "Unmapped",
-            "UltiSID 1 Address": "$D400", "UltiSID 2 Address": "$D420",
-            "UltiSID Range Split": "1/2 (A6)", "Auto Address Mirroring": "Disabled",
+            "UltiSID 1 Address": "$D400", "UltiSID 2 Address": "$D480",
+            "UltiSID Range Split": "1/4 (A5,A6)", "Auto Address Mirroring": "Disabled",
         },
         "Audio Mixer": {"Vol Socket 1": "OFF", "Vol Socket 2": "OFF",
                         "Vol Sampler L": "+6 dB", "Vol Sampler R": "+6 dB",
@@ -63,9 +63,9 @@ def release_contents(package_dir, root=ROOT):
     prg, reu = contents["havoc.prg"], contents["havoc.reu"]
     if len(prg) <= 2 or prg[:2] != b"\x01\x08":
         raise ValueError("Expected a native PRG loading at $0801")
-    if (len(reu) != 16 * 1024 * 1024 or reu[:4] != b"SM64" or reu[17] != 4
+    if (len(reu) != 16 * 1024 * 1024 or reu[:4] != b"SM64" or reu[17] != 8
             or int.from_bytes(reu[4:8], "little") != PACKAGE_ID):
-        raise ValueError("Expected a v17 16 MiB four-SID REU package")
+        raise ValueError("Expected a v17 16 MiB eight-SID REU package")
     return contents
 
 

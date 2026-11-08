@@ -103,9 +103,11 @@ def symbols(elf, llvm_nm):
                 result[fields[2]] = int(fields[0], 16)
             except ValueError:
                 pass
-    for name in ("frame_complete", "FRAME_SERIAL", "FRONT_BANK", "GAME_MODE", "GAME_DISTANCE"):
+    for name in ("frame_complete", "FRAME_SERIAL", "FRONT_BANK", "GAME_MODE"):
         if name not in result:
             raise RuntimeError(f"Missing target symbol {name}; use the matching unstripped ELF")
+    if "GAME_LOCAL_DISTANCE" not in result and "GAME_DISTANCE" not in result:
+        raise RuntimeError("Missing target symbol GAME_LOCAL_DISTANCE; use the matching unstripped ELF")
     return result
 
 
@@ -675,7 +677,8 @@ def counters(mon, syms):
     result = {}
     for name, width in (("FRAME_SERIAL", 2), ("VIDEO_FRAMES", 2), ("AUDIO_TICKS", 2),
                         ("FRAME_TRIANGLES", 2), ("FRAME_DROPPED", 2), ("STREAM_BYTES", 2),
-                        ("INPUT_OVERFLOWS", 2), ("GAME_MODE", 1), ("GAME_DISTANCE", 4), ("GAME_STAGE", 1),
+                        ("INPUT_OVERFLOWS", 2), ("GAME_MODE", 1), ("GAME_DISTANCE", 4),
+                        ("GAME_LOCAL_DISTANCE", 2), ("GAME_STAGE", 1),
                         ("FRONT_BANK", 1), ("TEST_INPUT", 1), ("RENDER_SEGMENT", 1),
                         ("ENEMY_CODE_PROFILE", 1), ("ENEMY_MODEL_PROFILE", 1), ("MODEL_STREAM_BYTES", 2),
                         ("MUSIC_CUE", 1), ("MUSIC_ACTIVE_CUE", 1),
@@ -683,6 +686,10 @@ def counters(mon, syms):
                         ("RETICLE_MISSES", 2)):
         if name in syms:
             result[name.lower()] = mon.integer(syms[name], width)
+    # Current packages export the section-local distance beside the stage
+    # (no 32-bit sum on the C64); older ones exported GAME_DISTANCE directly.
+    if "game_local_distance" in result:
+        result["game_distance"] = result.get("game_stage", 0) * 30000 + result.pop("game_local_distance")
     if any("REQUESTED_MENU_TRACK" in name for name in syms):
         result["requested_menu_track"] = mon.integer(resident_symbol(syms, "REQUESTED_MENU_TRACK")[1], 1)
     mon.command("bank io")
@@ -722,6 +729,17 @@ def stores(log_path, initial_values=None):
     return result
 
 
+# Chip names by package SID count. Two- and four-SID packages keep their
+# historical names; the eight-SID package has four left chips ($D400-$D460)
+# and four right chips ($D480-$D4E0).
+SID_CHIP_NAMES = {
+    2: ("left_d400", "right_d420"),
+    4: ("left_d400", "right_d420", "socket1_d440", "socket2_d460"),
+    8: ("left_d400", "left_d420", "left_d440", "left_d460",
+        "right_d480", "right_d4a0", "right_d4c0", "right_d4e0"),
+}
+
+
 def sid_summary(log_path, events, sid_count=2):
     chips = [{"writes": 0, "gate_on": 0, "gate_off": 0, "registers": {},
               "voices": [{"gate_on": 0, "gate_off": 0} for _ in range(3)]} for _ in range(sid_count)]
@@ -738,7 +756,7 @@ def sid_summary(log_path, events, sid_count=2):
             gate = "gate_on" if event["value"] & 1 else "gate_off"
             entry[gate] += 1
             entry["voices"][reg // 7][gate] += 1
-    names = ("left_d400", "right_d420", "socket1_d440", "socket2_d460")
+    names = SID_CHIP_NAMES.get(sid_count) or tuple(f"sid{index}_d4{index * 32:02x}" for index in range(sid_count))
     return dict(zip(names, chips), source=str(log_path), sid_count=sid_count)
 
 
@@ -898,6 +916,10 @@ def dwarf_game_layout(elf, tool, syms, output, controls=False):
                 "boss_started": "bool", "boss_defeated": "bool", "score": "u32",
                 "shield": "u8", "lives": "u8", "bombs": "u8", "respawn_ticks": "u8",
                 "menu_ticks": "u16", "boss_left": "u8", "boss_right": "u8", "boss_core": "u8"}
+    # Current packages count the score in 16-bit 25-point units; older
+    # packages stored points in a u32.
+    if fields.get("score", {}).get("type") == "u16":
+        required["score"] = "u16"
     if "Transition" in modes:
         required.update(transition_ticks="u16", ticks="u16")
     if "repeat_spawn_cursor" in fields:
@@ -1164,7 +1186,7 @@ def package_model_layout(package, *, validate_size=False, symbols=None):
     compact = version >= 0x534d0800
     count = 18 if space else 12 if campaign else 4
     if (len(package) < 18 or package[:4] != b"SM64" or version not in formats
-            or package[16] != count or package[17] not in (2, 4)):
+            or package[16] != count or package[17] not in (2, 4, 8)):
         raise RuntimeError("Expected supported package v3/v4, twelve-stage v5 or eighteen-stage v6-v17")
     reu_size = (0x1000000 if version >= 0x534d0a00 else 0x800000 if digital
                 else 0x100000 if compact else 0x1000000)
@@ -3590,8 +3612,8 @@ def main():
                    "-joydev1", "0", "-joydev2", "0", "-controlport1device", "none", "-controlport2device", "iosim",
                    "-remotemonitor", "-remotemonitoraddress", f"127.0.0.1:{port}",
                    "-initbreak", "0x080d", "-moncommands", str(startup), "-autostart", str(prg)]
-        if sid_count == 4:
-            command.extend(["-sid3address", "0xd440", "-sid4address", "0xd460"])
+        for extra in range(3, sid_count + 1):
+            command.extend([f"-sid{extra}address", f"0x{0xd400 + 32 * (extra - 1):x}"])
         report["command"] = command
         (output / "config").mkdir(exist_ok=True)
         (output / "cache").mkdir(exist_ok=True)
@@ -3695,10 +3717,12 @@ def main():
         # This companion's monitor I/O peek does not implement $D031 and
         # returns $FF. The target verifies a CPU-bus read during boot; retain
         # monitor values only as diagnostics, not as a false failure signal.
-        if not all(report["sid"][name]["writes"]
-                   and any(voice["gate_on"] for voice in report["sid"][name]["voices"][:2])
-                   and report["sid"][name]["voices"][2]["gate_on"]
-                   for name in ("left_d400", "right_d420")):
+        def side_sounded(side):
+            return any(chip["writes"]
+                       and any(voice["gate_on"] for voice in chip["voices"][:2])
+                       and chip["voices"][2]["gate_on"]
+                       for name, chip in report["sid"].items() if name.startswith(side))
+        if not (side_sounded("left_") and side_sounded("right_")):
             raise RuntimeError("Layered effects did not sound on both stereo sides during the gameplay sample")
         if any(frame.get("music_underruns", 0) for frame in [report["title"]] + frames):
             raise RuntimeError("Audio underrun during ordinary gameplay")

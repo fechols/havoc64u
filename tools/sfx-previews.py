@@ -1,4 +1,4 @@
-"""Record all quad-SID effects and directional variants through native VICE playback.
+"""Record all eight-SID effects and directional variants through native VICE playback.
 Emulator synthesis only; DAC music and physical hardware mixing are outside scope.
 """
 import argparse
@@ -42,11 +42,11 @@ def read_effects_layout(elf, dwarf):
         result[label] = dict(size=sizes.pop(), fields=smoke.dwarf_members(description, label))
     engine, instance, event = (result[name] for name in ("EffectsEngine", "Instance", "AudioEvent"))
     fields = engine["fields"]
-    if not (0 < engine["size"] <= 224
-            and fields["instances"]["type"].endswith("::Instance[4]")
+    if not (0 < engine["size"] <= 512
+            and fields["instances"]["type"].endswith("::Instance[8]")
             and fields["events"]["type"].endswith("::AudioEvent[8]")
             and fields["event_count"]["type"] == "u8"
-            and fields["instances"]["offset"] + instance["size"] * 4 <= fields["registers"]["offset"]
+            and fields["instances"]["offset"] + instance["size"] * 8 <= fields["registers"]["offset"]
             and fields["events"]["offset"] + event["size"] * 8 <= fields["event_count"]["offset"] < engine["size"]
             and instance["fields"]["remaining"]["type"] == "u8"
             and event["fields"]["pan"]["type"] == "i8"
@@ -205,7 +205,7 @@ def main():
     elf, reu, prg = (package / f"havoc.{suffix}" for suffix in ("elf", "reu", "prg"))
     data = reu.read_bytes()
     package_format = smoke.package_model_layout(data, validate_size=True)
-    sid_count = 4
+    sid_count = data[17]
     output = (args.out_dir or ROOT / "target/sfx-previews" / f"{sid_count}sid").resolve()
     output.mkdir(parents=True, exist_ok=True)
     syms = smoke.symbols(elf, args.llvm_nm)
@@ -232,8 +232,8 @@ def main():
                "-joydev1", "0", "-joydev2", "0", "-controlport1device", "iosim", "-controlport2device", "iosim",
                "-remotemonitor", "-remotemonitoraddress", f"127.0.0.1:{port}",
                "-initbreak", "0x080d", "-moncommands", str(startup), "-autostart", str(prg)]
-    if sid_count == 4:
-        command += ["-sid3address", "0xd440", "-sid4address", "0xd460"]
+    for extra in range(3, sid_count + 1):
+        command += [f"-sid{extra}address", f"0x{0xd400 + 32 * (extra - 1):x}"]
     for folder in ("config", "cache"):
         (output / folder).mkdir(exist_ok=True)
     env = dict(os.environ, XDG_CONFIG_HOME=str(output / "config"), XDG_CACHE_HOME=str(output / "cache"))

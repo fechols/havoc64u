@@ -6,3 +6,5 @@
 /press-kit-private/
 /__pycache__
 /tools/__pycache__
+/tools/asset-pipeline/ludo-output
+/tools/asset-pipeline/node_modules

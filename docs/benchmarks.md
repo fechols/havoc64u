@@ -5,11 +5,11 @@ VICE build used by `tools/vice-smoke.py`. These are emulator measurements, not
 claims about physical C64 Ultimate frame rates. The package is read-only during
 measurement; its PRG, REU, and ELF hashes are recorded and checked afterward.
 
-Current package ID `$534D1100` uses SMA6 model banks, a 16 MiB REU image, four
+Current package ID `$534D1100` uses SMA6 model banks, a 16 MiB REU image, eight
 built-in UltiSIDs for effects and DAC music throughout the game. Code and models
 fit below `$080000`, leaving an extra 512 KiB for DLT5 audio codebooks; the SID
 soundtrack has been removed. See the
-[current sustained audio benchmarks](hardware.md#quad-sid-effects). Recorded measurements
+[current sustained audio benchmarks](hardware.md#eight-sid-effects). Recorded measurements
 below retain their original package layouts and hashes; use the configuration
 and REU capacity matching each package when reproducing a historical run.
 
@@ -1287,8 +1287,36 @@ stock-speed figures): REU fetch 74,846 µs / 1,169 µs/KiB, REU stash 75,054 µs
 115,380-115,390 µs. The REU therefore moves one byte per bus cycle at stock
 speed, as in the emulator. Combined with the 8-10 FPS the in-game readout
 shows on the same machine in turbo mode, the overlay transfers cannot cost
-bus time there: the C64 Ultimate's DMA follows the turbo clock. A turbo-mode
-probe run (import `havoc.cfg` first) remains to be recorded.
+bus time there: the C64 Ultimate's DMA follows the turbo clock.
+
+### Turbo-mode probe: 2026-11-01
+
+The first runs timed the turbo loop immediately after writing `$D031`, but the
+C64 Ultimate takes about two seconds to change speed after the request, so
+they measured stock speed. The probe now spins at least three seconds before
+its turbo measurements. A physical C64 Ultimate (firmware 1.1.0, core 1.49,
+FPGA 122) configured as `havoc.cfg` — CPU Speed 64, C64U Turbo Registers,
+badline timing disabled, 16 MB REU — reports:
+
+| Measurement | Hardware, turbo | Emulator model | Ratio |
+| --- | ---: | ---: | ---: |
+| CPU loop (329,229 nominal cycles) | 5,235 µs (62.9x) | 5,151 µs (63.9x) | 1.02 |
+| REU fetch 64 x 1 KiB | 16,402 µs, 256 µs/KiB | 66,184 µs, 1,034 µs/KiB | 0.25 |
+| REU stash 64 x 1 KiB | 9,496 µs, 148 µs/KiB | 66,184 µs, 1,034 µs/KiB | 0.14 |
+| 1,024 `STA $D800,X` | 186 µs | 183 µs | 1.02 |
+| 1,024 `STA $D020` | 153 µs | 1,031 µs | 0.15 |
+| 1,024 `LDA $D012` | 172 µs | 1,031 µs | 0.17 |
+| 1,024 `STA $6000,X` | 170 µs | 167 µs | 1.02 |
+| Copy 8 KiB to `$6000` / under I/O | 1,838 / 1,837 µs | 1,808 µs | 1.02 |
+
+So the C64 Ultimate's DMA neither runs at bus speed nor follows the CPU clock: a
+fetch costs about a quarter of the emulator's price. An ordinary frame's
+57-60 KiB of overlay transfers costs about 15 ms on hardware, roughly 13-15% of
+a 100-125 ms frame, instead of the 60 ms the emulator charges. Emulator frame
+times therefore overstate DMA savings about fourfold. For example, the 20 KiB
+the gold-medal frames stopped loading (the medal section below) saves about
+5 ms on hardware, not 20. VIC register accesses are also far cheaper on hardware
+than the model prices them.
 
 ## Recorded production validation: 2026-10-18
 
@@ -2496,3 +2524,26 @@ and 89 overlay negative fixtures. Both video standards passed physical controls,
 boost, pause, weapon, multi-phase boss and HUD checks. The vertical-control test
 waits for neutral flight to settle before reversing direction, so its short
 pulse measures the requested movement independently of residual momentum.
+
+## Medal frames without the SCENERY overlay: 2026-11-01
+
+A profile of the victory fixtures (`tools/bench-native.py`, PAL, retained palette,
+one sample) showed that 56% of a held-medal frame (75,547 of 134,623 bus cycles)
+was REU overlay transfer: SIM 23,697, SCENERY 17,000, GEOMETRY 13,235 and PIXELS
+21,615 cycles, against about 15k cycles of medal transform and 23k of raster.
+After the 100-tick fade the world emits nothing, so those frames now skip the
+SCENERY overlay and its helpers; a resident `begin_empty_scenery` starts the
+empty, black frame instead.
+
+| Fixture | Before | After | DMA per frame |
+| --- | ---: | ---: | ---: |
+| victory-start | 123.1 ms | 123.1 ms | 79,483 B |
+| victory-midfade | 125.8 ms | 125.8 ms | 79,483 B |
+| victory-arrival | 138.1 ms | 117.3 ms | 79,483 → 59,576 B |
+| victory-hold | 136.6 ms | 116.7 ms | 79,483 → 59,576 B |
+
+The opening real-time sample is unchanged (6.90 FPS). The VICE streaming checks,
+including the natural gold-medal reveal and restart from victory, pass. These are
+emulator times. The [turbo-mode probe](#turbo-mode-probe-2026-11-01) prices REU
+fetches on the C64 Ultimate at a quarter of the emulator's cost, so the 19,907
+bytes saved per medal frame are worth about 5 ms on hardware, not 20 ms.

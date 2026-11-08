@@ -6,7 +6,8 @@ Requires LLVM-MOS's mos-sim-clang and mos-sim. The harness builds the same
 quarter-square table BOOT builds at $C000 and compares fast_mul_q8 with
 (int16_t)(((int32_t)a * b) >> 8) over every multiplier in -512..512 for a
 sweep of multiplicands, all sign/magnitude corners, and pseudo-random pairs;
-fast_mesh_matrix against RotationMatrix::compose (clamped to +-256); and
+fast_mesh_matrix against RotationMatrix::compose (clamped to +-256);
+fast_mesh_matrix_angles against compose of the six sin8 values; and
 fast_rotate_vertex against (sum m[i][j] * v[j]) >> shift for shifts 4..9 over
 the full i8 vertex range. The JSON report stays under target/multiply-test.
 Cycle totals include the harness.
@@ -28,6 +29,14 @@ source = r'''
 extern int16_t fast_mul_q8(int16_t a, int16_t b);
 struct Vec3 { int16_t x, y, z; };
 extern void fast_mesh_matrix(const int16_t sincos[6], int16_t out[9]);
+extern void fast_mesh_matrix_angles(const uint8_t angles[3], int16_t out[9]);
+/* math.rs QUARTER_WAVE, the resident table the angles entry reads. */
+const int16_t QUARTER_WAVE[65]={0,6,13,19,25,31,38,44,50,56,62,68,74,80,86,92,98,104,109,115,121,126,132,
+  137,142,147,152,157,162,167,172,177,181,185,190,194,198,202,206,209,213,216,
+  220,223,226,229,231,234,237,239,241,243,245,247,248,250,251,252,253,254,255,
+  255,256,256,256};
+static int16_t sin8(uint8_t a){ uint8_t q=a>>6,p=a&63;
+  return q==0?QUARTER_WAVE[p]:q==1?QUARTER_WAVE[64-p]:q==2?-QUARTER_WAVE[p]:-QUARTER_WAVE[64-p]; }
 extern void fast_rotate_vertex(const int8_t v[3], const int16_t m[9], struct Vec3 *out, uint8_t shift);
 #define QLO ((uint8_t*)0xc000)
 #define QHI ((uint8_t*)0xc200)
@@ -55,7 +64,7 @@ static void reference_rotate(const int8_t v[3], const int16_t m[9], struct Vec3 
     o[i]=(int16_t)(sum>>shift);
   }
 }
-static uint32_t checks, matrices, rotations;
+static uint32_t checks, matrices, rotations, angle_matrices;
 static int check(int16_t a,int16_t b){
   int16_t got=fast_mul_q8(a,b), want=reference(a,b);
   checks++;
@@ -121,7 +130,20 @@ int main(void){
         printf("FAIL rotate %u shift %u v=(%d,%d,%d) got (%d,%d,%d) want (%d,%d,%d)\n",i,shift,v[0],v[1],v[2],got.x,got.y,got.z,want.x,want.y,want.z);return 3;}
     }
   }
-  printf("PASS %lu multiply checks, %lu matrices, %lu vertex rotations\n",(unsigned long)checks,(unsigned long)matrices,(unsigned long)rotations);
+  /* RotationMatrix::new: every angle for each axis alone, then random
+     triples, against compose(sin8(...)). */
+  for(uint16_t i=0;i<1792;i++){
+    uint8_t angles[3]={0,0,0}; int16_t sincos[6], want_m[9], got_m[9];
+    if(i<768) angles[i/256]=(uint8_t)i;
+    else { state=state*1664525u+1013904223u; angles[0]=(uint8_t)(state>>8); angles[1]=(uint8_t)(state>>16); angles[2]=(uint8_t)(state>>24); }
+    for(uint8_t k=0;k<3;k++){sincos[2*k]=sin8(angles[k]); sincos[2*k+1]=sin8((uint8_t)(angles[k]+64));}
+    fast_mesh_matrix_angles(angles,got_m);
+    reference_matrix(sincos,want_m);
+    angle_matrices++;
+    for(uint8_t k=0;k<9;k++) if(got_m[k]!=want_m[k]){
+      printf("FAIL angles %u,%u,%u entry %u got %d want %d\n",angles[0],angles[1],angles[2],k,got_m[k],want_m[k]);return 4;}
+  }
+  printf("PASS %lu multiply checks, %lu matrices, %lu angle matrices, %lu vertex rotations\n",(unsigned long)checks,(unsigned long)matrices,(unsigned long)angle_matrices,(unsigned long)rotations);
   return 0;
 }
 '''

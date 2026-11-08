@@ -17,7 +17,9 @@ MEMORY {
     phase (rwx) : ORIGIN = 0x3000, LENGTH = 0x4200
     startup_checks (rx) : ORIGIN = 0x8E00, LENGTH = 0x0500
     sim_aux (rx) : ORIGIN = 0x8E00, LENGTH = 0x0500
-    sim_extra (rx) : ORIGIN = 0xE000, LENGTH = 0x1800
+    /* SIM helpers may use the PIXELS/SHADOW scratch through $FAFF: nothing
+     * there is live during SIM, and 0x500 + 0x1B00 fills the 8 KiB REU slot. */
+    sim_extra (rx) : ORIGIN = 0xE000, LENGTH = 0x1B00
     scenery_extra (rx) : ORIGIN = 0xE000, LENGTH = 0x0800
     constants (r) : ORIGIN = 0x7800, LENGTH = 0x0800
     tables (r) : ORIGIN = 0x9900, LENGTH = 0x0700
@@ -30,8 +32,10 @@ MEMORY {
     renderer (rw) : ORIGIN = 0xCFFA, LENGTH = 0x1006
     game (rw) : ORIGIN = 0xC800, LENGTH = 0x0300
     audio (rw) : ORIGIN = 0xCE00, LENGTH = 0x01B0
-    /* The effects state sits in the page below the DAC state. */
-    sfx_state (rw) : ORIGIN = 0xCD00, LENGTH = 0x0100
+    /* The effects state sits in the two pages below the DAC state. */
+    sfx_state (rw) : ORIGIN = 0xCC00, LENGTH = 0x0200
+    /* Both players' HUD sprite display state: the page below the effects state. */
+    hud_state (rw) : ORIGIN = 0xCB00, LENGTH = 0x0100
     benchmark_ram (rx) : ORIGIN = 0xFF20, LENGTH = 0x00DA
 }
 
@@ -103,9 +107,9 @@ __reu_scenery_carrier_end = 0x075800;
 __reu_scenery_gate = 0x075800;
 __reu_scenery_gate_end = 0x07A000;
 __reu_shadow = 0x07A000;
-__reu_shadow_end = 0x07D800;
-__reu_scenery_helpers = 0x07D800;
-__reu_scenery_helpers_end = 0x07E800;
+__reu_shadow_end = 0x07E000;
+__reu_scenery_helpers = 0x07E000;
+__reu_scenery_helpers_end = 0x07F000;
 
 SECTIONS {
     /* The stock C64 .init.250 case-mode hook calls KERNAL CHROUT. Our BSS
@@ -430,6 +434,11 @@ SECTIONS {
         KEEP(*(.sfx_state .sfx_state.*))
         __sfx_state_end = .;
     } >sfx_state
+    .hud_state (NOLOAD) : {
+        __hud_state_start = .;
+        KEEP(*(.hud_state .hud_state.*))
+        __hud_state_end = .;
+    } >hud_state
 }
 
 /* Independent software stacks grow downward. The bounded effects engine uses
@@ -442,7 +451,7 @@ __irq_stack_bottom = 0x7500;
 /* LLVM-MOS gives non-reentrant functions static local frames in .noinit.
  * Nothing reachable from irq_body may own one (tools/check-irq-frames.py
  * audits the linked closure), so the interrupt needs no frame backup and
- * $BF40-$BFBF plus $CB00-$CCFF are free; Game uses the first 128 bytes of
+ * $BF40-$BFBF is free and $CB00 holds the HUD display state; Game uses the first 128 bytes of
  * the former $CA80-$CCFF backup for the four-boss state and byte locks. */
 /* Immutable reticle image in the unused bitmap tail. */
 __reticle_sprite_start = 0xBFC0;
@@ -560,7 +569,7 @@ ASSERT(__reu_digital_music == 0x80000 && __reu_digital_victory == __reu_digital_
 ASSERT(__code_reu_pages_end - __code_reu_pages == 34, "incorrect logical REU page table size")
 ASSERT(__reu_probe_start == 0xC00 && __reu_probe_end == 0x1000, "incorrect probe scratch reservation")
 ASSERT(__reu_models == 0xB000 && __reu_models_end - __reu_models == 0x9000, "incorrect model bank reservation")
-ASSERT(__reu_models_end == __reu_boot && __reu_scenery_helpers_end == 0x7E800 &&
+ASSERT(__reu_models_end == __reu_boot && __reu_scenery_helpers_end == 0x7F000 &&
        __reu_scenery_helpers_end <= __reu_digital_music, "compact code/assets exceed the music boundary")
 ASSERT((__reu_boot & 0x7FF) == 0 && __reu_boot < __reu_boot_end && __reu_boot_end <= __reu_digital_music, "boot REU reservation exceeds the 2 KiB address table")
 ASSERT(__phase_boot_size > 0 && __phase_boot_size <= __reu_code_slot_size && __reu_boot + __phase_boot_size <= __reu_boot_end, "boot image exceeds its REU reservation")
@@ -653,7 +662,8 @@ ASSERT(__reticle_sprite_start == 0xBFC0 && __reticle_sprite_end == 0xC000 && __r
 ASSERT(__hud_sprites_end == __pixel_band_start && ORIGIN(startup_checks) == __pixel_band_start && ORIGIN(sim_aux) == __pixel_band_start, "shared workspace overlaps HUD sprites")
 ASSERT(__pixel_band_start == 0x8E00 && __pixel_band_end == 0x9300, "incorrect shared pixel-band workspace")
 ASSERT(__cell_hud_seen == 0x9328, "HUD-seen flag must reuse cell scratch at $9328")
-ASSERT(ADDR(.sfx_state) == 0xCD00 && SIZEOF(.sfx_state) <= 0x0100, "SID effects state must occupy $CD00-$CDFF")
+ASSERT(ADDR(.sfx_state) == 0xCC00 && SIZEOF(.sfx_state) <= 0x0200, "SID effects state must occupy $CC00-$CDFF")
+ASSERT(ADDR(.hud_state) == 0xCB00 && SIZEOF(.hud_state) <= 0x0100, "HUD display state must occupy $CB00-$CBFF")
 ASSERT(SIZEOF(.renderer) <= 0x1006, "renderer exceeds header plus hidden-I/O triangle storage")
 ASSERT(SIZEOF(.game_state) <= 0x0300, "game state exceeds $C800-$CAFF")
 ASSERT(SIZEOF(.unexpected_static_stack) == 0, "compiler static locals outside .noinit are not IRQ-safe")
@@ -664,7 +674,7 @@ ASSERT(SIZEOF(.tables) <= 0x0700, "resident tables exceed $9900-$9FFF")
 ASSERT(SIZEOF(.phase.boot) <= 0x4200, "BOOT overlay exceeds $3000-$71FF")
 ASSERT(__phase_sim_size <= 0x4200, "composed SIM overlay exceeds $3000-$71FF")
 ASSERT(__phase_sim_aux_prefix_size > 0 && __phase_sim_aux_prefix_size <= 0x0500, "SIM helpers exceed retired startup / renderer workspace")
-ASSERT(__phase_sim_extra_size > 0 && __phase_sim_extra_size <= 0x1800, "SIM extra helpers exceed retired raster / shadow workspace")
+ASSERT(__phase_sim_extra_size > 0 && __phase_sim_extra_size <= 0x1B00, "SIM extra helpers exceed retired raster / shadow workspace")
 ASSERT(encounter_lowlands == encounter_step && encounter_canyon == encounter_step && encounter_fortress == encounter_step && encounter_carrier == encounter_step && encounter_warden == encounter_step && encounter_citadel == encounter_step && encounter_flagship == encounter_step, "encounter ABI entries must start every SIM tail")
 ASSERT(SIZEOF(.phase.enemy.lowlands) > 0 && SIZEOF(.phase.enemy.canyon) > 0 && SIZEOF(.phase.enemy.fortress) > 0 && SIZEOF(.phase.enemy.carrier) > 0, "all four enemy tails are required")
 ASSERT(__phase_geometry_prefix_size <= 0x3F20, "GEOMETRY overlaps shared projection helpers at $6F20")

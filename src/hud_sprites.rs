@@ -23,7 +23,8 @@ const WHITE: u8 = 3;
 /// Only values which can change visible sprite pixels or their accent colour.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DisplayState {
-    score: u32,
+    /// Score units, clamped where the six-digit display saturates.
+    score: u16,
     fps: u16,
     shield: u8,
     charge: u8,
@@ -51,7 +52,7 @@ impl DisplayState {
             return state;
         }
         state.flags = COCKPIT;
-        state.score = hud.score.min(999_999);
+        state.score = hud.score.min(crate::hud::SCORE_DISPLAY_UNITS);
         state.lives = hud.lives.min(99);
         state.bombs = hud.bombs.min(3);
         state.shield = meter(hud.shield.min(100), 22, 100);

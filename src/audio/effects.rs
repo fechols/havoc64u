@@ -143,20 +143,20 @@ const EMPTY: Instance = Instance {
     program: 0,
 };
 
-/// Byte-aligned on both host and MOS; fits the 256-byte page at $CD00 below
-/// the DAC state, after the IRQ static-frame backup.
+/// Byte-aligned on both host and MOS; fits the 512-byte reservation at $CC00,
+/// two pages below the DAC state.
 #[derive(Clone)]
 #[repr(C, packed)]
 pub struct EffectsEngine {
-    instances: [Instance; 4],
-    registers: [u8; 128],
+    instances: [Instance; 8],
+    registers: [u8; 256],
     events: [AudioEvent; QUEUE_CAPACITY],
     event_count: u8,
     standard: VideoStandard,
     enabled: bool,
     rotation: u8,
 }
-const _: () = assert!(core::mem::size_of::<EffectsEngine>() <= 224);
+const _: () = assert!(core::mem::size_of::<EffectsEngine>() <= 512);
 // The native kernel (target-c64/asm/sfx.S) addresses these fields directly.
 const _: () = {
     use core::mem::{offset_of, size_of};
@@ -167,12 +167,12 @@ const _: () = {
     assert!(offset_of!(Instance, program) == 12);
     assert!(offset_of!(AudioEvent, effect) == 0 && offset_of!(AudioEvent, pan) == 1);
     assert!(offset_of!(EffectsEngine, instances) == 0);
-    assert!(offset_of!(EffectsEngine, registers) == 52);
-    assert!(offset_of!(EffectsEngine, events) == 180);
-    assert!(offset_of!(EffectsEngine, event_count) == 196);
-    assert!(offset_of!(EffectsEngine, standard) == 197);
-    assert!(offset_of!(EffectsEngine, enabled) == 198);
-    assert!(offset_of!(EffectsEngine, rotation) == 199);
+    assert!(offset_of!(EffectsEngine, registers) == 104);
+    assert!(offset_of!(EffectsEngine, events) == 360);
+    assert!(offset_of!(EffectsEngine, event_count) == 376);
+    assert!(offset_of!(EffectsEngine, standard) == 377);
+    assert!(offset_of!(EffectsEngine, enabled) == 378);
+    assert!(offset_of!(EffectsEngine, rotation) == 379);
     assert!(VideoStandard::Pal as u8 == 0 && VideoStandard::Ntsc as u8 == 1);
     assert!(Effect::Fire as u8 == 0 && Effect::EnemyFire as u8 == 1);
     assert!(Effect::Bomb as u8 == 6 && Effect::BossExplosion as u8 == 15);
@@ -181,8 +181,8 @@ const _: () = {
 impl EffectsEngine {
     pub const fn new(standard: VideoStandard) -> Self {
         Self {
-            instances: [EMPTY; 4],
-            registers: [0; 128],
+            instances: [EMPTY; 8],
+            registers: [0; 256],
             events: [EMPTY_EVENT; 8],
             event_count: 0,
             standard,
@@ -193,10 +193,10 @@ impl EffectsEngine {
     #[cfg_attr(target_arch = "mos", link_section = ".phase.audio")]
     #[inline(never)]
     pub fn reset<B: SidBus>(&mut self, bus: &mut B) {
-        self.instances = [EMPTY; 4];
+        self.instances = [EMPTY; 8];
         self.event_count = 0;
         self.rotation = 0;
-        for sid in 0..4u8 {
+        for sid in 0..8u8 {
             for reg in 0..25 {
                 bus.write(sid as u8, reg as u8, 0);
             }
@@ -208,7 +208,7 @@ impl EffectsEngine {
         self.enabled = true;
     }
     pub fn silence<B: SidBus>(&mut self, bus: &mut B) {
-        self.stop(bus, 15);
+        self.stop(bus, 0xff);
         self.event_count = 0;
     }
     pub fn queue(&mut self, event: AudioEvent) -> bool {
@@ -240,7 +240,7 @@ impl EffectsEngine {
             }
         }
     }
-    // All callers use a bounded chip 0..4 and register 0..25. A 32-byte
+    // All callers use a bounded chip 0..8 and register 0..25. A 32-byte
     // stride avoids multiplication and runtime bounds machinery on the 6502.
     #[inline(never)]
     fn write<B: SidBus>(&mut self, bus: &mut B, sid: u8, reg: u8, value: u8) {
@@ -258,7 +258,7 @@ impl EffectsEngine {
         self.write(bus, sid, reg + 1, (value >> 8) as u8);
     }
     fn stop<B: SidBus>(&mut self, bus: &mut B, mask: u8) {
-        for sid in 0..4u8 {
+        for sid in 0..8u8 {
             if mask & (1 << sid) == 0 {
                 continue;
             }
@@ -280,7 +280,7 @@ impl EffectsEngine {
         if !self.enabled {
             return;
         }
-        for sid in 0..4u8 {
+        for sid in 0..8u8 {
             let mut fx = self.instances[sid as usize];
             if fx.mask == 0 {
                 continue;
@@ -298,9 +298,10 @@ impl EffectsEngine {
             } else {
                 p.cutoff[2]
             }) << 3;
-            // Stereo modulation follows the channel, not the available chip.
-            // Each side's second SID is an interchangeable overlap slot.
-            let target = (target + ((sid & 1) as u16) * 23).min(2047);
+            // Stereo modulation follows the channel, not the available chip:
+            // chips 0..3 are left, 4..7 right, and a side's chips are
+            // interchangeable overlap slots.
+            let target = (target + ((sid >> 2) as u16) * 23).min(2047);
             // The authored rate is the shift applied to the remaining distance.
             if fx.cutoff != target {
                 let distance = if fx.cutoff < target {
@@ -375,7 +376,7 @@ impl EffectsEngine {
                     let phase = fx
                         .age
                         .wrapping_mul(program.pwm_rate)
-                        .wrapping_add((sid & 1) * 37);
+                        .wrapping_add((sid >> 2) * 37);
                     let triangle = if phase & 128 == 0 { phase } else { 255 - phase };
                     self.word(
                         bus,
@@ -422,32 +423,31 @@ impl EffectsEngine {
         // A repeated bomb replaces its own pair, leaving the overlap pair free.
         let mut restart = 0;
         if event.effect == Effect::Bomb {
-            // Every stereo instance owns exactly one left chip. Checking its
-            // two fixed slots avoids a 16-bit iterator on the native CPU.
-            if self.instances[0].effect == Effect::Bomb {
-                restart = self.instances[0].mask;
-            }
-            if self.instances[2].effect == Effect::Bomb {
-                restart |= self.instances[2].mask;
+            // Every stereo instance owns exactly one left chip, so the four
+            // left slots find an active bomb without scanning every chip.
+            for sid in 0..4u8 {
+                if self.instances[sid as usize].effect == Effect::Bomb {
+                    restart |= self.instances[sid as usize].mask;
+                }
             }
         }
-        // Four stereo combinations or two chips on a requested side. Even hero
-        // cues use just one chip per channel. Rotate equivalent free slots.
-        // Mono masks repeat after two candidates, irrespective of rotation.
-        for candidate in 0..if lane == 3 { 4u8 } else { 2u8 } {
+        // Four stereo pairs (chips n and n + 4) or the four chips on a
+        // requested side. Even hero cues use just one chip per channel.
+        // Rotate equivalent free slots.
+        for candidate in 0..4u8 {
             let n = (candidate + self.rotation) & 3;
-            let mask = if lane == 1 {
-                1 << ((n & 1) * 2)
+            let mask: u8 = if lane == 1 {
+                1 << n
             } else if lane == 2 {
-                2 << ((n & 1) * 2)
+                0x10 << n
             } else {
-                (n + 1) * 3
+                0x11 << n
             };
             if restart != 0 && mask != restart {
                 continue;
             }
             let mut full = mask;
-            for sid in 0..4u8 {
+            for sid in 0..8u8 {
                 if mask & (1 << sid) != 0 {
                     full |= self.instances[sid as usize].mask;
                 }
@@ -459,7 +459,7 @@ impl EffectsEngine {
             let mut highest = 0;
             let mut occupied = 0;
             let mut youngest = 255;
-            for sid in 0..4u8 {
+            for sid in 0..8u8 {
                 let old = self.instances[sid as usize];
                 if full & (1 << sid) == 0 || old.mask == 0 {
                     continue;
@@ -494,7 +494,7 @@ impl EffectsEngine {
         }
         self.stop(bus, victims);
         let p = unsafe { PATCHES.get_unchecked(event.effect as usize) };
-        for sid in 0..4u8 {
+        for sid in 0..8u8 {
             if best & (1 << sid) == 0 {
                 continue;
             }
@@ -505,7 +505,7 @@ impl EffectsEngine {
                     FREQUENCIES.get_unchecked(p.notes[voice as usize] as usize)
                         [self.standard as usize]
                 };
-                let pitch = pitch + (pitch >> 9) * ((sid & 1) as u16);
+                let pitch = pitch + (pitch >> 9) * ((sid >> 2) as u16);
                 frequency[voice as usize] = pitch;
                 self.word(bus, sid, base, pitch);
                 self.word(bus, sid, base + 2, u16::from(p.pulse[voice as usize]) << 8);
@@ -532,7 +532,7 @@ impl EffectsEngine {
                 remaining: p.duration,
                 frequency,
                 cutoff,
-                program: if lane == 3 && sid & 1 != 0 {
+                program: if lane == 3 && sid >= 4 {
                     p.programs >> 4
                 } else {
                     p.programs & 15

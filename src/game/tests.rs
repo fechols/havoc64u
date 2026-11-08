@@ -144,7 +144,7 @@ fn orbital_debris_is_bomb_destructible_but_cannot_farm_enemy_rewards() {
         assert_eq!(game.actors[1].kind, 0);
         assert_eq!(
             (game.score, game.kills, game.bomb_kills, game.bombs),
-            (50, 7, 4, 2)
+            (units(50), 7, 4, 2)
         );
         assert!(game.pickups.iter().all(|pickup| pickup.kind == 0));
     }
@@ -175,7 +175,7 @@ fn debris_shot_bounds_follow_its_half_size_mesh() {
         };
         game.update_shots(&bank);
         assert_eq!(game.actors[0].kind == 0, hit);
-        assert_eq!(game.score, if hit { 25 } else { 0 });
+        assert_eq!(game.score, if hit { units(25) } else { 0 });
     }
 }
 
@@ -1140,7 +1140,7 @@ fn all_boss_gates_start_on_time_and_allow_early_or_late_kills() {
                     Mode::Transition
                 }
             );
-            assert_eq!(game.score, 5000);
+            assert_eq!(game.score, units(5000));
         }
     }
 }
@@ -1221,7 +1221,7 @@ fn every_boss_refills_immediately_once_by_projectile_or_finishing_bomb() {
                 game.update_shots(&bank);
             }
             assert_eq!(game.boss_defeated, stage != 17, "stage {stage}, bomb {use_bomb}");
-            let reward = if stage == 17 { 0 } else { 5000 };
+            let reward = if stage == 17 { 0 } else { units(5000) };
             if stage == 17 { assert_eq!((game.boss_phase, game.boss_split_ticks), (1, 50)); }
             assert_eq!(
                 (game.shield, game.bombs, game.lives, game.score),
@@ -1372,11 +1372,11 @@ impl GeometrySink for TerrainCapture {
     }
 }
 fn theme_stage(theme: u8) -> u8 {
-    [0, 2, 6, 10, 1, 4, 5, 7, 8, 9][theme as usize]
+    [0, 2, 6, 10, 1, 4, 5, 7, 8, 9, 3, 11][theme as usize]
 }
 fn terrain_scene(style: u8, ticks: u16) -> TerrainCapture {
     let mut bytes = empty_segment(theme_stage(style));
-    bytes[6] = [5, 9, 11, 6, 3, 11, 9, 12, 11, 4][style as usize];
+    bytes[6] = [5, 9, 11, 6, 3, 11, 9, 12, 11, 4, 9, 6][style as usize];
     let segment = Segment::new(&bytes).unwrap();
     let mut game = Game::new();
     set_rail(&mut game, ticks);
@@ -1389,7 +1389,7 @@ fn terrain_scene(style: u8, ticks: u16) -> TerrainCapture {
 }
 #[test]
 fn terrain_profile_is_bounded_repeatable_and_asymmetric() {
-    for style in 0..10 {
+    for style in 0..assets::FIRST_ORBITAL_THEME {
         let (low, high) = match style {
             0 => (-105, 23),
             1 => (96, 160),
@@ -1399,7 +1399,9 @@ fn terrain_profile_is_bounded_repeatable_and_asymmetric() {
             6 => (-60, 36),
             7 => (-40, 88),
             8 => (-90, 70),
-            _ => (-100, 92),
+            9 => (-100, 92),
+            10 => (72, 160),
+            _ => (-105, -9),
         };
         let mut seen_low = false;
         let mut seen_high = false;
@@ -1420,13 +1422,13 @@ fn terrain_profile_is_bounded_repeatable_and_asymmetric() {
 }
 #[test]
 fn terrain_keeps_the_flight_lane_flat_within_its_face_budget() {
-    for style in 0..10 {
+    for style in 0..assets::FIRST_ORBITAL_THEME {
         for ticks in [0, 1, 63, 64, 1023, 3750, 14999] {
             let scene = terrain_scene(style, ticks);
             assert_eq!(scene, terrain_scene(style, ticks));
             assert_eq!(
                 scene.count,
-                if matches!(style, 1 | 2 | 6 | 7) {
+                if matches!(style, 1 | 2 | 6 | 7 | 10) {
                     54
                 } else {
                     38
@@ -1455,7 +1457,7 @@ fn terrain_keeps_the_flight_lane_flat_within_its_face_budget() {
 }
 #[test]
 fn adjacent_terrain_bands_share_exact_edges() {
-    for style in 0..10 {
+    for style in 0..assets::FIRST_ORBITAL_THEME {
         for ticks in [0, 19, 63, 64, 511, 3750, 14999] {
             let scene = terrain_scene(style, ticks);
             let faces_per_band = (scene.count - 14) / 4;
@@ -1482,7 +1484,7 @@ fn adjacent_terrain_bands_share_exact_edges() {
 }
 #[test]
 fn terrain_scrolls_continuously_across_row_replacement() {
-    for style in 0..10 {
+    for style in 0..assets::FIRST_ORBITAL_THEME {
         // Includes the old 20-tick reset and two complete 64-tick rows.
         for tick in 0..130 {
             let before = terrain_scene(style, tick);
@@ -1507,7 +1509,7 @@ fn terrain_scrolls_continuously_across_row_replacement() {
 }
 #[test]
 fn clouds_remain_in_the_sky_behind_scenery_with_shared_facet_edges() {
-    for theme in 0..10 {
+    for theme in 0..assets::FIRST_ORBITAL_THEME {
         for face in 5..14 {
             let (points, color) = backdrop_face(theme, face);
             assert!(CLOUD_COLORS[theme as usize].contains(&color));
@@ -1623,7 +1625,7 @@ fn backdrop_screen_geometry_follows_only_the_sky_parallax_across_camera_modes() 
 }
 #[test]
 fn clouds_are_visible_and_nearer_geometry_occludes_them() {
-    for theme in 0..10 {
+    for theme in 0..assets::FIRST_ORBITAL_THEME {
         let mut renderer = crate::render::Renderer::new();
         let (cloud, color) = backdrop_face(theme, 8);
         let near = cloud.map(|p| Vec3 {
@@ -1667,7 +1669,7 @@ fn clouds_are_visible_and_nearer_geometry_occludes_them() {
 fn section_themes_are_distinct_compact_and_keep_all_backdrop_facets_cacheable() {
     let bytes = model_bank_for_tests();
     let bank = AssetBank::new(&bytes).unwrap();
-    for theme in 0..10 {
+    for theme in 0..assets::FIRST_ORBITAL_THEME {
         let mut game = running();
         set_rail(&mut game, theme_stage(theme) as u16 * SECTION_TICKS + 500);
         assert_eq!(game.sky_color(), SKY_COLORS[theme as usize]);
@@ -1735,7 +1737,7 @@ fn section_themes_are_distinct_compact_and_keep_all_backdrop_facets_cacheable() 
             + core::mem::size_of_val(&HORIZONS)
             + core::mem::size_of_val(&CLOUD_CENTERS)
             + core::mem::size_of_val(&CLOUD_OUTLINES)
-            <= 600
+            <= 648
     );
 }
 #[test]
@@ -1950,7 +1952,7 @@ fn lowered_horizons_overlap_terrain_at_every_scroll_phase_and_camera_extreme() {
         rows
     }
     let mut worst = (0i16, 0, 0, 0, 0, 0, 0);
-    for theme in 0..10 {
+    for theme in 0..assets::FIRST_ORBITAL_THEME {
         // The cave deliberately leaves a dark interior between its roof and
         // floor. Its enclosing silhouette is checked separately below.
         if theme == 4 {
@@ -2055,9 +2057,10 @@ fn crystal_cave_has_an_unbroken_roof_side_walls_and_visible_hanging_crystals() {
 #[test]
 fn resident_state_fits_budget() {
     assert_eq!(core::mem::size_of::<PresentationEvent>(), 1);
-    // Host C alignment adds eight bytes relative to the byte-aligned MOS
-    // layout. The native compile-time assertion and ELF audit enforce 768.
-    let alignment_padding = if cfg!(target_arch = "mos") { 0 } else { 8 };
+    // Host C alignment and its eight-byte pointer add bytes relative to the
+    // byte-aligned MOS layout. The native compile-time assertion and ELF
+    // audit enforce 768.
+    let alignment_padding = if cfg!(target_arch = "mos") { 0 } else { 24 };
     assert!(
         core::mem::size_of::<Game>() <= 768 + alignment_padding,
         "{}",
@@ -2573,7 +2576,7 @@ fn swept_projectile_hits_between_endpoints() {
     };
     g.update_shots(&test_bank(g.segment_index()));
     assert_eq!(g.actors[0].kind, 0);
-    assert_eq!(g.score, 100);
+    assert_eq!(g.score, units(100));
 }
 #[test]
 fn joystick_vertical_axis_follows_direction_and_opposing_inputs_cancel() {
@@ -2616,7 +2619,7 @@ fn released_roll_pushes_the_ship_sideways_and_does_not_snap_back() {
             assert!(g.flight.vel[0] * sign > 0);
         }
         assert!(
-            (30..=50).contains(&previous),
+            (40..=60).contains(&previous),
             "spin displacement {previous}"
         );
         let mut settled = None;
@@ -2729,9 +2732,12 @@ fn flight_state_outside_the_arena_returns_inside_without_a_jump() {
         assert!(g.player.x <= 100 && g.player.y >= -66);
         assert!(g.flight.vel[0] <= 0 && g.flight.vel[1] >= 0);
     }
-    // The wall pushes the ship back in and its momentum coasts a unit further.
-    assert!((98..=100).contains(&g.player.x), "{}", g.player.x);
-    assert!((-65..=-63).contains(&g.player.y), "{}", g.player.y);
+    // The wall pushes the ship back to its rest point: the old hard limit,
+    // or within the wall's 7/256 rounding of it when approached from outside.
+    let q = |i: usize, p: i16| ((p as u16) << 8 | g.flight.frac[i] as u16) as i16;
+    let (qx, qy) = (q(0, g.player.x), q(1, g.player.y));
+    assert!((98 * 256..=100 * 256 + 7).contains(&qx), "{qx}");
+    assert!((-65 * 256 - 7..=-63 * 256).contains(&qy), "{qy}");
     assert_eq!(g.flight.vel, [0, 0]);
 }
 #[test]
@@ -2860,11 +2866,11 @@ fn shield_magnet_recovers_near_misses_and_rewards_once() {
                 g.update_pickups();
             }
             assert_eq!(g.pickups[0].kind, 0);
-            assert_eq!((g.shield, g.score), (expected_shield, 50));
+            assert_eq!((g.shield, g.score), (expected_shield, units(50)));
             assert_eq!(g.pop_audio().unwrap().effect, Effect::Pickup);
             assert!(g.pop_audio().is_none());
             g.update_pickups();
-            assert_eq!((g.shield, g.score), (expected_shield, 50));
+            assert_eq!((g.shield, g.score), (expected_shield, units(50)));
             assert!(g.pop_audio().is_none());
         }
     }
@@ -2933,12 +2939,12 @@ fn bomb_pickups_follow_the_same_pull_and_award_once_at_the_inventory_cap() {
         assert_eq!(game.pickups[0].kind, 0);
         assert_eq!(
             (game.bombs, game.shield, game.score),
-            ((bombs + 1).min(3), 17, 50)
+            ((bombs + 1).min(3), 17, units(50))
         );
         assert_eq!(game.pop_audio().unwrap().effect, Effect::Pickup);
         game.update_pickups();
         assert!(game.pop_audio().is_none());
-        assert_eq!(game.score, 50);
+        assert_eq!(game.score, units(50));
     }
 }
 
@@ -3873,7 +3879,7 @@ fn missile_guidance_reaches_moving_fighters_divers_and_distant_opposite_side_tur
                     if kind == assets::TURRET {
                         assert_eq!(g.actors[0].hp, 2, "missile damage remains four");
                     } else {
-                        assert_eq!(g.score, 100, "missile kills use ordinary scoring");
+                        assert_eq!(g.score, units(100), "missile kills use ordinary scoring");
                     }
                     break;
                 }
@@ -4372,14 +4378,14 @@ fn all_boss_shots_keep_actor_priority_and_single_core_death_feedback() {
         game.update_shots(&bank);
         assert_eq!(
             (game.bosses[0].core, game.score, game.shots[0].kind),
-            (0, 5000, 0)
+            (0, units(5000), 0)
         );
         assert!(game.boss_defeated);
         assert_eq!(game.pop_audio().unwrap().effect, Effect::BossExplosion);
         assert!(game.pop_audio().is_none());
         game.shots[0] = shot;
         game.update_shots(&bank);
-        assert_eq!((game.score, game.shots[0].kind), (5000, 1));
+        assert_eq!((game.score, game.shots[0].kind), (units(5000), 1));
         assert!(game.pop_audio().is_none());
     }
 }
@@ -4703,7 +4709,7 @@ fn full_eighteen_stage_campaign_is_winnable_with_regular_joystick_input() {
                     + (assets::SEGMENT_COUNT as u32 - 1) * TRANSITION_TICKS as u32
             );
             assert!(scenic_ticks >= (assets::SEGMENT_COUNT as u16 - 1) * TRANSITION_TICKS);
-            assert!(g.score >= 5000);
+            assert!(g.score >= units(5000));
             return;
         }
     }
@@ -4805,7 +4811,7 @@ fn every_level_enemy_uses_banked_health_rewards_and_missile_guidance() {
                 g.update_shots(&bank);
             }
             assert_eq!(g.actors[0].kind, 0, "laser kill level {level} kind {kind}");
-            assert_eq!(g.score, bank.enemy(kind).score as u32);
+            assert_eq!(g.score, bank.enemy(kind).score);
             assert_eq!(g.bomb_kills, 1);
 
             g.spawn_actor(spawn, 0, &bank);

@@ -2,9 +2,9 @@
 //! behaviour in Q8 fixed point at the 50 Hz simulation tick.
 //!
 //! The stick sets a target velocity; the velocity follows it with a first-order
-//! lag, a soft corridor slows the ship exponentially into the arena edges, the
-//! hull banks with its lateral acceleration (coordinated and transient, like a
-//! real turn) and pitches with the commanded climb. The native body is
+//! lag (96 ms), a soft corridor slows the ship exponentially into the arena
+//! edges, the hull banks with the held stick plus its lateral acceleration (a
+//! brief counter-bank while braking) and pitches with the commanded climb. The native body is
 //! `fast_flight_step` (target-c64/asm/flight.S); `step_reference` is the
 //! host's bit-exact reference and the kernel harness's oracle.
 use crate::Vec3;
@@ -23,6 +23,11 @@ pub const EDGE_X: i16 = 100 * 256;
 pub const EDGE_Y: i16 = 65 * 256;
 /// Bank saturates at ±20/256 of a turn (28°; havoc2 ±0.48 rad).
 pub const BANK_MAX: i16 = 20 * 256;
+/// Bank held while the stick steers sideways: 12/256 of a turn (17°).
+pub const BANK_STICK: i16 = 12;
+/// The lateral acceleration's extra bank saturates at ±8/256 of a turn, so
+/// the two terms together never exceed `BANK_MAX`.
+pub const BANK_ACCEL: i16 = 8;
 
 /// Fractional position, velocity and attitude, all Q8; declared directly after
 /// `Game::player`, which keeps the integer position every other system reads.
@@ -101,9 +106,10 @@ fn wall(velocity: i16, position: i16, edge: i16) -> i16 {
 #[cfg(not(target_arch = "mos"))]
 fn axis(position: &mut i16, frac: &mut u8, velocity: &mut i16, target: i16, edge: i16) -> i16 {
     let before = *velocity;
-    // 3/32 of the error per tick: a 213 ms time constant (havoc2's 263 ms).
-    // `d / 2` truncates toward zero, keeping the two directions mirrored.
-    let d = delta(target.wrapping_sub(before), 4);
+    // 3/16 of the error per tick: a 96 ms time constant, about two thirds of
+    // the commanded speed within one rendered frame. `d / 2` truncates toward
+    // zero, keeping the two directions mirrored.
+    let d = delta(target.wrapping_sub(before), 3);
     let lagged = before.wrapping_add(d).wrapping_add(d / 2);
     let q = ((*position as u16) << 8 | *frac as u16) as i16;
     let v = wall(lagged, q, edge);
@@ -137,22 +143,24 @@ pub fn step_reference(player: &mut Vec3, flight: &mut Flight, bits: u8, push: i8
         target_y,
         EDGE_Y,
     );
-    // Coordinated bank: −16 × the lateral acceleration (units per tick²),
-    // saturating at BANK_MAX; the single unit of a settling velocity
-    // commands none. The attitude follows with a 160 ms lag.
-    let bank_target = if (-1..=1).contains(&dvx) {
+    // Bank: the held stick's BANK_STICK plus −16 × the lateral acceleration
+    // (units per tick²) clamped to ±BANK_ACCEL, which leans harder into a
+    // reversal and counter-banks briefly while braking; the single unit of a
+    // settling velocity commands none. The attitude follows with a 70 ms lag.
+    let accel = if (-1..=1).contains(&dvx) {
         0
     } else {
-        dvx.wrapping_neg().clamp(-20, 20) << 8
+        dvx.wrapping_neg().clamp(-BANK_ACCEL, BANK_ACCEL)
     };
+    let bank_target = (accel - dx * BANK_STICK) << 8;
     flight.bank = flight
         .bank
-        .wrapping_add(delta(bank_target.wrapping_sub(flight.bank), 3));
+        .wrapping_add(delta(bank_target.wrapping_sub(flight.bank), 2));
     // Extra thrust changes speed without increasing the hull's climb angle.
     let pitch_target = -((dy * V_MAX_Y) << 2);
     flight.pitch = flight
         .pitch
-        .wrapping_add(delta(pitch_target.wrapping_sub(flight.pitch), 3));
+        .wrapping_add(delta(pitch_target.wrapping_sub(flight.pitch), 2));
 }
 
 #[cfg(test)]
@@ -222,25 +230,33 @@ mod tests {
     }
 
     #[test]
-    fn a_held_stick_banks_into_the_turn_then_levels_and_banks_back_when_released() {
-        let mut player = Vec3 { x: 0, y: 0, z: 180 };
+    fn a_held_stick_banks_into_the_turn_holds_it_and_banks_back_when_released() {
+        // From the left edge, so the right wall never brakes the turn.
+        let mut player = Vec3 { x: -95, y: 0, z: 180 };
         let mut flight = Flight::ZERO;
         let mut peak = 0;
-        for _ in 0..30 {
+        for tick in 0..55 {
             step_reference(&mut player, &mut flight, RIGHT, 0);
             peak = peak.min(flight.bank);
+            if tick == 5 {
+                // About one rendered frame at 9 FPS.
+                assert!(flight.bank <= -12 * 256, "bank after a frame {flight:?}");
+                assert!(flight.vel[0] * 3 >= V_MAX_X * 2, "speed after a frame {flight:?}");
+            }
         }
-        assert!(peak <= -15 * 256, "peak bank {peak}");
-        assert!(
-            flight.bank > peak && flight.bank < 0,
-            "levels out while sliding"
-        );
-        assert!(flight.vel[0] > 700);
-        for _ in 0..12 {
+        assert!(peak <= -18 * 256, "peak bank {peak}");
+        assert_eq!(flight.bank, -BANK_STICK * 256, "holds the stick's bank");
+        assert_eq!(flight.vel[0], V_MAX_X);
+        let mut counter = 0;
+        for _ in 0..8 {
+            step_reference(&mut player, &mut flight, 0, 0);
+            counter = counter.max(flight.bank);
+        }
+        assert!(counter >= 4 * 256, "banks the other way while braking: {counter}");
+        for _ in 0..40 {
             step_reference(&mut player, &mut flight, 0, 0);
         }
-        assert!(flight.bank > 8 * 256, "banks the other way while braking");
-        assert_eq!(flight.pitch, 0);
+        assert_eq!((flight.vel[0], flight.bank, flight.pitch), (0, 0, 0));
     }
 
     #[test]

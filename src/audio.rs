@@ -1,8 +1,9 @@
-//! Four dedicated SID effects instruments; DAC music has separate ownership.
+//! Eight dedicated SID effects instruments; DAC music has separate ownership.
 //! The IRQ ticks at 50 Hz without REU access or calls into overlays.
-pub const SID_COUNT: usize = 4;
+pub const SID_COUNT: usize = 8;
 pub const CUE_COUNT: usize = 21;
-pub const SID_BASES: [u16; SID_COUNT] = [0xd400, 0xd420, 0xd440, 0xd460];
+pub const SID_BASES: [u16; SID_COUNT] =
+    [0xd400, 0xd420, 0xd440, 0xd460, 0xd480, 0xd4a0, 0xd4c0, 0xd4e0];
 pub trait SidBus {
     fn write(&mut self, sid: u8, reg: u8, value: u8);
 }

@@ -32,20 +32,21 @@ publish_hud_corner:
     lsr
     ror
     sta __rc4
-    ; Top sprites begin at Y=62, bottom at Y=225. Guard every possible
-    ; opposite fine-scroll offset (-4..+3), with at least six leading lines and
-    ; trailing fetch margin. The measured copy bound is below two lines.
+    ; Top sprites begin at Y=62, bottom at Y=225. Every opposite fine-scroll
+    ; offset (-4..+3) fetches within [Y-5, Y+25): data for display line n is
+    ; fetched on line n-1. Three leading lines cover the masked copy (bound
+    ; below two lines); a line ends past the last fetch before it is safe.
     lda __rc7
     cmp #2
     bcs .Lhud_bottom
-    lda #52
+    lda #54
     sta __rc8
-    lda #92
+    lda #87
     bne .Lhud_end
 .Lhud_bottom:
-    lda #212
+    lda #217
     sta __rc8
-    lda #254
+    lda #250
 .Lhud_end:
     sta __rc9
 .Lhud_retry:

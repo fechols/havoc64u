@@ -55,6 +55,12 @@ impl ShadowFrame {
     #[inline(never)]
     #[cfg_attr(target_arch = "mos", link_section = ".phase.scenery_aux")]
     pub fn reset(&mut self) {
+        self.clear();
+    }
+
+    /// `reset` for callers that cannot reach the SCENERY helper image.
+    #[inline(always)]
+    pub fn clear(&mut self) {
         self.caster_count = 0;
         self.rendered = 0;
         self.omitted = 0;

@@ -57,7 +57,7 @@ class ReuLayout(unittest.TestCase):
     def test_complete_package_fits_with_full_music_and_code_reservations(self):
         offsets, allocations = packer.checked_layout(layout())
         self.assertEqual(len(offsets), 26)
-        self.assertEqual((CODE_BASE, CODE_END), (0x14000, 0x7e800))
+        self.assertEqual((CODE_BASE, CODE_END), (0x14000, 0x7f000))
         self.assertEqual(MUSIC_OFFSET, 0x80000)
         self.assertEqual(sum(RESERVATIONS.values()), CODE_END - CODE_BASE)
         ordered = sorted(allocations)

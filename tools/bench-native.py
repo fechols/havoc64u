@@ -52,7 +52,7 @@ def checkout_metadata():
 
 class Layouts:
     """Resolve named fields, including arrays, without assuming Rust offsets."""
-    primitive = {"u8": 1, "i8": 1, "bool": 1, "u16": 2, "i16": 2, "u32": 4, "i32": 4}
+    primitive = {"u8": 1, "i8": 1, "bool": 1, "u16": 2, "i16": 2, "u32": 4, "i32": 4, "usize": 2}
 
     def __init__(self, elf, tool, output):
         self.elf, self.tool, self.output, self.structs = elf, tool, output, {}
@@ -123,7 +123,6 @@ class Layouts:
 
 STAGE_FIELDS = ("enemy_profile", "music_cue", "bridge_profile", "boss_kind",
                 "theme", "next_theme", "previous_theme", "reserved")
-SKY_COLORS = (6, 8, 11, 4, 0, 11, 8, 11, 6, 4, 0, 0, 0, 0, 0, 0)
 STAGE_LABELS = ("lowlands", "crystal", "canyon", "gorge", "ash", "foundry",
                 "fortress", "citadel", "storm", "meteor", "coast", "carrier",
                 "asteroid-belt", "shattered-moon", "ship-graveyard", "orbital-shipyard",
@@ -387,7 +386,7 @@ def fixtures(include_victory=True, campaign=False, space=False, boss_health=None
         for name, elapsed in (("start", 0), ("midfade", 50), ("arrival", 400), ("hold", 600)):
             patch = dict(result[1]["patch"], mode=3, rail_ticks=count*3750, ticks=elapsed,
                          menu_ticks=min(elapsed, 400), spawn_segment=count-1,
-                         boss_started=1, boss_defeated=1, score=24000,
+                         boss_started=1, boss_defeated=1, score=960,  # 24,000 points in 25-point units
                          shield=76, lives=2, bombs=1, invulnerability=0)
             result.append({"name": f"victory-{name}", "patch": patch,
                            "section": count-1, "cache_miss": False, "input_bits": 0})
@@ -644,6 +643,8 @@ def main():
                         help="continuous controlled SFX run at each of three CIA phases; minimum30 seconds")
     parser.add_argument("--max-frame-regression", type=float, default=5.0, help="maximum median frame-time increase in percent")
     parser.add_argument("--palettes", default="cold,retained")
+    parser.add_argument("--coop", action="store_true",
+                        help="seat a second player (keyboard) beside the first in every fixture")
     parser.add_argument("--real-time-ticks", type=int, default=400)
     # Accepted for older command lines: the game no longer caches sky bands.
     parser.add_argument("--skip-cache-checks", action="store_true", help=argparse.SUPPRESS)
@@ -725,8 +726,8 @@ def main():
                    "-joydev1", "0", "-joydev2", "0", "-controlport1device", "iosim", "-controlport2device", "iosim",
                    "-remotemonitor", "-remotemonitoraddress", f"127.0.0.1:{port}", "-initbreak", "0x080d",
                    "-moncommands", str(startup), "-autostart", str(prg)]
-        if sid_count == 4:
-            command.extend(["-sid3address", "0xd440", "-sid4address", "0xd460"])
+        for extra in range(3, sid_count + 1):
+            command.extend([f"-sid{extra}address", f"0x{0xd400 + 32 * (extra - 1):x}"])
         log = (output / "vice.log").open("w")
         process = subprocess.Popen(command, cwd=ROOT, env=dict(os.environ, XDG_CONFIG_HOME=str(output/"config"), XDG_CACHE_HOME=str(output/"cache")),
                                    stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
@@ -829,10 +830,8 @@ def main():
         mon.command(f"trace store {syms['PROF_PHASE']:04x}")
         mon.command(f"trace store {syms['PROF_DETAIL']:04x}")
         mon.command("trace store df01 df0a if @cpu:$01 == $35")
-        mon.command("trace store d400 d418 if @cpu:$01 == $35")
-        mon.command("trace store d420 d438 if @cpu:$01 == $35")
-        if sid_count == 4:
-            mon.command("trace store d440 d478 if @cpu:$01 == $35")
+        for sid in range(sid_count):
+            mon.command(f"trace store d{0x400 + sid * 32:03x} d{0x418 + sid * 32:03x} if @cpu:$01 == $35")
         mon.command(f"trace exec {audio_tick_address:04x}")
         for name in ("publish_guard", "publish_commit", "publish_done", "hud_publish_guard", "hud_publish_commit", "hud_publish_done"):
             if name in syms:
@@ -886,6 +885,12 @@ def main():
                 values.update((f"stage_info.{field}", value) for field, value in info.items())
             else:
                 info = {"enemy_profile": fixture["section"], "boss_kind": 0}
+            if args.coop:
+                # Port 2 and the keyboard: the second ship flies in its lane.
+                values.update({"devices": 0x31, "start_lives": 3, "reserve.lives": 3,
+                               "reserve.shield": 100, "reserve.bombs": 3,
+                               "reserve.player.x": 48, "reserve.player.z": 180,
+                               "reserve.invulnerability": 255, "view[0]": 24})
             values = vice.clock_fixture(values, layouts.load("Game")["fields"], package_format["count"])
             for field, value in values.items():
                 layouts.patch(game, "Game", field, value)

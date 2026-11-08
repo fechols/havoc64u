@@ -74,6 +74,7 @@ fn header_rejects_wrong_size_signature_version_and_directory() {
         (12, 0xff, AssetError::Bounds),
         (16, 5, AssetError::Bounds),
         (17, 2, AssetError::Bounds),
+        (17, 4, AssetError::Bounds),
     ] {
         let mut bytes = good;
         bytes[offset] = value;
@@ -144,9 +145,9 @@ fn malformed_segment_metadata_and_encounter_order_are_rejected() {
         (9, havoc::audio::CUE_COUNT as u8),
         (10, 5),
         (11, 6),
-        (12, 16),
-        (13, 16),
-        (14, 16),
+        (12, LAST_THEME + 1),
+        (13, LAST_THEME + 1),
+        (14, LAST_THEME + 1),
         (15, 1),
         (18, 0),
         (18, 4),
@@ -389,7 +390,8 @@ fn stage_model_banks_keep_twenty_six_distinct_enemy_shapes_and_shared_player_ass
                 shapes.push(shape);
             }
             let spec = bank.enemy(kind);
-            assert_eq!(spec.score, if kind == 3 { 250 } else { 100 });
+            // Kill awards are baked in 25-point score units: 250 and 100 points.
+            assert_eq!(spec.score, if kind == 3 { 10 } else { 4 });
             // Boss stages expose two escorts, so every checked spec is a
             // regular enemy at three halves of its authored size.
             assert_eq!(
@@ -412,7 +414,8 @@ fn stage_model_banks_keep_twenty_six_distinct_enemy_shapes_and_shared_player_ass
         for kind in [0, bank.enemy_count() + 1, 255] {
             assert_eq!(bank.enemy(kind), EnemySpec::default());
         }
-        for mesh in [PLAYER, CRYSTAL, BUILDING, MEDAL] {
+        // Obstacle buildings are traced per stage from its painting.
+        for mesh in [PLAYER, CRYSTAL, MEDAL] {
             if level == 17 && mesh == CRYSTAL {
                 continue; // The final stage reserves this unused slot for child Guardians.
             }
@@ -487,9 +490,24 @@ fn completed_enemy_surfaces_keep_ground_bases_and_original_vertex_bounds() {
         // Player, pickups and scenery preserve their original dimensions.
         check(&bank, PLAYER, (8, 12), [-36, -7, -27], [36, 12, 36]);
         check(&bank, CRYSTAL, (6, 8), [-13, -20, -13], [13, 20, 13]);
-        check(&bank, BUILDING, (8, 12), [-22, 0, -22], [22, 60, 22]);
-        if !matches!(level, 1 | 4) {
-            check(&bank, ROCK, (6, 8), [-32, 0, -30], [35, 42, 30]);
+        // Obstacles traced from the stage paintings fill the same boxes as
+        // the meshes they replace (the cave and ash spires stand taller);
+        // the rest keep the original shared meshes.
+        let traced = |mesh, min: [i16; 3], max: [i16; 3]| {
+            let (vertices, faces) = (bank.vertex_count(mesh), bank.face_count(mesh));
+            assert!(vertices <= 12 && faces <= 20, "level {level}/mesh {mesh}");
+            check(&bank, mesh, (vertices, faces), min, max);
+        };
+        match level {
+            5 | 6 | 7 | 10 | 11 => traced(BUILDING, [-22, 0, -22], [22, 60, 22]),
+            _ => check(&bank, BUILDING, (8, 12), [-22, 0, -22], [22, 60, 22]),
+        }
+        match level {
+            1 => traced(ROCK, [-24, 0, -22], [26, 63, 22]),
+            3 | 4 => traced(ROCK, [-32, 0, -30], [35, 63, 30]),
+            8 => traced(ROCK, [-32, 0, -30], [35, 56, 30]),
+            0 | 2 | 9 => traced(ROCK, [-32, 0, -30], [35, 42, 30]),
+            _ => check(&bank, ROCK, (6, 8), [-32, 0, -30], [35, 42, 30]),
         }
     }
 }
@@ -570,9 +588,9 @@ fn every_quantized_model_has_outward_solids_and_explicit_thin_panel_backs() {
             }
             let expected_pairs = match mesh {
                 CRYSTAL if level == 17 => 16,
-                FIGHTER if info.theme < 10 && info.enemy_profile == 1 => 6,
-                FIGHTER if info.theme < 10 && info.enemy_profile == 2 => 2,
-                DIVER if info.theme < 10 && info.enemy_profile == 1 => 2,
+                FIGHTER if info.theme < FIRST_ORBITAL_THEME && info.enemy_profile == 1 => 6,
+                FIGHTER if info.theme < FIRST_ORBITAL_THEME && info.enemy_profile == 2 => 2,
+                DIVER if info.theme < FIRST_ORBITAL_THEME && info.enemy_profile == 1 => 2,
                 TURRET if info.enemy_profile != 1 => 1,
                 _ => 0,
             };
@@ -949,13 +967,16 @@ fn enemy_timing_leaves_room_for_repeats_without_moving_hazards() {
                 .map(|i| 2200 + i * 4300 + u16::from(stage) * 40)
                 .collect()
         } else {
-            Vec::new()
+            // Terrestrial boss stages: three props on the approach only.
+            (0..3)
+                .map(|i| 1800 + i * 2000 + u16::from(stage) * 40)
+                .collect()
         };
         assert_eq!(actual, expected, "stage {stage} hazard timing changed");
         enemies += combat.len();
         hazards += actual.len();
     }
-    assert_eq!((enemies, hazards), (445, 102));
+    assert_eq!((enemies, hazards), (445, 111));
 }
 
 #[test]
@@ -1002,7 +1023,7 @@ fn authored_rosters_cover_their_local_types_and_keep_boss_turrets_out_of_actor_s
                     9
                 }
             } else if info.boss_kind != 0 {
-                0
+                3
             } else {
                 6
             }

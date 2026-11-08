@@ -9,7 +9,7 @@ use core::{
 use havoc::{
     assets::{self, AssetBank, Segment},
     audio::{EffectsEngine, MusicState, SidBus, VideoStandard},
-    game::{Game, Hud, InputSample, PresentationEvent, INPUT_MASK},
+    game::{DeviceSample, Game, Hud, InputSample, PresentationEvent, INPUT_MASK},
     hud, hud_sprites,
     presentation::BombEffect,
     render::Renderer,
@@ -51,7 +51,7 @@ static mut AUDIO: MaybeUninit<digital::State> = MaybeUninit::uninit();
 #[no_mangle]
 static mut EFFECTS: MaybeUninit<EffectsEngine> = MaybeUninit::uninit();
 const _: () = assert!(core::mem::size_of::<digital::State>() <= 432);
-const _: () = assert!(core::mem::size_of::<EffectsEngine>() <= 224);
+const _: () = assert!(core::mem::size_of::<EffectsEngine>() <= 512);
 const BACKEND_DAC: u8 = 1;
 const BACKEND_STARTING: u8 = 2;
 const BACKEND_SFX_ONLY: u8 = 3;
@@ -95,7 +95,14 @@ pub static mut AUDIO_TICKS: u16 = 0;
 #[no_mangle]
 pub static mut BOMB_EFFECT: BombEffect = BombEffect::new();
 // Image storage lives in the VIC bank; retain only the compact display key.
+// Both seats' keys live in the free page at $CB00 (link.ld), keeping the
+// two-player build's low globals below the first mission buffer.
+#[link_section = ".hud_state"]
 static mut HUD_STATE: MaybeUninit<hud_sprites::DisplayState> = MaybeUninit::uninit();
+// The second seat's HUD values, and whether the last HUD showed two seats.
+#[link_section = ".hud_state"]
+static mut HUD_SECOND: MaybeUninit<hud_sprites::DisplayState> = MaybeUninit::uninit();
+static mut HUD_COOP: bool = false;
 static mut HUD_VALID: bool = false;
 // The first frame replaces the boot bitmap band by band. Keep HUD sprites
 // hidden until that publication finishes; this latch never repeats on wrap.
@@ -151,8 +158,10 @@ pub static mut FRAME_TRIANGLES: u16 = 0;
 pub static mut FRAME_DROPPED: u16 = 0;
 #[no_mangle]
 pub static mut GAME_MODE: u8 = 0;
+/// Section-local distance for the monitor tools, which combine it with
+/// GAME_STAGE (section × 30,000 + local); no 32-bit sum is formed here.
 #[no_mangle]
-pub static mut GAME_DISTANCE: u32 = 0;
+pub static mut GAME_LOCAL_DISTANCE: u16 = 0;
 #[no_mangle]
 pub static mut GAME_STAGE: u8 = 0;
 #[no_mangle]
@@ -169,6 +178,9 @@ pub static mut RENDER_SEGMENT: u8 = 0;
 pub static mut INPUT_OVERFLOWS: u16 = 0;
 #[no_mangle]
 pub static mut TEST_INPUT: u8 = 0xff;
+/// With TEST_INPUT active, the synthetic port 1 joystick (second player).
+#[no_mangle]
+pub static mut TEST_INPUT2: u8 = 0;
 #[no_mangle]
 pub static mut PROF_PHASE: u8 = 0;
 #[no_mangle]
@@ -198,14 +210,22 @@ static mut PAUSED: bool = false;
 static mut FPS_WINDOW_START: u16 = 0;
 static mut FPS_WINDOW_FRAMES: u8 = 0;
 static mut FPS_TENTHS: u16 = 0;
-static mut INPUTS: [InputSample; 64] = [InputSample {
-    bits: 0,
-    pressed: 0,
+// One sample of all three devices per frame (port 2, port 1, keyboard).
+#[no_mangle]
+static mut INPUTS: [DeviceSample; INPUT_QUEUE] = [DeviceSample {
+    bits: [0; 3],
+    pressed: [0; 3],
     ms: 0,
-}; 64];
+}; INPUT_QUEUE];
+// queue_devices (platform.S) assumes 32 eight-byte records.
+const INPUT_QUEUE: usize = 32;
+const _: () = assert!(core::mem::size_of::<DeviceSample>() == 8);
+#[no_mangle]
 static mut INPUT_HEAD: u8 = 0;
+#[no_mangle]
 static mut INPUT_TAIL: u8 = 0;
-static mut LAST_BITS: u8 = 0;
+#[no_mangle]
+static mut LAST_BITS: [u8; 3] = [0; 3];
 static mut SEGMENT_CHECKSUMS: [u16; assets::SEGMENT_COUNT as usize] =
     [0; assets::SEGMENT_COUNT as usize];
 static mut MODEL_CHECKSUMS: [u16; assets::SEGMENT_COUNT as usize] =
@@ -215,7 +235,9 @@ extern "C" {
     fn nmi_entry();
     fn disable_irq();
     fn enable_irq();
-    fn read_controls() -> u8;
+    fn read_devices();
+    fn queue_devices(ms: u16);
+    static mut device_bits: [u8; 3];
     fn restore_controls();
     fn io_on();
     fn io_off();
@@ -258,7 +280,7 @@ extern "C" {
 pub(crate) struct HardwareSid;
 impl SidBus for HardwareSid {
     fn write(&mut self, sid: u8, reg: u8, value: u8) {
-        // The engine bounds sid < 4 and reg < 25, so the register address
+        // The engine bounds sid < 8 and reg < 25, so the register address
         // shares the same single-byte offset as its changed-write cache.
         unsafe { poke(0xd400 | u16::from((sid << 5) | reg), value) }
     }
@@ -300,11 +322,11 @@ pub unsafe extern "C" fn irq_body(frame_event: u8) {
         if !AUDIO_READY {
             return;
         }
-        let bits = if TEST_INPUT == 0xff {
-            read_controls()
+        if TEST_INPUT == 0xff {
+            read_devices();
         } else {
-            TEST_INPUT & INPUT_MASK
-        };
+            device_bits = [TEST_INPUT & INPUT_MASK, TEST_INPUT2 & INPUT_MASK, 0];
+        }
         let timer = loop {
             let hi = peek(0xdc05);
             let lo = peek(0xdc04);
@@ -326,18 +348,7 @@ pub unsafe extern "C" fn irq_body(frame_event: u8) {
             fraction += 1;
         }
         let ms = CLOCK_MS.wrapping_add(fraction as u16);
-        let next = (INPUT_HEAD + 1) & 63;
-        if next != INPUT_TAIL {
-            INPUTS[INPUT_HEAD as usize] = InputSample {
-                bits,
-                pressed: bits & !LAST_BITS,
-                ms,
-            };
-            INPUT_HEAD = next;
-            LAST_BITS = bits;
-        } else {
-            INPUT_OVERFLOWS = INPUT_OVERFLOWS.wrapping_add(1);
-        }
+        queue_devices(ms);
     }
 }
 #[inline(never)]
@@ -350,7 +361,7 @@ unsafe fn audio_tick() {
     BOMB_EFFECT.tick();
     if AUDIO_READY {
         // The native body of EffectsEngine::tick (target-c64/asm/sfx.S)
-        // advances EFFECTS and writes the four chips; tools/test-sfx-kernel.py
+        // advances EFFECTS and writes the eight chips; tools/test-sfx-kernel.py
         // holds it to the host reference's exact state and write stream.
         extern "C" {
             fn fast_effects_tick();
@@ -374,10 +385,9 @@ unsafe fn fail(message: &[u8]) -> ! {
     poke(0xdf20, 0);
     poke(0xdf41, 0);
     poke(0xdf40, 0);
-    poke(0xd418, 0);
-    poke(0xd438, 0);
-    poke(0xd458, 0);
-    poke(0xd478, 0);
+    for sid in 0..havoc::audio::SID_COUNT as u16 {
+        poke(0xd418 + sid * 32, 0);
+    }
     // Bank 2 exposes the VIC character ROM at $9000. Reuse screen A, keeping
     // the compiler's low-memory scratch intact even while displaying an error.
     poke(0xdd02, peek(0xdd02) | 3);
@@ -396,29 +406,58 @@ unsafe fn fail(message: &[u8]) -> ! {
     }
     loop {}
 }
-unsafe fn dma(mut reu: u32, mut cpu: u16, mut count: u16) {
-    if cpu as u32 + count as u32 > 0x10000 {
+/// REU -> RAM in bounded chunks. The address arrives as a u32 but is only
+/// split into bytes: the loop runs on a bank byte and a 16-bit offset, which
+/// keeps 32-bit arithmetic out of this resident, per-frame routine.
+#[inline(never)]
+unsafe fn dma(reu: u32, cpu: u16, count: u16) {
+    let [low, middle, mut bank, top] = reu.to_le_bytes();
+    // The installed REU holds 16 MiB: any 24-bit address is valid.
+    const _: () = assert!(assets::REU_SIZE == 0x100_0000);
+    if top != 0 {
+        fail(b"INVALID REU TRANSFER")
+    }
+    // The destination may end exactly at $FFFF but never wrap past it.
+    let (end, wrapped) = cpu.overflowing_add(count);
+    if wrapped && end != 0 {
         fail(b"REU DESTINATION WOULD WRAP")
     }
-    while count != 0 {
+    let mut offset = u16::from_le_bytes([low, middle]);
+    // Count up to the total, as load_phase does: llvm-mos miscompiled a
+    // `while count != 0 { count -= n }` form of this loop, skipping any
+    // transfer whose low count byte was zero (such as every 512-byte segment).
+    let mut done = 0u16;
+    while done < count {
         // Keep foreground transfers short enough for the independent 50 Hz
-        // audio IRQ, including the SIM helper image and model/cache loads.
-        let n = assets::dma_chunk(reu, cpu, count).min(1024);
-        if n == 0 {
-            fail(b"INVALID REU TRANSFER")
+        // audio IRQ, and never let one cross a 64 KiB REU bank (so none can
+        // cross the controller's 512 KiB pages either).
+        let bank_left = 0u16.wrapping_sub(offset);
+        let mut n = (count - done).min(1024);
+        if bank_left != 0 && bank_left < n {
+            n = bank_left;
         }
-        word(0xdf02, cpu);
-        poke(0xdf04, reu as u8);
-        poke(0xdf05, (reu >> 8) as u8);
-        poke(0xdf06, (reu >> 16) as u8);
+        word(0xdf02, cpu.wrapping_add(done));
+        word(0xdf04, offset);
+        poke(0xdf06, bank);
         word(0xdf07, n);
         poke(0xdf09, 0);
         poke(0xdf0a, 0);
         poke(0xdf01, 0x91);
-        reu += n as u32;
-        cpu = cpu.wrapping_add(n);
-        count -= n;
+        offset = offset.wrapping_add(n);
+        if offset == 0 {
+            bank = bank.wrapping_add(1);
+        }
+        done += n;
     }
+}
+/// The REU address `add` bytes into a 2 KiB code page, without 32-bit or
+/// branching arithmetic: page × 2048 + add = (page × 8 + add_high) × 256 +
+/// add_low, and the bracketed sum (at most 2,295) always fits 16 bits.
+#[inline(always)]
+fn page_address(page: u8, add: u16) -> u32 {
+    let [add_low, add_high] = add.to_le_bytes();
+    let [middle, bank] = ((page as u16) * 8 + add_high as u16).to_le_bytes();
+    u32::from_le_bytes([add_low, middle, bank, 0])
 }
 #[inline(never)]
 unsafe fn load_phase(page: u8, size: u16) {
@@ -455,14 +494,14 @@ unsafe fn load_sim(profile: u8) {
     // GEOMETRY, PIXELS and AUDIO reuse this workspace after SIM returns.
     // Reload on every SIM entry; the IRQ never references these helpers.
     dma(
-        (__code_reu_pages[23] as u32) << 11,
+        page_address(__code_reu_pages[23], 0),
         0x8e00,
         core::ptr::addr_of!(__phase_sim_aux_prefix_size) as u16,
     );
     // Previous raster/shadow records are dead. SCENERY resets the shadow frame
     // later in this frame, after SIM and its extra helper code have returned.
     dma(
-        ((__code_reu_pages[23] as u32) << 11) + 0x500,
+        page_address(__code_reu_pages[23], 0x500),
         0xe000,
         core::ptr::addr_of!(__phase_sim_extra_size) as u16,
     );
@@ -730,23 +769,19 @@ unsafe fn clock_ms() -> u16 {
 }
 #[link_section = ".phase.sim"]
 #[inline(never)]
-unsafe fn take_input(until: u16) -> Option<InputSample> {
+unsafe fn input_ready(until: u16) -> bool {
+    // The IRQ writes only the head slot, so the tail record stays stable
+    // until the caller advances INPUT_TAIL past it.
     disable_irq();
-    let result = if INPUT_TAIL != INPUT_HEAD
-        && INPUTS[INPUT_TAIL as usize].ms.wrapping_sub(until) as i16 <= 0
-    {
-        let value = INPUTS[INPUT_TAIL as usize];
-        INPUT_TAIL = (INPUT_TAIL + 1) & 63;
-        Some(value)
-    } else {
-        None
-    };
+    let ready = INPUT_TAIL != INPUT_HEAD
+        && INPUTS[INPUT_TAIL as usize].ms.wrapping_sub(until) as i16 <= 0;
     enable_irq();
-    result
+    ready
 }
-// The publisher runs only from SIM, whose extra helpers are loaded with every
-// profile. Benchmark instrumentation uses spare resident space in that build.
-#[cfg_attr(not(feature = "benchmarks"), link_section = ".phase.sim_extra")]
+// The publisher runs only from SIM, right after simulate, so its two callees
+// in the common SIM prefix are still loaded. It stays resident: the two-player
+// build filled the SIM extra helpers, and tools/check-overlays.py whitelists
+// its exact SIM entries.
 #[inline(never)]
 unsafe fn send_audio(game: &mut Game) {
     disable_irq();
@@ -921,8 +956,10 @@ unsafe fn update_fps_overlay(mode: havoc::game::Mode) {
         FPS_WINDOW_START = ticks;
         FPS_WINDOW_FRAMES = 0;
     }
-    // Row 7: Space column 4, CTRL column 2, Commodore column 5.
-    // F is row 2 column 5; S is row 1 column 5; DEL is row 0 column 0.
+    // Row 7: RUN/STOP column 7, CTRL column 2, Commodore column 5.
+    // F is row 2 column 5; Y is row 3 column 1; DEL is row 0 column 0.
+    // Space and W/A/S/D are flight keys (read by the IRQ), so pause is
+    // RUN/STOP and the Story toggle is Y.
     // Comma/< and period/> are row 5, columns 7 and 4. CIA 1 port A
     // doubles as joystick port 2, so drive it as key rows only briefly with
     // the sampling IRQ masked, then restore joystick inputs and paddle port 2.
@@ -934,11 +971,11 @@ unsafe fn update_fps_overlay(mode: havoc::game::Mode) {
     let idle = peek(0xdc01);
     poke(0xdc00, 0x7f);
     let row7 = !peek(0xdc01);
-    let space = row7 & idle & 0x10 != 0;
+    let pause_key = row7 & idle & 0x80 != 0;
     poke(0xdc00, 0xfb);
     let f_key = peek(0xdc01) & 0x20 == 0 && idle & 0x20 != 0;
-    poke(0xdc00, 0xfd);
-    let story_key = peek(0xdc01) & 0x20 == 0;
+    poke(0xdc00, 0xf7);
+    let story_key = peek(0xdc01) & 0x02 == 0;
     poke(0xdc00, 0xfe);
     let delete = peek(0xdc01) & 1 == 0;
     poke(0xdc00, 0xdf);
@@ -948,7 +985,7 @@ unsafe fn update_fps_overlay(mode: havoc::game::Mode) {
     restore_controls();
     enable_irq();
     let music_chord = row7 & 0x24 == 0x24 && delete;
-    let keys = space as u8
+    let keys = pause_key as u8
         | (f_key as u8) << 1
         | (music_chord as u8) << 2
         | (story_key as u8) << 3
@@ -978,13 +1015,24 @@ unsafe fn update_fps_overlay(mode: havoc::game::Mode) {
             GAME.assume_init_mut().step_menu_music(false);
         }
     }
-    if pressed & 8 != 0 && idle & 0x20 != 0 {
+    if pressed & 8 != 0 && idle & 0x02 != 0 {
         // Title-only selection; the ordinary Fire edge still launches in SIM.
         GAME.assume_init_mut().toggle_story_mode();
     }
-    // Latch raw music/S keys even when idle filtering or mode guards suppress them. Releasing
+    // Latch raw music/Y keys even when idle filtering or mode guards suppress them. Releasing
     // joystick interference or changing modes must not rearm held keys.
     KEYS_HELD = keys;
+}
+
+/// The empty frame SCENERY would start after the victory fade: no staged
+/// faces, the faded (black) sky, a cleared shadow frame. The transition
+/// sounds were already cancelled during the fade, so nothing else changes.
+#[inline(never)]
+unsafe fn begin_empty_scenery(current: u8) -> u8 {
+    RENDER_SEGMENT = segment_data(current)[4];
+    RENDERER.assume_init_mut().begin(0);
+    havoc::shadow::native_frame().clear();
+    0
 }
 
 #[link_section = ".phase.scenery"]
@@ -992,12 +1040,12 @@ unsafe fn update_fps_overlay(mode: havoc::game::Mode) {
 unsafe fn prepare_scenery(current: u8, sounds: &mut TransitionAudio) -> u8 {
     io_on();
     dma(
-        (__code_reu_pages[33] as u32) << 11,
+        page_address(__code_reu_pages[33], 0),
         0x8e00,
         core::ptr::addr_of!(__phase_scenery_aux_prefix_size) as u16,
     );
     dma(
-        ((__code_reu_pages[33] as u32) << 11) + 0x500,
+        page_address(__code_reu_pages[33], 0x500),
         0xe000,
         core::ptr::addr_of!(__phase_scenery_extra_size) as u16,
     );
@@ -1017,8 +1065,10 @@ unsafe fn prepare_scenery(current: u8, sounds: &mut TransitionAudio) -> u8 {
         };
         io_on();
         dma(
-            ((__code_reu_pages[page] as u32) << 11)
-                + core::ptr::addr_of!(__phase_scenery_base_size) as u32,
+            page_address(
+                __code_reu_pages[page],
+                core::ptr::addr_of!(__phase_scenery_base_size) as u16,
+            ),
             core::ptr::addr_of!(__phase_scenery_base_end) as u16,
             core::ptr::addr_of!(__phase_scenery_earth_tail_size) as u16,
         );
@@ -1061,7 +1111,7 @@ unsafe fn prepare_scenery(current: u8, sounds: &mut TransitionAudio) -> u8 {
 unsafe fn benchmark_load_projection() {
     io_on();
     dma(
-        ((__code_reu_pages[3] as u32) << 11) + 0x3f20,
+        page_address(__code_reu_pages[3], 0x3f20),
         0x6f20,
         core::ptr::addr_of!(__phase_render_aux_size) as u16,
     );
@@ -1077,7 +1127,7 @@ unsafe fn prepare_geometry(scenery_count: u8, bank: &AssetBank<'_>) {
     {
         io_on();
         dma(
-            ((__code_reu_pages[3] as u32) << 11) + 0x3f20,
+            page_address(__code_reu_pages[3], 0x3f20),
             0x6f20,
             core::ptr::addr_of!(__phase_render_aux_size) as u16,
         );
@@ -1085,7 +1135,6 @@ unsafe fn prepare_geometry(scenery_count: u8, bank: &AssetBank<'_>) {
     }
     havoc::projection::begin_frame();
     let game = GAME.assume_init_mut();
-    game.prepare_damage_feedback_frame();
     let renderer = RENDERER.assume_init_mut();
     let [parallax_x, parallax_y] = game.sky_parallax();
     // Detail markers 5-8 split GEOMETRY work for the profilers; 0 ends it.
@@ -1213,19 +1262,39 @@ unsafe fn update_sprite_hud(status: &Hud) {
         FRAME_SERIAL,
         if FPS_SHOWN { Some(FPS_TENTHS) } else { None },
     );
-    let dirty = next.changed_corners(if HUD_VALID {
-        Some(HUD_STATE.assume_init_ref())
+    // In co-op the left corners show the first player's score and shield
+    // pairs, the right corners the second player's (read with the seats
+    // swapped); lives, bombs and charge show only in solo play.
+    let game = GAME.assume_init_mut();
+    let coop = game.coop();
+    let second = if coop {
+        game.swap_seats();
+        let hud = game.hud();
+        game.swap_seats();
+        hud_sprites::DisplayState::from_hud(&hud, FRAME_SERIAL, None)
     } else {
-        None
-    });
+        next
+    };
+    let valid = HUD_VALID && HUD_COOP == coop;
+    let dirty = next.changed_corners(if valid { Some(HUD_STATE.assume_init_ref()) } else { None });
+    let second_dirty =
+        second.changed_corners(if valid { Some(HUD_SECOND.assume_init_ref()) } else { None });
     for corner in 0..4u8 {
-        if dirty & (1 << corner) != 0 {
+        let (shown, state, changes) = if coop {
+            let seat = corner & 1 != 0;
+            (corner & 2, if seat { &second } else { &next }, if seat { second_dirty } else { dirty })
+        } else {
+            (corner, &next, dirty)
+        };
+        if changes & (1 << shown) != 0 {
             let images = &mut *(0x8e00 as *mut [u8; 128]);
-            hud_sprites::render_corner(corner, &next, images);
-            poke(0x8e80, next.accent(corner));
+            hud_sprites::render_corner(shown, state, images);
+            poke(0x8e80, state.accent(shown));
             publish_hud_corner(corner);
         }
     }
+    HUD_SECOND.write(second);
+    HUD_COOP = coop;
     // Byte publication is atomic; the line-251 IRQ latches the desired mask.
     // The first mask waits until present, after the splash has been covered.
     let enable = next.enabled_mask();
@@ -1246,8 +1315,12 @@ unsafe fn draw_pixels() {
     // VIC background takes the frame's clear colour (the cell writer's code 0).
     io_on();
     dma(
-        ((core::ptr::addr_of!(__phase_pixels_aux_reu_bank) as u8 as u32) << 16)
-            | (core::ptr::addr_of!(__phase_pixels_aux_reu_offset) as u32),
+        {
+            let offset = core::ptr::addr_of!(__phase_pixels_aux_reu_offset) as u16;
+            let [low, middle] = offset.to_le_bytes();
+            let bank = core::ptr::addr_of!(__phase_pixels_aux_reu_bank) as u8;
+            u32::from_le_bytes([low, middle, bank, 0])
+        },
         0x6f20,
         core::ptr::addr_of!(__phase_pixels_aux_size) as u16,
     );
@@ -1421,8 +1494,12 @@ struct Runtime {
 #[link_section = ".phase.sim"]
 #[inline(never)]
 unsafe fn load_segment(slot: u8, index: u8) {
+    // Every segment slot lies in the REU's first 64 KiB: build it in 16 bits.
+    const _: () = assert!(
+        assets::SEGMENTS_OFFSET + assets::SEGMENT_COUNT as u32 * 2048 <= 0x10000
+    );
     dma(
-        assets::SEGMENTS_OFFSET + index as u32 * 2048,
+        (assets::SEGMENTS_OFFSET as u16 + ((index as u16) << 11)) as u32,
         segment_address(slot),
         512,
     );
@@ -1497,14 +1574,15 @@ unsafe fn simulate(runtime: &mut Runtime, now: u16) -> Option<()> {
         let held = LAST_BITS;
         enable_irq();
         runtime.sim_ms = now;
-        game.sample_paused_input(held, now);
+        game.sample_paused_devices(&held, now);
         runtime.was_paused = PAUSED;
     }
     while now.wrapping_sub(runtime.sim_ms) >= 20 {
         let step_ms = runtime.sim_ms.wrapping_add(20);
         if bench_ticks == 255 {
-            while let Some(input) = take_input(step_ms) {
-                game.sample_input(input)
+            while input_ready(step_ms) {
+                game.sample_devices(&*core::ptr::addr_of!(INPUTS[INPUT_TAIL as usize]));
+                INPUT_TAIL = (INPUT_TAIL + 1) & (INPUT_QUEUE as u8 - 1);
             }
         } else {
             game.sample_input(InputSample {
@@ -1543,11 +1621,11 @@ unsafe fn simulate(runtime: &mut Runtime, now: u16) -> Option<()> {
     enable_irq();
     send_audio(game);
     GAME_MODE = game.mode() as u8;
-    // The campaign distance for the monitor tools: section × 30,000 as a
-    // 16-bit product of 1,875 shifted by four, plus the section-local part.
-    let section = game.segment_index();
-    GAME_DISTANCE = (((section as u16 * 1_875) as u32) << 4) + game.local_distance() as u32;
-    GAME_STAGE = section;
+    // The monitor tools derive the campaign distance from these two.
+    GAME_LOCAL_DISTANCE = game.local_distance();
+    GAME_STAGE = game.segment_index();
+    // Once per drawn frame, after catch-up, before GEOMETRY draws it.
+    game.prepare_damage_feedback_frame();
     Some(())
 }
 #[no_mangle]
@@ -1630,13 +1708,13 @@ pub unsafe extern "C" fn main() -> i32 {
         // Crossings clear to shared stars before the midpoint tail change.
         let info = GAME.assume_init_ref().stage_info();
         let crossing = GAME.assume_init_ref().transition_progress();
-        let scenery_page = if info.theme >= 10 {
+        let scenery_page = if info.theme >= assets::FIRST_ORBITAL_THEME {
             let theme = if crossing.map_or(false, |(_, tick)| tick >= 200) {
                 info.next_theme
             } else {
                 info.theme
             };
-            0x19 + theme - 10
+            0x19 + theme - assets::FIRST_ORBITAL_THEME
         } else {
             match info.bridge_profile {
                 1 => 0x15,
@@ -1650,11 +1728,19 @@ pub unsafe extern "C" fn main() -> i32 {
         } else {
             core::ptr::addr_of!(__phase_scenery_terrain_size) as u16
         };
-        load_phase(scenery_page, scenery_size);
-        wr(core::ptr::addr_of_mut!(PROF_PHASE), 11);
-        io_off();
-        let scenery_count = prepare_scenery(runtime.current, &mut runtime.transition_audio);
-        io_on();
+        // Once the victory fade completes the world emits nothing, so the
+        // medal frames skip the SCENERY overlay and its helpers entirely
+        // (about 17k bus cycles of REU transfer per frame).
+        let scenery_count = if GAME.assume_init_ref().victory_ticks() >= havoc::victory::FADE_TICKS {
+            begin_empty_scenery(runtime.current)
+        } else {
+            load_phase(scenery_page, scenery_size);
+            wr(core::ptr::addr_of_mut!(PROF_PHASE), 11);
+            io_off();
+            let count = prepare_scenery(runtime.current, &mut runtime.transition_audio);
+            io_on();
+            count
+        };
         wr(core::ptr::addr_of_mut!(PROF_PHASE), 2);
         // Bridges keep the common player/projectile renderer and replace enemy
         // presentation with SCENERY wildlife. SIM remains a separate overlay.

@@ -11,7 +11,8 @@ with saturating adds and lowered by the chase camera; all faces visited in
 order; faces entirely at or behind the near plane projected
 and emitted (project_triangle); faces entirely in front dropped; faces that
 straddle the plane handed back for clipping in sequence. Random meshes cover
-every shift, colour override, metadata flag bits, i16 saturation,
+every shift, colour override (solid or the second ship's $80 palette),
+metadata flag bits, i16 saturation,
 the 256-command capacity and 128-vertex meshes. The vertex records at $E000
 are checked as well. The JSON report stays under target/mesh-test.
 """
@@ -97,7 +98,8 @@ static void reference(const struct MeshArgs *a){
   for(uint8_t f=0;f<a->face_count;f++){
     const uint8_t *face=a->faces+f*4;
     struct Vec3 p[3]={cam[face[0]],cam[face[1]],cam[face[2]]};
-    uint8_t color=a->color?a->color:face[3];
+    static const uint8_t ship2[16]={0,1,2,3,4,5,2,7,8,9,10,11,12,13,10,15};
+    uint8_t color=(a->color&0x80)?ship2[face[3]&15]:a->color?a->color:face[3];
     uint8_t behind=(p[0].z>=8)+(p[1].z>=8)+(p[2].z>=8);
     if(behind==3) emit(reference_renderer,p,color,a->flags);
     else if(behind){ ref_clipped[ref_clipped_count]=f; ref_clip_color[ref_clipped_count++]=color; }
@@ -207,7 +209,9 @@ int main(void){
     a.camera_y=pick(next()>>5,200);
     a.vertex_count=vc; a.face_count=fc;
     a.flags=(uint8_t)((next()>>8)&((mesh&1)?0xff:0x63));
-    a.color=(uint8_t)((next()>>11)%4==0?1+(next()>>7)%15:0);
+    { uint8_t pick=(uint8_t)((next()>>11)%8);
+      /* Solid overrides, the second ship's palette ($80) and none. */
+      a.color=(uint8_t)(pick<2?1+(next()>>7)%15:pick==2?0x80:0); }
     uint16_t renderer_count=(uint16_t)((next()>>9)%9==0?250+(next()>>8)%7:(next()>>8)%64);
     begin_frame(renderer_count);
     a.face_color=0; a.indices[0]=a.indices[1]=a.indices[2]=0;

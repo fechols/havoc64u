@@ -432,7 +432,8 @@ class Capture:
                    "-jamaction", "5", "-autostartprgmode", "1", "-reu", "-reusize", str(package_layout["reu_size"] // 1024),
                    "-reuimage", str(self.args.package_dir / "havoc.reu"), "+reuimagerw",
                    "-sidmodel", "1", "-sidextra", str(self.package[17] - 1),
-                   "-sid2address", "0xd420", "-sid3address", "0xd440", "-sid4address", "0xd460",
+                   *(option for extra in range(2, self.package[17] + 1)
+                     for option in (f"-sid{extra}address", f"0x{0xd400 + 32 * (extra - 1):x}")),
                    "-joydev1", "0", "-joydev2", "0", "-controlport1device", "iosim", "-controlport2device", "iosim",
                    "-remotemonitor", "-remotemonitoraddress", f"127.0.0.1:{port}",
                    "-initbreak", "0x080d", "-moncommands", str(startup), "-autostart", str(self.args.package_dir / "havoc.prg")]
@@ -664,7 +665,7 @@ class Capture:
             last_cycle = self.report["audio_start_cycle"] + round(endpoint * self.hz)
             events = [event for event in vice.stores(trace_path) if first_cycle <= event["bus_cycles"] < last_cycle]
             activity = vice.sid_summary(trace_path.name, events, self.package[17])
-            chip_names = ("left_d400", "right_d420", "socket1_d440", "socket2_d460")[:self.package[17]]
+            chip_names = [name for name in activity if name not in ("source", "sid_count")]
             if not vice.package_model_layout(self.package).get("quad_sfx") and any(not activity[name]["gate_on"] for name in chip_names):
                 raise RuntimeError("A SID chip had no active voice gates during retained footage")
             if self.report["emulator_audio"].get("sfx_only", False):

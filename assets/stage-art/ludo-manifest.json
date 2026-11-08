@@ -1,0 +1,542 @@
+{
+ "tool": "ludo 0.2.1",
+ "backdrops": {
+  "t00_flat.png": {
+   "clean_plate": {
+    "command": "image edit",
+    "job_id": "f639b8ea-e1d5-42fb-b312-86d7669edd76",
+    "input": "src/Lowland Approach Splash.png",
+    "prompt": "Remove the large chrome title lettering and the blue player spaceship with its orange engine flames. Fill those areas by seamlessly continuing the surrounding scenery and sky. Keep everything else, the composition and the colors unchanged."
+   },
+   "flat": {
+    "command": "image edit",
+    "job_id": "127702b6-bc94-4870-a1f4-4a86518f6389",
+    "input": "t00_plate-1.png",
+    "prompt": "Redraw this scene as a very simple flat-shaded low-poly game backdrop in the style of a Commodore 64 multicolor screen: a flat sky in one solid color, one band of distant angular mountain or skyline silhouettes in two flat colors along the horizon, three simple flat angular clouds in the sky, and flat ground in two colors. Large flat color areas only, no texture, no gradients, no small details, same colors and layout as the original."
+   }
+  },
+  "t01_flat.png": {
+   "clean_plate": {
+    "command": "image edit",
+    "job_id": "5c09b480-c2be-40d7-a221-d8d646b27bb6",
+    "input": "src/Iron Canyon Splash.png",
+    "prompt": "Remove the large chrome title lettering and the blue player spaceship with its orange engine flames. Fill those areas by seamlessly continuing the surrounding scenery and sky. Keep everything else, the composition and the colors unchanged."
+   },
+   "flat": {
+    "command": "image edit",
+    "job_id": "930194d2-aa13-4a0b-a033-c1cc097da211",
+    "input": "t01_plate-1.png",
+    "prompt": "Redraw this scene as a very simple flat-shaded low-poly game backdrop in the style of a Commodore 64 multicolor screen: a flat sky in one solid color, one band of distant angular mountain or skyline silhouettes in two flat colors along the horizon, three simple flat angular clouds in the sky, and flat ground in two colors. Large flat color areas only, no texture, no gradients, no small details, same colors and layout as the original."
+   }
+  },
+  "t02_flat.png": {
+   "clean_plate": {
+    "command": "image edit",
+    "job_id": "ab938579-37fd-4ceb-836d-75560aed190d",
+    "input": "src/Fortress Run Splash.png",
+    "prompt": "Remove the large chrome title lettering and the blue player spaceship with its orange engine flames. Fill those areas by seamlessly continuing the surrounding scenery and sky. Keep everything else, the composition and the colors unchanged."
+   },
+   "flat": {
+    "command": "image edit",
+    "job_id": "5b5b7c39-a443-4166-bc02-fbeb50b54091",
+    "input": "t02_plate-1.png",
+    "prompt": "Redraw this scene as a very simple flat-shaded low-poly game backdrop in the style of a Commodore 64 multicolor screen: a flat sky in one solid color, one band of distant angular mountain or skyline silhouettes in two flat colors along the horizon, three simple flat angular clouds in the sky, and flat ground in two colors. Large flat color areas only, no texture, no gradients, no small details, same colors and layout as the original."
+   }
+  },
+  "t03_flat.png": {
+   "clean_plate": {
+    "command": "image edit",
+    "job_id": "50ec5017-a267-4362-804e-e1e9cef5d6a2",
+    "input": "src/Carrier Coast Splash.png",
+    "prompt": "Remove the large chrome title lettering and the blue player spaceship with its orange engine flames. Fill those areas by seamlessly continuing the surrounding scenery and sky. Keep everything else, the composition and the colors unchanged."
+   },
+   "flat": {
+    "command": "image edit",
+    "job_id": "4bdef761-87c7-412b-b465-bfadaca5411d",
+    "input": "t03_plate-1.png",
+    "prompt": "Redraw this scene as a very simple flat-shaded low-poly game backdrop in the style of a Commodore 64 multicolor screen: a flat sky in one solid color, one band of distant angular mountain or skyline silhouettes in two flat colors along the horizon, three simple flat angular clouds in the sky, and flat ground in two colors. Large flat color areas only, no texture, no gradients, no small details, same colors and layout as the original."
+   }
+  },
+  "t04_flat.png": {
+   "clean_plate": {
+    "command": "image edit",
+    "job_id": "2568f301-118c-46c1-962b-7f0123fa5eea",
+    "input": "src/Crystal Cave Splash.png",
+    "prompt": "Remove the large chrome title lettering and the blue player spaceship with its orange engine flames. Fill those areas by seamlessly continuing the surrounding scenery and sky. Keep everything else, the composition and the colors unchanged."
+   },
+   "flat": {
+    "command": "image edit",
+    "job_id": "6672f1ea-525a-4e44-8007-ec841a1e6e94",
+    "input": "t04_plate-1.png",
+    "prompt": "Redraw this crystal cave as a very simple flat-shaded low-poly game backdrop in the style of a Commodore 64 multicolor screen: a dark flat background, two sloping rock walls and an angular rock ceiling in two flat colors, three large hanging crystals in two flat colors, flat water floor. Large flat color areas only, no texture, no gradients, same colors and layout as the original."
+   }
+  },
+  "t05_flat.png": {
+   "clean_plate": {
+    "command": "image edit",
+    "job_id": "d5e70a97-2e51-46bb-b370-02fb2d87fb83",
+    "input": "src/Ashen Wastes Splash.png",
+    "prompt": "Remove the large chrome title lettering and the blue player spaceship with its orange engine flames. Fill those areas by seamlessly continuing the surrounding scenery and sky. Keep everything else, the composition and the colors unchanged."
+   },
+   "flat": {
+    "command": "image edit",
+    "job_id": "ee3f38a3-94a7-4895-ad27-f5d9c053bc22",
+    "input": "t05_plate-1.png",
+    "prompt": "Redraw this scene as a very simple flat-shaded low-poly game backdrop in the style of a Commodore 64 multicolor screen: a flat sky in one solid color, one band of distant angular mountain or skyline silhouettes in two flat colors along the horizon, three simple flat angular clouds in the sky, and flat ground in two colors. Large flat color areas only, no texture, no gradients, no small details, same colors and layout as the original."
+   }
+  },
+  "t06_flat.png": {
+   "clean_plate": {
+    "command": "image edit",
+    "job_id": "0be2f899-ea27-4cc8-b772-1c7eb1cfb8b6",
+    "input": "src/Foundry Belt Splash.png",
+    "prompt": "Remove the large chrome title lettering and the blue player spaceship with its orange engine flames. Fill those areas by seamlessly continuing the surrounding scenery and sky. Keep everything else, the composition and the colors unchanged."
+   },
+   "flat": {
+    "command": "image edit",
+    "job_id": "c6b53df6-749e-4cab-84a8-5fe865574ba7",
+    "input": "t06_plate-1.png",
+    "prompt": "Redraw this scene as a very simple flat-shaded low-poly game backdrop in the style of a Commodore 64 multicolor screen: a flat sky in one solid color, one band of distant angular mountain or skyline silhouettes in two flat colors along the horizon, three simple flat angular clouds in the sky, and flat ground in two colors. Large flat color areas only, no texture, no gradients, no small details, same colors and layout as the original."
+   }
+  },
+  "t07_flat.png": {
+   "clean_plate": {
+    "command": "image edit",
+    "job_id": "cd75f6fa-8a9c-4512-99e2-8283665020ba",
+    "input": "src/Citadel Core Splash.png",
+    "prompt": "Remove the large chrome title lettering and the blue player spaceship with its orange engine flames. Fill those areas by seamlessly continuing the surrounding scenery and sky. Keep everything else, the composition and the colors unchanged."
+   },
+   "flat": {
+    "command": "image edit",
+    "job_id": "25d9b4c8-5fa5-4f23-9842-eb6552952409",
+    "input": "t07_plate-1.png",
+    "prompt": "Redraw this scene as a very simple flat-shaded low-poly game backdrop in the style of a Commodore 64 multicolor screen: a flat sky in one solid color, one band of distant angular mountain or skyline silhouettes in two flat colors along the horizon, three simple flat angular clouds in the sky, and flat ground in two colors. Large flat color areas only, no texture, no gradients, no small details, same colors and layout as the original."
+   }
+  },
+  "t08_flat.png": {
+   "clean_plate": {
+    "command": "image edit",
+    "job_id": "244a02aa-13dd-461f-b915-2a159f829c99",
+    "input": "src/Storm Front Splash.png",
+    "prompt": "Remove the large chrome title lettering and the blue player spaceship with its orange engine flames. Fill those areas by seamlessly continuing the surrounding scenery and sky. Keep everything else, the composition and the colors unchanged."
+   },
+   "flat": {
+    "command": "image edit",
+    "job_id": "97066144-d17c-4403-ac5f-c09665780b84",
+    "input": "t08_plate-1.png",
+    "prompt": "Redraw this scene as a very simple flat-shaded low-poly game backdrop in the style of a Commodore 64 multicolor screen: a flat sky in one solid color, one band of distant angular mountain or skyline silhouettes in two flat colors along the horizon, three simple flat angular clouds in the sky, and flat ground in two colors. Large flat color areas only, no texture, no gradients, no small details, same colors and layout as the original."
+   }
+  },
+  "t09_flat.png": {
+   "clean_plate": {
+    "command": "image edit",
+    "job_id": "430d8cc3-e935-4c47-960c-bb1d30ecb61f",
+    "input": "src/Meteor Reach Splash.png",
+    "prompt": "Remove the large chrome title lettering and the blue player spaceship with its orange engine flames. Fill those areas by seamlessly continuing the surrounding scenery and sky. Keep everything else, the composition and the colors unchanged."
+   },
+   "flat": {
+    "command": "image edit",
+    "job_id": "024ded52-bb3f-497a-ad83-c0dadc6b418c",
+    "input": "t09_plate-1.png",
+    "prompt": "Redraw this scene as a very simple flat-shaded low-poly game backdrop in the style of a Commodore 64 multicolor screen: a flat sky in one solid color, one band of distant angular mountain or skyline silhouettes in two flat colors along the horizon, three simple flat angular clouds in the sky, and flat ground in two colors. Large flat color areas only, no texture, no gradients, no small details, same colors and layout as the original."
+   }
+  },
+  "t10_flat.png": {
+   "clean_plate": {
+    "command": "image edit",
+    "job_id": "816fb240-9aff-49c9-b50f-7c87790cc922",
+    "input": "src/Canyon Gate.png",
+    "prompt": "Remove the large chrome title lettering and the blue player spaceship with its orange engine flames. Fill those areas by seamlessly continuing the surrounding scenery and sky. Keep everything else, the composition and the colors unchanged."
+   },
+   "flat": {
+    "command": "image edit",
+    "job_id": "4dd83c43-5466-41c8-bdee-79bc990bb59a",
+    "input": "t10_plate-1.png",
+    "prompt": "Leave out the large armored flying warship, its explosion and its laser beams entirely: show only the canyon landscape and the sky behind where it was. Redraw this scene as a very simple flat-shaded low-poly game backdrop in the style of a Commodore 64 multicolor screen: a flat sky in one solid color, one band of distant angular mountain or skyline silhouettes in two flat colors along the horizon, three simple flat angular clouds in the sky, and flat ground in two colors. Large flat color areas only, no texture, no gradients, no small details, same colors and layout as the original."
+   }
+  },
+  "t11_flat.png": {
+   "clean_plate": {
+    "command": "image edit",
+    "job_id": "5ae1bba5-bc83-4ff8-9910-067be99d5565",
+    "input": "src/Carrier Assault Splash.png",
+    "prompt": "Remove the large chrome title lettering and the blue player spaceship with its orange engine flames. Fill those areas by seamlessly continuing the surrounding scenery and sky. Keep everything else, the composition and the colors unchanged."
+   },
+   "flat": {
+    "command": "image edit",
+    "job_id": "1f2cee45-0ff2-4dd4-85fe-5ddd95278e37",
+    "input": "t11_plate-1.png",
+    "prompt": "Leave out the giant blue aircraft carrier warship, its turrets, the explosion, the smoke and the laser beams entirely: show only the stormy sea, the rocky coast, the distant horizon and the sky behind where it was. Redraw this scene as a very simple flat-shaded low-poly game backdrop in the style of a Commodore 64 multicolor screen: a flat sky in one solid color, one band of distant angular mountain or skyline silhouettes in two flat colors along the horizon, three simple flat angular clouds in the sky, and flat ground in two colors. Large flat color areas only, no texture, no gradients, no small details, same colors and layout as the original."
+   }
+  },
+  "t12_flat.png": {
+   "clean_plate": {
+    "command": "image edit",
+    "job_id": "800a1a98-babe-42e9-8b34-20699c18ae69",
+    "input": "src/Asteroid Belt Splash.png",
+    "prompt": "Remove the large chrome title lettering and the blue player spaceship with its orange engine flames. Fill those areas by seamlessly continuing the surrounding scenery and sky. Keep everything else, the composition and the colors unchanged."
+   },
+   "flat": {
+    "command": "image edit",
+    "job_id": "310d8e07-9b91-48c6-994f-47976d123604",
+    "input": "t12_plate-1.png",
+    "prompt": "Redraw this scene as a very simple flat-shaded low-poly game backdrop in the style of a Commodore 64 multicolor screen: a solid black space sky with a few small white stars, no nebula. A blue planet with flat green land and white cloud patches in the upper left, and a few chunky brown asteroids. Each object built from a few large flat-colored angular facets with clear light and shadow sides. Large flat color areas only, no texture, no gradients, no small details, same colors and layout as the original."
+   }
+  },
+  "t13_flat.png": {
+   "clean_plate": {
+    "command": "image edit",
+    "job_id": "22d76e01-174d-4a5a-8b89-bb08f7b3e024",
+    "input": "src/Shattered Moon Splash.png",
+    "prompt": "Remove the large chrome title lettering and the blue player spaceship with its orange engine flames. Fill those areas by seamlessly continuing the surrounding scenery and sky. Keep everything else, the composition and the colors unchanged."
+   },
+   "flat": {
+    "command": "image edit",
+    "job_id": "52e467a1-337a-4429-8043-3251d1bafa29",
+    "input": "t13_plate-1.png",
+    "prompt": "Redraw this scene as a very simple flat-shaded low-poly game backdrop in the style of a Commodore 64 multicolor screen: a solid black space sky with a few small white stars, no nebula. A large gray cratered moon split by one dark fracture, with a thin blue rim, and a few chunky gray rock fragments. Each object built from a few large flat-colored angular facets with clear light and shadow sides. Large flat color areas only, no texture, no gradients, no small details, same colors and layout as the original."
+   }
+  },
+  "t14_flat.png": {
+   "clean_plate": {
+    "command": "image edit",
+    "job_id": "2c03702d-7202-48dc-b7f8-32d484166cdf",
+    "input": "src/Ship Graveyard Splash.png",
+    "prompt": "Remove the large chrome title lettering and the blue player spaceship with its orange engine flames. Fill those areas by seamlessly continuing the surrounding scenery and sky. Keep everything else, the composition and the colors unchanged."
+   },
+   "flat": {
+    "command": "image edit",
+    "job_id": "e7023d72-f87e-49f1-bfa8-5d9f37e2f967",
+    "input": "t14_plate-1.png",
+    "prompt": "Redraw this scene as a very simple flat-shaded low-poly game backdrop in the style of a Commodore 64 multicolor screen: a solid black space sky with a few small white stars, no nebula. Derelict spaceship hulls in flat blue, gray and rust orange panels drifting in space. Each object built from a few large flat-colored angular facets with clear light and shadow sides. Large flat color areas only, no texture, no gradients, no small details, same colors and layout as the original."
+   }
+  },
+  "t15_flat.png": {
+   "clean_plate": {
+    "command": "image edit",
+    "job_id": "aa4e97f4-be5d-4cc9-8aae-ef4d776e6c10",
+    "input": "src/Orbital Shipyard Splash.png",
+    "prompt": "Remove the large chrome title lettering and the blue player spaceship with its orange engine flames. Fill those areas by seamlessly continuing the surrounding scenery and sky. Keep everything else, the composition and the colors unchanged."
+   },
+   "flat": {
+    "command": "image edit",
+    "job_id": "23c3ac04-7c76-461a-add7-e3d4ee276d3d",
+    "input": "t15_plate-1.png",
+    "prompt": "Redraw this scene as a very simple flat-shaded low-poly game backdrop in the style of a Commodore 64 multicolor screen: a solid black space sky with a few small white stars, no nebula. A space shipyard corridor of tall gray-white gantry frames with blue girders, cyan light strips and yellow lights. Each object built from a few large flat-colored angular facets with clear light and shadow sides. Large flat color areas only, no texture, no gradients, no small details, same colors and layout as the original."
+   }
+  },
+  "t16_flat.png": {
+   "clean_plate": {
+    "command": "image edit",
+    "job_id": "cee65186-4996-4f40-b7f4-06948877cea4",
+    "input": "src/Space Carrier Splash.png",
+    "prompt": "Remove the large chrome title lettering and the blue player spaceship with its orange engine flames. Fill those areas by seamlessly continuing the surrounding scenery and sky. Keep everything else, the composition and the colors unchanged."
+   },
+   "flat": {
+    "command": "image edit",
+    "job_id": "3cb3a280-669f-4743-8a82-f0207a74cb3e",
+    "input": "t16_plate-1.png",
+    "prompt": "Redraw this scene as a very simple flat-shaded low-poly game backdrop in the style of a Commodore 64 multicolor screen: a solid black space sky with a few small white stars, no nebula. A huge blue and gray space carrier hull with a red stripe and a flat gray flight deck. Each object built from a few large flat-colored angular facets with clear light and shadow sides. Large flat color areas only, no texture, no gradients, no small details, same colors and layout as the original."
+   }
+  },
+  "t17_flat.png": {
+   "clean_plate": {
+    "command": "image edit",
+    "job_id": "ce2402d8-a255-44e9-936f-f4a6e0a53e28",
+    "input": "src/Jump Gate Splash.png",
+    "prompt": "Remove the large chrome title lettering and the blue player spaceship with its orange engine flames. Fill those areas by seamlessly continuing the surrounding scenery and sky. Keep everything else, the composition and the colors unchanged."
+   },
+   "flat": {
+    "command": "image edit",
+    "job_id": "9f30dcfa-f4d0-4d7f-a66a-a21c54f87e7c",
+    "input": "t17_plate-1.png",
+    "prompt": "Redraw this scene as a very simple flat-shaded low-poly game backdrop in the style of a Commodore 64 multicolor screen: a solid black space sky with a few small white stars, no nebula. A huge ring-shaped jump gate made of alternating blue and white segments around a glowing cyan center. Each object built from a few large flat-colored angular facets with clear light and shadow sides. Large flat color areas only, no texture, no gradients, no small details, same colors and layout as the original."
+   }
+  }
+ },
+ "props": {
+  "props/t00_rock.png": {
+   "concept": {
+    "command": "image edit",
+    "job_id": "e1aa62e3-06f6-4541-a549-3106b8e21205",
+    "input": "../plates/t00_plate-1.png",
+    "prompt": "A single craggy reddish-brown sandstone rock outcrop, like the rocks on the hills in this painting. Show exactly one object, centered, whole object visible, three-quarter view from slightly above, on a plain flat white background, no ground, no shadow. Bold chunky low-poly faceted shapes with large flat faces, game-asset 3D render style, using the colors of this painting."
+   },
+   "model": {
+    "command": "model create",
+    "job_id": "a0f04182-3ce5-43ed-a18c-2adedb33e84d",
+    "input": "../props/t00_rock-2.png",
+    "prompt": null
+   }
+  },
+  "props/t01_rock.png": {
+   "concept": {
+    "command": "image edit",
+    "job_id": "62757576-489e-48bc-bb50-5dbb8707c9be",
+    "input": "../plates/t01_plate-1.png",
+    "prompt": "A single jagged dark grey canyon boulder with rusty orange streaks, like the cliffs in this painting. Show exactly one object, centered, whole object visible, three-quarter view from slightly above, on a plain flat white background, no ground, no shadow. Bold chunky low-poly faceted shapes with large flat faces, game-asset 3D render style, using the colors of this painting."
+   },
+   "model": {
+    "command": "model create",
+    "job_id": "6da5a50e-e9ae-472c-9a11-f0dda555e5fe",
+    "input": "../props/t01_rock-1.png",
+    "prompt": null
+   }
+  },
+  "props/t02_building.png": {
+   "concept": {
+    "command": "image edit",
+    "job_id": "18d01844-aa87-4bf7-9f34-b7eac9115897",
+    "input": "../plates/t02_plate-1.png",
+    "prompt": "A single armored fortress tower block, grey steel with blue panels and red trim, like the towers in this painting. Show exactly one object, centered, whole object visible, three-quarter view from slightly above, on a plain flat white background, no ground, no shadow. Bold chunky low-poly faceted shapes with large flat faces, game-asset 3D render style, using the colors of this painting."
+   },
+   "model": {
+    "command": "model create",
+    "job_id": "2a6bb34d-140d-4f2a-a3b6-94fbbebc38d2",
+    "input": "../props/t02_building-2.png",
+    "prompt": null
+   }
+  },
+  "props/t03_building.png": {
+   "concept": {
+    "command": "image edit",
+    "job_id": "6de5bc7d-fa8b-4432-a0ad-e1ea4e635bae",
+    "input": "../plates/t03_plate-1.png",
+    "prompt": "A single grey concrete coastal defense bunker tower with a flat roof, matching the colors of this painting. Show exactly one object, centered, whole object visible, three-quarter view from slightly above, on a plain flat white background, no ground, no shadow. Bold chunky low-poly faceted shapes with large flat faces, game-asset 3D render style, using the colors of this painting."
+   },
+   "model": {
+    "command": "model create",
+    "job_id": "1f3fb2a7-b00f-4ffe-9aa9-a0a7c60808dd",
+    "input": "../props/t03_building-2.png",
+    "prompt": null
+   }
+  },
+  "props/t04_rock.png": {
+   "concept": {
+    "command": "image edit",
+    "job_id": "5a2f9c11-6614-4772-a702-81b153fef011",
+    "input": "../plates/t04_plate-1.png",
+    "prompt": "A single tall cluster of three glowing cyan crystal spires rising from dark violet rock, like the crystals in this painting. Show exactly one object, centered, whole object visible, three-quarter view from slightly above, on a plain flat white background, no ground, no shadow. Bold chunky low-poly faceted shapes with large flat faces, game-asset 3D render style, using the colors of this painting."
+   },
+   "model": {
+    "command": "model create",
+    "job_id": "970b9615-7c78-4be5-90e4-1495da8631b5",
+    "input": "../props/t04_rock-single.png",
+    "prompt": null
+   },
+   "concept_note": "left cluster cropped to a single spire group before image-to-3D"
+  },
+  "props/t05_rock.png": {
+   "concept": {
+    "command": "image edit",
+    "job_id": "88fd68bc-ec0e-405d-920c-801d0bc2c68a",
+    "input": "../plates/t05_plate-1.png",
+    "prompt": "A single dark volcanic basalt rock spire dusted with grey ash, like the rocks in this painting. Show exactly one object, centered, whole object visible, three-quarter view from slightly above, on a plain flat white background, no ground, no shadow. Bold chunky low-poly faceted shapes with large flat faces, game-asset 3D render style, using the colors of this painting."
+   },
+   "model": {
+    "command": "model create",
+    "job_id": "97de518d-6bd3-45ff-9bdc-b31ed26aec9a",
+    "input": "../props/t05_rock-2.png",
+    "prompt": null
+   }
+  },
+  "props/t06_building.png": {
+   "concept": {
+    "command": "image edit",
+    "job_id": "ffc69d3f-8d60-4c70-b00f-e322e934473e",
+    "input": "../plates/t06_plate-1.png",
+    "prompt": "A single industrial foundry smelter building with a chimney stack, dark metal with glowing orange furnace openings, like this painting. Show exactly one object, centered, whole object visible, three-quarter view from slightly above, on a plain flat white background, no ground, no shadow. Bold chunky low-poly faceted shapes with large flat faces, game-asset 3D render style, using the colors of this painting."
+   },
+   "model": {
+    "command": "model create",
+    "job_id": "0a905100-7879-4d7b-a661-656a687ab58e",
+    "input": "../props/t06_building-2.png",
+    "prompt": null
+   }
+  },
+  "props/t07_building.png": {
+   "concept": {
+    "command": "image edit",
+    "job_id": "ae525a7f-9cbd-4646-be23-78d5342e2ac6",
+    "input": "../plates/t07_plate-1.png",
+    "prompt": "A single squat armored reactor machinery block, like the grey steel bulkhead blocks on the floor of this painting: a blocky stepped tower of grey steel armor plates with glowing red light strips and a small blue panel. Show exactly one object, centered, whole object visible, three-quarter view from slightly above, on a plain flat white background, no ground, no shadow. Bold chunky low-poly faceted shapes with large flat faces, game-asset 3D render style, using the colors of this painting."
+   },
+   "model": {
+    "command": "model create",
+    "job_id": "52ed70ce-aad8-437b-a5d4-7954c3e63236",
+    "input": "../props/t07_building-1.png",
+    "prompt": null
+   }
+  },
+  "props/t08_rock.png": {
+   "concept": {
+    "command": "image edit",
+    "job_id": "d5609ca8-dab9-4fd2-8840-60cd524d10d7",
+    "input": "../plates/t08_plate-1.png",
+    "prompt": "A single jagged dark slate mountain rock spire with pale lit edges, like the peaks in this painting. Show exactly one object, centered, whole object visible, three-quarter view from slightly above, on a plain flat white background, no ground, no shadow. Bold chunky low-poly faceted shapes with large flat faces, game-asset 3D render style, using the colors of this painting."
+   },
+   "model": {
+    "command": "model create",
+    "job_id": "cd22c733-4f4c-4322-a460-71821c01bb2a",
+    "input": "../props/t08_rock-2.png",
+    "prompt": null
+   }
+  },
+  "props/t09_rock.png": {
+   "concept": {
+    "command": "image edit",
+    "job_id": "7efd0858-296c-4117-85f6-db3fdfaab840",
+    "input": "../plates/t09_plate-1.png",
+    "prompt": "A single charred meteorite boulder with glowing orange cracks, like the meteors in this painting. Show exactly one object, centered, whole object visible, three-quarter view from slightly above, on a plain flat white background, no ground, no shadow. Bold chunky low-poly faceted shapes with large flat faces, game-asset 3D render style, using the colors of this painting."
+   },
+   "model": {
+    "command": "model create",
+    "job_id": "6da046cc-324e-416c-8b3f-e85a97b60ccc",
+    "input": "../props/t09_rock-1.png",
+    "prompt": null
+   }
+  },
+  "props/t10_rock.png": {
+   "concept": {
+    "command": "image edit",
+    "job_id": "2af15e47-b962-4baa-a282-6488adb6dbdf",
+    "input": "../plates/t10_plate-1.png",
+    "prompt": "A single tall jagged canyon rock spire with sharp crags, like the cliffs in this painting: weathered grey stone with burnt orange and rust red faces. Show exactly one object, centered, whole object visible, three-quarter view from slightly above, on a plain flat white background, no ground, no shadow. Bold chunky low-poly faceted shapes with large flat faces, game-asset 3D render style, using the colors of this painting."
+   },
+   "model": {
+    "command": "model create",
+    "job_id": "a215b2b6-0ecb-4e66-8603-217b1ccc2932",
+    "input": "../props/t10_rock-1.png",
+    "prompt": null
+   }
+  },
+  "props/t11_building.png": {
+   "concept": {
+    "command": "image edit",
+    "job_id": "bbd66afc-4859-434c-96b7-be84e175430d",
+    "input": "../plates/t11_plate-1.png",
+    "prompt": "A single armored deck gun turret block from the carrier deck in this painting: a squat stepped block of deep blue armor plating with a red pyramid roof and grey steel trim. Show exactly one object, centered, whole object visible, three-quarter view from slightly above, on a plain flat white background, no ground, no shadow. Bold chunky low-poly faceted shapes with large flat faces, game-asset 3D render style, using the colors of this painting."
+   },
+   "model": {
+    "command": "model create",
+    "job_id": "f8e0202e-aa18-43cc-a232-787b80368e09",
+    "input": "../props/t11_building-1.png",
+    "prompt": null
+   }
+  }
+ },
+ "orbital": {
+  "props/t12_asteroid.png": {
+   "concept": {
+    "command": "image edit",
+    "job_id": "5aa7e905-edb1-44c6-af6c-4514dbf8a6a1",
+    "input": "../plates/t12_plate-1.png",
+    "prompt": "A single craggy tumbling asteroid, like the asteroids in this painting: lumpy brown rock with deep pits and a few green mineral patches. Show exactly one object, centered, whole object visible, three-quarter view from slightly above, on a plain flat white background, no stars, no debris, no shadow. Bold chunky low-poly faceted shapes with large flat faces, game-asset 3D render style, using the colors of this painting."
+   },
+   "model": {
+    "command": "model create",
+    "job_id": "0284b60d-b3b3-48b8-bd49-6118718e0503",
+    "input": "../props/t12_asteroid-1.png",
+    "prompt": null
+   }
+  },
+  "props/t13_asteroid.png": {
+   "concept": {
+    "command": "image edit",
+    "job_id": "16d8ef49-d677-4452-b1d6-cba9db6ac515",
+    "input": "../plates/t13_plate-1.png",
+    "prompt": "A single sharp-edged fragment of the shattered moon in this painting: pale grey lunar rock with fractured flat faces and small crater pits. Show exactly one object, centered, whole object visible, three-quarter view from slightly above, on a plain flat white background, no stars, no debris, no shadow. Bold chunky low-poly faceted shapes with large flat faces, game-asset 3D render style, using the colors of this painting."
+   },
+   "model": {
+    "command": "model create",
+    "job_id": "a3e1e2e3-d678-495e-bb6b-d76e0e14710c",
+    "input": "../props/t13_asteroid-1.png",
+    "prompt": null
+   }
+  },
+  "props/t14_asteroid.png": {
+   "concept": {
+    "command": "image edit",
+    "job_id": "741645cb-06da-4487-b828-19c16c207f27",
+    "input": "../plates/t14_plate-1.png",
+    "prompt": "A single tumbling chunk of wrecked starship armor from the ship graveyard in this painting: a crumpled lump of grey and blue armor plates with rust orange torn edges. Show exactly one object, centered, whole object visible, three-quarter view from slightly above, on a plain flat white background, no stars, no debris, no shadow. Bold chunky low-poly faceted shapes with large flat faces, game-asset 3D render style, using the colors of this painting."
+   },
+   "model": {
+    "command": "model create",
+    "job_id": "f21c3d10-e0cb-4109-a317-804f62bf7a7a",
+    "input": "../props/t14_asteroid-1.png",
+    "prompt": null
+   }
+  },
+  "props/t15_asteroid.png": {
+   "concept": {
+    "command": "image edit",
+    "job_id": "0459277e-eb04-4955-a9af-e3ac3060c0c0",
+    "input": "../plates/t15_plate-1.png",
+    "prompt": "A single tumbling knot of scrap metal from the orbital shipyard in this painting: a compact lump of bent white steel girders and grey hull panels with a cyan light strip. Show exactly one object, centered, whole object visible, three-quarter view from slightly above, on a plain flat white background, no stars, no debris, no shadow. Bold chunky low-poly faceted shapes with large flat faces, game-asset 3D render style, using the colors of this painting."
+   },
+   "model": {
+    "command": "model create",
+    "job_id": "dfdf0704-c1cc-4234-bf6a-e5c1e4e3e562",
+    "input": "../props/t15_asteroid-1.png",
+    "prompt": null
+   }
+  },
+  "props/t16_asteroid.png": {
+   "concept": {
+    "command": "image edit",
+    "job_id": "49a2d64a-7d51-4e59-b92e-a376965d507a",
+    "input": "../plates/t16_plate-1.png",
+    "prompt": "A single tumbling jagged piece of capital ship hull debris from the space carrier in this painting: a chunky slab of light blue armor plating with red underside panels. Show exactly one object, centered, whole object visible, three-quarter view from slightly above, on a plain flat white background, no stars, no debris, no shadow. Bold chunky low-poly faceted shapes with large flat faces, game-asset 3D render style, using the colors of this painting."
+   },
+   "model": {
+    "command": "model create",
+    "job_id": "2e2b2ab9-d9f3-499e-9f8f-83eefc8dc8bf",
+    "input": "../props/t16_asteroid-1.png",
+    "prompt": null
+   }
+  },
+  "props/t17_asteroid.png": {
+   "concept": {
+    "command": "image edit",
+    "job_id": "ed949a50-4b3d-4cb1-8f77-f0fa6c5c25fa",
+    "input": "../plates/t17_plate-1.png",
+    "prompt": "A single tumbling crystalline asteroid near the jump gate in this painting: dark faceted rock split by glowing cyan and light blue crystal veins. Show exactly one object, centered, whole object visible, three-quarter view from slightly above, on a plain flat white background, no stars, no debris, no shadow. Bold chunky low-poly faceted shapes with large flat faces, game-asset 3D render style, using the colors of this painting."
+   },
+   "model": {
+    "command": "model create",
+    "job_id": "8156a8e2-2d00-44f7-ac99-49a4622ba2ae",
+    "input": "../props/t17_asteroid-1.png",
+    "prompt": null
+   }
+  },
+  "props/t14_wreck.png": {
+   "concept": {
+    "command": "image edit",
+    "job_id": "3da3cb7a-ae01-483a-aaf0-df0a246bdf14",
+    "input": "../plates/t14_plate-1.png",
+    "prompt": "A single derelict spaceship hull wreck, like the wrecked ships in this painting: a long wedge-shaped hull with blue and grey armor plates and rust orange patches. Show exactly one object, centered, whole object visible, three-quarter side view from slightly above with the nose pointing to the right, on a plain flat white background, no stars, no debris, no shadow. Bold chunky low-poly faceted shapes with large flat faces, game-asset 3D render style, using the colors of this painting."
+   },
+   "model": {
+    "command": "model create",
+    "job_id": "122a261e-7747-4141-96fe-97bc01c0ccee",
+    "input": "../props/t14_wreck-1.png",
+    "prompt": null
+   }
+  },
+  "props/t16_hull.png": {
+   "concept": {
+    "command": "image edit",
+    "job_id": "857d05df-aabc-4860-9098-37ad266e1003",
+    "input": "../plates/t16_plate-1.png",
+    "prompt": "A single long parked capital ship hull, like the space carrier in this painting: a long wedge-shaped flight-deck hull with light blue armor, red underside and a raised bridge tower. Three-quarter side view from slightly above with the nose pointing to the right. Show exactly one object, centered, whole object visible, three-quarter view from slightly above, on a plain flat white background, no stars, no debris, no shadow. Bold chunky low-poly faceted shapes with large flat faces, game-asset 3D render style, using the colors of this painting."
+   },
+   "model": {
+    "command": "model create",
+    "job_id": "f4110aee-95f5-4787-8407-db5d6efe5c18",
+    "input": "../props/t16_hull-1.png",
+    "prompt": null
+   }
+  }
+ }
+}

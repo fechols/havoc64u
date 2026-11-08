@@ -1,7 +1,7 @@
 H.A.V.O.C. v0.1.5 - Heavy Assault Vessel: Orbital Combat
 
 Requires a C64 Ultimate at 64 MHz with 16 MiB of REU memory and a joystick
-connected to port 2. The supplied configuration enables the four built-in SIDs
+connected to port 2. The supplied configuration enables the eight built-in SIDs
 and Ultimate Audio for digital music throughout the game. Hammond Rocker uses
 true stereo; the other twenty songs use mono with a 10 ms delay between outputs.
 No extra sound chips are needed.
@@ -60,15 +60,15 @@ The mode persists through the attract tour and new runs. Toggle soundtrack
 mode off to restore Hammond Rocker. After victory, Galactic Dash continues
 at the title; title-only mode shows NOW PLAYING VICTORY MUSIC... and the
 toggle remains usable. Reloading restores title music.
-All four SIDs are dedicated to layered effects with resonant filter sweeps.
+All eight SIDs are dedicated to layered effects with resonant filter sweeps.
 Each effect uses one SID or a stereo pair, leaving chips free for overlapping
 sounds. Player lasers have a bright energy-cannon tone; hull impacts combine
 a bright tonal body with a soft, heavy attack. Bombs and the largest explosions
 keep their deep foundation. Effects update at 50 Hz.
 Barrel rolls have a strong thruster sweep. Laser contact with
 indestructible objects also makes a sound. Bombs use one stereo pair, leaving
-another left and right chip for ship explosions and other effects; repeating
-a bomb restarts its existing pair.
+three more left and right chips for ship explosions and other effects;
+repeating a bomb restarts its existing pair.
 Shots and impacts choose a side from their screen position when triggered.
 Only a narrow band around the center uses a stereo pair; existing tails keep
 their original side. Bombs, boss explosions and player death remain stereo.
@@ -86,7 +86,7 @@ do not overlap.
 Controls and troubleshooting:
 https://github.com/fechols/havoc64u
 
-Original game, quad-SID effects, models, and tools. See LICENSE for the MIT License.
+Original game, eight-SID effects, models, and tools. See LICENSE for the MIT License.
 
 All twenty-one original digital recordings were composed for H.A.V.O.C. by
 William Echols: Hammond Rocker, Galactic Dash, Mission Failed, Lowland Approach,

@@ -27,8 +27,15 @@ fn main() {
         "asm/shots.S",
         "asm/flight.S",
         "asm/sfx.S",
+        "asm/coop.S",
+        "asm/libdiv.S",
     ] {
         println!("cargo:rerun-if-changed={source}");
+    }
+    // Compiled division uses the compact asm/libdiv.S routines instead of
+    // libcrt's (whose object would also carry the unused 32-bit divides).
+    for routine in ["__udivhi3", "__umodhi3", "__divhi3", "__udivqi3", "__umodqi3"] {
+        println!("cargo:rustc-link-arg=-Wl,--wrap={routine}");
     }
     for name in ["MOS_CLANG", "LLVM_MOS", "HOME", "HAVOC_SPAN_PREPARED_POINTERS"] {
         println!("cargo:rerun-if-env-changed={name}");
@@ -76,6 +83,8 @@ fn main() {
         "shots",
         "flight",
         "sfx",
+        "coop",
+        "libdiv",
     ] {
         if source == "spans" && (!span_buffer || span_front)
             || source == "front_spans" && !span_front
