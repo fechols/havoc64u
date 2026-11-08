@@ -177,7 +177,7 @@ def main():
         if name == "old-code-directory":
             damaged[0x100:0x104] = b"OVL6" if space else b"OVL5"
         if name == "directory-profile":
-            damaged[offset] = 2 if original["reu"][17] == 4 else 4
+            damaged[offset] = 4 if original["reu"][17] == 8 else 8
         if name in ("resident-pair", "directory-profile", "old-code-directory"):
             # A valid directory with the wrong resident checksum must get the
             # distinct pairing error, rather than failing directory validation.

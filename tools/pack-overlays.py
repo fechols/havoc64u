@@ -136,7 +136,9 @@ def main():
     put(26, checksum(span(0x7800, 0x8000)))
     put(28, checksum(span(0x9900, 0xa000)))
     put(30, checksum(span(symbols['__startup_checks_start'], symbols['__startup_checks_end'])))
-    directory[32] = 4
+    # SID count: the baked header carries havoc::audio::SID_COUNT, and the
+    # resident check requires both records to agree.
+    directory[32] = reu[17]
     put(120, 768)
     put(122, checksum(span(0x7200, 0x7500)))
     put(126, checksum(directory[:126]))

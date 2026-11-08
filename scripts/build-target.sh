@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 if (( $# != 0 )); then
-    echo 'usage: scripts/build-target.sh (the four-UltiSID build has no sound-profile argument)' >&2
+    echo 'usage: scripts/build-target.sh (the eight-UltiSID build has no sound-profile argument)' >&2
     exit 2
 fi
 root=$(cd "$(dirname "$0")/.." && pwd)

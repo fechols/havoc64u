@@ -51,7 +51,7 @@ static mut AUDIO: MaybeUninit<digital::State> = MaybeUninit::uninit();
 #[no_mangle]
 static mut EFFECTS: MaybeUninit<EffectsEngine> = MaybeUninit::uninit();
 const _: () = assert!(core::mem::size_of::<digital::State>() <= 432);
-const _: () = assert!(core::mem::size_of::<EffectsEngine>() <= 224);
+const _: () = assert!(core::mem::size_of::<EffectsEngine>() <= 512);
 const BACKEND_DAC: u8 = 1;
 const BACKEND_STARTING: u8 = 2;
 const BACKEND_SFX_ONLY: u8 = 3;
@@ -95,8 +95,12 @@ pub static mut AUDIO_TICKS: u16 = 0;
 #[no_mangle]
 pub static mut BOMB_EFFECT: BombEffect = BombEffect::new();
 // Image storage lives in the VIC bank; retain only the compact display key.
+// Both seats' keys live in the free page at $CB00 (link.ld), keeping the
+// two-player build's low globals below the first mission buffer.
+#[link_section = ".hud_state"]
 static mut HUD_STATE: MaybeUninit<hud_sprites::DisplayState> = MaybeUninit::uninit();
 // The second seat's HUD values, and whether the last HUD showed two seats.
+#[link_section = ".hud_state"]
 static mut HUD_SECOND: MaybeUninit<hud_sprites::DisplayState> = MaybeUninit::uninit();
 static mut HUD_COOP: bool = false;
 static mut HUD_VALID: bool = false;
@@ -276,7 +280,7 @@ extern "C" {
 pub(crate) struct HardwareSid;
 impl SidBus for HardwareSid {
     fn write(&mut self, sid: u8, reg: u8, value: u8) {
-        // The engine bounds sid < 4 and reg < 25, so the register address
+        // The engine bounds sid < 8 and reg < 25, so the register address
         // shares the same single-byte offset as its changed-write cache.
         unsafe { poke(0xd400 | u16::from((sid << 5) | reg), value) }
     }
@@ -357,7 +361,7 @@ unsafe fn audio_tick() {
     BOMB_EFFECT.tick();
     if AUDIO_READY {
         // The native body of EffectsEngine::tick (target-c64/asm/sfx.S)
-        // advances EFFECTS and writes the four chips; tools/test-sfx-kernel.py
+        // advances EFFECTS and writes the eight chips; tools/test-sfx-kernel.py
         // holds it to the host reference's exact state and write stream.
         extern "C" {
             fn fast_effects_tick();
@@ -381,10 +385,9 @@ unsafe fn fail(message: &[u8]) -> ! {
     poke(0xdf20, 0);
     poke(0xdf41, 0);
     poke(0xdf40, 0);
-    poke(0xd418, 0);
-    poke(0xd438, 0);
-    poke(0xd458, 0);
-    poke(0xd478, 0);
+    for sid in 0..havoc::audio::SID_COUNT as u16 {
+        poke(0xd418 + sid * 32, 0);
+    }
     // Bank 2 exposes the VIC character ROM at $9000. Reuse screen A, keeping
     // the compiler's low-memory scratch intact even while displaying an error.
     poke(0xdd02, peek(0xdd02) | 3);
@@ -775,9 +778,10 @@ unsafe fn input_ready(until: u16) -> bool {
     enable_irq();
     ready
 }
-// The publisher runs only from SIM, whose extra helpers are loaded with every
-// profile. Benchmark instrumentation uses spare resident space in that build.
-#[cfg_attr(not(feature = "benchmarks"), link_section = ".phase.sim_extra")]
+// The publisher runs only from SIM, right after simulate, so its two callees
+// in the common SIM prefix are still loaded. It stays resident: the two-player
+// build filled the SIM extra helpers, and tools/check-overlays.py whitelists
+// its exact SIM entries.
 #[inline(never)]
 unsafe fn send_audio(game: &mut Game) {
     disable_irq();

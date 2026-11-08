@@ -32,8 +32,10 @@ MEMORY {
     renderer (rw) : ORIGIN = 0xCFFA, LENGTH = 0x1006
     game (rw) : ORIGIN = 0xC800, LENGTH = 0x0300
     audio (rw) : ORIGIN = 0xCE00, LENGTH = 0x01B0
-    /* The effects state sits in the page below the DAC state. */
-    sfx_state (rw) : ORIGIN = 0xCD00, LENGTH = 0x0100
+    /* The effects state sits in the two pages below the DAC state. */
+    sfx_state (rw) : ORIGIN = 0xCC00, LENGTH = 0x0200
+    /* Both players' HUD sprite display state: the page below the effects state. */
+    hud_state (rw) : ORIGIN = 0xCB00, LENGTH = 0x0100
     benchmark_ram (rx) : ORIGIN = 0xFF20, LENGTH = 0x00DA
 }
 
@@ -432,6 +434,11 @@ SECTIONS {
         KEEP(*(.sfx_state .sfx_state.*))
         __sfx_state_end = .;
     } >sfx_state
+    .hud_state (NOLOAD) : {
+        __hud_state_start = .;
+        KEEP(*(.hud_state .hud_state.*))
+        __hud_state_end = .;
+    } >hud_state
 }
 
 /* Independent software stacks grow downward. The bounded effects engine uses
@@ -444,7 +451,7 @@ __irq_stack_bottom = 0x7500;
 /* LLVM-MOS gives non-reentrant functions static local frames in .noinit.
  * Nothing reachable from irq_body may own one (tools/check-irq-frames.py
  * audits the linked closure), so the interrupt needs no frame backup and
- * $BF40-$BFBF plus $CB00-$CCFF are free; Game uses the first 128 bytes of
+ * $BF40-$BFBF is free and $CB00 holds the HUD display state; Game uses the first 128 bytes of
  * the former $CA80-$CCFF backup for the four-boss state and byte locks. */
 /* Immutable reticle image in the unused bitmap tail. */
 __reticle_sprite_start = 0xBFC0;
@@ -655,7 +662,8 @@ ASSERT(__reticle_sprite_start == 0xBFC0 && __reticle_sprite_end == 0xC000 && __r
 ASSERT(__hud_sprites_end == __pixel_band_start && ORIGIN(startup_checks) == __pixel_band_start && ORIGIN(sim_aux) == __pixel_band_start, "shared workspace overlaps HUD sprites")
 ASSERT(__pixel_band_start == 0x8E00 && __pixel_band_end == 0x9300, "incorrect shared pixel-band workspace")
 ASSERT(__cell_hud_seen == 0x9328, "HUD-seen flag must reuse cell scratch at $9328")
-ASSERT(ADDR(.sfx_state) == 0xCD00 && SIZEOF(.sfx_state) <= 0x0100, "SID effects state must occupy $CD00-$CDFF")
+ASSERT(ADDR(.sfx_state) == 0xCC00 && SIZEOF(.sfx_state) <= 0x0200, "SID effects state must occupy $CC00-$CDFF")
+ASSERT(ADDR(.hud_state) == 0xCB00 && SIZEOF(.hud_state) <= 0x0100, "HUD display state must occupy $CB00-$CBFF")
 ASSERT(SIZEOF(.renderer) <= 0x1006, "renderer exceeds header plus hidden-I/O triangle storage")
 ASSERT(SIZEOF(.game_state) <= 0x0300, "game state exceeds $C800-$CAFF")
 ASSERT(SIZEOF(.unexpected_static_stack) == 0, "compiler static locals outside .noinit are not IRQ-safe")

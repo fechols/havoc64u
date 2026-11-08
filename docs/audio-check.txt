@@ -5,8 +5,9 @@ D:\havoc. Keep the previous v15 build separately in D:\havoc-audio-baseline.
 Keep each folder's PRG, REU and CFG together.
 
 Use the same display, video standard, joystick and audio output for both runs.
-Import havoc.cfg and check that CPU Speed is 64. The supplied configurations
-are identical: four UltiSIDs, Left 1 / Right 1 panning, and the same mixer gains.
+Import each build's own havoc.cfg and check that CPU Speed is 64. The eight-SID
+build splits both UltiSIDs 1/4 (UltiSID 2 at $D480); the baseline uses the 1/2
+split. Both keep Left 1 / Right 1 panning and the same mixer gains.
 Leave the joystick's hardware autofire disabled.
 
 For each build:

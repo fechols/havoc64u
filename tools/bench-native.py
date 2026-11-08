@@ -726,8 +726,8 @@ def main():
                    "-joydev1", "0", "-joydev2", "0", "-controlport1device", "iosim", "-controlport2device", "iosim",
                    "-remotemonitor", "-remotemonitoraddress", f"127.0.0.1:{port}", "-initbreak", "0x080d",
                    "-moncommands", str(startup), "-autostart", str(prg)]
-        if sid_count == 4:
-            command.extend(["-sid3address", "0xd440", "-sid4address", "0xd460"])
+        for extra in range(3, sid_count + 1):
+            command.extend([f"-sid{extra}address", f"0x{0xd400 + 32 * (extra - 1):x}"])
         log = (output / "vice.log").open("w")
         process = subprocess.Popen(command, cwd=ROOT, env=dict(os.environ, XDG_CONFIG_HOME=str(output/"config"), XDG_CACHE_HOME=str(output/"cache")),
                                    stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
@@ -830,10 +830,8 @@ def main():
         mon.command(f"trace store {syms['PROF_PHASE']:04x}")
         mon.command(f"trace store {syms['PROF_DETAIL']:04x}")
         mon.command("trace store df01 df0a if @cpu:$01 == $35")
-        mon.command("trace store d400 d418 if @cpu:$01 == $35")
-        mon.command("trace store d420 d438 if @cpu:$01 == $35")
-        if sid_count == 4:
-            mon.command("trace store d440 d478 if @cpu:$01 == $35")
+        for sid in range(sid_count):
+            mon.command(f"trace store d{0x400 + sid * 32:03x} d{0x418 + sid * 32:03x} if @cpu:$01 == $35")
         mon.command(f"trace exec {audio_tick_address:04x}")
         for name in ("publish_guard", "publish_commit", "publish_done", "hud_publish_guard", "hud_publish_commit", "hud_publish_done"):
             if name in syms:

@@ -20,8 +20,8 @@ Map Ultimate Audio $DF20-DFFF=Enabled
 SID Socket 1 Address=Unmapped
 SID Socket 2 Address=Unmapped
 UltiSID 1 Address=$D400
-UltiSID 2 Address=$D420
-UltiSID Range Split=1/2 (A6)
+UltiSID 2 Address=$D480
+UltiSID Range Split=1/4 (A5,A6)
 Auto Address Mirroring=Disabled
 [Audio Mixer]
 Vol Socket 1=OFF
@@ -48,7 +48,7 @@ class ReleasePackageTests(unittest.TestCase):
         reu = bytearray(16 * 1024 * 1024)
         reu[:4] = b"SM64"
         reu[4:8] = (0x534d1100).to_bytes(4, "little")
-        reu[17] = 4
+        reu[17] = 8
         (self.package / "havoc.reu").write_bytes(reu)
         (self.root / "docs/launch.txt").write_bytes(b"Launch instructions\n")
         (self.root / "LICENSE").write_bytes(b"MIT License\n")
@@ -100,16 +100,16 @@ class ReleasePackageTests(unittest.TestCase):
         original = path.read_bytes()
         obsolete = original[:4] + (0x534d0900).to_bytes(4, "little") + original[8:]
         previous = original[:4] + (0x534d1000).to_bytes(4, "little") + original[8:]
-        for data in (original[:17] + b"\x02" + original[18:], original[:-1],
+        for data in (original[:17] + b"\x02" + original[18:], original[:17] + b"\x04" + original[18:], original[:-1],
                      original[:8 * 1024 * 1024], b"NOPE" + original[4:], obsolete, previous):
             with self.subTest(length=len(data), header=data[:18]):
                 path.write_bytes(data)
-                with self.assertRaisesRegex(ValueError, "four-SID REU"):
+                with self.assertRaisesRegex(ValueError, "eight-SID REU"):
                     self.build()
 
     def test_rejects_stale_configuration_and_physical_sid_routing(self):
         path = self.package / "havoc.cfg"
-        stale = CONFIG.replace(b"1/2 (A6)", b"Off")
+        stale = CONFIG.replace(b"1/4 (A5,A6)", b"Off")
         path.write_bytes(stale)
         with self.assertRaisesRegex(ValueError, "differs from config"):
             self.build()

@@ -1,4 +1,4 @@
-; Resident quad-SID effects engine: the native body of
+; Resident eight-SID effects engine: the native body of
 ; havoc::audio::effects::EffectsEngine::tick with its start/stop paths.
 ; tools/test-sfx-kernel.py compares the linked player against complete host
 ; state/register/write fixtures exported by `cargo run --release --
@@ -9,7 +9,7 @@
 ;
 ; void fast_effects_tick(void)
 ;   C ABI: no arguments or result. Operates on the EFFECTS engine at its
-;   linker address and on the four chips at $D400/$D420/$D440/$D460 (I/O
+;   linker address and on the eight chips at $D400-$D4E0 (I/O
 ;   must be mapped). Only caller-saved rc2..19 and A/X/Y change; rc20..27
 ;   are used as scratch but saved and restored on the hardware stack.
 ;   Called from irq_body; no software stack frame and no compiler static
@@ -44,14 +44,14 @@
 .zeropage __rc26
 .zeropage __rc27
 
-; EffectsEngine (200 bytes): instances[4] @0, registers[128] @52,
-; events[8] @180, event_count @196, standard @197, enabled @198, rotation @199.
-.set EFX_REGS, 52
-.set EFX_EVENTS, 180
-.set EFX_COUNT, 196
-.set EFX_STANDARD, 197
-.set EFX_ENABLED, 198
-.set EFX_ROTATION, 199
+; EffectsEngine (380 bytes): instances[8] @0, registers[256] @104,
+; events[8] @360, event_count @376, standard @377, enabled @378, rotation @379.
+.set EFX_REGS, 104
+.set EFX_EVENTS, 360
+.set EFX_COUNT, 376
+.set EFX_STANDARD, 377
+.set EFX_ENABLED, 378
+.set EFX_ROTATION, 379
 ; Instance (13 bytes): mask, effect, age, remaining, frequency[3] u16,
 ; cutoff u16, program.
 .set I_MASK, 0
@@ -62,7 +62,7 @@
 .set I_CUTOFF, 10
 .set I_PROGRAM, 12
 .set INST_SIZE, 13
-.set INST_END, 4 * INST_SIZE
+.set INST_END, 8 * INST_SIZE
 ; Patch (25 bytes) and Program (11 bytes) fields; see src/audio/patches.rs.
 .set P_NOTES, 0
 .set P_WAVES, 3
@@ -97,7 +97,7 @@
 .set EFFECT_PLAYER_DEATH, 16
 
 ; ---- tick scratch (per-chip loop)
-.set SID, __rc2                 ; chip 0..3
+.set SID, __rc2                 ; chip 0..7 (0..3 left, 4..7 right)
 .set SIDBASE, __rc3             ; chip << 5: register cache / hardware offset
 .set PATCH, __rc4               ; /5 pointer to the instance's patch
 .set PROG, __rc6                ; program * 11 (byte index into sfx_programs)
@@ -120,7 +120,6 @@
 ; ---- event admission / start scratch
 .set ADMITTED, __rc24
 .set EV_PRIO, __rc25
-.set NCAND, __rc26
 .set INST, __rc27               ; instance offset (chip * 13)
 .set BESTIDX, __rc25            ; event selection only
 .set I, __rc26
@@ -207,9 +206,9 @@ fast_effects_tick:
 .Lt_cut_load:
     lda (PATCH),y
     jsr .Lcutoff_target
-    ; the right chip of a stereo pair sits 23 steps higher, clamped to 2047
+    ; right-side chips (4..7) sit 23 steps higher, clamped to 2047
     lda SID
-    lsr
+    cmp #4
     bcc .Lt_target_ok
     lda T
     clc
@@ -473,7 +472,7 @@ fast_effects_tick:
     jsr .Lmul8
     sta T
     lda SID
-    lsr
+    cmp #4
     bcc .Lt_phase
     lda T
     clc
@@ -556,7 +555,7 @@ fast_effects_tick:
     sta SIDBASE
     inc SID
     lda SID
-    cmp #4
+    cmp #8
     beq .Lt_events
     jmp .Lt_sid
     ; ---- admit queued events, strongest first
@@ -751,23 +750,27 @@ fast_effects_tick:
     jsr sfx_lane
 .Ls_lane_set:
     sta LANE
-    ; a repeated bomb replaces its own pair, leaving the overlap pair free
+    ; a repeated bomb replaces its own pair, leaving the other pairs free:
+    ; every pair owns one left chip, so the four left slots find it
     lda #0
     sta RESTART
     cpx #EFFECT_BOMB
     bne .Ls_restart_done
-    lda EFFECTS+I_EFFECT
+    ldy #0
+.Ls_restart_scan:
+    lda EFFECTS+I_EFFECT,y
     cmp #EFFECT_BOMB
-    bne .Ls_restart_right
-    lda EFFECTS+I_MASK
-    sta RESTART
-.Ls_restart_right:
-    lda EFFECTS+I_EFFECT+2*INST_SIZE
-    cmp #EFFECT_BOMB
-    bne .Ls_restart_done
-    lda EFFECTS+I_MASK+2*INST_SIZE
+    bne .Ls_restart_next
+    lda EFFECTS+I_MASK,y
     ora RESTART
     sta RESTART
+.Ls_restart_next:
+    tya
+    clc
+    adc #INST_SIZE
+    tay
+    cpy #4*INST_SIZE
+    bne .Ls_restart_scan
 .Ls_restart_done:
     lda #0
     sta BEST
@@ -778,41 +781,31 @@ fast_effects_tick:
     sta BESTCOST
     lda sfx_priorities,x
     sta EV_PRIO
-    lda #2
-    ldx LANE
-    cpx #3
-    bne .Ls_ncand
-    lda #4
-.Ls_ncand:
-    sta NCAND
 .Ls_cand_loop:
+    ; four candidates for every lane: the side's four chips or the four pairs
     lda CAND
-    cmp NCAND
+    cmp #4
     bcc .Ls_candidate
     jmp .Ls_cand_done
 .Ls_candidate:
-    ; n = (candidate + rotation) & 3 selects the pair or the side's chip
+    ; n = (candidate + rotation) & 3 selects the side's chip or the pair:
+    ; mask = .Llane_mask[(lane - 1) * 4 + n]
     lda CAND
     clc
     adc EFFECTS+EFX_ROTATION
     and #3
     tax
     lda LANE
-    cmp #3
-    beq .Ls_mask_pair
+    sec
+    sbc #1
+    asl
+    asl
+    sta MASK
     txa
-    and #1
-    beq .Ls_mask_first
-    lda LANE
-    asl
-    asl
-    bne .Ls_mask_set
-.Ls_mask_first:
-    lda LANE
-    bne .Ls_mask_set
-.Ls_mask_pair:
-    lda .Lpair_mask,x
-.Ls_mask_set:
+    clc
+    adc MASK
+    tax
+    lda .Llane_mask,x
     sta MASK
     lda RESTART
     beq .Ls_full
@@ -961,7 +954,7 @@ fast_effects_tick:
     lda sfx_frequencies+1,y
     sta FREQ+1
     lda SID
-    lsr
+    cmp #4
     bcc .Ls_pitch_done
     lda FREQ+1
     lsr
@@ -1113,7 +1106,7 @@ fast_effects_tick:
     cmp #3
     bne .Ls_primary
     lda SID
-    lsr
+    cmp #4
     bcc .Ls_primary
     lda T
     lsr
@@ -1137,7 +1130,7 @@ fast_effects_tick:
     sta SIDBASE
     inc SID
     lda SID
-    cmp #4
+    cmp #8
     beq .Ls_rotate
     jmp .Ls_sid_loop
 .Ls_rotate:
@@ -1150,7 +1143,7 @@ fast_effects_tick:
     rts
 
 ; Patch byte offsets effect * 25, program byte offsets program * 11, the
-; four stereo pair masks (n + 1) * 3 and chip bits.
+; lane masks (left chip n, right chip n + 4, the pair of both) and chip bits.
 .Lpatch_lo:
 .irp k,0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20
     .byte (\k * PATCH_SIZE) & 255
@@ -1163,10 +1156,10 @@ fast_effects_tick:
 .irp k,0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15
     .byte \k * PROGRAM_SIZE
 .endr
-.Lpair_mask:
-    .byte 3, 6, 9, 12
+.Llane_mask:
+    .byte 1, 2, 4, 8, $10, $20, $40, $80, $11, $22, $44, $88
 .Lsid_bit:
-    .byte 1, 2, 4, 8
+    .byte 1, 2, 4, 8, $10, $20, $40, $80
 .size fast_effects_tick, . - fast_effects_tick
 
 ; A = value, Y = (chip << 5) | register. Writes the hardware only when the

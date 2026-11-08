@@ -36,7 +36,7 @@ class ProfileTests(unittest.TestCase):
         for begin, size, name in ((0x1000, 5, 'caller'), (0x1100, 5, 'callee'), (0x1200, 4, 'tail')):
             owners[begin:begin + size] = [name] * size
         symbols = SimpleNamespace(owner=owners, starts={0x1000:'caller', 0x1100:'callee', 0x1200:'tail'})
-        cpu = KERNEL['EffectsCpu'](memory, [(0xd400, 0xd480)])
+        cpu = KERNEL['EffectsCpu'](memory, [(0xd400, 0xd500)])
         cpu.push(0xff); cpu.push(0xfe); cpu.pc = 0x1000
         profile = Sample(symbols, cpu.pc)
         while cpu.pc != 0xffff:
@@ -56,7 +56,7 @@ class ProfileTests(unittest.TestCase):
         self.assertEqual(report['p95_tick_ms_model'], report['max_tick_ms_model'])
 
     def test_continuity_allows_queue_injection_but_not_state_or_register_rewrites(self):
-        after, regs = bytes(range(20)), bytes(128)
+        after, regs = bytes(range(20)), bytes(256)
         before = bytearray(after); before[8:12] = b'\xff' * 4
         check = KERNEL['check_continuity']
         check(after, regs, before, regs, 8, 12)

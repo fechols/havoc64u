@@ -15,7 +15,7 @@ Fly an original 3D rail shooter for the **64 MHz C64 Ultimate**. Skim green hill
 ## Features
 
 - **3D worlds** — Dive through colorful landscapes and orbital scenery.
-- **Quad-SID effects** — Deep energy-cannon fire, heavy hull impacts, and resonant filter sweeps. Each effect uses one SID or a stereo pair; four chips let sounds overlap. Music plays entirely through the DACs.
+- **Eight-SID effects** — Deep energy-cannon fire, heavy hull impacts, and resonant filter sweeps. Each effect uses one SID or a stereo pair; eight chips let sounds overlap. Music plays entirely through the DACs.
 - **Rock soundtrack** — Rock out to Hammond Rocker through the title and attract tour, hear a different song in every stage, and earn the final gold medal for Galactic Dash. Mission Failed closes an unsuccessful run.
 - **18 varied stages** — Journey from green hills to orbital battlefields.
 - **Five bosses** — Break their defenses and strike their exposed cores. The final Gate Guardian splits into two bosses, then four fighting together.
@@ -33,7 +33,7 @@ Version 0.1.4 adds a two-second afterburner burst with its own HUD gauge, a fina
 
 Version 0.1.3 includes twenty-one original digital recordings composed for H.A.V.O.C. by William Echols. All eighteen stages have their own songs; Shattered Moon plays Lunar Awe. Mission Failed plays after losing all lives, and Galactic Dash celebrates victory. Stage music, Mission Failed, and Galactic Dash use 16 kHz, 3-bit mono compression with a 10 ms delay between outputs. Hammond Rocker retains true stereo, and SID combat effects remain active. Every song keeps its full length, with one encoding per recording. See the [soundtrack implementation notes](docs/digital-music-handoff.md#current-development-status-dlt5).
 
-The four-SID effects engine runs in resident assembly at 50 Hz. Each chip acts as one instrument with three hardware voices shaping its attack, body, and tail. Each effect uses at most one SID per channel; a stereo bomb leaves one left and one right chip available for ship explosions, and repeating it restarts its existing pair. Shots and impacts follow their screen position with a narrow center band and gentle headphone separation. Pitch and pulse-width movement, staged waveforms, sync, ring modulation and filter sweeps shape the sound. Track changes fade the outgoing digital music for about one second before the next song starts, without a crossfade. Validation and the sustained-combat CPU measurements are tracked in the [audio implementation notes](docs/hardware.md#quad-sid-effects).
+The eight-SID effects engine runs in resident assembly at 50 Hz. Each chip acts as one instrument with three hardware voices shaping its attack, body, and tail. Each effect uses at most one SID per channel; a stereo bomb leaves three left and three right chips available for ship explosions, and repeating it restarts its existing pair. Shots and impacts follow their screen position with a narrow center band and gentle headphone separation. Pitch and pulse-width movement, staged waveforms, sync, ring modulation and filter sweeps shape the sound. Track changes fade the outgoing digital music for about one second before the next song starts, without a crossfade. Validation and the sustained-combat CPU measurements are tracked in the [audio implementation notes](docs/hardware.md#eight-sid-effects).
 
 ## See it in action
 

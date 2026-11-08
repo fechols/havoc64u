@@ -4,12 +4,12 @@ use havoc::audio::{
 
 #[derive(Clone, Default)]
 struct Bus {
-    regs: [[u8; 25]; 4],
+    regs: [[u8; 25]; 8],
     writes: Vec<(u8, u8, u8)>,
 }
 impl SidBus for Bus {
     fn write(&mut self, sid: u8, reg: u8, value: u8) {
-        assert!(sid < 4 && reg < 25);
+        assert!(sid < 8 && reg < 25);
         self.regs[sid as usize][reg as usize] = value;
         self.writes.push((sid, reg, value));
     }
@@ -38,8 +38,8 @@ fn cutoff(b: &Bus, sid: usize) -> u16 {
 }
 
 #[test]
-fn engine_fits_dedicated_page_and_cue_ids_are_checked() {
-    assert_eq!(size_of::<EffectsEngine>(), 200);
+fn engine_fits_its_reservation_and_cue_ids_are_checked() {
+    assert_eq!(size_of::<EffectsEngine>(), 380);
     assert_eq!(size_of::<AudioEvent>(), 2);
     for id in 0..=255 {
         assert_eq!(Effect::from_id(id).is_some(), id < (EFFECT_COUNT as u8));
@@ -83,7 +83,7 @@ fn authored_pitch_profile_layers_transients_bodies_and_subs() {
                 engine.queue(event(effect, pan));
                 engine.tick(&mut bus);
                 let mut chips = 0;
-                for sid in 0..4 {
+                for sid in 0..8 {
                     // Start writes every voice's waveform (gate low) even when
                     // its envelope is authored silent.
                     if bus.regs[sid][4] == 0 {
@@ -97,7 +97,7 @@ fn authored_pitch_profile_layers_transients_bodies_and_subs() {
                             bus.regs[sid][register + 1],
                         ]);
                         let base = note_frequency(standard, note);
-                        let expected = base + (base >> 9) * (sid as u16 & 1);
+                        let expected = base + (base >> 9) * u16::from(sid >= 4);
                         assert_eq!(
                             actual, expected,
                             "{standard:?}, {effect:?}, pan {pan}, SID {sid}, voice {voice}"
@@ -125,7 +125,7 @@ fn enemy_explosion_cracks_then_booms_without_a_second_noise_attack() {
             engine.reset(&mut bus);
             engine.queue(event(Effect::EnemyExplosion, pan));
             engine.tick(&mut bus);
-            let chips: Vec<_> = (0..4).filter(|&sid| bus.regs[sid][4] == 128).collect();
+            let chips: Vec<_> = (0..8).filter(|&sid| bus.regs[sid][4] == 128).collect();
             assert_eq!(chips.len(), if pan == 0 { 2 } else { 1 });
 
             for tick in 0..=30 {
@@ -159,7 +159,7 @@ fn enemy_explosion_cracks_then_booms_without_a_second_noise_attack() {
                     assert_eq!(registers[6], 0, "noise has no sustained body");
 
                     let sub = note_frequency(standard, 31);
-                    let expected_sub = sub + (sub >> 9) * (sid as u16 & 1);
+                    let expected_sub = sub + (sub >> 9) * u16::from(sid >= 4);
                     assert_eq!(
                         u16::from_le_bytes([registers[14], registers[15]]), expected_sub,
                         "sub holds its pitch through the boom and release"
@@ -182,13 +182,13 @@ fn enemy_explosion_cracks_then_booms_without_a_second_noise_attack() {
 }
 
 #[test]
-fn reset_initializes_all_four_chips_and_uninitialized_ticks_are_silent() {
+fn reset_initializes_all_eight_chips_and_uninitialized_ticks_are_silent() {
     let mut e = EffectsEngine::new(VideoStandard::Pal);
     let mut b = Bus::default();
     e.tick(&mut b);
     assert!(b.writes.is_empty());
     e.reset(&mut b);
-    for sid in 0..4 {
+    for sid in 0..8 {
         assert_eq!(b.regs[sid][24], 8);
         assert_eq!(b.regs[sid][23], 0);
     }
@@ -212,7 +212,7 @@ fn every_effect_plays_layers_sweeps_and_finishes_on_both_standards() {
                 e.tick(&mut b);
                 sounding |= active(&b) != 0;
                 cutoffs.push(cutoff(&b, 0));
-                for sid in 0..4 {
+                for sid in 0..8 {
                     // Chip volume rests at the mix level and may only rise
                     // for an authored punch.
                     let volume = b.regs[sid][24] & 15;
@@ -251,11 +251,11 @@ fn every_effect_plays_layers_sweeps_and_finishes_on_both_standards() {
 #[test]
 fn directional_sounds_use_only_the_requested_side_and_center_is_stereo() {
     for (pan, allowed, count) in [
-        (-127, 5, 1),
-        (127, 10, 1),
-        (0, 15, 2),
-        (-32, 15, 2),
-        (32, 15, 2),
+        (-127, 0x0f, 1),
+        (127, 0xf0, 1),
+        (0, 0xff, 2),
+        (-32, 0xff, 2),
+        (32, 0xff, 2),
     ] {
         let (mut e, mut b) = setup();
         e.queue(event(Effect::MissileLaunch, pan));
@@ -265,8 +265,9 @@ fn directional_sounds_use_only_the_requested_side_and_center_is_stereo() {
         assert_eq!(mask & !allowed, 0);
         assert_eq!(mask.count_ones(), count);
         if count == 2 {
-            assert_ne!(mask & 5, 0);
-            assert_ne!(mask & 10, 0);
+            assert_ne!(mask & 0x0f, 0);
+            assert_ne!(mask & 0xf0, 0);
+            assert_eq!(mask >> 4, mask & 0x0f, "a pair is chips n and n + 4");
         }
     }
 }
@@ -281,8 +282,8 @@ fn every_effect_uses_at_most_one_chip_per_side() {
             engine.tick(&mut bus);
             engine.tick(&mut bus);
             let mask = active(&bus);
-            assert!((mask & 5).count_ones() <= 1, "{effect:?}, pan {pan}");
-            assert!((mask & 10).count_ones() <= 1, "{effect:?}, pan {pan}");
+            assert!((mask & 0x0f).count_ones() <= 1, "{effect:?}, pan {pan}");
+            assert!((mask & 0xf0).count_ones() <= 1, "{effect:?}, pan {pan}");
             assert_eq!(
                 mask.count_ones(),
                 if pan == 0 || effect.is_cinematic() {
@@ -323,24 +324,26 @@ fn backup_chips_preserve_each_instruments_channel_registers_and_writes() {
                     backup_bus.writes.clear();
                     primary.tick(&mut primary_bus);
                     backup.tick(&mut backup_bus);
+                    // Channel c is chip 4c on the fresh engine and chip 4c + 1
+                    // on the engine whose first pair is busy.
                     for channel in 0..2 {
                         if lane & (1 << channel) != 0 {
-                            assert_eq!(primary_bus.regs[channel], backup_bus.regs[channel + 2],
+                            assert_eq!(primary_bus.regs[channel * 4], backup_bus.regs[channel * 4 + 1],
                                 "{standard:?}, {effect:?}, pan {pan}, tick {tick}, channel {channel}");
                         }
                     }
-                    let writes = |bus: &Bus, first: u8| {
+                    let writes = |bus: &Bus, slot: u8| {
                         bus.writes
                             .iter()
                             .filter(|&&(sid, _, _)| {
-                                sid >= first && sid < first + 2 && lane & (1 << (sid & 1)) != 0
+                                sid & 3 == slot && lane & (1 << (sid >> 2)) != 0
                             })
-                            .map(|&(sid, reg, value)| (sid & 1, reg, value))
+                            .map(|&(sid, reg, value)| (sid >> 2, reg, value))
                             .collect::<Vec<_>>()
                     };
                     assert_eq!(
                         writes(&primary_bus, 0),
-                        writes(&backup_bus, 2),
+                        writes(&backup_bus, 1),
                         "{standard:?}, {effect:?}, pan {pan}, tick {tick}: backup writes differ"
                     );
                 }
@@ -364,19 +367,21 @@ fn bomb_and_both_sides_of_ship_destruction_sound_together() {
             engine.tick(&mut bus);
             reference.tick(&mut reference_bus);
             assert_eq!(
-                bus.regs[..2],
-                reference_bus.regs[..2],
+                [bus.regs[0], bus.regs[4]],
+                [reference_bus.regs[0], reference_bus.regs[4]],
                 "bomb interrupted at {at}/{tick}"
             );
             if tick > at {
-                assert_eq!(
-                    active(&bus),
-                    15,
-                    "one of the explosions is missing at {at}/{tick}"
-                );
+                let mask = active(&bus);
+                assert_eq!(mask & 0x11, 0x11, "the bomb lost its pair at {at}/{tick}");
+                assert_eq!((mask & 0x0f).count_ones(), 2, "left explosion missing at {at}/{tick}");
+                assert_eq!((mask & 0xf0).count_ones(), 2, "right explosion missing at {at}/{tick}");
                 // EnemyExplosion: resonance 11 with its noise and sub routed.
-                assert_eq!(bus.regs[2][23], 0xb5);
-                assert_eq!(bus.regs[3][23], 0xb5);
+                for sid in 0..8usize {
+                    if mask & !0x11 & (1 << sid) != 0 {
+                        assert_eq!(bus.regs[sid][23], 0xb5);
+                    }
+                }
             }
         }
     }
@@ -396,11 +401,13 @@ fn repeated_bomb_restarts_its_existing_pair_and_keeps_other_effects_running() {
             engine.tick(&mut bus);
         }
         let bomb_mask = active(&bus);
-        assert_eq!(bomb_mask, if backup_pair { 12 } else { 3 });
+        assert_eq!(bomb_mask, if backup_pair { 0x22 } else { 0x11 });
         engine.queue(event(Effect::EnemyExplosion, -100));
         engine.queue(event(Effect::EnemyExplosion, 100));
         engine.tick(&mut bus);
         engine.tick(&mut bus);
+        let full = active(&bus);
+        assert_eq!((full & !bomb_mask).count_ones(), 2, "explosions missing beside the bomb");
         let mut reference = engine.snapshot();
         let mut reference_bus = bus.clone();
         engine.queue(event(Effect::Bomb, 0));
@@ -408,10 +415,10 @@ fn repeated_bomb_restarts_its_existing_pair_and_keeps_other_effects_running() {
         reference.tick(&mut reference_bus);
         assert_eq!(
             active(&bus),
-            15 ^ bomb_mask,
+            full & !bomb_mask,
             "retrigger needs a gate-low tick"
         );
-        for sid in 0..4 {
+        for sid in 0..8usize {
             if bomb_mask & (1 << sid) == 0 {
                 assert_eq!(
                     bus.regs[sid], reference_bus.regs[sid],
@@ -422,32 +429,36 @@ fn repeated_bomb_restarts_its_existing_pair_and_keeps_other_effects_running() {
             }
         }
         engine.tick(&mut bus);
-        assert_eq!(active(&bus), 15);
+        assert_eq!(active(&bus), full);
     }
 }
 
 #[test]
-fn four_directional_instruments_can_sweep_simultaneously() {
+fn eight_directional_instruments_can_sweep_simultaneously() {
     let (mut e, mut b) = setup();
     for (effect, pan) in [
         (Effect::MissileLaunch, -100),
         (Effect::Roll, -100),
+        (Effect::BossArrival, -100),
+        (Effect::MissileReady, -100),
         (Effect::Meteor, 100),
         (Effect::Transport, 100),
+        (Effect::TransportAway, 100),
+        (Effect::LowShield, 100),
     ] {
         e.queue(event(effect, pan));
     }
     e.tick(&mut b);
     e.tick(&mut b);
-    assert_eq!(active(&b), 15);
-    let before = (0..4).map(|sid| cutoff(&b, sid)).collect::<Vec<_>>();
+    assert_eq!(active(&b), 0xff);
+    let before = (0..8).map(|sid| cutoff(&b, sid)).collect::<Vec<_>>();
     for _ in 0..4 {
         e.tick(&mut b);
     }
-    for sid in 0..4 {
-        assert_ne!(cutoff(&b, sid), before[sid]);
+    for sid in 0..8usize {
+        assert_ne!(cutoff(&b, sid), before[sid], "chip {sid} filter did not move");
     }
-    assert_ne!(cutoff(&b, 0), cutoff(&b, 2));
+    assert_ne!(cutoff(&b, 0), cutoff(&b, 1));
     for r in &b.regs {
         assert_ne!(r[23] & 7, 0, "instrument needs a filtered layer");
         for reg in [4, 11, 18] {
@@ -464,11 +475,11 @@ fn hero_effects_use_six_oscillators_and_distinct_stereo_sweeps() {
         for _ in 0..15 {
             e.tick(&mut b);
         }
-        assert_eq!(active(&b), 3);
-        assert_ne!(cutoff(&b, 0), cutoff(&b, 1));
-        for r in &b.regs[..2] {
+        assert_eq!(active(&b), 0x11);
+        assert_ne!(cutoff(&b, 0), cutoff(&b, 4));
+        for sid in [0, 4] {
             for reg in [4, 11, 18] {
-                assert_eq!(r[reg] & 1, 1);
+                assert_eq!(b.regs[sid][reg] & 1, 1);
             }
         }
     }
@@ -487,27 +498,35 @@ fn mass_kills_use_the_spare_pair_without_replacing_the_bomb() {
     e.tick(&mut b);
     reference.tick(&mut reference_bus);
     reference.tick(&mut reference_bus);
-    assert_eq!(active(&b), 15);
-    assert_eq!(b.regs[..2], reference_bus.regs[..2]);
-    assert!(b.regs[2..].iter().all(|r| r[23] == 0xb5));
+    assert_eq!(active(&b), 0xff);
+    let hero = |bus: &Bus| [bus.regs[0], bus.regs[4]];
+    assert_eq!(hero(&b), hero(&reference_bus));
+    // Explosions take one chip per side plus a spare pair; lasers fill the rest.
+    let explosions = (0..8).filter(|&sid| sid % 4 != 0 && b.regs[sid][23] == 0xb5).count();
+    assert_eq!(explosions, 4);
     for _ in 0..5 {
         e.queue(event(Effect::EnemyExplosion, 0));
         e.tick(&mut b);
         reference.tick(&mut reference_bus);
-        assert_eq!(b.regs[..2], reference_bus.regs[..2]);
+        assert_eq!(hero(&b), hero(&reference_bus));
     }
-    // Death takes the lower-priority explosion pair and leaves the bomb
-    // intact; the bomb's own gate-low re-detonation at tick eight lands on
-    // the second tick here, identically in both engines.
+    // Death takes a lower-priority pair and leaves the bomb intact; the
+    // bomb's own gate-low re-detonation at tick eight lands on the second
+    // tick here, identically in both engines.
+    let before = active(&b);
     e.queue(event(Effect::PlayerDeath, 0));
     e.tick(&mut b);
     reference.tick(&mut reference_bus);
-    assert_eq!(active(&b) & 12, 0, "death needs its gate-low tick");
-    assert_eq!(b.regs[..2], reference_bus.regs[..2]);
+    let dropped = before & !active(&b);
+    let pair = dropped & (dropped >> 4) & 0x0f;
+    assert_eq!(pair.count_ones(), 1, "death needs its gate-low tick on one pair");
+    let death = pair | pair << 4;
+    assert_eq!(death & 0x11, 0, "death took the bomb's pair");
+    assert_eq!(hero(&b), hero(&reference_bus));
     e.tick(&mut b);
     reference.tick(&mut reference_bus);
-    assert_eq!(active(&b) & 12, 12, "death pair did not attack");
-    assert_eq!(b.regs[..2], reference_bus.regs[..2], "the existing bomb keeps its pair");
+    assert_eq!(active(&b) & death, death, "death pair did not attack");
+    assert_eq!(hero(&b), hero(&reference_bus), "the existing bomb keeps its pair");
 }
 #[test]
 fn preempting_half_a_stereo_effect_releases_its_other_half() {
@@ -516,11 +535,14 @@ fn preempting_half_a_stereo_effect_releases_its_other_half() {
     e.tick(&mut b);
     e.tick(&mut b);
     let original = active(&b);
+    assert_eq!(original, 0x11);
+    // Fill the other three left chips so the hit must steal.
     e.queue(event(Effect::MissileLaunch, -100));
-    e.queue(event(Effect::BossArrival, 100));
+    e.queue(event(Effect::BossArrival, -100));
+    e.queue(event(Effect::EnemyHit, -100));
     e.tick(&mut b);
     e.tick(&mut b);
-    assert_eq!(active(&b), 15);
+    assert_eq!(active(&b), 0x1f);
     e.queue(event(Effect::PlayerHit, -100));
     e.tick(&mut b);
     assert_eq!(
@@ -529,7 +551,7 @@ fn preempting_half_a_stereo_effect_releases_its_other_half() {
         "both old stereo halves stop together"
     );
     e.tick(&mut b);
-    assert_eq!(active(&b).count_ones(), 3);
+    assert_eq!(active(&b), 0x0f, "the hit took only the pickup's left chip");
 }
 #[test]
 fn full_queue_keeps_urgent_cues_and_coalesces_duplicates() {
@@ -543,7 +565,9 @@ fn full_queue_keeps_urgent_cues_and_coalesces_duplicates() {
     assert!(e.queue(event(Effect::PlayerDeath, 0)));
     e.tick(&mut b);
     e.tick(&mut b);
-    assert_eq!(active(&b), 15);
+    // Death and the bomb take two pairs, the two strongest right-hand cues
+    // take the free right chips, and nothing weaker can steal.
+    assert_eq!(active(&b), 0xf3);
 }
 #[test]
 fn scene_cancellation_is_ram_only_and_leaves_combat_running() {
@@ -552,15 +576,15 @@ fn scene_cancellation_is_ram_only_and_leaves_combat_running() {
     e.queue(event(Effect::MissileLaunch, 100));
     e.tick(&mut b);
     e.tick(&mut b);
-    let right = active(&b) & 10;
+    let right = active(&b) & 0xf0;
     e.queue(event(Effect::Transport, 0));
     b.writes.clear();
     e.cancel_scene_effects();
     assert!(b.writes.is_empty());
     e.tick(&mut b);
     assert_eq!(active(&b), right);
-    for sid in [0, 2] {
-        assert_eq!(b.regs[sid][23], 0);
+    for sid in 0..4usize {
+        assert_eq!(b.regs[sid][23], 0, "left chip {sid} still filtered");
     }
 }
 #[test]
@@ -645,6 +669,7 @@ fn damage_priorities_outrank_weapons_and_scenery_without_becoming_hero_effects()
         e.tick(&mut b);
         e.tick(&mut b);
         assert_eq!(active(&b).count_ones(), 2, "{damage:?} needs a stereo pair");
+        assert_eq!(active(&b) >> 4, active(&b) & 0x0f, "{damage:?} pair spans both sides");
         for (sid, registers) in b.regs.iter().enumerate() {
             if active(&b) & (1 << sid) != 0 {
                 assert_ne!(registers[4] & 1, 0, "dry attack must be gated");
@@ -676,15 +701,15 @@ fn damage_uses_the_spare_cinematic_pair_even_on_the_activation_tick() {
                     engine.tick(&mut bus);
                     reference.tick(&mut reference_bus);
                     assert_eq!(
-                        bus.regs[..2],
-                        reference_bus.regs[..2],
+                        [bus.regs[0], bus.regs[4]],
+                        [reference_bus.regs[0], reference_bus.regs[4]],
                         "{hero:?}, {damage:?}, start {at}, tick {tick}: primary changed"
                     );
                     if tick == at + 1 {
-                        assert_eq!(active(&bus) & 12, 12, "{damage:?} did not attack");
+                        assert_eq!(active(&bus) & 0x22, 0x22, "{damage:?} did not attack");
                         assert_ne!(
-                            bus.regs[2..],
-                            reference_bus.regs[2..],
+                            [bus.regs[1], bus.regs[5]],
+                            [reference_bus.regs[1], reference_bus.regs[5]],
                             "secondary pair still sounds only {hero:?}"
                         );
                     }
@@ -703,10 +728,14 @@ fn damage_uses_the_spare_cinematic_pair_even_on_the_activation_tick() {
                 }
                 engine.tick(&mut bus);
                 clean.tick(&mut clean_bus);
-                assert_eq!(
-                    bus.regs, clean_bus.regs,
-                    "{damage:?} was stolen by scenery/fire"
-                );
+                // The spare pairs admit the weaker cues; the hero and damage
+                // pairs must not change.
+                for sid in [0, 1, 4, 5] {
+                    assert_eq!(
+                        bus.regs[sid], clean_bus.regs[sid],
+                        "{damage:?} was stolen by scenery/fire"
+                    );
+                }
             }
         }
     }
@@ -725,14 +754,19 @@ fn player_damage_wins_a_shared_impact_batch_and_death_takes_only_one_pair() {
     reference.queue(event(Effect::PlayerHit, 0));
     reference.tick(&mut reference_bus);
     reference.tick(&mut reference_bus);
-    assert_eq!(bus.regs, reference_bus.regs);
+    // The player's hit outranks the enemy hit for the first spare pair; the
+    // enemy hit still finds a third pair.
+    for sid in [0, 1, 4, 5] {
+        assert_eq!(bus.regs[sid], reference_bus.regs[sid]);
+    }
+    assert_eq!(active(&bus), 0x77);
     engine.queue(event(Effect::PlayerDeath, 0));
     engine.queue(event(Effect::PlayerHit, 0));
     engine.queue(event(Effect::BossHit, 0));
     engine.tick(&mut bus);
-    assert_eq!(active(&bus), 3, "the existing bomb keeps its pair");
+    assert_eq!(active(&bus), 0x33, "the existing bomb and hit keep their pairs");
     engine.tick(&mut bus);
-    assert_eq!(active(&bus), 15);
+    assert_eq!(active(&bus), 0xff);
 }
 
 #[test]
@@ -771,7 +805,7 @@ fn repeated_laser_has_a_tonal_attack_and_cannot_erase_damage() {
         }
     });
     assert_ne!(damage_mask, 0);
-    for sid in 0..4 {
+    for sid in 0..8 {
         if damage_mask & (1 << sid) != 0 {
             assert_eq!(bus.regs[sid], clean_bus.regs[sid]);
         }
@@ -782,7 +816,9 @@ fn repeated_laser_has_a_tonal_attack_and_cannot_erase_damage() {
 fn cinematic_effects_preserve_the_frozen_core_pair_register_and_write_streams() {
     // The v17 cinematic streams, including every ordered write, punch ramp,
     // re-detonation, release and silence over all 106 ticks. The bomb's
-    // previously removed doubled pair is excluded from this contract.
+    // previously removed doubled pair is excluded from this contract. Chips
+    // hash as their channel (sid >> 2) and the pair as chips 0 then 4, so the
+    // eight-chip layout keeps the four-chip digests.
     fn hash(h: &mut u64, bytes: impl IntoIterator<Item = u8>) {
         for byte in bytes {
             *h = (*h ^ byte as u64).wrapping_mul(0x100000001b3);
@@ -819,9 +855,9 @@ fn cinematic_effects_preserve_the_frozen_core_pair_register_and_write_streams() 
                     &mut digest,
                     bus.writes
                         .iter()
-                        .flat_map(|&(sid, reg, value)| [sid, reg, value]),
+                        .flat_map(|&(sid, reg, value)| [sid >> 2, reg, value]),
                 );
-                hash(&mut digest, bus.regs[..2].iter().flatten().copied());
+                hash(&mut digest, [0, 4].into_iter().flat_map(|sid| bus.regs[sid]));
             }
             assert_eq!(digest, expected, "{standard:?}, {effect:?}, pan {pan}");
         }

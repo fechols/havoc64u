@@ -117,7 +117,7 @@ assert symbols['__phase_pixels_size'] == 0x3f20 + symbols['__phase_pixels_aux_si
 assert symbols['__raster_player_seen']==0x77ab
 assert (symbols['__raster_prepare_scratch_start'],symbols['__raster_prepare_scratch_end'])==(0x77a0,0x77bf)
 assert symbols['__irq_stack']<=symbols['__raster_prepare_scratch_start']<symbols['__raster_prepare_scratch_end']<=0x7800
-ranges={'.basic_header':(0x801,0x3000),'.text':(0x801,0x3000),'.data':(0x200,low_end),'.bss':(0x200,low_end),'.noinit':(0x200,low_end),'.sfx_state':(0xcd00,0xce00),'.sfx_patches':(0x7200,0x7500),'.startup_checks':(0x8e00,0x9300),'.rodata':(0x7800,0x8000),'.tables':(0x9900,0xa000),'.renderer':(0xcffa,0xe000),'.game_state':(0xc800,0xcb00),'.audio_state':(0xce00,0xcfb0),'.zp.data':(0x22,0xf0),'.zp.bss':(0x22,0xf0),'.zp.noinit':(0x22,0xf0)}
+ranges={'.basic_header':(0x801,0x3000),'.text':(0x801,0x3000),'.data':(0x200,low_end),'.bss':(0x200,low_end),'.noinit':(0x200,low_end),'.sfx_state':(0xcc00,0xce00),'.hud_state':(0xcb00,0xcc00),'.sfx_patches':(0x7200,0x7500),'.startup_checks':(0x8e00,0x9300),'.rodata':(0x7800,0x8000),'.tables':(0x9900,0xa000),'.renderer':(0xcffa,0xe000),'.game_state':(0xc800,0xcb00),'.audio_state':(0xce00,0xcfb0),'.zp.data':(0x22,0xf0),'.zp.bss':(0x22,0xf0),'.zp.noinit':(0x22,0xf0)}
 ranges['.benchmark_resident'] = (0xff20, 0xfffa)
 ranges['.sfx_helpers'] = (0x7800, 0x8000)
 ranges['.splash'] = (0x3000, 0x5711)
@@ -256,7 +256,7 @@ assert phase_sizes['.phase.scenery'] == symbols['__phase_scenery_base_size']
 assert symbols['__phase_scenery_size'] == symbols['__phase_scenery_base_size'] + max(phase_sizes[name] for name in scenery_sections)
 print(f'PRG {len(data):,} bytes; resident headroom {0x3000-symbols["__resident_end"]} bytes')
 state = next(section for section in metadata.sections if section.name == '.sfx_state')
-assert state.address == 0xcd00 and 0 < state.size <= 256, 'invalid SFX state section'
+assert state.address == 0xcc00 and 0 < state.size <= 512, 'invalid SFX state section'
 assert symbols['__sfx_state_start'] == state.address and symbols['__sfx_state_end'] == state.address + state.size, 'SFX state bounds disagree'
 effect = next(symbol for symbol in metadata.symbols if symbol.name == 'EFFECTS')
 assert effect.address == state.address and effect.size == state.size and effect.section == state.index, 'SFX state symbol disagrees'
@@ -271,7 +271,7 @@ assert patches.address == 0x7200 and 0 < patches.size <= 768 and not patches.exe
 bank = metadata.data[patches.offset:patches.offset+patches.size].ljust(768, b'\0')
 assert data[2+0x7200-0x801:2+0x7500-0x801] == bank, 'PRG SFX patch bank differs from ELF'
 assert not any(section.name == '.music_page' or section.name.startswith('.music.kernel.') for section in metadata.sections)
-print('Four dedicated SIDs: twelve oscillators, four filters; effects stateCD00-CDFF; patches7200-74FF')
+print('Eight dedicated SIDs: twenty-four oscillators, eight filters; effects state CC00-CDFF; patches 7200-74FF')
 print('Models8400-8BFF; HUD sprites8C00-8DFF; overflow-cell pixel band8E00-92FF; GEOMETRY kernel scratch9300-93FF (PIXELS cell scratch9300-9328); cell codes9400-953F, cover/HUD9540-967F, palettes9680-96F7; segments0600-07FF and9700-98FF')
 print('Overlay3000-71FF; permanent SFX patches7200-74FF; main stackC400-C7FF; IRQ stack7500-75FF')
 print('Resident reticle BFC0-BFFF: one immutable 64-byte sprite')

@@ -74,6 +74,7 @@ fn header_rejects_wrong_size_signature_version_and_directory() {
         (12, 0xff, AssetError::Bounds),
         (16, 5, AssetError::Bounds),
         (17, 2, AssetError::Bounds),
+        (17, 4, AssetError::Bounds),
     ] {
         let mut bytes = good;
         bytes[offset] = value;
